@@ -695,7 +695,19 @@ defmodule NpcServer.NpcBodyWorldTest do
            orientation: 0
          },
          %{verb: :place, coord: @pillar, material: @stone, tool_id: 1},
-         %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1, target: %{micro: {128,520,80}, granularity: 0, incarnation: 1, owner: {0,0}, material: @stone}},
+         %{
+           verb: :scoop,
+           coord: @pillar,
+           material: @stone,
+           tool_id: 1,
+           target: %{
+             micro: {128, 520, 80},
+             granularity: 0,
+             incarnation: 1,
+             owner: {0, 0},
+             material: @stone
+           }
+         },
          %{verb: :look, min: {0, 0, 0}, max: {100, 100, 100}}
        ]
      }}

@@ -20,24 +20,45 @@ defmodule AuthServerWeb.AccountPortalController do
     case Identity.login(p["email"], p["password"], false, source: source(conn), web: true) do
       {:ok, session} ->
         Identity.logout(get_session(conn, :account_access))
-        conn |> configure_session(renew: true) |> put_session(:account_access, session.access_token) |> redirect(to: "/auth")
-      {:error, reason} -> failure(conn, :login, p, reason)
+
+        conn
+        |> configure_session(renew: true)
+        |> put_session(:account_access, session.access_token)
+        |> redirect(to: "/auth")
+
+      {:error, reason} ->
+        failure(conn, :login, p, reason)
     end
   end
 
   def registration_email(conn, p) do
-    result(conn, :register, p, Identity.send_registration_email(p["email"], p["invite"], source(conn)), "验证邮件已发送；请填写邮件验证码和密码完成注册。已有账号可直接登录。")
+    result(
+      conn,
+      :register,
+      p,
+      Identity.send_registration_email(p["email"], p["invite"], source(conn)),
+      "验证邮件已发送；请填写邮件验证码和密码完成注册。已有账号可直接登录。"
+    )
   end
 
   def register(conn, p) do
     case Identity.register(p["email"], p["password"], p["code"], p["invite"]) do
-      {:ok, _} -> conn |> put_flash(:ok, "注册成功。现在可以在 Voxim 游戏中使用邮箱和密码登录。") |> redirect(to: "/auth/login")
-      {:error, reason} -> failure(conn, :register, p, reason)
+      {:ok, _} ->
+        conn |> put_flash(:ok, "注册成功。现在可以在 Voxim 游戏中使用邮箱和密码登录。") |> redirect(to: "/auth/login")
+
+      {:error, reason} ->
+        failure(conn, :register, p, reason)
     end
   end
 
   def forgot(conn, p) do
-    result(conn, :forgot, p, Identity.forgot_password(p["email"], source(conn)), "若该邮箱已注册，重置邮件已发送。请使用邮件中的重置码设置新密码。")
+    result(
+      conn,
+      :forgot,
+      p,
+      Identity.forgot_password(p["email"], source(conn)),
+      "若该邮箱已注册，重置邮件已发送。请使用邮件中的重置码设置新密码。"
+    )
   end
 
   def reset(conn, p) do
@@ -48,7 +69,13 @@ defmodule AuthServerWeb.AccountPortalController do
   end
 
   def claim_email(conn, p) do
-    result(conn, :claim, p, Identity.send_claim_email(p["email"], p["legacy_code"], source(conn)), "认领验证邮件已发送，请填写验证码和新密码绑定原角色。")
+    result(
+      conn,
+      :claim,
+      p,
+      Identity.send_claim_email(p["email"], p["legacy_code"], source(conn)),
+      "认领验证邮件已发送，请填写验证码和新密码绑定原角色。"
+    )
   end
 
   def claim(conn, p) do
@@ -60,10 +87,26 @@ defmodule AuthServerWeb.AccountPortalController do
 
   def change_password(conn, p) do
     with_account(conn, fn conn, context ->
-      case Identity.change_password(get_session(conn, :account_access), p["current_password"], p["password"]) do
-        :ok -> signed_out(conn, :ok, "密码已更新，所有设备已退出。请重新登录。")
-        {:error, :invalid_session} -> signed_out(conn, :info, "登录已失效，请重新登录。")
-        {:error, reason} -> conn |> put_status(400) |> page(:manage, %{}, {:error, if(reason == :invalid_credentials, do: "当前密码错误。", else: error_text(reason))}, context)
+      case Identity.change_password(
+             get_session(conn, :account_access),
+             p["current_password"],
+             p["password"]
+           ) do
+        :ok ->
+          signed_out(conn, :ok, "密码已更新，所有设备已退出。请重新登录。")
+
+        {:error, :invalid_session} ->
+          signed_out(conn, :info, "登录已失效，请重新登录。")
+
+        {:error, reason} ->
+          conn
+          |> put_status(400)
+          |> page(
+            :manage,
+            %{},
+            {:error, if(reason == :invalid_credentials, do: "当前密码错误。", else: error_text(reason))},
+            context
+          )
       end
     end)
   end
@@ -88,13 +131,25 @@ defmodule AuthServerWeb.AccountPortalController do
   end
 
   defp signed_out(conn, tone, message) do
-    conn |> clear_session() |> configure_session(renew: true) |> put_flash(tone, message) |> redirect(to: "/auth/login")
+    conn
+    |> clear_session()
+    |> configure_session(renew: true)
+    |> put_flash(tone, message)
+    |> redirect(to: "/auth/login")
   end
 
   # 邮件已发出：页面进入第二步，并按服务端每邮箱 60 秒一封的限制显示重发冷却。
-  defp result(conn, screen, p, :ok, message), do: conn |> assign(:sent, true) |> page(screen, p, {:ok, message})
+  defp result(conn, screen, p, :ok, message),
+    do: conn |> assign(:sent, true) |> page(screen, p, {:ok, message})
+
   defp result(conn, screen, p, {:error, reason}, _), do: failure(conn, screen, p, reason)
-  defp failure(conn, screen, p, reason), do: conn |> put_status(if(reason == :rate_limited, do: 429, else: 400)) |> page(screen, p, {:error, error_text(reason)})
+
+  defp failure(conn, screen, p, reason),
+    do:
+      conn
+      |> put_status(if(reason == :rate_limited, do: 429, else: 400))
+      |> page(screen, p, {:error, error_text(reason)})
+
   # 已登录时登录／注册页没有意义，直接回到账号页。
   defp guest_only(conn, screen) do
     case Identity.authenticate(get_session(conn, :account_access)) do
@@ -102,20 +157,39 @@ defmodule AuthServerWeb.AccountPortalController do
       _ -> page(conn, screen)
     end
   end
+
   defp page(conn, screen, p \\ %{}, notice \\ nil, context \\ nil) do
-    viewer = if context, do: Identity.profile(context.account_id) |> Map.put(:admin, context.auth_admin), else: Identity.viewer(get_session(conn, :account_access))
-    render(conn, :index, screen: screen, email: p["email"] || "", invite: p["invite"] || "", sent: conn.assigns[:sent] || false,
-      notice: notice || flash_notice(conn), viewer: viewer, account: context,
-      invite_required: Identity.registration_policy().invite_required)
+    viewer =
+      if context,
+        do: Identity.profile(context.account_id) |> Map.put(:admin, context.auth_admin),
+        else: Identity.viewer(get_session(conn, :account_access))
+
+    render(conn, :index,
+      screen: screen,
+      email: p["email"] || "",
+      invite: p["invite"] || "",
+      sent: conn.assigns[:sent] || false,
+      notice: notice || flash_notice(conn),
+      viewer: viewer,
+      account: context,
+      invite_required: Identity.registration_policy().invite_required
+    )
   end
+
   defp flash_notice(conn) do
-    Enum.find_value([:ok, :info], fn tone -> (text = Phoenix.Flash.get(conn.assigns.flash, tone)) && {tone, text} end)
+    Enum.find_value([:ok, :info], fn tone ->
+      (text = Phoenix.Flash.get(conn.assigns.flash, tone)) && {tone, text}
+    end)
   end
+
   defp no_store(conn, _), do: put_resp_header(conn, "cache-control", "no-store")
   defp source(conn), do: conn.remote_ip |> :inet.ntoa() |> to_string()
   defp error_text(:invalid_credentials), do: "邮箱或密码错误。"
   defp error_text(:invalid_email), do: "请输入有效邮箱。"
-  defp error_text(:invalid_password), do: "密码需为 #{Identity.password_min_length()}–#{Identity.password_max_length()} 个字符。"
+
+  defp error_text(:invalid_password),
+    do: "密码需为 #{Identity.password_min_length()}–#{Identity.password_max_length()} 个字符。"
+
   defp error_text(:invite_required), do: "当前需要邀请码，请填写后重试。"
   defp error_text(:invalid_invite), do: "邀请码不可用，请检查或联系发放者。"
   defp error_text(:invalid_legacy_claim), do: "旧邀请码无法认领，请检查是否已绑定或联系管理员。"

@@ -9,13 +9,19 @@ defmodule MmoContracts.Voxel.Refined do
 
   @doc "相同后缀的有序iodata；完整载荷复用槽记录，在最终Codec边界统一物化。"
   def encode_iodata(refined, instances, version \\ 5) do
-    {count, cells} = case refined do
-      %Encoding{cells: cells} ->
-        {map_size(cells), for({index, {count, bytes}} <- Enum.sort(cells),
-          do: [<<index::32-little, count::32-little>>, bytes])}
-      slots_by_cell when is_map(slots_by_cell) ->
-        {map_size(slots_by_cell), for(cell <- Enum.sort(slots_by_cell), do: decoded_cell(cell))}
-    end
+    {count, cells} =
+      case refined do
+        %Encoding{cells: cells} ->
+          {map_size(cells),
+           for(
+             {index, {count, bytes}} <- Enum.sort(cells),
+             do: [<<index::32-little, count::32-little>>, bytes]
+           )}
+
+        slots_by_cell when is_map(slots_by_cell) ->
+          {map_size(slots_by_cell), for(cell <- Enum.sort(slots_by_cell), do: decoded_cell(cell))}
+      end
+
     [
       <<count::32-little>>,
       cells,
@@ -46,10 +52,15 @@ defmodule MmoContracts.Voxel.Refined do
     do: [<<index::32-little, map_size(slots)::32-little>>, slot_records(slots)]
 
   defp decoded_cell({index, slots}),
-    do: raise(ArgumentError, "refined cell #{index} requires a decoded slot map or Refined.Encoding projection, got: #{inspect(slots)}")
+    do:
+      raise(
+        ArgumentError,
+        "refined cell #{index} requires a decoded slot map or Refined.Encoding projection, got: #{inspect(slots)}"
+      )
 
   @doc "一个宏格的槽记录（按槽号升序）：VXR5/7 refined 后缀中该格头之后的字节。"
-  def slot_records(slots), do: slots |> Enum.sort() |> Enum.map(&slot_record/1) |> IO.iodata_to_binary()
+  def slot_records(slots),
+    do: slots |> Enum.sort() |> Enum.map(&slot_record/1) |> IO.iodata_to_binary()
 
   @doc "一个合法槽的 wire 记录；有序投影与 decoded-map 编码共用字段定义。"
   def slot_record({slot, {material, {birth, occurrence}}}),

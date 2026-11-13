@@ -219,7 +219,15 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: 0.65}}
 
     # 纯回调小例：封存前收到尚未被下一次身体 tick 消费的 90 J，移交必须完整带走。
-    heat = %{q_j: 90.0, tissue_j: 40.0, max_contact_k: 330.0, sole_k: 320.0, immersed: 0.5, seq: 1}
+    heat = %{
+      q_j: 90.0,
+      tissue_j: 40.0,
+      max_contact_k: 330.0,
+      sole_k: 320.0,
+      immersed: 0.5,
+      seq: 1
+    }
+
     {:noreply, source} = Player.handle_info({:body_heat, heat}, source)
     assert source.body_heat == Map.delete(heat, :seq)
     ref = make_ref()
@@ -237,7 +245,9 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert cut.body_heat == source.body_heat
     assert {:noreply, ^sealed} = Player.handle_info(:body_tick, sealed)
 
-    {:ok, target} = Player.init(Keyword.merge(opts(ctx.body_store), import: cut, tail: [], tick: 10))
+    {:ok, target} =
+      Player.init(Keyword.merge(opts(ctx.body_store), import: cut, tail: [], tick: 10))
+
     assert target.movement_scales == cut.movement_scales
     assert target.body_heat == source.body_heat
     assert {:noreply, ^target} = Player.handle_info(:body_tick, target)
@@ -251,7 +261,9 @@ defmodule SceneServer.Movement.FrostMovementTest do
   end
 
   test "真实 Native 固定步同时消费冻伤和前摇限制，原始跑跳输入不能越过约束", ctx do
-    state = player(ctx.body_store) |> body_tick() |> input([9, 10]) |> Map.put(:authority_ref, self())
+    state =
+      player(ctx.body_store) |> body_tick() |> input([9, 10]) |> Map.put(:authority_ref, self())
+
     for _ <- 1..2, do: assert_receive({:stepped, _, _})
     request = %{action: 1, client_intent_seq: 1, request_id: 1, direction: {1.0, 0.0, 0.0}}
 

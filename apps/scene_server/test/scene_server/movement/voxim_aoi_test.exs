@@ -525,12 +525,22 @@ defmodule SceneServer.Movement.VoximAoiTest do
     {_, enters, _} = update(AOI.new(), [alan, beichen, stranger], 3, 1)
     seen = Map.new(enters, &{{&1.identity.session_epoch, &1.entity_id}, &1})
 
-    assert %{name: "北辰", guild_name: "", nation_name: "北原国", relation: 4,
-             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"} = seen[{10, 20}]
+    assert %{
+             name: "北辰",
+             guild_name: "",
+             nation_name: "北原国",
+             relation: 4,
+             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"
+           } = seen[{10, 20}]
 
     # 北原方没有声明立场：青岚的锁定国战反向生效。
-    assert %{name: "阿岚", guild_name: "铁砧公会", nation_name: "青岚国", relation: 4,
-             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"} = seen[{20, 10}]
+    assert %{
+             name: "阿岚",
+             guild_name: "铁砧公会",
+             nation_name: "青岚国",
+             relation: 4,
+             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"
+           } = seen[{20, 10}]
 
     # 没有档案的实体：无名、无组织、中立。
     assert %{name: "", guild_name: "", nation_name: "", relation: 0} = seen[{10, 30}]
@@ -544,7 +554,14 @@ defmodule SceneServer.Movement.VoximAoiTest do
     # frame) = 40 targets, more than 32 keys, so map iteration is not key order (and OTP 27 vs 29 reverse it).
     entities =
       for id <- 1..20, epoch <- [1, 2] do
-        %{entity(id, {id * 1.0, 500.0, 0.0}, epoch) | identity: %Session.Identity{session_epoch: id * 10 + epoch, scene_id: 1, scene_epoch: 7}}
+        %{
+          entity(id, {id * 1.0, 500.0, 0.0}, epoch)
+          | identity: %Session.Identity{
+              session_epoch: id * 10 + epoch,
+              scene_id: 1,
+              scene_epoch: 7
+            }
+        }
         |> Map.merge(%{simulation_tick: 3, collision_revision: 1})
       end
 

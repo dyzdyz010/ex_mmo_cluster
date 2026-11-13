@@ -136,8 +136,11 @@ defmodule GateServer.Session.Dispatch do
 
     reply(state, request, result)
     if refresh, do: send_material_balances(state, state.cid, request.request_id)
-    if kind == :voxel_tool_intent and request.action == 1 and match?({:ok, _}, result) and beacon_tool?(state, request),
-      do: send_beacon_directory(state, request.request_id)
+
+    if kind == :voxel_tool_intent and request.action == 1 and match?({:ok, _}, result) and
+         beacon_tool?(state, request),
+       do: send_beacon_directory(state, request.request_id)
+
     {:ok, state}
   end
 
@@ -159,7 +162,10 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  def handle({:voxel_beacon_directory_request, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+  def handle(
+        {:voxel_beacon_directory_request, request},
+        %{status: :in_scene, voxim_overlay: true} = state
+      ) do
     send_beacon_directory(state, request.request_id)
     {:ok, state}
   end
@@ -268,7 +274,12 @@ defmodule GateServer.Session.Dispatch do
     [coord] = voxim_edit_coords({:voxel_edit_intent, request})
 
     case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
-           VoxelRegion.World.apply_edit(state.world_ref, {:character, state.cid}, coord, request.material_id) do
+           VoxelRegion.World.apply_edit(
+             state.world_ref,
+             {:character, state.cid},
+             coord,
+             request.material_id
+           ) do
       {:ok, seq} ->
         send_encoded(state, ResultFrame.accepted(request, seq))
 
@@ -395,7 +406,10 @@ defmodule GateServer.Session.Dispatch do
     do: Map.put(Map.take(state, [:received_us, :clock_node]), :caster_recipient, state.sink.ref)
 
   defp beacon_tool?(state, request) do
-    match?({:ok, %{"action" => "beacon.use"}}, VoxelRegion.World.tool_definition(state.world_ref, request.tool_id))
+    match?(
+      {:ok, %{"action" => "beacon.use"}},
+      VoxelRegion.World.tool_definition(state.world_ref, request.tool_id)
+    )
   end
 
   defp send_beacon_directory(state, request_id) do

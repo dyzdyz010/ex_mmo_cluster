@@ -115,8 +115,8 @@ defmodule MmoContracts.Voxel.Codec do
   def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
     norm = dx * dx + dy * dy + dz * dz
 
+    # g=6 战斗招式：无提示 owner {0,0}+incarnation 0，或单体提示 owner {人物 id,0}+incarnation 生命代次；不成对拒绝（Hello 43）。
     action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3, 5, 6] and
-      # g=6 战斗招式：无提示 owner {0,0}+incarnation 0，或单体提示 owner {人物 id,0}+incarnation 生命代次；不成对拒绝（Hello 43）。
       (Map.get(request, :granularity, 0) != 6 or
          (action == 1 and request.material == 0 and request.micro == {0, 0, 0} and
             ((match?({0, 0}, request.owner) and request.incarnation == 0) or
@@ -130,8 +130,13 @@ defmodule MmoContracts.Voxel.Codec do
   @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29）、6 徒手分选一份混合矿 material（tool = ore.sort，coord 忽略）、7 取消当前分选（Hello 44））的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用。"
   # Voxim 交互设计“2026-11-09 修订”第 3 步：合成 4 与吃 5 不携带工具（tool 0 合法，旧客户端的非零工具也照收；两者从不读工具），字节格式不变。
   def production_intent?(%{action: action, tool_id: tool} = request),
-    do: action in [0, 1, 2, 3, 4, 5, 6, 7] and (tool > 0 or action in [4, 5]) and
-      (action != 2 or match?(%{granularity: 0, micro: {_, _, _}, incarnation: _, owner: {_, _}, material: _}, Map.get(request, :target)))
+    do:
+      action in [0, 1, 2, 3, 4, 5, 6, 7] and (tool > 0 or action in [4, 5]) and
+        (action != 2 or
+           match?(
+             %{granularity: 0, micro: {_, _, _}, incarnation: _, owner: {_, _}, material: _},
+             Map.get(request, :target)
+           ))
 
   @doc "附件意图的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
@@ -232,7 +237,9 @@ defmodule MmoContracts.Voxel.Codec do
 
   # 传送信标出发（Hello 41，Voxim Docs/Gameplay/Beacon.md），大端：request_id u64、client_intent_seq u32、scene u64、
   # 出发信标 id（u8 长度 + UTF-8）、目的信标 id（同）。
-  def decode(<<0x87, rid::64, seq::32, scene::64, nf, from::binary-size(nf), nt, to::binary-size(nt)>>)
+  def decode(
+        <<0x87, rid::64, seq::32, scene::64, nf, from::binary-size(nf), nt, to::binary-size(nt)>>
+      )
       when nf > 0 and nt > 0 do
     {:ok,
      {:voxel_beacon_travel,
@@ -245,12 +252,26 @@ defmodule MmoContracts.Voxel.Codec do
         <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
           tool::16, material::16, identity::binary>>
       ) do
-    target = case {action, identity} do
-      {2, <<mx::signed-64, my::signed-64, mz::signed-64, incarnation::64, birth::64, occurrence::32, mat::16, granularity::8>>} ->
-        %{micro: {mx, my, mz}, incarnation: incarnation, owner: {birth, occurrence}, material: mat, granularity: granularity}
-      {a, <<>>} when a != 2 -> nil
-      _ -> :invalid
-    end
+    target =
+      case {action, identity} do
+        {2,
+         <<mx::signed-64, my::signed-64, mz::signed-64, incarnation::64, birth::64,
+           occurrence::32, mat::16, granularity::8>>} ->
+          %{
+            micro: {mx, my, mz},
+            incarnation: incarnation,
+            owner: {birth, occurrence},
+            material: mat,
+            granularity: granularity
+          }
+
+        {a, <<>>} when a != 2 ->
+          nil
+
+        _ ->
+          :invalid
+      end
+
     request = %{
       request_id: rid,
       client_intent_seq: seq,
@@ -262,6 +283,7 @@ defmodule MmoContracts.Voxel.Codec do
     }
 
     request = if target == nil, do: request, else: Map.put(request, :target, target)
+
     if target != :invalid and production_intent?(request),
       do: {:ok, {:voxel_production_intent, request}},
       else: {:error, :invalid_message}
@@ -433,8 +455,9 @@ defmodule MmoContracts.Voxel.Codec do
     entries =
       for e <- t.entries do
         {x, y, z} = e.core
-        <<byte_size(e.id)::8, e.id::binary, byte_size(e.name)::16, e.name::binary, x::float-64, y::float-64,
-          z::float-64, if(e.attuned, do: 1, else: 0)::8>>
+
+        <<byte_size(e.id)::8, e.id::binary, byte_size(e.name)::16, e.name::binary, x::float-64,
+          y::float-64, z::float-64, if(e.attuned, do: 1, else: 0)::8>>
       end
 
     {:ok, IO.iodata_to_binary([<<0x87, t.request_id::64, length(t.entries)::16>> | entries])}
@@ -823,6 +846,7 @@ defmodule MmoContracts.Voxel.Codec do
   def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4)
       when is_binary(raw_body) or is_list(raw_body) do
     raw_bytes = IO.iodata_length(raw_body)
+
     # 写端与解码同界：超出 Payload.max_body_bytes/1 的 body 写出后读不回，显式拒绝。
     if raw_bytes > MmoContracts.Voxel.Payload.max_body_bytes(version),
       do:
@@ -833,6 +857,7 @@ defmodule MmoContracts.Voxel.Codec do
 
     raw_body = IO.iodata_to_binary(raw_body)
     body = :zlib.compress(raw_body)
+
     # 与 compressed_prefix_bytes/1 同一 zlib 流（OTP :zlib.compress/1 = deflateInit(:default) 后一次 :finish）。
 
     magic =
@@ -851,8 +876,8 @@ defmodule MmoContracts.Voxel.Codec do
 
     <<magic::binary, version::32-little, level::8, x::32-little-signed, y::32-little-signed,
       z::32-little-signed, seq::64-little, content_version::64-little,
-      body_hash(raw_body)::64-little, 1::8, raw_bytes::32-little,
-      byte_size(body)::32-little, body::binary>>
+      body_hash(raw_body)::64-little, 1::8, raw_bytes::32-little, byte_size(body)::32-little,
+      body::binary>>
   end
 
   @doc """
@@ -888,7 +913,8 @@ defmodule MmoContracts.Voxel.Codec do
          true <-
            header.encoding in [0, 1] and
              header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(header.version),
-         <<_::binary-size(@payload_header_bytes), body::binary-size((^header).body_bytes)>> <- bytes,
+         <<_::binary-size(@payload_header_bytes), body::binary-size((^header).body_bytes)>> <-
+           bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes do
       {:ok, header, raw}
@@ -984,30 +1010,59 @@ defmodule MmoContracts.Voxel.Codec do
 
   # Global system: ephemeral authoritative player feedback, never world truth.
   defp encode_operation(nil), do: []
-  defp encode_operation(%{character: character, client_seq: client_seq, kind: kind,
-                         material: material, micro: {x,y,z}}) do
+
+  defp encode_operation(%{
+         character: character,
+         client_seq: client_seq,
+         kind: kind,
+         material: material,
+         micro: {x, y, z}
+       }) do
     <<3, character::little-64, client_seq::little-32, kind, material::little-16,
       x::little-signed-64, y::little-signed-64, z::little-signed-64>>
   end
 
   defp decode_transaction_metadata(<<>>, metadata), do: {:ok, metadata}
-  defp decode_transaction_metadata(<<2, material::little-16, count::little-32,
-         bytes::binary-size(count * 16), rest::binary>>, metadata)
-       when material in [21,22] and not is_map_key(metadata, :liquid_falls) do
-    transfers = for <<x::little-signed-32, y::little-signed-32, z::little-signed-32,
-                      units::little-32 <- bytes>>, do: {{x,y,z},units}
-    if Enum.all?(transfers, fn {_,units} -> units > 0 end),
-      do: decode_transaction_metadata(rest, Map.put(metadata,:liquid_falls,%{material: material,transfers: transfers})),
-      else: {:error,:invalid_transaction}
+
+  defp decode_transaction_metadata(
+         <<2, material::little-16, count::little-32, bytes::binary-size(count * 16),
+           rest::binary>>,
+         metadata
+       )
+       when material in [21, 22] and not is_map_key(metadata, :liquid_falls) do
+    transfers =
+      for <<x::little-signed-32, y::little-signed-32, z::little-signed-32,
+            units::little-32 <- bytes>>,
+          do: {{x, y, z}, units}
+
+    if Enum.all?(transfers, fn {_, units} -> units > 0 end),
+      do:
+        decode_transaction_metadata(
+          rest,
+          Map.put(metadata, :liquid_falls, %{material: material, transfers: transfers})
+        ),
+      else: {:error, :invalid_transaction}
   end
-  defp decode_transaction_metadata(<<3, character::little-64, client_seq::little-32,
-         kind, material::little-16, x::little-signed-64, y::little-signed-64,
-         z::little-signed-64, rest::binary>>, metadata)
+
+  defp decode_transaction_metadata(
+         <<3, character::little-64, client_seq::little-32, kind, material::little-16,
+           x::little-signed-64, y::little-signed-64, z::little-signed-64, rest::binary>>,
+         metadata
+       )
        when kind in 0..2 and not is_map_key(metadata, :operation) do
-    decode_transaction_metadata(rest, Map.put(metadata,:operation,%{character: character,
-      client_seq: client_seq,kind: kind,material: material,micro: {x,y,z}}))
+    decode_transaction_metadata(
+      rest,
+      Map.put(metadata, :operation, %{
+        character: character,
+        client_seq: client_seq,
+        kind: kind,
+        material: material,
+        micro: {x, y, z}
+      })
+    )
   end
-  defp decode_transaction_metadata(_, _), do: {:error,:invalid_transaction}
+
+  defp decode_transaction_metadata(_, _), do: {:error, :invalid_transaction}
 
   defp decode_transaction_entries(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 
@@ -1148,7 +1203,10 @@ defmodule MmoContracts.Voxel.Codec do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
     {:ok, delta} = decode_semblances(semblances)
-    true = complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil and Map.get(s, :live, 1) == 1 end)
+
+    true =
+      complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil and Map.get(s, :live, 1) == 1 end)
+
     {:ok, delta} = decode_casts(casts)
     true = complete == 0 or Enum.all?(delta, fn {_, c} -> c.live == 1 end)
   end
@@ -1239,9 +1297,10 @@ defmodule MmoContracts.Voxel.Codec do
 
           break_on_hit = if Map.get(s, :break_on_hit, false), do: 1, else: 0
           live = Map.get(s, :live, 1)
-          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, break_on_hit::8, s.radius_m::float-64,
-            s.temperature_k::float-64, s.glow_w::float-64, ox::float-64, oy::float-64,
-            oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
+
+          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, break_on_hit::8,
+            s.radius_m::float-64, s.temperature_k::float-64, s.glow_w::float-64, ox::float-64,
+            oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
             s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
       end
     end
@@ -1264,14 +1323,15 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_semblances(
-         <<seq::64, n::32, live::8, caster::64, shape::8, break_on_hit::8, radius::float-64, temperature::float-64,
-           glow::float-64, ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64,
-           vz::float-64, t0::64, flight::float-64, rx::float-64, ry::float-64, rz::float-64,
-           rest::binary>>,
+         <<seq::64, n::32, live::8, caster::64, shape::8, break_on_hit::8, radius::float-64,
+           temperature::float-64, glow::float-64, ox::float-64, oy::float-64, oz::float-64,
+           vx::float-64, vy::float-64, vz::float-64, t0::64, flight::float-64, rx::float-64,
+           ry::float-64, rz::float-64, rest::binary>>,
          previous,
          acc
        )
-       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and break_on_hit in [0, 1] and
+       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and
+              break_on_hit in [0, 1] and
               (live == 1 or (live == 2 and break_on_hit == 1)) and radius > 0 and
               temperature > 0 and
               glow >= 0 and flight >= 0 do

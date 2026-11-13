@@ -37,6 +37,7 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
 
     # 同世界同身份重建必须指向新 home，不能被只插入定位表的旧行挡住。
     seed_pages(@cv, ids, {9, -8, 7})
+
     assert PageStore.locate(@cv, ids) ==
              Map.new(ids, &{&1, %{root: {71, 2}, home: {9, -8, 7}}})
   end
@@ -61,7 +62,10 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
 
   defp seed_pages(cv, ids, home) do
     segment = %{level: 0, region: home, segment: 0, chunk: {0, 0, 0}, payload: "page"}
-    locators = Enum.map(ids, &%{locator: &1, root: {elem(hd(ids), 1), elem(hd(ids), 2)}, home: home})
+
+    locators =
+      Enum.map(ids, &%{locator: &1, root: {elem(hd(ids), 1), elem(hd(ids), 2)}, home: home})
+
     assert :ok = PageStore.publish(cv, 7, [segment | locators], "globals")
     assert :ok = OverlayLogStore.append(cv, [row(8, 0, 0, 0, home, "tail")])
   end

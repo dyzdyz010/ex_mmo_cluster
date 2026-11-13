@@ -9,11 +9,22 @@ defmodule SceneServer.Movement.ToolHit do
     length = :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
 
     cond do
-      (ax - cx) ** 2 + dy ** 2 + (az - cz) ** 2 <= r * r -> {:ok, 0.0}
-      length == 0.0 -> :miss
+      (ax - cx) ** 2 + dy ** 2 + (az - cz) ** 2 <= r * r ->
+        {:ok, 0.0}
+
+      length == 0.0 ->
+        :miss
+
       true ->
         p = %{profile | radius: r, half_height: profile.half_height + radius}
-        case ray(a, {(bx - ax) / length, (by - ay) / length, (bz - az) / length}, center, p, length) do
+
+        case ray(
+               a,
+               {(bx - ax) / length, (by - ay) / length, (bz - az) / length},
+               center,
+               p,
+               length
+             ) do
           {:ok, distance, _part} -> {:ok, distance / length}
           :miss -> :miss
         end

@@ -126,7 +126,6 @@ defmodule AuthServer.AuthWorker do
     else
       {:error, :invalid_account} -> {:error, :account_not_found}
       {:error, :data_service_unavailable} -> {:error, :data_service_unavailable}
-      {:ok, nil} -> {:error, :cid_mismatch}
       true -> {:error, :cid_mismatch}
       {:error, _reason} -> {:error, :account_not_found}
     end

@@ -51,9 +51,6 @@ defmodule NpcServer.Brain.Social do
              social: if(completed, do: nil, else: s.social)
          }}
 
-      s.social != nil ->
-        {[], s}
-
       true ->
         {[], s}
     end

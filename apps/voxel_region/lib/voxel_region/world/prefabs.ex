@@ -9,7 +9,7 @@ defmodule VoxelRegion.World.Prefabs do
   require Logger
   alias VoxelRegion.Damage
   alias VoxelRegion.Prefab
-  alias VoxelRegion.{Liquid, Phase}
+  alias VoxelRegion.Phase
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Payloads, Observation, Log, Edits, Tools, Production, Phases, Liquids, AttachmentOps, HeatCommit}
 

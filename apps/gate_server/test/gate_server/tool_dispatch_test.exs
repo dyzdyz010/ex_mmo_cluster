@@ -11,24 +11,73 @@ defmodule GateServer.ToolDispatchTest do
 
     def handle_call({:authorize_tool, _, _, _}, _, {:area, _, _} = result),
       do: {:reply, {:done, result}, result}
+
     def handle_call({:authorize_tool, _, _, _}, _, receipt),
       do: {:reply, {:done, {:body, receipt}}, receipt}
+
     # 不接余额查询：g5／g6 人物作用不刷新余额，误刷新即在此进程崩溃、用例失败。
   end
 
   test "范围逐目标发完整ToolState后回同一次意图的最终事务", _ do
     identity = %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3}
-    receipts = for target <- [9, 10], do: %{source_id: 5, source_session: 1,
-      source_life: 7, action_seq: 8, target_id: target, target_life: 10,
-      part: :torso, body: %{life: 80, recoverable: 20}}
+
+    receipts =
+      for target <- [9, 10],
+          do: %{
+            source_id: 5,
+            source_session: 1,
+            source_life: 7,
+            action_seq: 8,
+            target_id: target,
+            target_life: 10,
+            part: :torso,
+            body: %{life: 80, recoverable: 20}
+          }
+
     owner = start_supervised!({CompletedOwner, {:area, 17, receipts}})
-    state = %{status: :in_scene, voxim_overlay: true, identity: identity, cid: 5,
-      player: owner, world_ref: owner, sink: GateServer.Session.Sink.quic(self(), :area)}
-    request = %{action: 1, granularity: 6, request_id: 4, client_intent_seq: 8, logical_scene_id: 2}
-    assert {:ok, ^state} = GateServer.Session.Dispatch.handle({:voxel_tool_intent, request}, state)
-    assert_receive {:mmo_reliable, ^identity, 1, %Session.ToolState{request_id: 4, action_seq: 8, target_id: 9, target_life: 10, life: 80}}
-    assert_receive {:mmo_reliable, ^identity, 1, %Session.ToolState{request_id: 4, action_seq: 8, target_id: 10, target_life: 10, life: 80}}
-    assert_receive {:mmo_voxel_bytes, :area, <<0x68, 4::64, 8::32, 2::64, 0, 17::64, 0::16, 2::16, "ok">>}
+
+    state = %{
+      status: :in_scene,
+      voxim_overlay: true,
+      identity: identity,
+      cid: 5,
+      player: owner,
+      world_ref: owner,
+      sink: GateServer.Session.Sink.quic(self(), :area)
+    }
+
+    request = %{
+      action: 1,
+      granularity: 6,
+      request_id: 4,
+      client_intent_seq: 8,
+      logical_scene_id: 2
+    }
+
+    assert {:ok, ^state} =
+             GateServer.Session.Dispatch.handle({:voxel_tool_intent, request}, state)
+
+    assert_receive {:mmo_reliable, ^identity, 1,
+                    %Session.ToolState{
+                      request_id: 4,
+                      action_seq: 8,
+                      target_id: 9,
+                      target_life: 10,
+                      life: 80
+                    }}
+
+    assert_receive {:mmo_reliable, ^identity, 1,
+                    %Session.ToolState{
+                      request_id: 4,
+                      action_seq: 8,
+                      target_id: 10,
+                      target_life: 10,
+                      life: 80
+                    }}
+
+    assert_receive {:mmo_voxel_bytes, :area,
+                    <<0x68, 4::64, 8::32, 2::64, 0, 17::64, 0::16, 2::16, "ok">>}
+
     refute_receive {:mmo_reliable, _, _, _}, 0
   end
 

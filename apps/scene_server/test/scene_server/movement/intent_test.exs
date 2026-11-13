@@ -106,7 +106,9 @@ defmodule SceneServer.Movement.IntentTest do
     %{world: world, identity: identity, owner: owner}
   end
 
-  defp session(c, owner), do: %{player: owner, identity: c.identity, world_ref: c.world, cid: @cid}
+  defp session(c, owner),
+    do: %{player: owner, identity: c.identity, world_ref: c.world, cid: @cid}
+
   defp ingress, do: %{received_us: System.monotonic_time(:microsecond), clock_node: node()}
 
   defp balance(world, material),
@@ -129,6 +131,7 @@ defmodule SceneServer.Movement.IntentTest do
 
   test "放置经 owner 接纳进真实 World：提交并补余额，余额按目录手算少一格", c do
     {:ok, _} = World.material_supply(c.world, @cid, "intent-test", %{19 => 4096})
+
     place = %{
       request_id: 10,
       client_intent_seq: 10,
@@ -143,6 +146,7 @@ defmodule SceneServer.Movement.IntentTest do
              Intent.run(session(c, c.owner.(%{})), {:voxel_production_intent, place}, ingress())
 
     assert is_integer(seq) and seq > 0
+
     # 目录 schema 1、材料 19 无 place_units：一格 = 8³ micro × 每 micro 1 单位 = 512。
     assert balance(c.world, 19) == 4096 - 512
 
@@ -164,7 +168,15 @@ defmodule SceneServer.Movement.IntentTest do
   end
 
   test "owner 拒绝（施法中）时不进 World、不补余额；缺 cid / client_intent_seq 的日志行照常", c do
-    place = %{request_id: 3, logical_scene_id: 1, action: 1, coord: {1, 1, 2}, tool_id: 1, material: 19}
+    place = %{
+      request_id: 3,
+      logical_scene_id: 1,
+      action: 1,
+      coord: {1, 1, 2},
+      tool_id: 1,
+      material: 19
+    }
+
     owner = c.owner.(%{tool_context: {:error, :casting}})
     session = Map.delete(session(c, owner), :cid)
 
@@ -187,9 +199,12 @@ defmodule SceneServer.Movement.IntentTest do
     s = session(c, owner)
 
     # 空白世界沿 +Z 无命中：探测不进事务。
-    assert {{:error, :no_target}, false} = Intent.run(s, {:voxel_tool_intent, tool(0, 0)}, ingress())
+    assert {{:error, :no_target}, false} =
+             Intent.run(s, {:voxel_tool_intent, tool(0, 0)}, ingress())
+
     assert {{:error, :dead}, true} = Intent.run(s, {:voxel_tool_intent, tool(1, 0)}, ingress())
     assert {{:error, :dead}, true} = Intent.run(s, {:voxel_tool_intent, tool(2, 0)}, ingress())
+
     log =
       capture_log(fn ->
         assert {{:error, :dead}, false} =

@@ -124,7 +124,7 @@ defmodule VoxelRegion.World.Closure do
     end
   end
 
-  defp seeds(state, {:gm, _key, op, args}) do
+  defp seeds(_state, {:gm, _key, op, args}) do
     case op do
       op when op in [:clear, :fill] -> {Edits.edit_keys(VoxelRegion.World.Gm.macros(args)), []}
       :liquid_fill -> {Edits.edit_keys([args.seed]), []}
@@ -192,7 +192,6 @@ defmodule VoxelRegion.World.Closure do
 
   defp box(box), do: {Enum.map(CollisionSource.regions(box), &{0, &1}), []}
   defp cells(cells), do: {Enum.uniq(Enum.map(cells, &{0, region_of(&1)})), []}
-  defp footprint(cells), do: Edits.edit_keys(Prefabs.footprint_macros(cells))
 
   # 半开宏格盒的全部各级区域（地块导出 / 安装、排水）。
   defp box_macros({{x0, y0, z0}, {x1, y1, z1}}) do

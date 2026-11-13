@@ -121,14 +121,10 @@ defmodule VoxelRegion.World.Projectiles do
         # 先持久冻结交付对象；重启后仍重投同一目标，不再次求交。
         HeatCommit.thermal_commit(next, [], %{semblances: %{id => s}})
       terrain ->
-        s = if terrain do
-          {_, rest, target} = terrain
-          node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
-          %{s | flight_s: s.age_s, rest: rest, contact: %{target: target,
-            key: VoxelRegion.ThermalGeometry.key(node), cell: VoxelRegion.Damage.macro(target)}}
-        else
-          s
-        end
+        {_, rest, target} = terrain
+        node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
+        s = %{s | flight_s: s.age_s, rest: rest, contact: %{target: target,
+          key: VoxelRegion.ThermalGeometry.key(node), cell: VoxelRegion.Damage.macro(target)}}
         {cell, state} = Thermal.release_cell(state, s)
         state = %{state | thermal: Thermal.release(state.thermal, id, s, cell)}
         HeatCommit.thermal_commit(state, [], %{semblances: %{id => Map.put(s, :live, 2)}})

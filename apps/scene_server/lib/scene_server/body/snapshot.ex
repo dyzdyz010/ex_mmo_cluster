@@ -7,7 +7,11 @@ defmodule SceneServer.Body.Snapshot do
   def take(state), do: Map.take(state, @fields ++ [:effect_receipts])
 
   @doc "身体、作用回执与消费游标同笔编码，避免重启后重复吸收食物或重复结算同一作用。"
-  def encode(state), do: :erlang.term_to_binary({:body, if(Map.has_key?(state, :effect_receipts), do: 3, else: 1), take(state)})
+  def encode(state),
+    do:
+      :erlang.term_to_binary(
+        {:body, if(Map.has_key?(state, :effect_receipts), do: 3, else: 1), take(state)}
+      )
 
   @doc "持久化加载边界：只接受已知版本；损坏存档不得冒充新角色。版本 2 的投射物收据按原 key 并入作用回执。"
   def decode!(bytes) do
@@ -36,7 +40,9 @@ defmodule SceneServer.Body.Snapshot do
   end
 
   defp with_receipts(saved, field, receipts) do
-    base = saved |> Map.delete(field) |> then(&:erlang.term_to_binary({:body, 1, &1})) |> decode!()
+    base =
+      saved |> Map.delete(field) |> then(&:erlang.term_to_binary({:body, 1, &1})) |> decode!()
+
     Map.put(base, :effect_receipts, receipts)
   end
 end

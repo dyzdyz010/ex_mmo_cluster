@@ -10,7 +10,11 @@ defmodule MmoContracts.EntityEnterWireTest do
   @moduletag :t0
   alias MmoContracts.Session
 
-  @tail Base.decode16!("00" <> "0006E998BFE5B29A" <> "0000" <> "0000" <> "04" <> "0003E6958C" <> "0000000000000009" <> "02")
+  @tail Base.decode16!(
+          "00" <>
+            "0006E998BFE5B29A" <>
+            "0000" <> "0000" <> "04" <> "0003E6958C" <> "0000000000000009" <> "02"
+        )
 
   @value %Session.EntityEnter{
     identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
@@ -18,14 +22,20 @@ defmodule MmoContracts.EntityEnterWireTest do
     entity_epoch: 10,
     interest_generation: 1,
     server_tick: 20,
-    state: %Session.State{position: {4.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0},
+    state: %Session.State{
+      position: {4.0, 0.0, 0.0},
+      velocity: {0.0, 0.0, 0.0},
+      grounded: 1,
+      yaw: 0
+    },
     kind: 0,
     name: "阿岚",
     guild_name: "",
     nation_name: "",
     relation: 4,
     relation_source: "敌",
-    life_generation: 9, body_status: 2
+    life_generation: 9,
+    body_status: 2
   }
 
   test "阵营字段紧跟 kind 写在末尾，解码还原同一值" do

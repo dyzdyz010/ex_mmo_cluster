@@ -12,7 +12,9 @@ defmodule WorldServer.Movement do
   @doc "从已部署 Scene 的当前成员查询角色 owner；移交重叠时取新会话，不保存第二份角色路由表。"
   def character_owner(cid) do
     Application.fetch_env!(:world_server, :movement_routes)
-    |> Enum.map(fn {_, route} -> SceneServer.Movement.Scene.character_owner(route.scene_ref, cid) end)
+    |> Enum.map(fn {_, route} ->
+      SceneServer.Movement.Scene.character_owner(route.scene_ref, cid)
+    end)
     |> Enum.reject(&is_nil/1)
     |> Enum.max_by(& &1.identity.session_epoch, fn -> nil end)
   end

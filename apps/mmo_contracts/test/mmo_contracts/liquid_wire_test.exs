@@ -34,7 +34,9 @@ defmodule MmoContracts.LiquidWireTest do
         <<0x7F, 19::64, 7::32, 1::64, action, -1::signed-32, 542::signed-32, 3::signed-32, 11::16,
           21::16>>
 
-      identity = <<-8::signed-64, 4336::signed-64, 24::signed-64, 23::64, 19::64, 7::32, 21::16, 0>>
+      identity =
+        <<-8::signed-64, 4336::signed-64, 24::signed-64, 23::64, 19::64, 7::32, 21::16, 0>>
+
       if action == 2, do: assert({:error, :invalid_message} == Voxel.Codec.decode(wire))
       wire = if action == 2, do: wire <> identity, else: wire
       assert byte_size(wire) == if(action == 2, do: 85, else: 38)
@@ -52,20 +54,50 @@ defmodule MmoContracts.LiquidWireTest do
   test "tool suffix freezes directory ID and g6 hint identity is constrained" do
     prefix = <<0x7D, 1::64, 2::32, 3::64, 1, 1.0::float-64, 0.0::float-64, 0.0::float-64>>
     area = <<0::signed-64, 0::signed-64, 0::signed-64, 0::64, 0::64, 0::32, 0::16, 23::16, 6>>
-    assert {:ok, {:voxel_tool_intent, %{granularity: 6, beacon_id: ""}}} = Voxel.Codec.decode(prefix <> area <> <<0>>)
+
+    assert {:ok, {:voxel_tool_intent, %{granularity: 6, beacon_id: ""}}} =
+             Voxel.Codec.decode(prefix <> area <> <<0>>)
+
     assert {:error, :invalid_message} = Voxel.Codec.decode(prefix <> area)
     assert {:error, :invalid_message} = Voxel.Codec.decode(prefix <> area <> <<2, "x">>)
     beacon = <<0::signed-64, 16::signed-64, 0::signed-64, 7::64, 0::64, 0::32, 88::16, 21::16, 0>>
-    assert {:ok, {:voxel_tool_intent, %{beacon_id: "ruyuan"}}} = Voxel.Codec.decode(prefix <> beacon <> <<6, "ruyuan">>)
+
+    assert {:ok, {:voxel_tool_intent, %{beacon_id: "ruyuan"}}} =
+             Voxel.Codec.decode(prefix <> beacon <> <<6, "ruyuan">>)
+
     # Hello 43：单体提示 owner {人物 7, 0} + incarnation 生命代次 3，字节布局不变。
     hint = <<0::signed-64, 0::signed-64, 0::signed-64, 3::64, 7::64, 0::32, 0::16, 22::16, 6>>
-    assert {:ok, {:voxel_tool_intent, %{granularity: 6, tool_id: 22, owner: {7, 0}, incarnation: 3}}} =
-      Voxel.Codec.decode(prefix <> hint <> <<0>>)
+
+    assert {:ok,
+            {:voxel_tool_intent, %{granularity: 6, tool_id: 22, owner: {7, 0}, incarnation: 3}}} =
+             Voxel.Codec.decode(prefix <> hint <> <<0>>)
+
     # 提示与生命代次必须成对；occurrence 非零、材料、微格与探测动作仍拒绝。
-    for field <- [%{action: 0}, %{owner: {1,0}}, %{incarnation: 1}, %{owner: {1,1}, incarnation: 1},
-        %{owner: {0,1}}, %{material: 1}, %{micro: {1,0,0}}, %{owner: {1,0}, incarnation: 1, material: 1}] do
-      request = Map.merge(%{action: 1, tool_id: 23, direction: {1.0,0.0,0.0}, granularity: 6,
-        owner: {0,0}, incarnation: 0, material: 0, micro: {0,0,0}}, field)
+    for field <- [
+          %{action: 0},
+          %{owner: {1, 0}},
+          %{incarnation: 1},
+          %{owner: {1, 1}, incarnation: 1},
+          %{owner: {0, 1}},
+          %{material: 1},
+          %{micro: {1, 0, 0}},
+          %{owner: {1, 0}, incarnation: 1, material: 1}
+        ] do
+      request =
+        Map.merge(
+          %{
+            action: 1,
+            tool_id: 23,
+            direction: {1.0, 0.0, 0.0},
+            granularity: 6,
+            owner: {0, 0},
+            incarnation: 0,
+            material: 0,
+            micro: {0, 0, 0}
+          },
+          field
+        )
+
       refute Voxel.Codec.tool_intent?(request)
     end
   end

@@ -1,4 +1,13 @@
-<UI.page title="注册与邀请码" tagline="ADMIN" home="/admin" nav={nav()} current="/admin" viewer={@viewer} logout="/admin/logout" logout_label="退出管理">
+<UI.page
+  title="注册与邀请码"
+  tagline="ADMIN"
+  home="/admin"
+  nav={nav()}
+  current="/admin"
+  viewer={@viewer}
+  logout="/admin/logout"
+  logout_label="退出管理"
+>
   <div class="sk-container">
     <div class="ac-page-head">
       <div>
@@ -11,7 +20,9 @@
     <div class="ac-admin-row">
       <section class="ac-card" aria-labelledby="policy-title">
         <p class="ac-eyebrow">Policy</p>
-        <h2 id="policy-title" class="ac-h2">注册方式：{if @policy.invite_required, do: "邀请注册", else: "开放注册"}</h2>
+        <h2 id="policy-title" class="ac-h2">
+          注册方式：{if @policy.invite_required, do: "邀请注册", else: "开放注册"}
+        </h2>
         <p class="ac-text">
           <UI.badge tone={if @policy.invite_required, do: "gold", else: "positive"}>
             {if @policy.invite_required, do: "需要邀请码", else: "任何人可注册"}
@@ -19,8 +30,14 @@
         </p>
         <p class="ac-text">切换只影响新账号注册，已有账号仍可登录。</p>
         <.form for={%{}} action="/admin/policy" class="ac-actions ac-gap-top">
-          <input type="hidden" name="invite_required" value={if @policy.invite_required, do: "false", else: "true"} />
-          <button class="ac-btn">{if @policy.invite_required, do: "关闭邀请码要求", else: "启用邀请码注册"}</button>
+          <input
+            type="hidden"
+            name="invite_required"
+            value={if @policy.invite_required, do: "false", else: "true"}
+          />
+          <button class="ac-btn">
+            {if @policy.invite_required, do: "关闭邀请码要求", else: "启用邀请码注册"}
+          </button>
         </.form>
       </section>
 
@@ -32,19 +49,51 @@
           <div class="ac-form-grid">
             <div class="ac-field">
               <label class="ac-label" for="count">数量</label>
-              <input id="count" name="count" type="number" class="ac-input" value="1" min="1" max="100" required />
+              <input
+                id="count"
+                name="count"
+                type="number"
+                class="ac-input"
+                value="1"
+                min="1"
+                max="100"
+                required
+              />
             </div>
             <div class="ac-field">
               <label class="ac-label" for="days">有效天数</label>
-              <input id="days" name="days" type="number" class="ac-input" min="1" placeholder="留空为不限期" />
+              <input
+                id="days"
+                name="days"
+                type="number"
+                class="ac-input"
+                min="1"
+                placeholder="留空为不限期"
+              />
             </div>
             <div class="ac-field">
               <label class="ac-label" for="max_uses">每码可注册人数</label>
-              <input id="max_uses" name="max_uses" type="number" class="ac-input" min="1" max="2147483647" step="1" placeholder="输入自定义人数" required />
+              <input
+                id="max_uses"
+                name="max_uses"
+                type="number"
+                class="ac-input"
+                min="1"
+                max="2147483647"
+                step="1"
+                placeholder="输入自定义人数"
+                required
+              />
             </div>
             <div class="ac-field ac-field--wide">
               <label class="ac-label" for="batch">批次备注</label>
-              <input id="batch" name="batch" class="ac-input" maxlength="160" placeholder="例如：10 月内测第二批" />
+              <input
+                id="batch"
+                name="batch"
+                class="ac-input"
+                maxlength="160"
+                placeholder="例如：10 月内测第二批"
+              />
             </div>
           </div>
           <div class="ac-actions"><button class="ac-btn ac-btn--primary">生成</button></div>
@@ -54,7 +103,14 @@
             <li :for={c <- @codes} title={c.id}>{c.code}</li>
           </ul>
           <div class="ac-actions ac-gap-top">
-            <button type="button" class="ac-btn ac-btn--sm" data-copy={Enum.map_join(@codes, "\n", & &1.code)} hidden>复制全部</button>
+            <button
+              type="button"
+              class="ac-btn ac-btn--sm"
+              data-copy={Enum.map_join(@codes, "\n", & &1.code)}
+              hidden
+            >
+              复制全部
+            </button>
           </div>
         </div>
       </section>
@@ -65,9 +121,20 @@
       <h2 id="records-title" class="ac-h2">邀请码与使用记录</h2>
       <p class="ac-text">删除后邀请码立即失效，使用记录保留。新生成的邀请码完整显示；历史掩码记录未保存原码，需要时请重新生成。</p>
       <form method="get" action="/admin" class="ac-toolbar" role="search">
-        <input name="search" class="ac-input" value={@filters.search} placeholder="批次、邀请码、邮箱或账号 ID" aria-label="搜索邀请码" />
+        <input
+          name="search"
+          class="ac-input"
+          value={@filters.search}
+          placeholder="批次、邀请码、邮箱或账号 ID"
+          aria-label="搜索邀请码"
+        />
         <label class="ac-check">
-          <input type="checkbox" name="include_deleted" value="true" checked={@filters.include_deleted} />包含已删除
+          <input
+            type="checkbox"
+            name="include_deleted"
+            value="true"
+            checked={@filters.include_deleted}
+          />包含已删除
         </label>
         <button class="ac-btn">查询</button>
       </form>
@@ -75,7 +142,10 @@
         <table class="ac-table">
           <thead>
             <tr>
-              <th>邀请码／批次</th><th>状态／已用人数</th><th>生成／有效期</th><th>最近使用者／时间</th>
+              <th>邀请码／批次</th>
+              <th>状态／已用人数</th>
+              <th>生成／有效期</th>
+              <th>最近使用者／时间</th>
               <th><span class="sk-visually-hidden">操作</span></th>
             </tr>
           </thead>
@@ -98,7 +168,9 @@
               <td data-label="使用者">
                 <%= if i.used_by do %>
                   <span class="ac-strong">{i.email}</span>
-                  <span class="ac-sub">{i.character} · <span class="ac-mono">{i.used_by}</span></span>
+                  <span class="ac-sub">
+                    {i.character} · <span class="ac-mono">{i.used_by}</span>
+                  </span>
                   <span class="ac-sub"><.time at={i.used_at} /></span>
                 <% else %>
                   <span class="ac-sub">未使用</span>
@@ -106,16 +178,36 @@
               </td>
               <td data-label="操作">
                 <div class="ac-actions">
-                  <.form :if={!i.deleted_at && !i.revoked_at} for={%{}} action={"/admin/invites/#{i.id}/limit"}>
+                  <.form
+                    :if={!i.deleted_at && !i.revoked_at}
+                    for={%{}}
+                    action={"/admin/invites/#{i.id}/limit"}
+                  >
                     <label class="ac-label" for={"limit-#{i.id}"}>人数上限</label>
-                    <input id={"limit-#{i.id}"} name="max_uses" type="number" class="ac-input" value={i.max_uses} min={max(1, i.use_count)} max="2147483647" step="1" required />
+                    <input
+                      id={"limit-#{i.id}"}
+                      name="max_uses"
+                      type="number"
+                      class="ac-input"
+                      value={i.max_uses}
+                      min={max(1, i.use_count)}
+                      max="2147483647"
+                      step="1"
+                      required
+                    />
                     <button class="ac-btn ac-btn--sm">保存上限</button>
                   </.form>
-                  <.form :if={!i.deleted_at && !i.revoked_at} for={%{}} action={"/admin/invites/#{i.id}/revoke"}>
+                  <.form
+                    :if={!i.deleted_at && !i.revoked_at}
+                    for={%{}}
+                    action={"/admin/invites/#{i.id}/revoke"}
+                  >
                     <button class="ac-btn ac-btn--sm" data-confirm="确认停用">停用</button>
                   </.form>
                   <.form :if={!i.deleted_at} for={%{}} action={"/admin/invites/#{i.id}/delete"}>
-                    <button class="ac-btn ac-btn--sm ac-btn--danger" data-confirm="确认删除">删除</button>
+                    <button class="ac-btn ac-btn--sm ac-btn--danger" data-confirm="确认删除">
+                      删除
+                    </button>
                   </.form>
                 </div>
               </td>
@@ -125,10 +217,24 @@
         <p :if={@invites == []} class="ac-empty">没有匹配的邀请码。</p>
       </div>
       <nav class="ac-pager" aria-label="分页">
-        <span :if={@invites != []}>第 {@filters.offset + 1}–{@filters.offset + length(@invites)} 条 · 每页 {page_size()} 条</span>
+        <span :if={@invites != []}>
+          第 {@filters.offset + 1}–{@filters.offset + length(@invites)} 条 · 每页 {page_size()} 条
+        </span>
         <span class="ac-actions">
-          <a :if={@filters.offset > 0} class="ac-btn ac-btn--sm" href={page_link(@filters, max(@filters.offset - page_size(), 0))}>上一页</a>
-          <a :if={length(@invites) == page_size()} class="ac-btn ac-btn--sm" href={page_link(@filters, @filters.offset + page_size())}>下一页</a>
+          <a
+            :if={@filters.offset > 0}
+            class="ac-btn ac-btn--sm"
+            href={page_link(@filters, max(@filters.offset - page_size(), 0))}
+          >
+            上一页
+          </a>
+          <a
+            :if={length(@invites) == page_size()}
+            class="ac-btn ac-btn--sm"
+            href={page_link(@filters, @filters.offset + page_size())}
+          >
+            下一页
+          </a>
         </span>
       </nav>
     </section>

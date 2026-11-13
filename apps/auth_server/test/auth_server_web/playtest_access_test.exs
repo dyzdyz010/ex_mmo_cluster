@@ -23,10 +23,21 @@ defmodule AuthServerWeb.PlaytestAccessTest do
   end
 
   test "正式账号部署拒绝全部旧入口，即使持有有效旧邀请码" do
-    Application.put_env(:auth_server,:dev_auto_login,false)
-    for route <- ["/playtest/login","/playtest/regions","/playtest/prefabs","/ingame/auto_login","/ingame/voxel/regions"] do
-      response=conn(:post,route) |> put_req_header("authorization","Bearer test-invite") |> PlaytestAccess.call([])
-      assert response.status==404
+    Application.put_env(:auth_server, :dev_auto_login, false)
+
+    for route <- [
+          "/playtest/login",
+          "/playtest/regions",
+          "/playtest/prefabs",
+          "/ingame/auto_login",
+          "/ingame/voxel/regions"
+        ] do
+      response =
+        conn(:post, route)
+        |> put_req_header("authorization", "Bearer test-invite")
+        |> PlaytestAccess.call([])
+
+      assert response.status == 404
       assert response.halted
     end
   end

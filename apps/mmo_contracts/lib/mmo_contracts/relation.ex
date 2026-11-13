@@ -56,7 +56,13 @@ defmodule MmoContracts.Relation do
         target != nil,
         s <- from.standings,
         s.from == level and s.to == target.id,
-        do: %{relation: s.relation, locked: s.locked, source: s.source, from: org.name, to: target.name}
+        do: %{
+          relation: s.relation,
+          locked: s.locked,
+          source: s.source,
+          from: org.name,
+          to: target.name
+        }
   end
 
   defp describe(hit) do

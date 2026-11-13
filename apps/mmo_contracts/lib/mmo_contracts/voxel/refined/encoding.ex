@@ -12,10 +12,16 @@ defmodule MmoContracts.Voxel.Refined.Encoding do
   @doc "一次接纳编码投影；编码内部直接消费，不再次扫描验证。"
   def new(cells) when is_map(cells) do
     Enum.each(cells, fn
-      {index, {count, bytes}} when is_integer(index) and index in 0..287_495
-        and is_integer(count) and count in 1..512 and is_binary(bytes) and byte_size(bytes) == count * 16 -> :ok
-      row -> raise ArgumentError, "invalid refined encoding cell: #{inspect(row)}"
+      {index, {count, bytes}}
+      when is_integer(index) and index in 0..287_495 and
+             is_integer(count) and count in 1..512 and is_binary(bytes) and
+             byte_size(bytes) == count * 16 ->
+        :ok
+
+      row ->
+        raise ArgumentError, "invalid refined encoding cell: #{inspect(row)}"
     end)
+
     %__MODULE__{cells: cells}
   end
 

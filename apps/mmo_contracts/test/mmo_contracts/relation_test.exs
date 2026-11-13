@@ -13,7 +13,8 @@ defmodule MmoContracts.RelationTest do
   @merchant %{id: 12, name: "青岚商会"}
   @frost %{id: 21, name: "霜狼公会"}
 
-  defp war(to, locked), do: %{from: :nation, to: to, relation: :hostile, locked: locked, source: "国战"}
+  defp war(to, locked),
+    do: %{from: :nation, to: to, relation: :hostile, locked: locked, source: "国战"}
 
   defp member(name, guild, nation, standings),
     do: %{name: name, guild: guild, nation: nation, standings: standings}
@@ -57,7 +58,11 @@ defmodule MmoContracts.RelationTest do
   test "我方没有立场时，对方的敌对反向生效；对方的友好不反向生效" do
     alan = member("阿岚", @anvil, @qinglan, [])
     hostile = member("北辰", @frost, @beiyuan, [war(1, false)])
-    friendly = member("白桦", nil, @beiyuan, [%{from: :nation, to: 1, relation: :friendly, locked: false, source: "邦交"}])
+
+    friendly =
+      member("白桦", nil, @beiyuan, [
+        %{from: :nation, to: 1, relation: :friendly, locked: false, source: "邦交"}
+      ])
 
     assert Relation.resolve(1, alan, 2, hostile) == {:hostile, "北原国 对 青岚国：敌对（国战）"}
     assert Relation.resolve(1, alan, 3, friendly) == {:neutral, "没有任何立场"}
@@ -70,6 +75,12 @@ defmodule MmoContracts.RelationTest do
   end
 
   test "线上关系字节" do
-    assert Enum.map([:neutral, :self, :own, :friendly, :hostile], &Relation.code/1) == [0, 1, 2, 3, 4]
+    assert Enum.map([:neutral, :self, :own, :friendly, :hostile], &Relation.code/1) == [
+             0,
+             1,
+             2,
+             3,
+             4
+           ]
   end
 end

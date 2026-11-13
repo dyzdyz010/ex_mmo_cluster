@@ -26,8 +26,13 @@ defmodule MmoTest.WorldAuthorityDouble do
       def handle_call({:adopt_liquid, _regions}, _from, state), do: {:reply, :ok, state}
 
       # 准备作用域内的快照请求携带 token（World 在接纳时释放该准备）；替身无准备状态，按原快照请求交给使用方。
-      def handle_call({:canonical_snapshot, box, subscriber, ref, include_chunks, _token}, from, state),
-        do: handle_call({:canonical_snapshot, box, subscriber, ref, include_chunks}, from, state)
+      def handle_call(
+            {:canonical_snapshot, box, subscriber, ref, include_chunks, _token},
+            from,
+            state
+          ),
+          do:
+            handle_call({:canonical_snapshot, box, subscriber, ref, include_chunks}, from, state)
 
       def handle_call(message, from, state), do: world_call(message, from, state)
 

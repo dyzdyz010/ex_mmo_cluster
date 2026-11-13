@@ -22,7 +22,13 @@ defmodule DataService.OrgsTest do
 
   defp player(id) do
     %Character{}
-    |> Character.changeset(%{id: id, account: id, name: "char-#{id}", base_attrs: %{}, battle_attrs: %{}})
+    |> Character.changeset(%{
+      id: id,
+      account: id,
+      name: "char-#{id}",
+      base_attrs: %{},
+      battle_attrs: %{}
+    })
     |> Repo.insert!()
   end
 

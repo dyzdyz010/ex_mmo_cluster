@@ -11,11 +11,12 @@ defmodule SceneServer.Movement.ToolAction do
   def run(player, identity, world, request, ingress) do
     case Player.authorize_tool(player, identity, request, ingress) do
       {:ok, actor} ->
-        result = case request.granularity do
-          5 -> body_tool(world, actor, request)
-          6 -> area_tool(world, actor, request)
-          _ -> World.tool_intent(world, actor, request)
-        end
+        result =
+          case request.granularity do
+            5 -> body_tool(world, actor, request)
+            6 -> area_tool(world, actor, request)
+            _ -> World.tool_intent(world, actor, request)
+          end
 
         if request.action == 0,
           do: result,
@@ -37,27 +38,55 @@ defmodule SceneServer.Movement.ToolAction do
          %{} = impact <- tool["body_impact"],
          {:ok, players} <- Scene.tool_candidates(actor.scene) do
       # Harm 许可随候选交 World（同投射物采样的判断）：禁伤人物不参与单体选择，但“区内有人”仍可区分于打空。
-      targets = for player <- players, player != actor.player,
-        {:ok, target} <- [Player.hit_context(player)], target.status != :dead,
-        do: Map.put(target, :permitted, Harm.permitted?(target.scope, actor.position, target.position))
+      targets =
+        for player <- players,
+            player != actor.player,
+            {:ok, target} <- [Player.hit_context(player)],
+            target.status != :dead,
+            do:
+              Map.put(
+                target,
+                :permitted,
+                Harm.permitted?(target.scope, actor.position, target.position)
+              )
+
       case World.tool_intent(world, Map.put(actor, :area_targets, targets), request) do
         {:area, seq, targets} ->
-          {receipts, errors} = Enum.reduce(targets, {[], []}, fn {target, part}, {receipts, errors} ->
-            result = Player.receive_effect(target.player, %{
-              key: actor.action_key, actor: actor, target: target, part: part,
-              request_id: request.request_id, impact: %{
-                depth: impact["depth"], protein_g: impact["protein_g"], heal_s: impact["heal_s"]}})
-            case result do
-              {:ok, receipt} -> {[receipt | receipts], errors}
-              {:error, reason} ->
-                Logger.info("area_body_target request_id=#{request.request_id} target=#{target.id} result=#{reason}")
-                {receipts, [reason | errors]}
-            end
-          end)
+          {receipts, errors} =
+            Enum.reduce(targets, {[], []}, fn {target, part}, {receipts, errors} ->
+              result =
+                Player.receive_effect(target.player, %{
+                  key: actor.action_key,
+                  actor: actor,
+                  target: target,
+                  part: part,
+                  request_id: request.request_id,
+                  impact: %{
+                    depth: impact["depth"],
+                    protein_g: impact["protein_g"],
+                    heal_s: impact["heal_s"]
+                  }
+                })
+
+              case result do
+                {:ok, receipt} ->
+                  {[receipt | receipts], errors}
+
+                {:error, reason} ->
+                  Logger.info(
+                    "area_body_target request_id=#{request.request_id} target=#{target.id} result=#{reason}"
+                  )
+
+                  {receipts, [reason | errors]}
+              end
+            end)
+
           if receipts == [] and errors != [],
             do: {:error, List.last(errors)},
             else: {:area, seq, Enum.reverse(receipts)}
-        error -> error
+
+        error ->
+          error
       end
     else
       nil -> {:error, :unsupported_body_tool}

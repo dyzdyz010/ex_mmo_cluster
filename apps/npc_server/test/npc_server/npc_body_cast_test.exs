@@ -184,7 +184,9 @@ defmodule NpcServer.NpcBodyCastTest do
     Body.command(body, %{id: :c, verb: :cancel_cast})
 
     # `Player.spell/5` 的同步消息带本请求 ref（超时时以 `{:cancel_spell_request, ref}` 取消）。
-    assert_receive {:player, ^player, {:"$gen_call", from, {:spell_request, _ref, @old, cancel, _ingress}}}
+    assert_receive {:player, ^player,
+                    {:"$gen_call", from, {:spell_request, _ref, @old, cancel, _ingress}}}
+
     assert cancel.action == 2
     assert cancel.client_intent_seq == request_b.client_intent_seq
     assert cancel.request_id > request_b.request_id

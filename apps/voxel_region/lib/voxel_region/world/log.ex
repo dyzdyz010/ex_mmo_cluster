@@ -112,16 +112,6 @@ defmodule VoxelRegion.World.Log do
     end)
   end
 
-  @doc "液体数量增量（`Edits` 的日志表示）：写入数量，并像在线后像一样把覆盖区域记为完整快照、丢弃缓存。"
-  def replay_liquid(state, %{liquid_units: units}) do
-    keys = Enum.uniq(Payloads.region_keys(Enum.map(Map.keys(units), &{0, &1})))
-    Enum.reduce(keys, put_liquid(state, units), fn key, s ->
-      %{Payloads.cache_delete(s, key) | snapshots: MapSet.put(s.snapshots, key)}
-    end)
-  end
-
-  def replay_liquid(state, _txn), do: state
-
   def replay_entry(state, %{payload: bytes}) do
     {:ok, p} = Payload.decode(bytes)
 
@@ -187,6 +177,16 @@ defmodule VoxelRegion.World.Log do
       Edits.put_overlay(s, e.level, e.cell, {e.material, e.skins})
     end)
   end
+
+  @doc "液体数量增量（`Edits` 的日志表示）：写入数量，并像在线后像一样把覆盖区域记为完整快照、丢弃缓存。"
+  def replay_liquid(state, %{liquid_units: units}) do
+    keys = Enum.uniq(Payloads.region_keys(Enum.map(Map.keys(units), &{0, &1})))
+    Enum.reduce(keys, put_liquid(state, units), fn key, s ->
+      %{Payloads.cache_delete(s, key) | snapshots: MapSet.put(s.snapshots, key)}
+    end)
+  end
+
+  def replay_liquid(state, _txn), do: state
 
   # 区域自身 core 里的稀疏编辑格（索引同时含邻区 ring 格）。
   def core_cells(state, {_, region} = key) do

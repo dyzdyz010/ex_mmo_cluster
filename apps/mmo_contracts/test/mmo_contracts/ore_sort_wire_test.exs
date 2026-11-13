@@ -24,8 +24,15 @@ defmodule MmoContracts.OreSortWireTest do
 
     assert {:ok,
             {:voxel_production_intent,
-             %{request_id: 23, client_intent_seq: 10, logical_scene_id: 1, action: 6, coord: {0, 0, 0}, tool_id: 24,
-               material: 89} = request}} = Voxel.Codec.decode(wire)
+             %{
+               request_id: 23,
+               client_intent_seq: 10,
+               logical_scene_id: 1,
+               action: 6,
+               coord: {0, 0, 0},
+               tool_id: 24,
+               material: 89
+             } = request}} = Voxel.Codec.decode(wire)
 
     refute Map.has_key?(request, :target)
   end
@@ -56,9 +63,19 @@ defmodule MmoContracts.OreSortWireTest do
 
   test "Hello 44：Hello 43 在线边界拒绝" do
     assert Session.Codec.protocol_version() == 44
-    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 44, kernel_id: <<1::256>>, profile_id: <<2::256>>})
+
+    {:ok, packet} =
+      Session.Codec.encode(%Session.Hello{
+        protocol_version: 44,
+        kernel_id: <<1::256>>,
+        profile_id: <<2::256>>
+      })
+
     <<prefix::binary-size(9), 0x00, 0x2C, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:ok, %Session.Hello{protocol_version: 44}} = Session.Codec.decode(prefix <> <<44::16>> <> tail)
+
+    assert {:ok, %Session.Hello{protocol_version: 44}} =
+             Session.Codec.decode(prefix <> <<44::16>> <> tail)
+
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<43::16>> <> tail)
   end
 end

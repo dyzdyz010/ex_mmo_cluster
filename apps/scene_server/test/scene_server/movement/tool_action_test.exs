@@ -24,7 +24,10 @@ defmodule SceneServer.Movement.ToolActionTest do
     def start_link(_), do: GenServer.start_link(__MODULE__, [])
     def init(players), do: {:ok, players}
     def handle_call({:players, players}, _, _), do: {:reply, :ok, players}
-    def handle_call(:tool_candidates, _, :closed), do: {:reply, {:error, :combat_not_permitted}, :closed}
+
+    def handle_call(:tool_candidates, _, :closed),
+      do: {:reply, {:error, :combat_not_permitted}, :closed}
+
     def handle_call(:tool_candidates, _, players), do: {:reply, {:ok, players}, players}
   end
 
@@ -100,6 +103,7 @@ defmodule SceneServer.Movement.ToolActionTest do
              Player.handle_call({:receive_effect, c.hit}, c.from, after_hit)
 
     refute_receive {:wire, _}, 0
+
     # 复活不清空回执：旧作用重投仍只返回原回执、不再结算；旧生命的新作用拒绝。
     revived = %{after_hit | life_generation: 100, body: Body.revive()}
 
@@ -121,15 +125,29 @@ defmodule SceneServer.Movement.ToolActionTest do
              Player.handle_call({:receive_effect, stale}, c.from, state)
 
     {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_effect, c.hit}, c.from, c.state)
-    recovered = Map.merge(c.state, SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next)))
-    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_effect, c.hit}, c.from, recovered)
+
+    recovered =
+      Map.merge(
+        c.state,
+        SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next))
+      )
+
+    assert {:reply, {:ok, ^receipt}, ^recovered} =
+             Player.handle_call({:receive_effect, c.hit}, c.from, recovered)
   end
 
   test "投射物焦耳只入局部热一次；存档恢复仍去重，旧生命与 owner 拒绝", c do
-    hit = %{key: {77, 15, 0}, actor: c.hit.actor,
-      target: %{id: 20, identity: c.identity, life_generation: 99}, q_j: 2094.0,
-      position: {1.5, 0.0, 0.0}}
-    assert {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_effect, hit}, c.from, c.state)
+    hit = %{
+      key: {77, 15, 0},
+      actor: c.hit.actor,
+      target: %{id: 20, identity: c.identity, life_generation: 99},
+      q_j: 2094.0,
+      position: {1.5, 0.0, 0.0}
+    }
+
+    assert {:reply, {:ok, receipt}, next} =
+             Player.handle_call({:receive_effect, hit}, c.from, c.state)
+
     assert receipt.q_j == 2094.0
     assert next.body_heat.q_j == 2094.0
     assert next.body_heat.tissue_j == 2094.0
@@ -137,16 +155,30 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert next.body == c.state.body
     saved = SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next))
     recovered = Map.merge(c.state, saved)
-    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_effect, hit}, c.from, recovered)
+
+    assert {:reply, {:ok, ^receipt}, ^recovered} =
+             Player.handle_call({:receive_effect, hit}, c.from, recovered)
+
     stale = put_in(hit.target.life_generation, 98)
-    assert {:reply, {:error, :stale_life}, _} = Player.handle_call({:receive_effect, stale}, c.from, c.state)
+
+    assert {:reply, {:error, :stale_life}, _} =
+             Player.handle_call({:receive_effect, stale}, c.from, c.state)
+
     old = put_in(hit.target.identity.session_epoch, 6)
-    assert {:reply, {:error, :stale_owner}, _} = Player.handle_call({:receive_effect, old}, c.from, c.state)
-    {body, account} = SceneServer.Body.Thermo.step(next.body, 1.0, %{q_j: 2094.0, tissue_j: 2094.0, air_k: 293.15})
+
+    assert {:reply, {:error, :stale_owner}, _} =
+             Player.handle_call({:receive_effect, old}, c.from, c.state)
+
+    {body, account} =
+      SceneServer.Body.Thermo.step(next.body, 1.0, %{q_j: 2094.0, tissue_j: 2094.0, air_k: 293.15})
+
     # 0.06kg × 3490 J/(kg K) = 209.4 J/K；2094 J 独立手算升温 10 K。
     assert_in_delta body.tissue_k - c.state.body.tissue_k, 10.0, 1.0e-10
     assert account.q_j == 2094.0 and account.tissue_j == 2094.0
-    assert_in_delta Body.heat_content_j(body) - Body.heat_content_j(next.body), account.stored_j, 1.0e-7
+
+    assert_in_delta Body.heat_content_j(body) - Body.heat_content_j(next.body),
+                    account.stored_j,
+                    1.0e-7
   end
 
   test "范围外和关闭战斗场拒绝，本次采样后继续移动不撤回即时命中", c do
@@ -219,16 +251,56 @@ defmodule SceneServer.Movement.ToolActionTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     catalog = Path.join(root, "properties.json")
-    materials = for id <- 0..23, do: %{material_id: id, max_hp_per_macro: 100.0,
-      defense: 2.0, tags: [], responses: [%{action: "damage", multiplier: 1.0}]}
-    area = %{tool_id: 23, id: "area", action: "damage", power: 30.0, target_mode: "direction",
-      range_macro: 3.0, interval_seconds: 0.8, area_radius_m: 1.0, area_offset_m: 2.0, aim_max_deg: 45.0,
-      body_impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0}}
-    single = Map.merge(area, %{tool_id: 22, id: "melee", target_mode: "object", interval_seconds: 0.5})
-    File.write!(catalog, Jason.encode!(%{schema_version: 1, tags: [%{id: "damage"}],
-      materials: materials, tools: [single, area], definitions: []}))
-    world = start_supervised!({VoxelRegion.World, name: nil, source: VoxelRegion.TestSupport.Source,
-      log: VoxelRegion.TestSupport.Log, observer: self(), root: root, property_catalog_path: catalog})
+
+    materials =
+      for id <- 0..23,
+          do: %{
+            material_id: id,
+            max_hp_per_macro: 100.0,
+            defense: 2.0,
+            tags: [],
+            responses: [%{action: "damage", multiplier: 1.0}]
+          }
+
+    area = %{
+      tool_id: 23,
+      id: "area",
+      action: "damage",
+      power: 30.0,
+      target_mode: "direction",
+      range_macro: 3.0,
+      interval_seconds: 0.8,
+      area_radius_m: 1.0,
+      area_offset_m: 2.0,
+      aim_max_deg: 45.0,
+      body_impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0}
+    }
+
+    single =
+      Map.merge(area, %{tool_id: 22, id: "melee", target_mode: "object", interval_seconds: 0.5})
+
+    File.write!(
+      catalog,
+      Jason.encode!(%{
+        schema_version: 1,
+        tags: [%{id: "damage"}],
+        materials: materials,
+        tools: [single, area],
+        definitions: []
+      })
+    )
+
+    world =
+      start_supervised!(
+        {VoxelRegion.World,
+         name: nil,
+         source: VoxelRegion.TestSupport.Source,
+         log: VoxelRegion.TestSupport.Log,
+         observer: self(),
+         root: root,
+         property_catalog_path: catalog}
+      )
+
     # 判定球边界接触的墙 {3,0,0}：旧实现会扣它的 HP；不挡眼点到 A、B 的射线。
     assert {:ok, _} = VoxelRegion.World.apply_edit(world, {3, 0, 0}, 19)
     scene = start_supervised!(Members)
@@ -236,16 +308,39 @@ defmodule SceneServer.Movement.ToolActionTest do
   end
 
   defp owner(w, id, position, config \\ %{}) do
-    state = %{w.state | id: id, config: Map.merge(w.state.config, config),
-      state: %{position: position, velocity: {0.0, 0.0, 0.0}, yaw: 0}}
+    state = %{
+      w.state
+      | id: id,
+        config: Map.merge(w.state.config, config),
+        state: %{position: position, velocity: {0.0, 0.0, 0.0}, yaw: 0}
+    }
+
     start_supervised!({Owner, state}, id: id)
   end
 
   defp swing(w, attacker, c, seq, at, changes \\ %{}) do
-    request = Map.merge(%{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1,
-      granularity: 6, tool_id: 23, direction: {1.0, 0.0, 0.0}, owner: {0, 0},
-      incarnation: 0, material: 0, micro: {0, 0, 0}}, changes)
-    SceneServer.Movement.ToolAction.run(attacker, c.identity, w.world, request, %{received_us: at, clock_node: node()})
+    request =
+      Map.merge(
+        %{
+          request_id: seq,
+          client_intent_seq: seq,
+          logical_scene_id: 1,
+          action: 1,
+          granularity: 6,
+          tool_id: 23,
+          direction: {1.0, 0.0, 0.0},
+          owner: {0, 0},
+          incarnation: 0,
+          material: 0,
+          micro: {0, 0, 0}
+        },
+        changes
+      )
+
+    SceneServer.Movement.ToolAction.run(attacker, c.identity, w.world, request, %{
+      received_us: at,
+      clock_node: node()
+    })
   end
 
   defp life(pid, id) do
@@ -253,7 +348,8 @@ defmodule SceneServer.Movement.ToolActionTest do
     life
   end
 
-  defp damage(w), do: VoxelRegion.TestSupport.observe(w.world, [10], {{-1, -1, -1}, {6, 5, 5}}).damage
+  defp damage(w),
+    do: VoxelRegion.TestSupport.observe(w.world, [10], {{-1, -1, -1}, {6, 5, 5}}).damage
 
   test "单体段经 g6 按提示/最近者只作用一个，范围段作用区内全部，重投不重复，墙不受损", c do
     w = area_world(c)
@@ -262,13 +358,24 @@ defmodule SceneServer.Movement.ToolActionTest do
     b = owner(w, 21, {2.0, 0.0, 0.8})
     assert :ok = GenServer.call(w.scene, {:players, [attacker, a, b]})
     walls = damage(w)
+
     # 单体招式不再经 g5 人物射线（设计 §6.4／§10：战斗招式一律 g6 判定区）。
     assert {:error, :stale_or_forbidden_target} =
-      swing(w, attacker, c, 69, 1_000_000, %{granularity: 5, tool_id: 22, owner: {20, 0}, incarnation: 99})
+             swing(w, attacker, c, 69, 1_000_000, %{
+               granularity: 5,
+               tool_id: 22,
+               owner: {20, 0},
+               incarnation: 99
+             })
+
     assert {:area, _, [%{target_id: 21, body: %{life: 80}}]} =
-      swing(w, attacker, c, 70, 1_000_000, %{tool_id: 22, owner: {21, 0}, incarnation: 99})
+             swing(w, attacker, c, 70, 1_000_000, %{tool_id: 22, owner: {21, 0}, incarnation: 99})
+
     assert life(a, 20) == 100
-    assert {:area, _, [%{target_id: 20, body: %{life: 80}}]} = swing(w, attacker, c, 71, 2_000_000, %{tool_id: 22})
+
+    assert {:area, _, [%{target_id: 20, body: %{life: 80}}]} =
+             swing(w, attacker, c, 71, 2_000_000, %{tool_id: 22})
+
     assert {:area, _, receipts} = result = swing(w, attacker, c, 72, 3_000_000)
     # 身体作用按既有乘数合成：两次 0.2 深度剩 0.8×0.8 = 64%。
     assert Enum.sort(Enum.map(receipts, &{&1.target_id, &1.body.life})) == [{20, 64}, {21, 64}]
@@ -280,24 +387,31 @@ defmodule SceneServer.Movement.ToolActionTest do
   test "单体段候选先经 Harm 许可：更近的禁伤人物不抢选，作用落到区内可伤者", c do
     w = area_world(c)
     attacker = owner(w, 10, {0.0, 0.0, 0.0})
+
     # 手算：guarded(22) 站 {2,0,0} 距判定球心 0（最近）但自身战斗范围为空；B(21) 站 {2,0,0.8} 距中心 0.8，入区且许可。
     guarded = owner(w, 22, {2.0, 0.0, 0.0}, %{combat_scope: nil})
     b = owner(w, 21, {2.0, 0.0, 0.8})
     assert :ok = GenServer.call(w.scene, {:players, [attacker, guarded, b]})
-    assert {:area, _, [%{target_id: 21, body: %{life: 80}}]} = swing(w, attacker, c, 90, 1_000_000, %{tool_id: 22})
+
+    assert {:area, _, [%{target_id: 21, body: %{life: 80}}]} =
+             swing(w, attacker, c, 90, 1_000_000, %{tool_id: 22})
+
     assert life(guarded, 22) == 100
   end
 
   test "打空接纳频率，朝向超限不消耗频率，区内全部被拒与战斗关闭返回拒绝且不改生命", c do
     w = area_world(c)
     attacker = owner(w, 10, {0.0, 0.0, 0.0})
-    far = owner(w, 20, {2.0, 0.0, 3.0}) # 距中心 3.0，区外
+    # 距中心 3.0，区外
+    far = owner(w, 20, {2.0, 0.0, 3.0})
     assert :ok = GenServer.call(w.scene, {:players, [attacker, far]})
     walls = damage(w)
     assert {:area, _, []} = swing(w, attacker, c, 80, 1_000_000)
     assert {:error, :tool_cooldown} = swing(w, attacker, c, 81, 1_000_000)
     # 已确认 yaw 0；方向 -X 与前向差 180° > 45°。
-    assert {:error, :facing} = swing(w, attacker, c, 82, 2_000_000, %{direction: {-1.0, 0.0, 0.0}})
+    assert {:error, :facing} =
+             swing(w, attacker, c, 82, 2_000_000, %{direction: {-1.0, 0.0, 0.0}})
+
     assert {:area, _, []} = swing(w, attacker, c, 83, 2_000_000)
     guarded = owner(w, 22, {2.0, 0.0, 0.0}, %{combat_scope: nil})
     assert :ok = GenServer.call(w.scene, {:players, [attacker, far, guarded]})
@@ -314,13 +428,20 @@ defmodule SceneServer.Movement.ToolActionTest do
     # reported "first rejection"; 40 > 32 characters make map iteration differ from id order.
     characters =
       Map.new(1..40, fn id ->
-        {%Session.Identity{session_epoch: 1000 - id, scene_id: 1, scene_epoch: 2}, %{id: id, player: {:player, id}}}
+        {%Session.Identity{session_epoch: 1000 - id, scene_id: 1, scene_epoch: 2},
+         %{id: id, player: {:player, id}}}
       end)
 
-    state = %{config: %{combat_scope: {{-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0}}}, characters: characters}
+    state = %{
+      config: %{combat_scope: {{-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0}}},
+      characters: characters
+    }
+
     refute Enum.map(Map.values(characters), & &1.id) == Enum.to_list(1..40)
 
-    assert {:reply, {:ok, players}, ^state} = SceneServer.Movement.Scene.handle_call(:tool_candidates, nil, state)
+    assert {:reply, {:ok, players}, ^state} =
+             SceneServer.Movement.Scene.handle_call(:tool_candidates, nil, state)
+
     assert players == for(id <- 1..40, do: {:player, id})
   end
 end

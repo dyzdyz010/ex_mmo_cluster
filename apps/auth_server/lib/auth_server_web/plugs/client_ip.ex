@@ -13,7 +13,8 @@ defmodule AuthServerWeb.Plugs.ClientIp do
   def call(%{remote_ip: peer} = conn, _) do
     with true <- loopback?(peer),
          [value] <- get_req_header(conn, "x-real-ip"),
-         {:ok, ip} <- value |> String.trim() |> String.to_charlist() |> :inet.parse_strict_address() do
+         {:ok, ip} <-
+           value |> String.trim() |> String.to_charlist() |> :inet.parse_strict_address() do
       %{conn | remote_ip: ip}
     else
       _ -> conn

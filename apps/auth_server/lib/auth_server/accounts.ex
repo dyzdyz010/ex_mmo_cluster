@@ -54,7 +54,10 @@ defmodule AuthServer.Accounts do
         catch
           :exit, reason ->
             # 退出原因里带着原消息（可能含凭据），日志只记请求类型和退出类别。
-            Logger.warning("auth_data_service_call_failed request=#{elem(message, 0)} reason=#{inspect(exit_kind(reason))}")
+            Logger.warning(
+              "auth_data_service_call_failed request=#{elem(message, 0)} reason=#{inspect(exit_kind(reason))}"
+            )
+
             {:error, :data_service_unavailable}
         end
     end

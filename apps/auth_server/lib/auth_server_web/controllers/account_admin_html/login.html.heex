@@ -8,10 +8,21 @@
       <.form for={%{}} action="/admin/login" class="ac-form">
         <div class="ac-field">
           <label class="ac-label" for="email">邮箱</label>
-          <input id="email" name="email" type="email" class="ac-input" autocomplete="username" maxlength="254" autofocus required />
+          <input
+            id="email"
+            name="email"
+            type="email"
+            class="ac-input"
+            autocomplete="username"
+            maxlength="254"
+            autofocus
+            required
+          />
         </div>
         <UI.secret id="password" name="password" label="密码" autocomplete="current-password" />
-        <button type="submit" class="ac-btn ac-btn--primary ac-btn--block">登录<span class="ac-arrow" aria-hidden="true">→</span></button>
+        <button type="submit" class="ac-btn ac-btn--primary ac-btn--block">
+          登录<span class="ac-arrow" aria-hidden="true">→</span>
+        </button>
       </.form>
       <div class="ac-card-foot"><a href="/auth">前往玩家账号中心</a></div>
     </section>

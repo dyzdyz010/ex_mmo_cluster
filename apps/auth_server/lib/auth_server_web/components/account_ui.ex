@@ -9,9 +9,18 @@ defmodule AuthServerWeb.AccountUI do
   use Phoenix.Component
 
   @tokens [
-    canvas: "#060812", surface: "#101426", "surface-strong": "#0a0d1c", line: "rgba(154, 170, 225, 0.16)",
-    text: "#f5f7ff", muted: "#b7bdd2", dim: "#69728f", cyan: "#61d9ff", violet: "#8c7cff",
-    magenta: "#ff7bcb", gold: "#ffcc7a", positive: "#79f0cb"
+    canvas: "#060812",
+    surface: "#101426",
+    "surface-strong": "#0a0d1c",
+    line: "rgba(154, 170, 225, 0.16)",
+    text: "#f5f7ff",
+    muted: "#b7bdd2",
+    dim: "#69728f",
+    cyan: "#61d9ff",
+    violet: "#8c7cff",
+    magenta: "#ff7bcb",
+    gold: "#ffcc7a",
+    positive: "#79f0cb"
   ]
   @fonts [
     sans: ~s(Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif),
@@ -52,7 +61,12 @@ defmodule AuthServerWeb.AccountUI do
 
   @doc "完整页面骨架：品牌页头（按登录状态显示导航与当前账号）、星空背景、页脚。"
   def page(assigns) do
-    assigns = assign(assigns, style: Phoenix.HTML.raw(@style), script: Phoenix.HTML.raw(@script), favicon: @favicon)
+    assigns =
+      assign(assigns,
+        style: Phoenix.HTML.raw(@style),
+        script: Phoenix.HTML.raw(@script),
+        favicon: @favicon
+      )
 
     ~H"""
     <!DOCTYPE html>
@@ -83,11 +97,15 @@ defmodule AuthServerWeb.AccountUI do
             </a>
             <div class="ac-header-end">
               <nav :if={@nav != []} class="sk-product-nav" aria-label="账号导航">
-                <a :for={{label, href} <- @nav} href={href} aria-current={href == @current && "page"}>{label}</a>
+                <a :for={{label, href} <- @nav} href={href} aria-current={href == @current && "page"}>
+                  {label}
+                </a>
               </nav>
               <div :if={@viewer} class="ac-user">
                 <span class="ac-user__email" title={@viewer.email}>{@viewer.email}</span>
-                <.form for={%{}} action={@logout}><button class="ac-btn ac-btn--sm">{@logout_label}</button></.form>
+                <.form for={%{}} action={@logout}>
+                  <button class="ac-btn ac-btn--sm">{@logout_label}</button>
+                </.form>
               </div>
             </div>
           </div>
@@ -163,7 +181,9 @@ defmodule AuthServerWeb.AccountUI do
           aria-describedby={@counter && "#{@id}-hint"}
           required
         />
-        <button type="button" class="ac-reveal" data-reveal={@id} aria-pressed="false" hidden>显示</button>
+        <button type="button" class="ac-reveal" data-reveal={@id} aria-pressed="false" hidden>
+          显示
+        </button>
       </div>
       <p :if={@counter} id={"#{@id}-hint"} class="ac-hint" data-count={@id}>
         {@minlength}–{@maxlength} 个字符。

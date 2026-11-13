@@ -219,8 +219,13 @@ defmodule MmoContracts.MagicWireTest do
     ended = put(live, 12, 2)
     assert Codec.encode_semblances(%{{9, 0} => impact}) == ended
     assert Codec.decode_semblances(ended) == {:ok, %{{9, 0} => impact}}
-    assert {:ok, %{semblances: ^ended}} = Codec.decode_m1(elem(Codec.encode_m1(batch.(0, ended)), 1))
-    assert {:error, :invalid_m1_message} = Codec.decode_m1(elem(Codec.encode_m1(batch.(1, ended)), 1))
+
+    assert {:ok, %{semblances: ^ended}} =
+             Codec.decode_m1(elem(Codec.encode_m1(batch.(0, ended)), 1))
+
+    assert {:error, :invalid_m1_message} =
+             Codec.decode_m1(elem(Codec.encode_m1(batch.(1, ended)), 1))
+
     assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 0))
 
     # 反例：乱序、重复、未知形状、删除记录带非零字段、截断。

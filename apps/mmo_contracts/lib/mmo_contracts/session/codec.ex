@@ -130,16 +130,46 @@ defmodule MmoContracts.Session.Codec do
          life: :u8,
          recoverable: :u8
        ]},
-    14 => {Session.ProjectileHit, [identity: :identity, world_seq: :u64,
-      projectile_seq: :u64, projectile_n: :u32, source_id: :u64, source_life: :u64,
-      target_id: :u64, target_life: :u64, q_j: :f64, position: :vec3]},
-    15 => {Session.Say, [identity: :identity, request_id: :u64, target_id: :u64,
-      conversation_id: :u64, text: :utf8]},
-    16 => {Session.Speech, [identity: :identity, conversation_id: :u64, turn: :u32,
-      speaker_id: :u64, speaker_epoch: :u64, speaker_kind: :u8, speaker_name: :utf8,
-      target_id: :u64, at_ms: :u64, text: :utf8]},
-    17 => {Session.SayResult, [identity: :identity, request_id: :u64,
-      conversation_id: :u64, turn: :u32, reason: :utf8]}
+    14 =>
+      {Session.ProjectileHit,
+       [
+         identity: :identity,
+         world_seq: :u64,
+         projectile_seq: :u64,
+         projectile_n: :u32,
+         source_id: :u64,
+         source_life: :u64,
+         target_id: :u64,
+         target_life: :u64,
+         q_j: :f64,
+         position: :vec3
+       ]},
+    15 =>
+      {Session.Say,
+       [
+         identity: :identity,
+         request_id: :u64,
+         target_id: :u64,
+         conversation_id: :u64,
+         text: :utf8
+       ]},
+    16 =>
+      {Session.Speech,
+       [
+         identity: :identity,
+         conversation_id: :u64,
+         turn: :u32,
+         speaker_id: :u64,
+         speaker_epoch: :u64,
+         speaker_kind: :u8,
+         speaker_name: :utf8,
+         target_id: :u64,
+         at_ms: :u64,
+         text: :utf8
+       ]},
+    17 =>
+      {Session.SayResult,
+       [identity: :identity, request_id: :u64, conversation_id: :u64, turn: :u32, reason: :utf8]}
   }
 
   @moduledoc "现行认证、入场、心跳的纯字节契约；大端，入场位置仍为旧 UE/cm，不是 canonical 米。"
@@ -249,7 +279,8 @@ defmodule MmoContracts.Session.Codec do
   def end_reason(name), do: Keyword.fetch!(@end_reasons, name)
 
   @doc "线上数值 => 原因名；不在表里的数值返回 nil。"
-  def end_reason_name(code), do: Enum.find_value(@end_reasons, fn {name, value} -> if value == code, do: name end)
+  def end_reason_name(code),
+    do: Enum.find_value(@end_reasons, fn {name, value} -> if value == code, do: name end)
 
   @doc "全部原因名与数值（测试与日志用）。"
   def end_reasons, do: @end_reasons

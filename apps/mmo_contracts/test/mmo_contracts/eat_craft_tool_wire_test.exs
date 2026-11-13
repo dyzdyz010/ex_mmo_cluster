@@ -11,7 +11,11 @@ defmodule MmoContracts.EatCraftToolWireTest do
   defp wire(action, tool, material),
     do:
       Base.decode16!(
-        "7F" <> "0000000000000031" <> "00000005" <> "0000000000000001" <> action <>
+        "7F" <>
+          "0000000000000031" <>
+          "00000005" <>
+          "0000000000000001" <>
+          action <>
           "000000000000000000000000" <> tool <> material
       )
 
@@ -21,7 +25,14 @@ defmodule MmoContracts.EatCraftToolWireTest do
 
     assert {:ok,
             {:voxel_production_intent,
-             %{request_id: 49, client_intent_seq: 5, action: 5, coord: {0, 0, 0}, tool_id: 0, material: 36}}} =
+             %{
+               request_id: 49,
+               client_intent_seq: 5,
+               action: 5,
+               coord: {0, 0, 0},
+               tool_id: 0,
+               material: 36
+             }}} =
              Voxel.Codec.decode(bytes)
   end
 
@@ -31,8 +42,11 @@ defmodule MmoContracts.EatCraftToolWireTest do
   end
 
   test "旧客户端带工具 1 的吃／合成仍解码" do
-    assert {:ok, {:voxel_production_intent, %{action: 5, tool_id: 1}}} = Voxel.Codec.decode(wire("05", "0001", "0024"))
-    assert {:ok, {:voxel_production_intent, %{action: 4, tool_id: 1}}} = Voxel.Codec.decode(wire("04", "0001", "0029"))
+    assert {:ok, {:voxel_production_intent, %{action: 5, tool_id: 1}}} =
+             Voxel.Codec.decode(wire("05", "0001", "0024"))
+
+    assert {:ok, {:voxel_production_intent, %{action: 4, tool_id: 1}}} =
+             Voxel.Codec.decode(wire("04", "0001", "0029"))
   end
 
   test "其它 action 工具 0 仍拒绝" do

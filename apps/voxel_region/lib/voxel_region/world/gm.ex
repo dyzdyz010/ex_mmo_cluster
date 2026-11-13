@@ -236,6 +236,8 @@ defmodule VoxelRegion.World.Gm do
     end
   end
 
+  defp operate(_op, _state, _args, _rkey, _receipt), do: {:error, :invalid_gm_args}
+
   defp move_instance(state, %{instance: id, anchor: anchor, orientation: orientation}, rkey, receipt, definition) do
     with {:ok, instance} <- move_input(state, %{instance: id, anchor: anchor, orientation: orientation}) do
       ids = Prefabs.subtree_ids(state, id)
@@ -247,8 +249,6 @@ defmodule VoxelRegion.World.Gm do
         %{material_supplies: %{rkey => receipt}}), receipt)
     end
   end
-
-  defp operate(_op, _state, _args, _rkey, _receipt), do: {:error, :invalid_gm_args}
 
   # 固体占据沿用正式移动阻挡目录；额外排除液态身份，不把花草当实体池底。
   defp solid?(material), do: MmoContracts.VoxelMaterialCatalog.valid_id?(material) and

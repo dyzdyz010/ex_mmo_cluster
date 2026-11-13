@@ -29,7 +29,9 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   defmodule Sink do
-    def reliable(pid, identity, purpose, message), do: send(pid, {:reliable, identity, purpose, message})
+    def reliable(pid, identity, purpose, message),
+      do: send(pid, {:reliable, identity, purpose, message})
+
     def datagram(pid, identity, message), do: send(pid, {:datagram, identity, message})
     def close(pid, identity, reason), do: send(pid, {:closed, identity, reason})
   end
@@ -46,7 +48,11 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     def ensure(_state, _level, _region), do: :ok
 
     def world_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
-      send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.BeaconTravelTest.snapshot(box)})
+      send(
+        subscriber,
+        {:canonical_snapshot, ref, SceneServer.Movement.BeaconTravelTest.snapshot(box)}
+      )
+
       {:reply, :ok, state}
     end
 
@@ -54,6 +60,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
       send(source, {:simulation_windows_result, ref, :ok})
       {:noreply, state}
     end
+
     def handle_info(message, state) do
       send(state.owner, {:authority, message})
       {:noreply, state}
@@ -64,34 +71,72 @@ defmodule SceneServer.Movement.BeaconTravelTest do
 
   # y = 500 一层地面（同 ReviveRelocationTest）；y = 250 另一层，只在请求盒覆盖 y tile 3 时出现（“更低的窗口”用例）。
   def snapshot({{x0, y0, z0}, {x1, y1, z1}} = box) do
-    layer = fn h -> for _z <- 0..15, cy <- 0..15, _x <- 0..15, into: <<>>, do: <<if(cy == rem(h, 16), do: 1, else: 0)>> end
+    layer = fn h ->
+      for _z <- 0..15,
+          cy <- 0..15,
+          _x <- 0..15,
+          into: <<>>,
+          do: <<if(cy == rem(h, 16), do: 1, else: 0)>>
+    end
+
     floors = %{31 => layer.(500), 15 => layer.(250)}
 
     chunks =
-      for x <- (x0 * 4)..(x1 * 4 - 1), y <- (y0 * 4)..(y1 * 4 - 1), z <- (z0 * 4)..(z1 * 4 - 1), Map.has_key?(floors, y),
-        do: %Voxel.ChunkOccupancy{coord: {x, y, z}, n: 16, scale_m: 1.0, origin_m: {x * 16.0, y * 16.0, z * 16.0},
-          cells: floors[y]}
+      for x <- (x0 * 4)..(x1 * 4 - 1),
+          y <- (y0 * 4)..(y1 * 4 - 1),
+          z <- (z0 * 4)..(z1 * 4 - 1),
+          Map.has_key?(floors, y),
+          do: %Voxel.ChunkOccupancy{
+            coord: {x, y, z},
+            n: 16,
+            scale_m: 1.0,
+            origin_m: {x * 16.0, y * 16.0, z * 16.0},
+            cells: floors[y]
+          }
 
-    %Voxel.CanonicalSnapshot{content_version: 9, transaction_seq: 0, l0_min: elem(box, 0), l0_max_exclusive: elem(box, 1),
-      chunks: chunks, regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})}
+    %Voxel.CanonicalSnapshot{
+      content_version: 9,
+      transaction_seq: 0,
+      l0_min: elem(box, 0),
+      l0_max_exclusive: elem(box, 1),
+      chunks: chunks,
+      regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})
+    }
   end
 
   # bottom：场景最低 y tile；移动范围下沿与出生下限都取该 tile 底 + 16 m（青岚这两者远低于出生窗口）。
   defp config(bottom) do
     path = Path.expand("../../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
-    profile = File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
+
+    profile =
+      File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
+
     floor_y = bottom * 64 + 16.0
 
-    %{"schema" => "voxim-m1-demo-v1", "l0_min" => [-1, bottom, -1], "l0_max_exclusive" => [2, 10, 2],
-      "travel_min_m" => [-48.0, floor_y, -48.0], "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
-      "spawn_probes_m" => [[40.0, 558.0, 40.0]], "spawn_min_y_m" => floor_y, "profile" => profile,
-      "collision_window_radius_tiles" => 1}
+    %{
+      "schema" => "voxim-m1-demo-v1",
+      "l0_min" => [-1, bottom, -1],
+      "l0_max_exclusive" => [2, 10, 2],
+      "travel_min_m" => [-48.0, floor_y, -48.0],
+      "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
+      "spawn_probes_m" => [[40.0, 558.0, 40.0]],
+      "spawn_min_y_m" => floor_y,
+      "profile" => profile,
+      "collision_window_radius_tiles" => 1
+    }
   end
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
 
   defp wait(fun, attempts \\ 4000) do
-    if value = fun.(), do: value, else: (assert(attempts > 0); Process.sleep(1); wait(fun, attempts - 1))
+    if value = fun.(),
+      do: value,
+      else:
+        (
+          assert(attempts > 0)
+          Process.sleep(1)
+          wait(fun, attempts - 1)
+        )
   end
 
   defp tick(ctx, tick) do
@@ -101,7 +146,14 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   defp step(ctx, p, seq, axis_x) do
-    frame = %Movement.InputFrame{input_seq: seq, axis_x: axis_x, axis_z: 0, yaw: 0, jump_pressed: 0}
+    frame = %Movement.InputFrame{
+      input_seq: seq,
+      axis_x: axis_x,
+      axis_z: 0,
+      yaw: 0,
+      jump_pressed: 0
+    }
+
     Player.input(p, identity(), %Movement.InputBatch{identity: identity(), frames: [frame]})
     tick(ctx, seq + ctx.origin - 1)
     wait(fn -> Player.observe(p).processed_input_seq == seq end)
@@ -116,8 +168,16 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     scene =
       start_supervised!(
         {Scene,
-         [scene_id: 1, scene_epoch: 7, world_ref: source, config: config(bottom), clock: {Clock, clock}, sink: Sink,
-          body_store: {MmoTest.BodyStore, store: body_store}, world_api: Source]}
+         [
+           scene_id: 1,
+           scene_epoch: 7,
+           world_ref: source,
+           config: config(bottom),
+           clock: {Clock, clock},
+           sink: Sink,
+           body_store: {MmoTest.BodyStore, store: body_store},
+           world_api: Source
+         ]}
       )
 
     wait(fn -> Scene.observe(scene).initialized end)
@@ -139,7 +199,15 @@ defmodule SceneServer.Movement.BeaconTravelTest do
 
   defp depart(p) do
     ref = make_ref()
-    request = %{request_id: 3, client_intent_seq: 50, logical_scene_id: 1, from: "qinglan", to: "ruyuan"}
+
+    request = %{
+      request_id: 3,
+      client_intent_seq: 50,
+      logical_scene_id: 1,
+      from: "qinglan",
+      to: "ruyuan"
+    }
+
     Player.beacon_travel(p, identity(), request, {self(), ref})
     assert_receive {:authority, {:prepare_beacon, key, actor, ^request}}, 2000
     assert actor.cid == 20 and actor.position == Player.observe(p).state.position
@@ -168,8 +236,15 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     end)
 
     step(ctx, p, 5, 0)
-    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: apply_tick, state: spawned}}, 2000
-    assert_receive {:reliable, _, :voxel, %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {_, 3, _}}}, 2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.Relocate{apply_tick: apply_tick, state: spawned}},
+                   2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {_, 3, _}}},
+                   2000
+
     {_, start_y, _} = start.state.position
     {sx, sy, sz} = spawned.position
     assert {sx, sz} == {70.5, 40.5}
@@ -188,7 +263,11 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     send(p, {:beacon_committed, key, {:ok, @landing}})
     assert_receive {^ref, {:ok, 0}}, 2000
     apply_tick = committed_at + 1
-    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}}, 2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}},
+                   2000
+
     {lx, _, lz} = @landing
     {_, ground_y, _} = start.state.position
     assert spawned.position == {lx, ground_y, lz}
@@ -206,6 +285,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     {ref, key, _} = depart(p)
     send(p, {:beacon_prepared, key, {:ok, 30.0}})
     origin = Player.observe(p).state.position
+
     Enum.reduce_while(5..80, nil, fn seq, _ ->
       step(ctx, p, seq, 32767)
       if :sys.get_state(p).action == nil, do: {:halt, seq}, else: {:cont, nil}
@@ -232,7 +312,17 @@ defmodule SceneServer.Movement.BeaconTravelTest do
 
   defp start_sort(p, seq) do
     ref = make_ref()
-    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 6, coord: {0, 0, 0}, tool_id: 24, material: 89}
+
+    request = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 6,
+      coord: {0, 0, 0},
+      tool_id: 24,
+      material: 89
+    }
+
     Player.ore_sort(p, identity(), request, {self(), ref})
     {ref, request}
   end
@@ -261,7 +351,14 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     {again, _} = start_sort(p, 61)
     assert_receive {^again, {:error, :cast_too_soon}}, 2000
     beacon = make_ref()
-    Player.beacon_travel(p, identity(), %{request_id: 3, client_intent_seq: 62, logical_scene_id: 1, from: "a", to: "b"}, {self(), beacon})
+
+    Player.beacon_travel(
+      p,
+      identity(),
+      %{request_id: 3, client_intent_seq: 62, logical_scene_id: 1, from: "a", to: "b"},
+      {self(), beacon}
+    )
+
     assert_receive {^beacon, {:error, :cast_too_soon}}, 2000
     refute_receive {:authority, {:prepare_sort, _, _, _}}, 50
     refute_receive {:authority, {:prepare_beacon, _, _, _}}, 0
@@ -280,6 +377,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     assert_receive {:authority, {:prepare_sort, key, _, _}}, 2000
     send(p, {:sort_prepared, key, {:ok, 30.0}})
     origin = Player.observe(p).state.position
+
     Enum.reduce_while(5..80, nil, fn seq, _ ->
       step(ctx, p, seq, 32767)
       if :sys.get_state(p).action == nil, do: {:halt, seq}, else: {:cont, nil}

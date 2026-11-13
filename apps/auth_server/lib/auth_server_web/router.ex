@@ -17,11 +17,13 @@ defmodule AuthServerWeb.Router do
   pipeline :account do
     plug AuthServerWeb.Plugs.AccountRateLimit
   end
+
   pipeline :game_account do
     plug AuthServerWeb.Plugs.AccountAccess
   end
+
   scope "/account", AuthServerWeb do
-    pipe_through [:api,:account]
+    pipe_through [:api, :account]
     get "/registration-policy", AccountController, :policy
     get "/session", AccountController, :session
     post "/registration-email", AccountController, :registration_email
@@ -43,11 +45,13 @@ defmodule AuthServerWeb.Router do
     post "/admin/invites/:id/revoke", AccountController, :invite_revoke
     post "/admin/invites/:id/limit", AccountController, :invite_limit
   end
+
   scope "/game", AuthServerWeb do
     pipe_through :game_account
     post "/regions", IngameController, :game_regions
     post "/prefabs", IngameController, :game_prefabs
   end
+
   scope "/auth", AuthServerWeb do
     pipe_through [:browser, :account]
     get "/", AccountPortalController, :index
@@ -67,8 +71,9 @@ defmodule AuthServerWeb.Router do
     post "/logout", AccountPortalController, :logout
     post "/logout-all", AccountPortalController, :logout_all
   end
+
   scope "/admin", AuthServerWeb do
-    pipe_through [:browser,:account]
+    pipe_through [:browser, :account]
     get "/login", AccountAdminController, :login_page
     post "/login", AccountAdminController, :login
     post "/logout", AccountAdminController, :logout

@@ -16,7 +16,9 @@ defmodule SceneServer.Movement.GmTeleportTest do
   end
 
   defmodule Sink do
-    def reliable(pid, identity, purpose, message), do: send(pid, {:reliable, identity, purpose, message})
+    def reliable(pid, identity, purpose, message),
+      do: send(pid, {:reliable, identity, purpose, message})
+
     def datagram(pid, identity, message), do: send(pid, {:datagram, identity, message})
     def close(pid, identity, reason), do: send(pid, {:closed, identity, reason})
   end
@@ -26,38 +28,85 @@ defmodule SceneServer.Movement.GmTeleportTest do
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
     def authority_ref(pid), do: pid
+
     def canonical_snapshot_and_subscribe(pid, box, subscriber, ref, _include_chunks \\ true),
       do: GenServer.call(pid, {:canonical_snapshot, box, subscriber, ref})
+
     def ensure(_state, _level, _region), do: :ok
+
     def world_call({:canonical_snapshot, box, subscriber, ref}, _, state) do
-      send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.GmTeleportTest.snapshot(box)})
+      send(
+        subscriber,
+        {:canonical_snapshot, ref, SceneServer.Movement.GmTeleportTest.snapshot(box)}
+      )
+
       {:reply, :ok, state}
     end
+
     def handle_info(_message, state), do: {:noreply, state}
   end
 
   def snapshot({{x0, y0, z0}, {x1, y1, z1}} = box) do
-    floor = for _z <- 0..15, cy <- 0..15, _x <- 0..15, into: <<>>, do: <<if(31 * 16 + cy == 500, do: 1, else: 0)>>
+    floor =
+      for _z <- 0..15,
+          cy <- 0..15,
+          _x <- 0..15,
+          into: <<>>,
+          do: <<if(31 * 16 + cy == 500, do: 1, else: 0)>>
+
     chunks =
-      for x <- (x0 * 4)..(x1 * 4 - 1), y <- (y0 * 4)..(y1 * 4 - 1), z <- (z0 * 4)..(z1 * 4 - 1), y == 31,
-        do: %Voxel.ChunkOccupancy{coord: {x, y, z}, n: 16, scale_m: 1.0, origin_m: {x * 16.0, y * 16.0, z * 16.0}, cells: floor}
-    %Voxel.CanonicalSnapshot{content_version: 9, transaction_seq: 0, l0_min: elem(box, 0), l0_max_exclusive: elem(box, 1),
-      chunks: chunks, regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})}
+      for x <- (x0 * 4)..(x1 * 4 - 1),
+          y <- (y0 * 4)..(y1 * 4 - 1),
+          z <- (z0 * 4)..(z1 * 4 - 1),
+          y == 31,
+          do: %Voxel.ChunkOccupancy{
+            coord: {x, y, z},
+            n: 16,
+            scale_m: 1.0,
+            origin_m: {x * 16.0, y * 16.0, z * 16.0},
+            cells: floor
+          }
+
+    %Voxel.CanonicalSnapshot{
+      content_version: 9,
+      transaction_seq: 0,
+      l0_min: elem(box, 0),
+      l0_max_exclusive: elem(box, 1),
+      chunks: chunks,
+      regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})
+    }
   end
 
   defp config do
     path = Path.expand("../../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
-    profile = File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
-    %{"schema" => "voxim-m1-demo-v1", "l0_min" => [-1, 7, -1], "l0_max_exclusive" => [2, 10, 2],
-      "travel_min_m" => [-48.0, 464.0, -48.0], "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
-      "spawn_probes_m" => [[40.0, 558.0, 40.0]], "spawn_min_y_m" => 464.0, "profile" => profile,
-      "collision_window_radius_tiles" => 0}
+
+    profile =
+      File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
+
+    %{
+      "schema" => "voxim-m1-demo-v1",
+      "l0_min" => [-1, 7, -1],
+      "l0_max_exclusive" => [2, 10, 2],
+      "travel_min_m" => [-48.0, 464.0, -48.0],
+      "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
+      "spawn_probes_m" => [[40.0, 558.0, 40.0]],
+      "spawn_min_y_m" => 464.0,
+      "profile" => profile,
+      "collision_window_radius_tiles" => 0
+    }
   end
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
 
   defp wait(fun, attempts \\ 4000) do
-    if value = fun.(), do: value, else: (assert(attempts > 0); Process.sleep(1); wait(fun, attempts - 1))
+    if value = fun.(),
+      do: value,
+      else:
+        (
+          assert(attempts > 0)
+          Process.sleep(1)
+          wait(fun, attempts - 1)
+        )
   end
 
   defp tick(clock, scene, tick) do
@@ -72,8 +121,22 @@ defmodule SceneServer.Movement.GmTeleportTest do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{}})
     store = start_supervised!({MmoTest.BodyStore, []})
-    scene = start_supervised!({Scene, [scene_id: 1, scene_epoch: 7, world_ref: source, config: config(),
-      clock: {Clock, clock}, sink: Sink, body_store: {MmoTest.BodyStore, store: store}, world_api: Source]})
+
+    scene =
+      start_supervised!(
+        {Scene,
+         [
+           scene_id: 1,
+           scene_epoch: 7,
+           world_ref: source,
+           config: config(),
+           clock: {Clock, clock},
+           sink: Sink,
+           body_store: {MmoTest.BodyStore, store: store},
+           world_api: Source
+         ]}
+      )
+
     wait(fn -> Scene.observe(scene).initialized end)
     {:ok, p} = Scene.join(scene, identity(), %{id: 20}, self())
     wait(fn -> Scene.observe(scene).queue_length > 0 end)
@@ -87,7 +150,8 @@ defmodule SceneServer.Movement.GmTeleportTest do
     %{player: p, start: start}
   end
 
-  test "GM teleport is refused when disabled, lands on the floor when enabled, and stays inside the window", c do
+  test "GM teleport is refused when disabled, lands on the floor when enabled, and stays inside the window",
+       c do
     landed_y = elem(c.start.state.position, 1)
     assert landed_y > 501.0 and landed_y < 503.0
     before = Player.observe(c.player).state.position
@@ -99,7 +163,10 @@ defmodule SceneServer.Movement.GmTeleportTest do
     assert {x, z} == {60.0, 60.0}
     assert_in_delta y, landed_y, 1.0e-6
     assert Player.observe(c.player).state.position == position
-    assert {:error, :outside_collision_window} = Player.gm_teleport(c.player, {200.0, 520.0, 200.0})
+
+    assert {:error, :outside_collision_window} =
+             Player.gm_teleport(c.player, {200.0, 520.0, 200.0})
+
     assert Player.observe(c.player).state.position == position
   end
 end

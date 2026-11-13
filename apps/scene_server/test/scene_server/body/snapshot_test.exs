@@ -51,7 +51,11 @@ defmodule SceneServer.Body.SnapshotTest do
     }
 
     # 手写版本 2 字节：与改前 Snapshot.encode/1 写出的项相同。
-    v2 = :erlang.term_to_binary({:body, 2, Map.put(v1, :projectile_hits, %{{77, 15, 0} => :receipt})})
+    v2 =
+      :erlang.term_to_binary(
+        {:body, 2, Map.put(v1, :projectile_hits, %{{77, 15, 0} => :receipt})}
+      )
+
     assert Snapshot.decode!(v2) == Map.put(v1, :effect_receipts, %{{77, 15, 0} => :receipt})
 
     v3 = Map.put(v1, :effect_receipts, %{{:identity, 11} => :tool, {77, 15, 0} => :projectile})

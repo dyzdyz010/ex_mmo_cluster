@@ -169,8 +169,12 @@ defmodule GateServer.Session.QuicConnection do
 
       true ->
         case Movement.Codec.decode(bytes) do
-          {:ok, %Movement.InputBatch{} = message} -> {:noreply, forward_input(state, message)}
-          _ -> {:noreply, close(state, :protocol_violation, "datagram_decode " <> frame_header(bytes))}
+          {:ok, %Movement.InputBatch{} = message} ->
+            {:noreply, forward_input(state, message)}
+
+          _ ->
+            {:noreply,
+             close(state, :protocol_violation, "datagram_decode " <> frame_header(bytes))}
         end
     end
   end
@@ -570,7 +574,12 @@ defmodule GateServer.Session.QuicConnection do
           else: close(state, :unsupported_range, "edit_scene kind=#{kind}")
 
       {:ok, {kind, request} = message}
-      when kind in [:voxel_tool_intent, :voxel_spell_intent, :voxel_beacon_travel, :voxel_prefab_publish_v1] and
+      when kind in [
+             :voxel_tool_intent,
+             :voxel_spell_intent,
+             :voxel_beacon_travel,
+             :voxel_prefab_publish_v1
+           ] and
              state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id),
           do: enqueue_edit(state, message),
@@ -921,7 +930,9 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   defp shutdown(state, code) do
-    {:ok, bytes} = Session.Codec.encode(%Session.SessionEnd{identity: state.identity, reason: code})
+    {:ok, bytes} =
+      Session.Codec.encode(%Session.SessionEnd{identity: state.identity, reason: code})
+
     state = send_bytes(state, 1, IO.iodata_to_binary(bytes), 4)
     %{state | closing: true}
   end

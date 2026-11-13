@@ -13,7 +13,7 @@ defmodule AuthServerWeb.Endpoint do
     signing_salt: "Yz4kf7ap",
     encryption_salt: "voxim-account-browser-v1",
     http_only: true,
-    secure: Application.compile_env(:auth_server,:secure_cookies,true),
+    secure: Application.compile_env(:auth_server, :secure_cookies, true),
     same_site: "Lax"
   ]
 

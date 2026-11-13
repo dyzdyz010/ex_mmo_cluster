@@ -16,7 +16,8 @@ defmodule DataService.Orgs do
   def ensure_nation(name), do: ensure(%{kind: "nation", name: name})
 
   @doc "按名字取或建公会；`nation_id` 为 nil 表示不属于任何国家。"
-  def ensure_guild(name, nation_id), do: ensure(%{kind: "guild", name: name, nation_id: nation_id})
+  def ensure_guild(name, nation_id),
+    do: ensure(%{kind: "guild", name: name, nation_id: nation_id})
 
   defp ensure(attrs) do
     case Repo.get_by(Org, name: attrs.name) do

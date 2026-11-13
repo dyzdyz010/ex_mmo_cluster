@@ -16,7 +16,7 @@ defmodule VoxelRegion.World.Parcel do
   只经 release rpc 在维护窗口调用，不接 Gate；目标世界不应有玩家在线。
   """
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.{Attachments, Damage, Phase, Prefab, Protection}
+  alias VoxelRegion.{Attachments, Damage, Phase, Protection}
   alias VoxelRegion.World.{Edits, Prefabs}
 
   @micro VoxelRegion.Spatial.micro_resolution()

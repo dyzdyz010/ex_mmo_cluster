@@ -1392,78 +1392,6 @@ defmodule VoxelRegion.World do
     result
   end
 
-  defp tool_actor(actor, %{granularity: 6}) do
-    # 即时段的源/目标几何共同冻结在Scene采样时；装页后只复核源身份，不混入另一时刻的位置。
-    with {:ok, current} <- current_actor(actor) do
-      if current.life_generation == actor.life_generation,
-        do: {:ok, Map.merge(current, Map.take(actor, [:eye, :position, :yaw, :sim_tick]))},
-        else: {:error, :stale_life}
-    end
-  end
-  defp tool_actor(actor, _request), do: current_actor(actor)
-
-  defp tool_owner(before, state, actor, %{granularity: 6} = request, tool, _started, _refreshed),
-    do: VoxelRegion.World.AreaTool.run(before, state, actor, request, tool)
-
-  # 战斗招式只走 g=6 判定区，不经精确射线落到地形／构件／附件（设计 §6.4）。
-  defp tool_owner(before, _state, _actor, _request, %{"target_mode" => mode}, _started, _refreshed) when mode != "precise",
-    do: {:reply, {:error, :invalid_tool}, before}
-
-  defp tool_owner(before, state, actor, request, tool, started, refreshed) do
-    Logger.info(
-      "voxel_tool_owner request_id=#{request.request_id} node=#{node()} started_us=#{started} refresh_us=#{refreshed - started}"
-    )
-
-    case tool_target(state, actor, request, tool) do
-      {:error, reason, _} ->
-        {:reply, {:error, reason}, before}
-
-      {:ok, target, state} ->
-        target = property_state(state, target)
-
-        cond do
-          request.action == 0 ->
-            {:reply, {:ok, public_property(%{target | request_id: request.request_id})}, state}
-
-          Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
-            {:reply, {:error, :use_liquid_tool}, before}
-
-          # R8-07：散体格只能舀取（工具 11），镐采与拆解都不接受；点燃、认领等非损伤工具照常。
-          loose_cell?(state, target) and String.starts_with?(tool["action"], "damage") ->
-            {:reply, {:error, :use_liquid_tool}, before}
-
-          # 叶损伤按owner，开关却按微格存状态：B的声明不能因同leaf而授权射线实际命中的A。
-          not same_tool_target?(target, request) or
-              (tool["action"] == "circuit.toggle" and target.granularity == 2 and target.micro != request.micro) ->
-            {:reply, {:error, :stale_target}, state}
-
-          # 受保护区域许可（先于玩法原因报出）：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
-          tool["action"] not in ["protection.claim", "beacon.use"] and
-              Access.authorize_cells({:character, actor.cid}, state.protection, target_cells(state, target), :character_intent) != :ok ->
-            {:reply, {:error, :protected_region}, state}
-
-          true ->
-            attack_target(before, state, actor, request, target, tool)
-        end
-    end
-  end
-
-  # 裁决用的最终快照（刷新后的姿态等）的闭包复核：全部驻留即 `:ready`，否则挂起原消息装页，装齐重放（父稿 P4 接纳复核）。
-  defp posed(%{resident: :all}, _message, _from, _final), do: :ready
-
-  defp posed(state, message, from, final) do
-    case VoxelRegion.World.PageLoad.missing_keys(state, VoxelRegion.World.Closure.needs(state, final)) do
-      [] -> :ready
-      keys -> defer_input(state, {:call, message, from}, keys)
-    end
-  end
-
-  # 裁决中途发现缺页（动态洪泛伸进冷页）：挂起原消息装页、装齐后从头重新裁决，不当空气继续（父稿 P4）。
-  defp missing_pages({:reply, {:error, {:pages_missing, keys}}, state}, message, from),
-    do: defer_input(state, {:call, message, from}, Enum.uniq(VoxelRegion.World.Pages.expand(keys)))
-
-  defp missing_pages(reply, _message, _from), do: reply
-
   defp call({:publish_prefabs, catalog}, _from, state) do
     {:reply, :ok, %{state | prefabs: Map.merge(state.prefabs, catalog)}}
   end
@@ -1587,7 +1515,6 @@ defmodule VoxelRegion.World do
         cells
       )
     else
-      :error -> {:reply, {:error, :definition_not_found}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -1822,6 +1749,78 @@ defmodule VoxelRegion.World do
     {:noreply, VoxelRegion.World.PageCut.compact(state, from)}
   end
 
+  defp tool_actor(actor, %{granularity: 6}) do
+    # 即时段的源/目标几何共同冻结在Scene采样时；装页后只复核源身份，不混入另一时刻的位置。
+    with {:ok, current} <- current_actor(actor) do
+      if current.life_generation == actor.life_generation,
+        do: {:ok, Map.merge(current, Map.take(actor, [:eye, :position, :yaw, :sim_tick]))},
+        else: {:error, :stale_life}
+    end
+  end
+  defp tool_actor(actor, _request), do: current_actor(actor)
+
+  defp tool_owner(before, state, actor, %{granularity: 6} = request, tool, _started, _refreshed),
+    do: VoxelRegion.World.AreaTool.run(before, state, actor, request, tool)
+
+  # 战斗招式只走 g=6 判定区，不经精确射线落到地形／构件／附件（设计 §6.4）。
+  defp tool_owner(before, _state, _actor, _request, %{"target_mode" => mode}, _started, _refreshed) when mode != "precise",
+    do: {:reply, {:error, :invalid_tool}, before}
+
+  defp tool_owner(before, state, actor, request, tool, started, refreshed) do
+    Logger.info(
+      "voxel_tool_owner request_id=#{request.request_id} node=#{node()} started_us=#{started} refresh_us=#{refreshed - started}"
+    )
+
+    case tool_target(state, actor, request, tool) do
+      {:error, reason, _} ->
+        {:reply, {:error, reason}, before}
+
+      {:ok, target, state} ->
+        target = property_state(state, target)
+
+        cond do
+          request.action == 0 ->
+            {:reply, {:ok, public_property(%{target | request_id: request.request_id})}, state}
+
+          Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
+            {:reply, {:error, :use_liquid_tool}, before}
+
+          # R8-07：散体格只能舀取（工具 11），镐采与拆解都不接受；点燃、认领等非损伤工具照常。
+          loose_cell?(state, target) and String.starts_with?(tool["action"], "damage") ->
+            {:reply, {:error, :use_liquid_tool}, before}
+
+          # 叶损伤按owner，开关却按微格存状态：B的声明不能因同leaf而授权射线实际命中的A。
+          not same_tool_target?(target, request) or
+              (tool["action"] == "circuit.toggle" and target.granularity == 2 and target.micro != request.micro) ->
+            {:reply, {:error, :stale_target}, state}
+
+          # 受保护区域许可（先于玩法原因报出）：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
+          tool["action"] not in ["protection.claim", "beacon.use"] and
+              Access.authorize_cells({:character, actor.cid}, state.protection, target_cells(state, target), :character_intent) != :ok ->
+            {:reply, {:error, :protected_region}, state}
+
+          true ->
+            attack_target(before, state, actor, request, target, tool)
+        end
+    end
+  end
+
+  # 裁决用的最终快照（刷新后的姿态等）的闭包复核：全部驻留即 `:ready`，否则挂起原消息装页，装齐重放（父稿 P4 接纳复核）。
+  defp posed(%{resident: :all}, _message, _from, _final), do: :ready
+
+  defp posed(state, message, from, final) do
+    case VoxelRegion.World.PageLoad.missing_keys(state, VoxelRegion.World.Closure.needs(state, final)) do
+      [] -> :ready
+      keys -> defer_input(state, {:call, message, from}, keys)
+    end
+  end
+
+  # 裁决中途发现缺页（动态洪泛伸进冷页）：挂起原消息装页、装齐后从头重新裁决，不当空气继续（父稿 P4）。
+  defp missing_pages({:reply, {:error, {:pages_missing, keys}}, state}, message, from),
+    do: defer_input(state, {:call, message, from}, Enum.uniq(VoxelRegion.World.Pages.expand(keys)))
+
+  defp missing_pages(reply, _message, _from), do: reply
+
   # Player / Scene 发来、要读页的异步消息（M2b）：过读取闭包的闸，缺页即挂起、装完重放。
   # 施法授权带最终姿态，结算重新求射线：同样过闸（评审 A2）。
   @paged_infos [:prepare_cast, :quote_cast, :authorize_cast, :prepare_beacon, :commit_beacon, :body_contact, :body_death]
@@ -1867,86 +1866,6 @@ defmodule VoxelRegion.World do
 
   defp info({:prefab_ready, token, result}, state),
     do: {:noreply, VoxelRegion.World.Definitions.finish(state, token, result)}
-
-  # 投射物采样结果（`Projectiles.poll/1` 的任务回复）要按飞行段读世界：同样过闸。
-  defp projectile_result?({ref, _results}, %{projectile_task: %Task{ref: ref}}), do: true
-  defp projectile_result?(_message, _state), do: false
-
-  # 装页任务结束：正常即重放挂起的消息（重新过闸），异常即对挂起的调用显式回错（不当空气）；模拟的装页唤醒调度。
-  # 模拟装页完整结束才续原步；失败保留due/run/paused并显式停止，依赖修复后的公共retry只开启一次新attempt。
-  defp redo(:wake, _attempt, reason, state) do
-    if reason == :normal do
-      state = put_in(state.page_load.paused, nil)
-      if state.thermal_run, do: send(self(), {:thermal_step, state.thermal_run.ref})
-      state |> Thermal.wake() |> schedule_liquid() |> VoxelRegion.World.Projectiles.wake()
-    else
-      state |> halt_simulation_io() |> reject_waiting_simulation_inputs(reason)
-    end
-  end
-
-  defp redo({:input, _context, _entry} = input, attempt, :normal, state), do: replay(input, state, attempt + 1)
-  defp redo({:input, _context, {:info, {:body_death, cid, feet}}} = input, _attempt, reason, state) do
-    # 死亡掉落是已确认后果；原重试继续同一输入身份，同body后继不能越过尚未落地的前驱。
-    Logger.error("voxel_death_drop_retry cid=#{cid} feet=#{inspect(feet)} error=#{inspect(reason)} retry_ms=1000")
-    Process.send_after(self(), {:retry_death_drop, Admission.preparing(input)}, 1_000)
-    state
-  end
-  defp redo({:input, _context, entry} = input, _attempt, reason, state) do
-    result = case entry do
-      {:call, _message, _from} -> {:reply, {:error, {:page_load_failed, reason}}, state}
-      {:info, message} -> {:noreply, page_failed(message, {:page_load_failed, reason}, state)}
-    end
-    deliver_result(input, finish_input(input, result))
-  end
-  defp redo(entry, attempt, reason, state), do: redo(Admission.input(entry, Clock.monotonic(state)), attempt, reason, state)
-
-  defp page_failed({:prepare_cast, key, actor, _request, from}, error, state) do
-    send(actor.player, {:cast_failed, key})
-    GenServer.reply(from, {:error, error})
-    state
-  end
-
-  defp page_failed({:quote_cast, _actor, _request, from}, error, state) do
-    GenServer.reply(from, {:error, error})
-    state
-  end
-
-  # 授权时待施放已建立：按取消收尾（不扣能，调用方收到错误）。
-  defp page_failed({:authorize_cast, key, _actor, _request}, error, state), do: cancel_pending_cast(state, key, error)
-
-  defp page_failed({:prepare_beacon, key, actor, _request}, error, state) do
-    send(actor.player, {:beacon_prepared, key, {:error, error}})
-    state
-  end
-
-  defp page_failed({:commit_beacon, key, actor, _request}, error, state) do
-    send(actor.player, {:beacon_committed, key, {:error, error}})
-    state
-  end
-
-  defp page_failed({:prepare_sort, key, actor, _request}, error, state) do
-    send(actor.player, {:sort_prepared, key, {:error, error}})
-    state
-  end
-
-  defp page_failed({:commit_sort, key, actor, _request}, error, state) do
-    send(actor.player, {:sort_committed, key, {:error, error}})
-    state
-  end
-
-  # 投射物采样：放掉这次采样（与年龄不符的旧采样同样处理），任务位清空、下一拍重新采样，不让死任务封住投射物。
-  defp page_failed({ref, _results}, _error, %{projectile_task: %Task{ref: ref}} = state) do
-    Process.demonitor(ref, [:flush])
-    VoxelRegion.World.Projectiles.wake(%{state | projectile_task: nil})
-  end
-
-  # 身体接触每秒续报，下一次报告即重来；其余消息不带业务回复。
-  defp page_failed(_message, _error, state), do: state
-
-  defp replay(entry, state, attempt \\ 0)
-  defp replay({:input, _context, _entry} = input, state, attempt),
-    do: deliver_result(input, gate_input(input, state, attempt))
-  defp replay(entry, state, attempt), do: replay(Admission.input(entry, Clock.monotonic(state)), state, attempt)
 
   # 同上：热提交自己的节拍与步消息之外，其他消息都先写回原生热域的变化。
   defp info(message, %{page_load: %{sim: %{status: :failed}}} = state)
@@ -2230,6 +2149,86 @@ defmodule VoxelRegion.World do
   defp info({:retry_death_drop, input}, state), do: {:noreply, replay(input, state, 1)}
 
   defp info(_msg, state), do: {:noreply, state}
+
+  # 投射物采样结果（`Projectiles.poll/1` 的任务回复）要按飞行段读世界：同样过闸。
+  defp projectile_result?({ref, _results}, %{projectile_task: %Task{ref: ref}}), do: true
+  defp projectile_result?(_message, _state), do: false
+
+  # 装页任务结束：正常即重放挂起的消息（重新过闸），异常即对挂起的调用显式回错（不当空气）；模拟的装页唤醒调度。
+  # 模拟装页完整结束才续原步；失败保留due/run/paused并显式停止，依赖修复后的公共retry只开启一次新attempt。
+  defp redo(:wake, _attempt, reason, state) do
+    if reason == :normal do
+      state = put_in(state.page_load.paused, nil)
+      if state.thermal_run, do: send(self(), {:thermal_step, state.thermal_run.ref})
+      state |> Thermal.wake() |> schedule_liquid() |> VoxelRegion.World.Projectiles.wake()
+    else
+      state |> halt_simulation_io() |> reject_waiting_simulation_inputs(reason)
+    end
+  end
+
+  defp redo({:input, _context, _entry} = input, attempt, :normal, state), do: replay(input, state, attempt + 1)
+  defp redo({:input, _context, {:info, {:body_death, cid, feet}}} = input, _attempt, reason, state) do
+    # 死亡掉落是已确认后果；原重试继续同一输入身份，同body后继不能越过尚未落地的前驱。
+    Logger.error("voxel_death_drop_retry cid=#{cid} feet=#{inspect(feet)} error=#{inspect(reason)} retry_ms=1000")
+    Process.send_after(self(), {:retry_death_drop, Admission.preparing(input)}, 1_000)
+    state
+  end
+  defp redo({:input, _context, entry} = input, _attempt, reason, state) do
+    result = case entry do
+      {:call, _message, _from} -> {:reply, {:error, {:page_load_failed, reason}}, state}
+      {:info, message} -> {:noreply, page_failed(message, {:page_load_failed, reason}, state)}
+    end
+    deliver_result(input, finish_input(input, result))
+  end
+  defp redo(entry, attempt, reason, state), do: redo(Admission.input(entry, Clock.monotonic(state)), attempt, reason, state)
+
+  defp page_failed({:prepare_cast, key, actor, _request, from}, error, state) do
+    send(actor.player, {:cast_failed, key})
+    GenServer.reply(from, {:error, error})
+    state
+  end
+
+  defp page_failed({:quote_cast, _actor, _request, from}, error, state) do
+    GenServer.reply(from, {:error, error})
+    state
+  end
+
+  # 授权时待施放已建立：按取消收尾（不扣能，调用方收到错误）。
+  defp page_failed({:authorize_cast, key, _actor, _request}, error, state), do: cancel_pending_cast(state, key, error)
+
+  defp page_failed({:prepare_beacon, key, actor, _request}, error, state) do
+    send(actor.player, {:beacon_prepared, key, {:error, error}})
+    state
+  end
+
+  defp page_failed({:commit_beacon, key, actor, _request}, error, state) do
+    send(actor.player, {:beacon_committed, key, {:error, error}})
+    state
+  end
+
+  defp page_failed({:prepare_sort, key, actor, _request}, error, state) do
+    send(actor.player, {:sort_prepared, key, {:error, error}})
+    state
+  end
+
+  defp page_failed({:commit_sort, key, actor, _request}, error, state) do
+    send(actor.player, {:sort_committed, key, {:error, error}})
+    state
+  end
+
+  # 投射物采样：放掉这次采样（与年龄不符的旧采样同样处理），任务位清空、下一拍重新采样，不让死任务封住投射物。
+  defp page_failed({ref, _results}, _error, %{projectile_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    VoxelRegion.World.Projectiles.wake(%{state | projectile_task: nil})
+  end
+
+  # 身体接触每秒续报，下一次报告即重来；其余消息不带业务回复。
+  defp page_failed(_message, _error, state), do: state
+
+  defp replay(entry, state, attempt \\ 0)
+  defp replay({:input, _context, _entry} = input, state, attempt),
+    do: deliver_result(input, gate_input(input, state, attempt))
+  defp replay(entry, state, attempt), do: replay(Admission.input(entry, Clock.monotonic(state)), state, attempt)
 
   # 输入分类以实际副作用为准：prepare可能接纳来源液体；余额供给不改变当前物理输入。
   # 显式液体／热步也是到达的输入；缺页时运输原输入，不能只唤醒尚未到期的自然due。

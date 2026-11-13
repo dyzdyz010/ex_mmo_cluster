@@ -31,7 +31,15 @@ end
 
 defmodule MmoContracts.Movement.SnapshotRecord do
   @moduledoc "M1 SnapshotRecord 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。"
-  @enforce_keys [:entity_id, :entity_epoch, :interest_generation, :collision_revision, :state, :life_generation, :body_status]
+  @enforce_keys [
+    :entity_id,
+    :entity_epoch,
+    :interest_generation,
+    :collision_revision,
+    :state,
+    :life_generation,
+    :body_status
+  ]
   defstruct @enforce_keys
 end
 

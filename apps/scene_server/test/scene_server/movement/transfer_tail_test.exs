@@ -117,7 +117,10 @@ defmodule SceneServer.Movement.TransferTailTest do
   test "无 stream 移交遇到已退休的增量历史：目标 Scene 显式拒绝、不建 Player、自身照常运行", ctx do
     who = %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
     profile = %{MmoContracts.Relation.blank() | name: "移交玩家"}
-    {:ok, player} = Scene.join(ctx.scene, who, %{id: 10, kind: "player", profile: profile}, self())
+
+    {:ok, player} =
+      Scene.join(ctx.scene, who, %{id: 10, kind: "player", profile: profile}, self())
+
     await(fn -> Scene.observe(ctx.scene).queue_length > 0 end)
     tick(ctx)
     assert_receive {:mmo_reliable, ^who, 1, %Session.SessionStart{} = start}, 2000
@@ -130,7 +133,13 @@ defmodule SceneServer.Movement.TransferTailTest do
 
     frames =
       for seq <- 1..60,
-          do: %Movement.InputFrame{input_seq: seq, axis_x: 32767, axis_z: 0, yaw: 0, jump_pressed: 0}
+          do: %Movement.InputFrame{
+            input_seq: seq,
+            axis_x: 32767,
+            axis_z: 0,
+            yaw: 0,
+            jump_pressed: 0
+          }
 
     for batch <- Enum.chunk_every(frames, 6),
         do: Player.input(player, who, %Movement.InputBatch{identity: who, frames: batch})
@@ -142,7 +151,10 @@ defmodule SceneServer.Movement.TransferTailTest do
     assert cut.stream == nil
 
     next = %Session.Identity{session_epoch: 2, scene_id: 2, scene_epoch: 7}
-    assert {:error, :before_replica_snapshot} = Scene.prepare_transfer(ctx.other, next, cut, self())
+
+    assert {:error, :before_replica_snapshot} =
+             Scene.prepare_transfer(ctx.other, next, cut, self())
+
     assert Process.alive?(ctx.other)
     assert Scene.observe(ctx.other).characters == []
   end

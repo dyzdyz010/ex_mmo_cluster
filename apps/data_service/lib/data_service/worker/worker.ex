@@ -1,6 +1,5 @@
 defmodule DataService.Worker do
   use GenServer
-  require Logger
 
   alias DataService.Repo
   alias DataService.Schema.Account

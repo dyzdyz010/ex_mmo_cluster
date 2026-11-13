@@ -25,7 +25,11 @@ defmodule DataService.Voxel.PageStore do
 
   @doc "已发布的安全前缀；没有（未初始化 / 未迁移）为 nil。"
   def prefix(content_version, opts \\ []) do
-    case Ecto.Adapters.SQL.query!(repo(opts), "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1", [signed(content_version)]) do
+    case Ecto.Adapters.SQL.query!(
+           repo(opts),
+           "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1",
+           [signed(content_version)]
+         ) do
       %{rows: [[seq]]} -> seq
       %{rows: []} -> nil
     end
@@ -39,8 +43,18 @@ defmodule DataService.Voxel.PageStore do
 
     {:ok, :ok} =
       repo.transaction(fn ->
-        Ecto.Adapters.SQL.query!(repo, "DELETE FROM voxel_page_segment WHERE content_version = $1 AND cut_seq > $2", [cv, floor])
-        Ecto.Adapters.SQL.query!(repo, "DELETE FROM voxel_world_globals WHERE content_version = $1 AND cut_seq > $2", [cv, floor])
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "DELETE FROM voxel_page_segment WHERE content_version = $1 AND cut_seq > $2",
+          [cv, floor]
+        )
+
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "DELETE FROM voxel_world_globals WHERE content_version = $1 AND cut_seq > $2",
+          [cv, floor]
+        )
+
         :ok
       end)
 
@@ -53,7 +67,10 @@ defmodule DataService.Voxel.PageStore do
   """
   def write(content_version, cut_seq, rows, opts \\ []) do
     repo = repo(opts)
-    {:ok, :ok} = repo.transaction(fn -> insert_rows(repo, signed(content_version), cut_seq, rows) end)
+
+    {:ok, :ok} =
+      repo.transaction(fn -> insert_rows(repo, signed(content_version), cut_seq, rows) end)
+
     :ok
   end
 
@@ -67,13 +84,22 @@ defmodule DataService.Voxel.PageStore do
     cv = signed(content_version)
 
     repo.transaction(fn ->
-      case Ecto.Adapters.SQL.query!(repo, "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1 FOR UPDATE", [cv]).rows do
+      case Ecto.Adapters.SQL.query!(
+             repo,
+             "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1 FOR UPDATE",
+             [cv]
+           ).rows do
         [[p]] when p >= cut_seq -> repo.rollback({:prefix, p})
         _ -> :ok
       end
 
       insert_rows(repo, cv, cut_seq, rows)
-      Ecto.Adapters.SQL.query!(repo, "INSERT INTO voxel_world_globals (content_version, cut_seq, payload) VALUES ($1, $2, $3)", [cv, cut_seq, globals])
+
+      Ecto.Adapters.SQL.query!(
+        repo,
+        "INSERT INTO voxel_world_globals (content_version, cut_seq, payload) VALUES ($1, $2, $3)",
+        [cv, cut_seq, globals]
+      )
 
       %{num_rows: n} =
         Ecto.Adapters.SQL.query!(
@@ -101,9 +127,17 @@ defmodule DataService.Voxel.PageStore do
 
     {:ok, loaded} =
       repo.transaction(fn ->
-        Ecto.Adapters.SQL.query!(repo, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY", [])
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+          []
+        )
 
-        case Ecto.Adapters.SQL.query!(repo, "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1", [cv]).rows do
+        case Ecto.Adapters.SQL.query!(
+               repo,
+               "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1",
+               [cv]
+             ).rows do
           [] ->
             %{prefix: nil}
 
@@ -119,7 +153,11 @@ defmodule DataService.Voxel.PageStore do
               )
 
             %{rows: [[globals]]} =
-              Ecto.Adapters.SQL.query!(repo, "SELECT payload FROM voxel_world_globals WHERE content_version = $1 AND cut_seq = $2", [cv, p])
+              Ecto.Adapters.SQL.query!(
+                repo,
+                "SELECT payload FROM voxel_world_globals WHERE content_version = $1 AND cut_seq = $2",
+                [cv, p]
+              )
 
             %{rows: log} =
               Ecto.Adapters.SQL.query!(
@@ -134,11 +172,24 @@ defmodule DataService.Voxel.PageStore do
               globals: globals,
               segments:
                 Enum.map(segments, fn [l, x, y, z, s, cx, cy, cz, payload] ->
-                  %{level: l, region: {x, y, z}, segment: s, chunk: {cx, cy, cz}, payload: payload}
+                  %{
+                    level: l,
+                    region: {x, y, z},
+                    segment: s,
+                    chunk: {cx, cy, cz},
+                    payload: payload
+                  }
                 end),
               log:
                 Enum.map(log, fn [seq, ordinal, kind, level, x, y, z, payload] ->
-                  %{seq: seq, ordinal: ordinal, kind: kind, level: level, region: {x, y, z}, payload: payload}
+                  %{
+                    seq: seq,
+                    ordinal: ordinal,
+                    kind: kind,
+                    level: level,
+                    region: {x, y, z},
+                    payload: payload
+                  }
                 end)
             }
         end
@@ -161,7 +212,9 @@ defmodule DataService.Voxel.PageStore do
       "DELETE FROM voxel_world_globals WHERE ctid IN (SELECT ctid FROM voxel_world_globals WHERE content_version = $1 AND cut_seq < $2 LIMIT $3)"
     ]
 
-    Enum.reduce(statements, 0, fn sql, n -> n + Ecto.Adapters.SQL.query!(repo, sql, [cv, prefix, limit]).num_rows end)
+    Enum.reduce(statements, 0, fn sql, n ->
+      n + Ecto.Adapters.SQL.query!(repo, sql, [cv, prefix, limit]).num_rows
+    end)
   end
 
   @doc """
@@ -174,15 +227,27 @@ defmodule DataService.Voxel.PageStore do
 
     {:ok, loaded} =
       repo.transaction(fn ->
-        Ecto.Adapters.SQL.query!(repo, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY", [])
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+          []
+        )
 
-        case Ecto.Adapters.SQL.query!(repo, "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1", [cv]).rows do
+        case Ecto.Adapters.SQL.query!(
+               repo,
+               "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1",
+               [cv]
+             ).rows do
           [] ->
             %{prefix: nil}
 
           [[p]] ->
             %{rows: [[globals]]} =
-              Ecto.Adapters.SQL.query!(repo, "SELECT payload FROM voxel_world_globals WHERE content_version = $1 AND cut_seq = $2", [cv, p])
+              Ecto.Adapters.SQL.query!(
+                repo,
+                "SELECT payload FROM voxel_world_globals WHERE content_version = $1 AND cut_seq = $2",
+                [cv, p]
+              )
 
             %{rows: log} =
               Ecto.Adapters.SQL.query!(
@@ -206,9 +271,19 @@ defmodule DataService.Voxel.PageStore do
               globals: globals,
               log:
                 Enum.map(log, fn [seq, ordinal, kind, level, x, y, z, payload] ->
-                  %{seq: seq, ordinal: ordinal, kind: kind, level: level, region: {x, y, z}, payload: payload}
+                  %{
+                    seq: seq,
+                    ordinal: ordinal,
+                    kind: kind,
+                    level: level,
+                    region: {x, y, z},
+                    payload: payload
+                  }
                 end),
-              activity: Enum.map(activity, fn [x, y, z, payload] -> %{region: {x, y, z}, payload: payload} end)
+              activity:
+                Enum.map(activity, fn [x, y, z, payload] ->
+                  %{region: {x, y, z}, payload: payload}
+                end)
             }
         end
       end)
@@ -227,14 +302,26 @@ defmodule DataService.Voxel.PageStore do
     cv = signed(content_version)
     {l0, coarse} = Enum.split_with(keys, fn {level, _} -> level == 0 end)
     columns = "level, region_x, region_y, region_z, segment, chunk_x, chunk_y, chunk_z, payload"
-    distinct = "SELECT DISTINCT ON (level, region_x, region_y, region_z, segment, chunk_x, chunk_y, chunk_z) "
-    order = " ORDER BY level, region_x, region_y, region_z, segment, chunk_x, chunk_y, chunk_z, cut_seq DESC"
+
+    distinct =
+      "SELECT DISTINCT ON (level, region_x, region_y, region_z, segment, chunk_x, chunk_y, chunk_z) "
+
+    order =
+      " ORDER BY level, region_x, region_y, region_z, segment, chunk_x, chunk_y, chunk_z, cut_seq DESC"
 
     {:ok, loaded} =
       repo.transaction(fn ->
-        Ecto.Adapters.SQL.query!(repo, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY", [])
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+          []
+        )
 
-        case Ecto.Adapters.SQL.query!(repo, "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1", [cv]).rows do
+        case Ecto.Adapters.SQL.query!(
+               repo,
+               "SELECT seq FROM voxel_safe_prefix WHERE content_version = $1",
+               [cv]
+             ).rows do
           [] ->
             %{prefix: nil, rows: []}
 
@@ -247,10 +334,12 @@ defmodule DataService.Voxel.PageStore do
               else
                 Ecto.Adapters.SQL.query!(
                   repo,
-                  distinct <> columns <>
+                  distinct <>
+                    columns <>
                     " FROM voxel_page_segment s JOIN unnest($3::int[], $4::int[], $5::int[]) AS k(x, y, z) " <>
                     "ON s.region_x = k.x AND s.region_y = k.y AND s.region_z = k.z " <>
-                    "WHERE s.content_version = $1 AND s.cut_seq <= $2 AND (s.level = 0 OR s.segment = ANY($6::smallint[]))" <> order,
+                    "WHERE s.content_version = $1 AND s.cut_seq <= $2 AND (s.level = 0 OR s.segment = ANY($6::smallint[]))" <>
+                    order,
                   [cv, p, xs, ys, zs, fragment_segments]
                 ).rows
               end
@@ -265,7 +354,8 @@ defmodule DataService.Voxel.PageStore do
 
                 Ecto.Adapters.SQL.query!(
                   repo,
-                  distinct <> columns <>
+                  distinct <>
+                    columns <>
                     " FROM voxel_page_segment s JOIN unnest($4::int[], $5::int[], $6::int[]) AS k(x, y, z) ON " <>
                     "(NOT s.segment = ANY($7::smallint[]) AND s.region_x = k.x AND s.region_y = k.y AND s.region_z = k.z) OR " <>
                     "(s.segment = ANY($7::smallint[]) AND (s.region_x >> $3) = k.x AND (s.region_y >> $3) = k.y AND (s.region_z >> $3) = k.z) " <>
@@ -295,7 +385,9 @@ defmodule DataService.Voxel.PageStore do
           "WHERE l.content_version = $1",
         [signed(content_version), kinds, as, bs]
       ).rows
-      |> Map.new(fn [kind, a, b, ra, rb, x, y, z] -> {{kind, a, b}, %{root: {ra, rb}, home: {x, y, z}}} end)
+      |> Map.new(fn [kind, a, b, ra, rb, x, y, z] ->
+        {{kind, a, b}, %{root: {ra, rb}, home: {x, y, z}}}
+      end)
     end
   end
 
@@ -316,7 +408,8 @@ defmodule DataService.Voxel.PageStore do
   end
 
   defp axes(tuples) do
-    {Enum.map(tuples, &elem(&1, 0)), Enum.map(tuples, &elem(&1, 1)), Enum.map(tuples, &elem(&1, 2))}
+    {Enum.map(tuples, &elem(&1, 0)), Enum.map(tuples, &elem(&1, 1)),
+     Enum.map(tuples, &elem(&1, 2))}
   end
 
   defp segment_row([l, x, y, z, s, cx, cy, cz, payload]),
@@ -329,10 +422,17 @@ defmodule DataService.Voxel.PageStore do
     locators
     |> Enum.chunk_every(@batch)
     |> Enum.each(fn chunk ->
-      values = chunk |> Enum.with_index() |> Enum.map_join(", ", fn {_, i} -> "(" <> Enum.map_join(1..9, ", ", &"$#{i * 9 + &1}") <> ")" end)
+      values =
+        chunk
+        |> Enum.with_index()
+        |> Enum.map_join(", ", fn {_, i} ->
+          "(" <> Enum.map_join(1..9, ", ", &"$#{i * 9 + &1}") <> ")"
+        end)
 
       params =
-        Enum.flat_map(chunk, fn %{locator: {kind, a, b}, root: {ra, rb}, home: {x, y, z}} -> [cv, kind, a, b, ra, rb, x, y, z] end)
+        Enum.flat_map(chunk, fn %{locator: {kind, a, b}, root: {ra, rb}, home: {x, y, z}} ->
+          [cv, kind, a, b, ra, rb, x, y, z]
+        end)
 
       Ecto.Adapters.SQL.query!(
         repo,
@@ -352,10 +452,18 @@ defmodule DataService.Voxel.PageStore do
       values =
         chunk
         |> Enum.with_index()
-        |> Enum.map_join(", ", fn {_row, i} -> "(" <> Enum.map_join(1..@columns, ", ", &"$#{i * @columns + &1}") <> ")" end)
+        |> Enum.map_join(", ", fn {_row, i} ->
+          "(" <> Enum.map_join(1..@columns, ", ", &"$#{i * @columns + &1}") <> ")"
+        end)
 
       params =
-        Enum.flat_map(chunk, fn %{level: l, region: {x, y, z}, segment: s, chunk: {cx, cy, cz}, payload: payload} ->
+        Enum.flat_map(chunk, fn %{
+                                  level: l,
+                                  region: {x, y, z},
+                                  segment: s,
+                                  chunk: {cx, cy, cz},
+                                  payload: payload
+                                } ->
           [cv, l, x, y, z, s, cx, cy, cz, cut_seq, payload]
         end)
 

@@ -43,14 +43,28 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "旧持久／作者 map 表皮接纳为唯一紧凑规范表示；已接纳数据不重复规范化。"
   def admit(%__MODULE__{records: %SkinField{}} = p), do: p
+
   def admit(%__MODULE__{} = p) do
-    field = normalize_field(p, Enum.sort_by(p.records, fn {{x, y, z}, _} -> {z, y, x} end), p.map_extent)
+    field =
+      normalize_field(
+        p,
+        Enum.sort_by(p.records, fn {{x, y, z}, _} -> {z, y, x} end),
+        p.map_extent
+      )
+
     %{p | records: field, fmi: <<>>, maps: <<>>, map_extent: 1}
   end
 
   @doc "投影为原 format2 持久 Payload，旧 release 仍可读取；不是在线缓存。"
   def persisted(%__MODULE__{records: %SkinField{} = field} = p),
-    do: %{p | records: SkinField.to_map(field), map_extent: field.map_extent, fmi: field.fmi, maps: field.maps}
+    do: %{
+      p
+      | records: SkinField.to_map(field),
+        map_extent: field.map_extent,
+        fmi: field.fmi,
+        maps: field.maps
+    }
+
   def persisted(%__MODULE__{} = p), do: p
 
   @doc "表皮记录数，不展开紧凑表示。"
@@ -67,7 +81,12 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "有限表皮统计，不展开记录；字节数是各平面本身的逻辑长度。"
   def skin_stats(%__MODULE__{} = p) do
     source = skin_source(p)
-    %{records: skin_count(p), fmi_bytes: byte_size(source.fmi), maps_bytes: byte_size(source.maps)}
+
+    %{
+      records: skin_count(p),
+      fmi_bytes: byte_size(source.fmi),
+      maps_bytes: byte_size(source.maps)
+    }
   end
 
   defp record_map(%{records: %SkinField{} = field}), do: SkinField.to_map(field)
@@ -76,7 +95,10 @@ defmodule MmoContracts.Voxel.Payload do
   defp skin_source(p), do: p
   defp record_fetch(%{records: %SkinField{} = field}, local), do: SkinField.fetch(field, local)
   defp record_fetch(%{records: records}, local), do: Map.fetch(records, local)
-  defp record_present?(%{records: %SkinField{} = field}, local), do: SkinField.member?(field, local)
+
+  defp record_present?(%{records: %SkinField{} = field}, local),
+    do: SkinField.member?(field, local)
+
   defp record_present?(%{records: records}, local), do: Map.has_key?(records, local)
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
@@ -87,9 +109,12 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "覆盖后地形的解压字节下界：完整 CSR 行索引与记录平面，省略贴图和细节尾部。"
   def min_body_bytes(%__MODULE__{} = p, overrides) do
-    count = Enum.reduce(overrides, skin_count(p), fn {local, {material, skins}}, count ->
-      count - if(record_present?(p, local), do: 1, else: 0) + if(Skins.trivial?(skins, material), do: 0, else: 1)
-    end)
+    count =
+      Enum.reduce(overrides, skin_count(p), fn {local, {material, skins}}, count ->
+        count - if(record_present?(p, local), do: 1, else: 0) +
+          if(Skins.trivial?(skins, material), do: 0, else: 1)
+      end)
+
     rows = if count == 0, do: 0, else: (@extent * @extent + 1) * 4
     min_body_bytes() + rows + count * (2 + 6 + 2)
   end
@@ -165,9 +190,14 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "只解出载荷的 66³ 格材质段（u16 小端，x 最快）；不解表皮场与细节尾部。"
   def decode_cells(bytes) do
     case MmoContracts.Voxel.Codec.decode_payload_body(bytes) do
-      {:ok, _header, <<@cell_count::32-little, cells::binary-size(@cell_count * 2), _::binary>>} -> {:ok, cells}
-      {:ok, _header, _raw} -> {:error, :invalid_payload}
-      error -> error
+      {:ok, _header, <<@cell_count::32-little, cells::binary-size(@cell_count * 2), _::binary>>} ->
+        {:ok, cells}
+
+      {:ok, _header, _raw} ->
+        {:error, :invalid_payload}
+
+      error ->
+        error
     end
   end
 
@@ -175,19 +205,33 @@ defmodule MmoContracts.Voxel.Payload do
   def decode_body(raw, version \\ 4)
 
   def decode_body(raw, 13) do
-    with {:ok,_,tail} <- terrain_sections(raw),
-         <<base::32-little,size::32-little,base_tail::binary-size(size),canopy::binary>> <- tail,
+    with {:ok, _, tail} <- terrain_sections(raw),
+         <<base::32-little, size::32-little, base_tail::binary-size(size), canopy::binary>> <-
+           tail,
          true <- base in 4..12,
-         terrain = binary_part(raw,0,byte_size(raw)-byte_size(tail)),
-         {:ok,payload} <- decode_body(terrain<>base_tail,base),
-         true <- payload.format_version==base,
-         {:ok,anchors,instances,residual,structure} <- MmoContracts.Voxel.Canopy.decode(canopy),
-         true <- Enum.all?(payload.instances,fn {id,value} ->
-           not Map.has_key?(instances,id) or Map.take(instances[id],Map.keys(value))==value end) do
-      {:ok,%{payload | format_version: 13,base_format_version: base,base_instances: payload.instances,
-        instances: Map.merge(payload.instances,instances),canopy: anchors,canopy_instances: instances,canopy_residual: residual,canopy_residual_structure: structure}}
+         terrain = binary_part(raw, 0, byte_size(raw) - byte_size(tail)),
+         {:ok, payload} <- decode_body(terrain <> base_tail, base),
+         true <- payload.format_version == base,
+         {:ok, anchors, instances, residual, structure} <-
+           MmoContracts.Voxel.Canopy.decode(canopy),
+         true <-
+           Enum.all?(payload.instances, fn {id, value} ->
+             not Map.has_key?(instances, id) or Map.take(instances[id], Map.keys(value)) == value
+           end) do
+      {:ok,
+       %{
+         payload
+         | format_version: 13,
+           base_format_version: base,
+           base_instances: payload.instances,
+           instances: Map.merge(payload.instances, instances),
+           canopy: anchors,
+           canopy_instances: instances,
+           canopy_residual: residual,
+           canopy_residual_structure: structure
+       }}
     else
-      _ -> {:error,:invalid_payload}
+      _ -> {:error, :invalid_payload}
     end
   end
 
@@ -224,28 +268,41 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   # 地形段布局只有这一处；完整解码与细节重写共用分段，不重复展开 CSR。
-  defp canopy_in_span?(%{format_version: version},_) when version != 13,do: true
-  defp canopy_in_span?(payload,header) do
-    base=payload.base_format_version
-    scale=1 <<< header.level
-    origin=origin(header.region)
-    expected=MapSet.new(payload.canopy,fn {{x,y,z},_}->
-      cell_index({Integer.floor_div(x,scale)-elem(origin,0),Integer.floor_div(y,scale)-elem(origin,1),Integer.floor_div(z,scale)-elem(origin,2)}) end)
-    header.level<=5 and (base != 6 or header.level>=1) and
-      (base not in [7,8,9,10,11,12] or header.level==0) and
-      expected==MapSet.new(Map.keys(payload.canopy_residual)) and
-      (header.level>0 or map_size(payload.canopy_residual_structure)==0) and
-      Enum.all?(payload.canopy_residual,fn {_,{_,{extent,_}}}->extent<=min(scale,4) end) and
-      Enum.all?(payload.canopy,fn {cell,{material,_,_}}->
-        in_span=Enum.all?(0..2,fn i->
-          local=elem(cell,i)-elem(origin,i)*scale
-          local>=0 and local<66*scale
-        end)
-        in_span and (header.level>0 or
-          (not Map.has_key?(payload.refined,cell_index(local(header.region,cell))) and
-            material(payload,local(header.region,cell))==material))
+  defp canopy_in_span?(%{format_version: version}, _) when version != 13, do: true
+
+  defp canopy_in_span?(payload, header) do
+    base = payload.base_format_version
+    scale = 1 <<< header.level
+    origin = origin(header.region)
+
+    expected =
+      MapSet.new(payload.canopy, fn {{x, y, z}, _} ->
+        cell_index(
+          {Integer.floor_div(x, scale) - elem(origin, 0),
+           Integer.floor_div(y, scale) - elem(origin, 1),
+           Integer.floor_div(z, scale) - elem(origin, 2)}
+        )
+      end)
+
+    header.level <= 5 and (base != 6 or header.level >= 1) and
+      (base not in [7, 8, 9, 10, 11, 12] or header.level == 0) and
+      expected == MapSet.new(Map.keys(payload.canopy_residual)) and
+      (header.level > 0 or map_size(payload.canopy_residual_structure) == 0) and
+      Enum.all?(payload.canopy_residual, fn {_, {_, {extent, _}}} -> extent <= min(scale, 4) end) and
+      Enum.all?(payload.canopy, fn {cell, {material, _, _}} ->
+        in_span =
+          Enum.all?(0..2, fn i ->
+            local = elem(cell, i) - elem(origin, i) * scale
+            local >= 0 and local < 66 * scale
+          end)
+
+        in_span and
+          (header.level > 0 or
+             (not Map.has_key?(payload.refined, cell_index(local(header.region, cell))) and
+                material(payload, local(header.region, cell)) == material))
       end)
   end
+
   defp terrain_sections(
          <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
            map_extent::32-little, rest::binary>>
@@ -351,9 +408,17 @@ defmodule MmoContracts.Voxel.Payload do
 
     if shape_ok and rows_ok do
       case SkinField.admit(map_extent, row_start, col_x, faces, masks, fmi, maps) do
-        {:ok, field} -> {:ok, field}
+        {:ok, field} ->
+          {:ok, field}
+
         :noncanonical ->
-          p = %__MODULE__{map_extent: map_extent, records: build_records(row_start, col_x, faces, masks), fmi: fmi, maps: maps}
+          p = %__MODULE__{
+            map_extent: map_extent,
+            records: build_records(row_start, col_x, faces, masks),
+            fmi: fmi,
+            maps: maps
+          }
+
           {:ok, admit(p).records}
       end
     else
@@ -411,6 +476,7 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "local 格的表皮（规范形）；没有记录 = 六面均匀 material。"
   def skins(%__MODULE__{} = p, local, material) do
     source = skin_source(p)
+
     case record_fetch(p, local) do
       :error ->
         Skins.uniform(material)
@@ -449,31 +515,60 @@ defmodule MmoContracts.Voxel.Payload do
   def same_value?(%__MODULE__{} = left, left_local, %__MODULE__{} = right, right_local) do
     left_material = material(left, left_local)
     right_material = material(right, right_local)
+
     left_material == right_material and
       ((not record_present?(left, left_local) and not record_present?(right, right_local)) or
-        skins(left, left_local, left_material) == skins(right, right_local, right_material))
+         skins(left, left_local, left_material) == skins(right, right_local, right_material))
   end
 
   @doc "将两份已接纳载荷的连续X行差额写入覆盖表；键沿左侧local，值取右侧规范材料与表皮。"
-  def put_row_differences(%__MODULE__{} = left, left_local, %__MODULE__{} = right, right_local, count, overrides) do
+  def put_row_differences(
+        %__MODULE__{} = left,
+        left_local,
+        %__MODULE__{} = right,
+        right_local,
+        count,
+        overrides
+      ) do
     left_cells = binary_part(left.cells, cell_index(left_local) * 2, count * 2)
     right_cells = binary_part(right.cells, cell_index(right_local) * 2, count * 2)
 
     # 完整x行相等且没有表皮记录时无需构造逐格值；非空records仍逐格查键，不按行扫描整表。
     if skin_count(left) == 0 and skin_count(right) == 0 and left_cells == right_cells,
       do: overrides,
-      else: row_differences(left_cells, right_cells, left, right, left_local, right_local, overrides)
+      else:
+        row_differences(left_cells, right_cells, left, right, left_local, right_local, overrides)
   end
 
-  defp row_differences(<<>>, <<>>, _left, _right, _left_local, _right_local, overrides), do: overrides
+  defp row_differences(<<>>, <<>>, _left, _right, _left_local, _right_local, overrides),
+    do: overrides
 
-  defp row_differences(<<material::16-little, left_cells::binary>>, <<other::16-little, right_cells::binary>>,
-         left, right, {x, y, z} = left_local, {rx, ry, rz} = right_local, overrides) do
-    changed = material != other or
-      ((record_present?(left, left_local) or record_present?(right, right_local)) and
-        not same_value?(left, left_local, right, right_local))
-    overrides = if changed, do: Map.put(overrides, left_local, value(right, right_local)), else: overrides
-    row_differences(left_cells, right_cells, left, right, {x + 1, y, z}, {rx + 1, ry, rz}, overrides)
+  defp row_differences(
+         <<material::16-little, left_cells::binary>>,
+         <<other::16-little, right_cells::binary>>,
+         left,
+         right,
+         {x, y, z} = left_local,
+         {rx, ry, rz} = right_local,
+         overrides
+       ) do
+    changed =
+      material != other or
+        ((record_present?(left, left_local) or record_present?(right, right_local)) and
+           not same_value?(left, left_local, right, right_local))
+
+    overrides =
+      if changed, do: Map.put(overrides, left_local, value(right, right_local)), else: overrides
+
+    row_differences(
+      left_cells,
+      right_cells,
+      left,
+      right,
+      {x + 1, y, z},
+      {rx + 1, ry, rz},
+      overrides
+    )
   end
 
   @doc """
@@ -493,30 +588,47 @@ defmodule MmoContracts.Voxel.Payload do
   def encode_below(%__MODULE__{} = p, overrides, seq, content_version, limit) do
     raw = terrain_raw(p, overrides)
 
-    if MmoContracts.Voxel.Codec.payload_header_bytes() + MmoContracts.Voxel.Codec.compressed_prefix_bytes(raw) >= limit,
-      do: :not_smaller,
-      else: {:ok, encode_with_details(raw, p, seq, content_version)}
+    if MmoContracts.Voxel.Codec.payload_header_bytes() +
+         MmoContracts.Voxel.Codec.compressed_prefix_bytes(raw) >= limit,
+       do: :not_smaller,
+       else: {:ok, encode_with_details(raw, p, seq, content_version)}
   end
 
   # body 的地形段：格与表皮场 CSR；细节尾部由 encode_with_details/4 接在其后。
   defp terrain_raw(p, overrides) do
-    field = if map_size(overrides) == 0 do
-      admit(p).records
-    else
-      {records, ext} = updated_records(p, overrides)
-      normalize_field(skin_source(p), Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end), ext)
-    end
-    IO.iodata_to_binary([<<@cell_count::32-little>>, splice_cells(p.cells, overrides), SkinField.encode(field)])
+    field =
+      if map_size(overrides) == 0 do
+        admit(p).records
+      else
+        {records, ext} = updated_records(p, overrides)
+
+        normalize_field(
+          skin_source(p),
+          Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end),
+          ext
+        )
+      end
+
+    IO.iodata_to_binary([
+      <<@cell_count::32-little>>,
+      splice_cells(p.cells, overrides),
+      SkinField.encode(field)
+    ])
   end
 
   # 旧 map／非规范来源／真实覆盖统一走此构造，不另写一套编码语义。
   defp normalize_field(p, records, ext) do
     {rows, xs, faces, masks, fmi, maps} = build_csr(records, p)
-    SkinField.canonical(if(records == [], do: 1, else: ext),
+
+    SkinField.canonical(
+      if(records == [], do: 1, else: ext),
       IO.iodata_to_binary(Enum.map(rows, &<<&1::32-little>>)),
-      IO.iodata_to_binary(Enum.map(xs, &<<&1::16-little>>)), IO.iodata_to_binary(faces),
+      IO.iodata_to_binary(Enum.map(xs, &<<&1::16-little>>)),
+      IO.iodata_to_binary(faces),
       IO.iodata_to_binary(Enum.map(masks, &<<&1::16-little>>)),
-      IO.iodata_to_binary(Enum.map(fmi, &<<&1::16-little>>)), maps)
+      IO.iodata_to_binary(Enum.map(fmi, &<<&1::16-little>>)),
+      maps
+    )
   end
 
   defp updated_records(p, overrides) do
@@ -604,60 +716,75 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   defp refined_input(%{refined_encoding: nil, refined: refined}), do: refined
-  defp refined_input(%{refined_encoding: %MmoContracts.Voxel.Refined.Encoding{} = encoding, refined: refined})
+
+  defp refined_input(%{
+         refined_encoding: %MmoContracts.Voxel.Refined.Encoding{} = encoding,
+         refined: refined
+       })
        when map_size(refined) == 0, do: encoding
+
   defp refined_input(_), do: raise(ArgumentError, "conflicting refined encoding inputs")
-  defp refined_count(%MmoContracts.Voxel.Refined.Encoding{} = encoding), do: MmoContracts.Voxel.Refined.Encoding.size(encoding)
+
+  defp refined_count(%MmoContracts.Voxel.Refined.Encoding{} = encoding),
+    do: MmoContracts.Voxel.Refined.Encoding.size(encoding)
+
   defp refined_count(refined), do: map_size(refined)
 
   defp encode_with_details(terrain, p, seq, content_version) do
     instances = p.base_instances || p.instances
     refined = refined_input(p)
+
     materials =
       for {i, _} <- p.liquid_units,
           into: MapSet.new(),
           do: :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little)
 
-    version = p.base_format_version ||
-      cond do
-        Enum.any?(materials, &(&1 not in [4, 13, 20, 21, 22])) ->
-          12
+    version =
+      p.base_format_version ||
+        cond do
+          Enum.any?(materials, &(&1 not in [4, 13, 20, 21, 22])) ->
+            12
 
-        Enum.any?(materials, &(&1 in [4, 13, 22])) ->
-          11
+          Enum.any?(materials, &(&1 in [4, 13, 22])) ->
+            11
 
-        MapSet.member?(materials, 20) ->
-          10
+          MapSet.member?(materials, 20) ->
+            10
 
-        map_size(p.liquid_units) > 0 ->
-          9
+          map_size(p.liquid_units) > 0 ->
+            9
 
-        map_size(p.attachments) > 0 ->
-          8
+          map_size(p.attachments) > 0 ->
+            8
 
-        map_size(p.structure) > 0 ->
-          6
+          map_size(p.structure) > 0 ->
+            6
 
-        Enum.any?(instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) != {0, 0} end) ->
-          7
+          Enum.any?(instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) != {0, 0} end) ->
+            7
 
-        refined_count(refined) > 0 or map_size(instances) > 0 ->
-          5
+          refined_count(refined) > 0 or map_size(instances) > 0 ->
+            5
 
-        true ->
-          4
-      end
+          true ->
+            4
+        end
 
     # 尾段保留有序片段；VXRD直接包裹同一尾段，不先构造完整base再切出重拼。
     tail =
       case version do
         v when v in [9, 10, 11, 12] ->
-          [MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
-           MmoContracts.Voxel.Attachments.encode(p.attachments), encode_liquid(p.liquid_units)]
+          [
+            MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
+            MmoContracts.Voxel.Attachments.encode(p.attachments),
+            encode_liquid(p.liquid_units)
+          ]
 
         8 ->
-          [MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
-           MmoContracts.Voxel.Attachments.encode(p.attachments)]
+          [
+            MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
+            MmoContracts.Voxel.Attachments.encode(p.attachments)
+          ]
 
         6 ->
           MmoContracts.Voxel.Structure.encode(p.structure)
@@ -669,13 +796,23 @@ defmodule MmoContracts.Voxel.Payload do
           []
       end
 
-    {raw, version} = if map_size(p.canopy) > 0 or map_size(p.canopy_residual) > 0 do
-      {[terrain, <<version::32-little, IO.iodata_length(tail)::32-little>>, tail,
-        MmoContracts.Voxel.Canopy.encode(p.canopy, p.canopy_instances,
-          p.canopy_residual, p.canopy_residual_structure)], 13}
-    else
-      {[terrain, tail], version}
-    end
+    {raw, version} =
+      if map_size(p.canopy) > 0 or map_size(p.canopy_residual) > 0 do
+        {[
+           terrain,
+           <<version::32-little, IO.iodata_length(tail)::32-little>>,
+           tail,
+           MmoContracts.Voxel.Canopy.encode(
+             p.canopy,
+             p.canopy_instances,
+             p.canopy_residual,
+             p.canopy_residual_structure
+           )
+         ], 13}
+      else
+        {[terrain, tail], version}
+      end
+
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end
 

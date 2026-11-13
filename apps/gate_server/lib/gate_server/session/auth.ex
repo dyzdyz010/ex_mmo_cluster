@@ -14,27 +14,41 @@ defmodule GateServer.Session.Auth do
   正式 Join 消费一次性票据；开发免密仅在显式 Test-only 部署开放。
   两条路径得到的角色行都在这里附上阵营档案（Voxim Docs/Factions.md §3），随 Scene.join 进入实体值。
   """
-  def join(join,hello) do
-    with {:ok,character,ref} <- authorize(join,hello),
-         do: {:ok,%{character | profile: DataService.Orgs.profile(character)},ref}
+  def join(join, hello) do
+    with {:ok, character, ref} <- authorize(join, hello),
+         do: {:ok, %{character | profile: DataService.Orgs.profile(character)}, ref}
   end
 
-  defp authorize(join,hello) do
-    if Application.get_env(:auth_server,:dev_auto_login,false) do
-      with {:ok,claims} <- verify_token(join.token),
-           :ok <- validate_username(claims,join.username),
-           :ok <- authorize_cid(claims,join.cid),
-           {:ok,character} <- fetch_authorized_character(claims,join.cid),do: {:ok,character,nil}
+  defp authorize(join, hello) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      with {:ok, claims} <- verify_token(join.token),
+           :ok <- validate_username(claims, join.username),
+           :ok <- authorize_cid(claims, join.cid),
+           {:ok, character} <- fetch_authorized_character(claims, join.cid),
+           do: {:ok, character, nil}
     else
-      owner=Process.whereis(AuthServer.Connections)
+      owner = Process.whereis(AuthServer.Connections)
+
       if is_pid(owner) do
-        ref=Process.monitor(owner)
-        case AuthServer.Identity.consume_ticket(join.token,join.cid,join.username,join.scene_id,hello,self()) do
-          {:ok,%{character: character}} -> {:ok,character,ref}
-          error -> Process.demonitor(ref,[:flush]); error
+        ref = Process.monitor(owner)
+
+        case AuthServer.Identity.consume_ticket(
+               join.token,
+               join.cid,
+               join.username,
+               join.scene_id,
+               hello,
+               self()
+             ) do
+          {:ok, %{character: character}} ->
+            {:ok, character, ref}
+
+          error ->
+            Process.demonitor(ref, [:flush])
+            error
         end
       else
-        {:error,:auth_unavailable}
+        {:error, :auth_unavailable}
       end
     end
   end
@@ -49,7 +63,6 @@ defmodule GateServer.Session.Auth do
     case AuthServer.AuthWorker.verify_token(token) do
       {:ok, claims} when is_map(claims) -> {:ok, claims}
       {:error, :mismatch} -> {:error, :mismatch}
-      _ -> {:error, :server_error}
     end
   end
 
@@ -61,7 +74,6 @@ defmodule GateServer.Session.Auth do
     case AuthServer.AuthWorker.validate_cid(claims, cid) do
       :ok -> :ok
       {:error, :cid_mismatch} -> {:error, :cid_mismatch}
-      {:error, _reason} -> {:error, :server_error}
     end
   end
 

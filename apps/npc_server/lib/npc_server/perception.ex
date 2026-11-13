@@ -466,7 +466,9 @@ defmodule NpcServer.Perception do
     # 截断与行序不随上游 map 遍历次序变化。
     nearest = fn rows ->
       rows
-      |> Enum.sort_by(fn %{micro: {x, y, z}, owner: owner} -> {distance({x / 8, y / 8, z / 8}, position), owner} end)
+      |> Enum.sort_by(fn %{micro: {x, y, z}, owner: owner} ->
+        {distance({x / 8, y / 8, z / 8}, position), owner}
+      end)
       |> Enum.take(@nearest)
     end
 

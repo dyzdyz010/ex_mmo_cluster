@@ -12,10 +12,12 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
   setup do
     Application.put_env(:auth_server, :mail_adapter, AuthServer.TestMailer)
     Application.put_env(:auth_server, :test_mail_recipient, self())
+
     on_exit(fn ->
       Application.delete_env(:auth_server, :mail_adapter)
       Application.delete_env(:auth_server, :test_mail_recipient)
     end)
+
     %{email: "portal-#{System.unique_integer([:positive])}@example.test", password: "12345678"}
   end
 
@@ -31,9 +33,19 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     refute conn.resp_body =~ c.password
     assert_receive {:account_mail, email, :registration, code}
     assert email == c.email
-    rejected = post(build_conn(), "/auth/register", Map.merge(params, %{code: code, password: "1234567"}))
+
+    rejected =
+      post(build_conn(), "/auth/register", Map.merge(params, %{code: code, password: "1234567"}))
+
     assert html_response(rejected, 400) =~ "8–20"
-    rejected = post(build_conn(), "/auth/register", Map.merge(params, %{code: code, password: String.duplicate("a", 21)}))
+
+    rejected =
+      post(
+        build_conn(),
+        "/auth/register",
+        Map.merge(params, %{code: code, password: String.duplicate("a", 21)})
+      )
+
     assert html_response(rejected, 400) =~ "8–20"
     conn = post(build_conn(), "/auth/register", Map.put(params, :code, code))
     assert redirected_to(conn) == "/auth/login"
@@ -46,6 +58,7 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     assert body =~ ~s(minlength="8")
     assert body =~ ~s(data-maxlength="20")
     assert conn.resp_body =~ c.email
+
     # 已登录：登录／注册页回到账号页，其他页面顶栏显示当前账号与退出，而不是登录／注册入口。
     assert recycle(conn) |> get("/auth/login") |> redirected_to() == "/auth"
     assert recycle(conn) |> get("/auth/register") |> redirected_to() == "/auth"
@@ -53,10 +66,18 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     assert signed_in =~ c.email
     assert signed_in =~ ~s(action="/auth/logout")
     refute signed_in =~ ~s(href="/auth/register")
-    conn = recycle(conn) |> post("/auth/change-password", %{current_password: "incorrect", password: "87654321"})
+
+    conn =
+      recycle(conn)
+      |> post("/auth/change-password", %{current_password: "incorrect", password: "87654321"})
+
     assert html_response(conn, 400) =~ "当前密码错误"
     assert {:ok, _} = Identity.authenticate(game.access_token)
-    conn = recycle(conn) |> post("/auth/change-password", %{current_password: c.password, password: "87654321"})
+
+    conn =
+      recycle(conn)
+      |> post("/auth/change-password", %{current_password: c.password, password: "87654321"})
+
     assert redirected_to(conn) == "/auth/login"
     assert {:error, :invalid_session} = Identity.authenticate(game.access_token)
     assert {:ok, replacement} = Identity.login(c.email, "87654321", false)
@@ -83,7 +104,13 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     username = "portal_old_#{System.unique_integer([:positive])}"
     {:ok, %{account: old, character: character}} = AuthServer.Accounts.upsert_dev(username)
     legacy = Identity.random_token()
-    :ok = DataService.AccountStore.import_legacy([{Identity.digest(legacy), username}], Identity.now())
+
+    :ok =
+      DataService.AccountStore.import_legacy(
+        [{Identity.digest(legacy), username}],
+        Identity.now()
+      )
+
     params = %{email: c.email, password: c.password, legacy_code: legacy}
     conn = post(build_conn(), "/auth/claim-email", params)
     body = html_response(conn, 200)
@@ -98,7 +125,9 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     {:ok, session} = Identity.login(c.email, c.password, false)
     assert session.account_id == Integer.to_string(old.id)
     assert session.cid == Integer.to_string(character.id)
-    assert post(build_conn(), "/auth/claim", Map.put(params, :code, code)) |> html_response(400) =~ "旧邀请码无法认领"
+
+    assert post(build_conn(), "/auth/claim", Map.put(params, :code, code)) |> html_response(400) =~
+             "旧邀请码无法认领"
   end
 
   test "browser pages over the per-source limit get an account page while the API keeps JSON" do
@@ -108,12 +137,16 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     limited = conn.() |> get("/auth/login")
     assert html_response(limited, 429) =~ "操作过于频繁"
     assert get_resp_header(limited, "retry-after") == ["60"]
-    assert conn.() |> post("/account/login", %{}) |> json_response(429) == %{"error" => "rate_limited"}
+
+    assert conn.() |> post("/account/login", %{}) |> json_response(429) == %{
+             "error" => "rate_limited"
+           }
   end
 
   test "account management requires a live session and public pages do not expose credentials" do
     assert build_conn() |> get("/auth") |> redirected_to() == "/auth/login"
     assert build_conn() |> post("/auth/logout-all", %{}) |> redirected_to() == "/auth/login"
+
     for page <- ["login", "register", "forgot", "reset", "claim"] do
       body = build_conn() |> get("/auth/" <> page) |> html_response(200)
       assert body =~ "_csrf_token"

@@ -66,6 +66,22 @@ defmodule NpcServer.NpcEmotionMovementTest do
       File.mkdir_p!(out)
     end
 
+    # 只测试：干跑由下方 request 替身应答，不访问模型端点，只需占位端点环境；live 仍读取真实环境。
+    if mode == :dry do
+      for {key, value} <- [
+            {"NPC_LLM_URL", "http://127.0.0.1:9/responses"},
+            {"NPC_LLM_KEY", "test-key"},
+            {"NPC_LLM_MODEL", "test-model"}
+          ] do
+        previous = System.get_env(key)
+        System.put_env(key, value)
+
+        on_exit(fn ->
+          if previous, do: System.put_env(key, previous), else: System.delete_env(key)
+        end)
+      end
+    end
+
     {backend, profile} =
       NpcServer.Registry.brain("life", %{
         "goal" =>

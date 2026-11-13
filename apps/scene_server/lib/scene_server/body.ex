@@ -326,7 +326,10 @@ defmodule SceneServer.Body do
   @doc "部位外伤的循环功能乘数，和热伤沿同一系统合成。"
   # 浮点连乘按部位键序（部位无加入次序；不依赖 map 遍历次序），与 `injuries/1` 的部位排序一致。
   def trauma_factor(%__MODULE__{} = body),
-    do: body.traumas |> Enum.sort() |> Enum.reduce(1.0, fn {_, w}, f -> f * (1 - w.depth * (1 - w.heal)) end)
+    do:
+      body.traumas
+      |> Enum.sort()
+      |> Enum.reduce(1.0, fn {_, w}, f -> f * (1 - w.depth * (1 - w.heal)) end)
 
   @doc """
   复活后的统一身体（Magic.md §6.10）：调定点体温、无伤病；营养（蛋白）与糖原清零，脂肪为标准人满值 `fat_full_j`（420.52 MJ，

@@ -15,14 +15,18 @@ defmodule MmoContracts.VoxelMaterialCatalog do
               {id, blocks}
             end)
   @support Map.new(@materials, fn %{"id" => id, "supports_attachments" => supports}
-                                  when is_boolean(supports) -> {id, supports} end)
+                                  when is_boolean(supports) ->
+             {id, supports}
+           end)
   # 复用 Session 的 blocking_hash 身份槽；v2 同时承诺移动阻挡与附件支撑，二者任一变化均失配。
   @blocking_bytes IO.iodata_to_binary([
                     "voxim-blocking-v2\n",
                     <<map_size(@blocking)::16-big>>,
                     for(
                       {id, blocks} <- Enum.sort(@blocking),
-                      do: <<id::16-big, if(blocks, do: 1, else: 0), if(Map.fetch!(@support, id), do: 1, else: 0)>>
+                      do:
+                        <<id::16-big, if(blocks, do: 1, else: 0),
+                          if(Map.fetch!(@support, id), do: 1, else: 0)>>
                     )
                   ])
   @blocking_hash :crypto.hash(:sha256, @blocking_bytes)

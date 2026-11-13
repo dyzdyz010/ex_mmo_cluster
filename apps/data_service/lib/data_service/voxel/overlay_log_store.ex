@@ -89,7 +89,12 @@ defmodule DataService.Voxel.OverlayLogStore do
   @spec reset_world(non_neg_integer(), keyword()) :: :ok
   def reset_world(content_version, opts \\ []) do
     for table <- @world_tables,
-        do: Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM #{table} WHERE content_version = $1", [signed(content_version)])
+        do:
+          Ecto.Adapters.SQL.query!(
+            repo(opts),
+            "DELETE FROM #{table} WHERE content_version = $1",
+            [signed(content_version)]
+          )
 
     :ok
   end

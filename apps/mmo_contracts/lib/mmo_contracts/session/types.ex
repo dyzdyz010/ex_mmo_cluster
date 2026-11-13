@@ -161,8 +161,18 @@ end
 
 defmodule MmoContracts.Session.ProjectileHit do
   @moduledoc "全局系统功能 Hello37：World 命中事务与 Player 已接纳的局部热能收据，双方字段一致；身体状态仍由 BodyState 表达。"
-  @enforce_keys [:identity, :world_seq, :projectile_seq, :projectile_n, :source_id, :source_life,
-    :target_id, :target_life, :q_j, :position]
+  @enforce_keys [
+    :identity,
+    :world_seq,
+    :projectile_seq,
+    :projectile_n,
+    :source_id,
+    :source_life,
+    :target_id,
+    :target_life,
+    :q_j,
+    :position
+  ]
   defstruct @enforce_keys
 end
 
@@ -192,8 +202,18 @@ end
 
 defmodule MmoContracts.Session.Speech do
   @moduledoc "全局对话 Hello40：权威发言；identity 是接收者，conversation_id/turn 是事件唯一键。"
-  @enforce_keys [:identity, :conversation_id, :turn, :speaker_id, :speaker_epoch,
-    :speaker_kind, :speaker_name, :target_id, :at_ms, :text]
+  @enforce_keys [
+    :identity,
+    :conversation_id,
+    :turn,
+    :speaker_id,
+    :speaker_epoch,
+    :speaker_kind,
+    :speaker_name,
+    :target_id,
+    :at_ms,
+    :text
+  ]
   defstruct @enforce_keys
 end
 

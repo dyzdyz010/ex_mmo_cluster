@@ -480,7 +480,17 @@ defmodule NpcServer.NpcBrainLlmTest do
       "output" => [
         call("look", %{x0: 15, y0: 63, z0: 9, x1: 17, y1: 66, z1: 11}),
         call("place", %{x: 16, y: 65, z: 10, material: 11, tool_id: 1}),
-        call("scoop", %{tool_id: 9, target: %{micro: [400,4152,512], granularity: 0, incarnation: 7, owner: [0,0], material: 21, direction: nil}}),
+        call("scoop", %{
+          tool_id: 9,
+          target: %{
+            micro: [400, 4152, 512],
+            granularity: 0,
+            incarnation: 7,
+            owner: [0, 0],
+            material: 21,
+            direction: nil
+          }
+        }),
         call("pour", %{x: 50, y: 519, z: 64, material: 21, tool_id: 9}),
         call("query_balances", %{}),
         call("probe_toward", %{direction: [1, 0, 0], tool_id: 9})
@@ -490,7 +500,20 @@ defmodule NpcServer.NpcBrainLlmTest do
     assert [
              %{id: 1, verb: :look, min: {15, 63, 9}, max: {17, 66, 11}},
              %{id: 2, verb: :place, coord: {16, 65, 10}, material: 11, tool_id: 1},
-             %{id: 3, verb: :scoop, coord: {50, 519, 64}, material: 21, tool_id: 9, target: %{micro: {400,4152,512}, granularity: 0, incarnation: 7, owner: {0,0}, material: 21}},
+             %{
+               id: 3,
+               verb: :scoop,
+               coord: {50, 519, 64},
+               material: 21,
+               tool_id: 9,
+               target: %{
+                 micro: {400, 4152, 512},
+                 granularity: 0,
+                 incarnation: 7,
+                 owner: {0, 0},
+                 material: 21
+               }
+             },
              %{id: 4, verb: :pour, coord: {50, 519, 64}, material: 21, tool_id: 9},
              %{id: 5, verb: :query_balances},
              %{id: 6, verb: :probe_toward, tool_id: 9, direction: {1.0, 0.0, 0.0}}
@@ -727,7 +750,11 @@ defmodule NpcServer.NpcBrainLlmTest do
 
     for rows <- [tied, Enum.reverse(tied)] do
       assert [%{data: %{attachments: listed}}] =
-               NpcServer.Perception.project(%{outcome | data: %{seq: 9, property_states: rows}}, [], {12.0, 64.9, 10.0})
+               NpcServer.Perception.project(
+                 %{outcome | data: %{seq: 9, property_states: rows}},
+                 [],
+                 {12.0, 64.9, 10.0}
+               )
 
       assert Enum.map(listed, & &1.attachment_id) == Enum.to_list(1..24)
     end
