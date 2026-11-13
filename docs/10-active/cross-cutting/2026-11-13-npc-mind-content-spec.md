@@ -91,3 +91,14 @@ Hindsight retain 项支持 `context`、`tags`、`entities`、`metadata`、`times
 - `Life.Hindsight`：`recall` 支持 `tags` / `types` / `prefer_observations`；`ensure` 里设 bank mission；多路并行召回在 Life 的慢 worker 里做，不阻塞 Body。
 - `Selector`：召回改为 `Mind.recall_queries/2` 产出多路问句；历史合并。
 - 不动：`Body`、`World`、`Brain.Social`、候选表。
+
+## 8. 落地前的更正与决定（2026-11-13，第七个统筹会话；依据离线测量 S1-I / S1-J / S1-K / S1-L，明细在统筹页）
+
+- **§3.2 期间事实的真值**：改为活动期间逐帧记每个人的最小距离（Life 本来每帧收到观察，不加新通道），不是“起止各取一次”——离线材料里“靠近又走了”恰好发生在中途。靠近半径 **6 米**。两项都是用户 2026-11-13 定的；半径没有外部依据，是原创取值，实跑后可调。
+- **§3.3 `place:` 的来源**：Registry 的活动候选加可选地名字段（用户定），登记边界校验一次；事件的 `place:` 取建筑名。
+- **§3.5 mission**：`retain_mission` / `observations_mission` 经 `PATCH /config` 写入（S1-L：第一人称比例 1.00 对缺省 0.11 / 0.14，认识里有了次数）。副作用：更多事实被抽成 `world` 类型，所以**召回不按 `types` 过滤**。
+- **§4 合并规则更正**：原文“先按路的优先级、再按 `occurred_start` 旧在前；总条数上限 12”会截掉最近的事实（S1-J：M1 库“没人来”11 条 → 0 条）。改为**按路配额、路内新的优先**；三路都 `prefer_observations: true`；每路 `max_tokens` 700 / 700 / 600；每路配额先取 4（**没有离线依据，原创取值**，实跑后调）。
+- **§2 暂不落地的栏内容**：连续活动合并成一句（S1-H：`guard_hut` 0.81 → 0.89，未单独评估）、关系史一句（S1-K：三个时长都把守屋抬高 0.04–0.09）、“多久没跟人相处”（S1-K：方向相反）。“Plans and promises”栏的写法成立（S1-K：到点的约定 `visit_plaza` 0.56，未到点 0.18），内容来源等规划层。
+- **旧数据**：写入形状改变后清空重建本线的开发库与 Life 片段，不写兼容（用户定）。
+- 存进 Hindsight 的经历正文保持离线测过的 `At <UTC> (UTC), …` 写法；条目另存 `at_ms`，Mind 用它渲染相对游戏时间，不解析正文。
+
