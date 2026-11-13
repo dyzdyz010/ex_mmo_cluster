@@ -460,7 +460,8 @@ defmodule NpcServer.NpcLifeTest do
       speech_pending: [],
       appraise: false,
       observation: nil,
-      experience_pending: []
+      experience_pending: [],
+      sight: Life.Sight.new()
     }
 
     {:noreply, s} =

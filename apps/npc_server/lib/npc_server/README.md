@@ -442,10 +442,25 @@ flowchart LR
   （`<N>` = 最小距离向上取整、最小 1；多人近的在前、最多 3 人，用 `; ` 连成一句）。靠近半径 6 米是用户 2026-11-13 定的原创取值，
   没有外部依据，实跑后可调（`Life.State` 的 `@near_m`）。没有收到开始信号或期间没有观察就不写这句（没有真值）；
   距离账只在 Life 进程里，Life 重启时正在进行的那项活动不写期间事实。这几句英文没有离线测过。
+- **看到的**（`Life.Sight`，内容规范 `2026-11-13-npc-mind-content-spec.md` §9；用户 2026-11-13 定只做 A、B）：所见单独成经历，
+  不新增栏，与其它经历同一条路进 “What just happened” 与 Hindsight。**A 相遇**：Life 每帧观察喂相遇账，某人离开视野满 10 秒
+  （其间再出现算同一次）写一条 `<人> was around for about <时长>; came within <N> m of me, then left.`（进过 6 米）或
+  `…; stayed at least <N> m away, then left.`（没进过 6 米、但在视野里累计满 50 秒；N 向下取整）；满 5 分钟还没走先写一条
+  `<人> has been around for about <时长> and is still here; …`；观察中断超过 5 秒按最后见到时结束，句末不说 `then left`。
+  **B 附近的建造 / 拆除**：每秒读到的 World 事件里不是我做的、没有被写成“动我的建筑”经历的（按 seq 排除）、事件格离我
+  ≤ 30 米且落后 ≤ 5 秒的，按（谁、放 / 拆、哪座建筑或散格）分组，组内 30 秒无新事件或开组满 5 分钟合成一条：
+  `<人> placed <N> blocks | the building "<名>" | an unnamed building about <M> m from me.`、
+  `<人> removed the entire | broke off part of the | damaged part of the building "<名>"[ that <原放置者> placed,] about <M> m from me.`、
+  `<人> removed | damaged <N> blocks[ …] about <M> m from me.`（全部句型与取整规则在 `Life.Sight` 的 moduledoc）。时长按游戏钟写
+  （现实 50 秒 = 游戏 1 小时，`about <N> minutes / hours`）。同一人每类每 20 分钟至多 4 条，挡下的不写、记 `npc_sight_capped`
+  （`Life.observe/1` 的 `sight_capped` 按类计数）。只写看到的：不写意图与评价，不动情绪与信任。门槛与上限都是原创取值，
+  实跑导出后再调；进行中的账只在 Life 内存里，重启即丢、不补写；观察每秒 20 帧，没有条目要写的帧不保存。
+  与活动句 `During it:` 的重复先两者都留。C 倒下 / 死亡不做（要改 Body）。这些句子没有离线测过。
 - **经历条目与写入 Hindsight**：每条经历是 `%{"id", "at_ms", "text", "tags"}`（World 事件另有 `seq` / `actor`，对话另有 `speech`）。
   `"text"` 不带时刻；交给 Hindsight 与快照的正文由 `Life` 的一处函数加离线测过的 `At <UTC> (UTC), ` 前缀。tags：
   World 事件 `kind:event` + `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`；对话 `kind:conversation` + 对方 `actor:<cid>`；
-  活动 `kind:activity` + 期间进过 6 米内的每个人 `actor:<cid>` + 候选登记了地名（注册参数 `place_name`）时 `place:<地名>`。
+  活动 `kind:activity` + 期间进过 6 米内的每个人 `actor:<cid>` + 候选登记了地名（注册参数 `place_name`）时 `place:<地名>`；
+  所见 `kind:sight` + 那个人 `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`（id `sight:encounter:…` / `sight:place:…` / `sight:remove:…`）。
   经历照旧按原文字数攒到约 3000 字封成片段（`%{"id", "at_ms", "episodes"}`，只是运输批次），retain 时**每条经历一份文档**
   （document_id = 经历 id，timestamp = 它的 `at_ms`，tags = 它的 tags）。旧形状（片段只有 `"text"`）不转换：开发数据清空重建（用户 2026-11-13 定）。
 - **经历按标准描述表写**（owner 是 `Life.State`，表只在它的 moduledoc 与 `account/5` 一处定义）：程序里一种 World 事件

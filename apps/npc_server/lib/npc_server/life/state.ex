@@ -34,7 +34,8 @@ defmodule NpcServer.Life.State do
 
   人的写法与“附近的人”的定义也归这里（`person/2`、`person_name/1`、`others/1`、`distance/2`）：经历原文、活动的期间事实
   与心智快照（`NpcServer.Mind`）共用同一套，记忆原文与快照里的人才对得上。活动的期间事实（`approach/2`、`during/2`）：
-  活动期间每帧记下自己以外每个人到我的最小距离，结束时写一句谁进过 6 米内（`@near_m`）、结束时还在不在。
+  活动期间每帧记下自己以外每个人到我的最小距离，结束时写一句谁进过 6 米内（`@near_m`，`near_m/0`，“看到的”相遇门槛共用）、
+  结束时还在不在。“看到的”（`Life.Sight`）复用这几项，不另写一套。
 
   `"buildings"` 记“我放下的有名字的建筑”（自己的 prefab 放置事件）：`[%{"name", "instance" => [birth, occurrence],
   "anchor" => [x, y, z] 锚点所在宏格}]`，按放下的次序，同一锚点只留最新的一座。这只是记忆：此刻在不在由发问时现查
@@ -224,6 +225,12 @@ defmodule NpcServer.Life.State do
   @doc "两点间的直线距离（米，完整 XYZ）：社交距离、活动期间的最小距离与心智快照里“离我多远”共用。"
   def distance({x, y, z}, {ex, ey, ez}),
     do: :math.sqrt((x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2)
+
+  @doc """
+  “有人靠近”的半径（米）：活动的期间事实与“看到的”相遇门槛（`Life.Sight`，进过这个距离即记）共用这一个值，
+  两处说的“进过 6 米”才是同一件事。
+  """
+  def near_m, do: @near_m
 
   @doc "观察里除自己（`observation.self`）以外的每个人，玩家与 NPC 都算，保持观察里的次序。"
   def others(%{self: self, entities: entities}),

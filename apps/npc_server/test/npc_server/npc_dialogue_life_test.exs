@@ -187,6 +187,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
       observation: nil,
       experience_pending: [],
       activity: nil,
+      sight: Life.Sight.new(),
       row: %{
         "state" => Life.State.new(7, "world", 6, 0),
         "pending" => [],
@@ -204,13 +205,14 @@ defmodule NpcServer.NpcDialogueLifeTest do
   defp seen(entities), do: %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
   defp person(id, name, x), do: %{entity_id: id, name: name, position: {x, 0.0, 0.0}}
 
-  # 期间事实只在“收到过开始信号、且期间收到过观察”时写；每项活动的经历时刻取 Life 的时钟（这里每读一次走 1 秒）。
+  # 期间事实只在“收到过开始信号、且期间收到过观察”时写；每项活动的经历时刻取 Life 的时钟。时钟只在每项活动结束后走 1 秒
+  # （观察处也读时钟——“看到的”按它记账——所以不能用“每读一次走一步”的钟，否则活动的时刻随观察帧数漂移）。
   test "activity facts: none without a start signal or without observations; nearest approach and tags otherwise" do
     clock = start_supervised!({Agent, fn -> 1000 end})
 
     s = %{
       state()
-      | now: fn -> Agent.get_and_update(clock, &{&1, &1 + 1000}) end,
+      | now: fn -> Agent.get(clock, & &1) end,
         context: %{cid: 7, scene_id: 1}
     }
 
@@ -219,12 +221,18 @@ defmodule NpcServer.NpcDialogueLifeTest do
 
     done = ~s|I did "guard_hut" (Guard the hut.). Result: completed.|
 
+    finish = fn s, place ->
+      {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: place}}, s)
+      Agent.update(clock, &(&1 + 1000))
+      s
+    end
+
     # 1. 没有开始信号：观察照常收到，不记账，不写期间事实。地名照样进 tags。
     {:noreply, s} = Life.handle_cast({:observation, seen([person(21, "Brann", 2.0)])}, s)
-    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: "the hut"}}, s)
+    s = finish.(s, "the hut")
     # 2. 开始了，但期间一帧观察都没有。
     {:noreply, s} = Life.handle_cast(:activity_started, s)
-    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: nil}}, s)
+    s = finish.(s, nil)
 
     # 3. 开始之后 Brann 从 9 米走到 2.5 米又退到 7 米。开始之前那一帧（2 米）不算。
     {:noreply, s} = Life.handle_cast(:activity_started, s)
@@ -235,11 +243,11 @@ defmodule NpcServer.NpcDialogueLifeTest do
         s
       end)
 
-    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: "the hut"}}, s)
+    s = finish.(s, "the hut")
     # 4. 开始了，期间只有 6 米外的人。
     {:noreply, s} = Life.handle_cast(:activity_started, s)
     {:noreply, s} = Life.handle_cast({:observation, seen([person(21, "Brann", 6.5)])}, s)
-    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: nil}}, s)
+    s = finish.(s, nil)
     assert s.activity == nil
 
     assert [
@@ -354,6 +362,91 @@ defmodule NpcServer.NpcDialogueLifeTest do
     {:noreply, s} = Life.handle_info({:result, :job, result}, s)
     assert s.row["fragments"] == [] and s.row["retained"] == 1 and s.row["dirty"]
   end
+
+  # “看到的”经观察进尾部：每帧观察都喂相遇账，但只有写出条目的那一帧才保存。存储设成拒绝写入时，Brann 在场的 2 秒（41 帧）
+  # 里一次保存都不该发生（发生了就会留下 error）；他离开满 10 秒的那一帧写出一条相遇并保存。
+  test "sight from observations: frames with nothing to write never save; an ended encounter reaches pending and is saved" do
+    clock = start_supervised!({Agent, fn -> 0 end})
+    s = %{state() | now: fn -> Agent.get(clock, & &1) end, context: %{cid: 7, scene_id: 1}}
+
+    frame = fn t, entities, s ->
+      Agent.update(clock, fn _ -> t end)
+      {:noreply, s} = Life.handle_cast({:observation, seen(entities)}, s)
+      s
+    end
+
+    Store.fail(true)
+    s = Enum.reduce(0..2000//50, s, &frame.(&1, [person(21, "Brann", 2.5)], &2))
+    assert s.error == nil and s.row["pending"] == []
+    Store.fail(false)
+    s = Enum.reduce(2050..12_000//50, s, &frame.(&1, [], &2))
+
+    assert [
+             %{
+               "id" => "sight:encounter:21:0",
+               "at_ms" => 2000,
+               "text" =>
+                 "Brann (actor 21) was around for about 2 minutes; came within 3 m of me, then left.",
+               "tags" => ["kind:sight", "actor:21"]
+             }
+           ] == s.row["pending"]
+
+    assert {:ok, %{"pending" => [%{"id" => "sight:encounter:21:0"}]}} = Memory.life_load(Store, 7)
+  end
+
+  # “看到的”经 World 读取进尾部：动我的建筑（7）的那一下已写成 World 经历，不再算所见；别人在附近放的一格 30 秒后合成一条，
+  # 在下一次读取结果里写出。观察直接放进状态（不经回调），所以没有相遇账。
+  test "sight from World events: events already written as episodes are not repeated; a nearby placement closes on a later poll" do
+    clock = start_supervised!({Agent, fn -> 1000 end})
+
+    s = %{
+      state()
+      | now: fn -> Agent.get(clock, & &1) end,
+        observation: seen([person(9, "Mara", 1.0)])
+    }
+
+    damaged = world_event(7, 1000, 9, :damage, {1, 0, 0}, 7)
+    placed = world_event(8, 1000, 9, :build, {3, 0, 0}, nil)
+
+    read = %{world_id: "world", cursor: 8, events: [damaged, placed]}
+    {:noreply, s} = Life.handle_info({:result, :poll, {:ok, %{row: s.row, events: read}}}, s)
+    assert Enum.map(s.row["pending"], & &1["id"]) == ["world:7"]
+
+    Agent.update(clock, fn _ -> 31_000 end)
+
+    {:noreply, s} =
+      Life.handle_info(
+        {:result, :poll,
+         {:ok, %{row: s.row, events: %{world_id: "world", cursor: 8, events: []}}}},
+        %{s | poll: %{ref: make_ref()}}
+      )
+
+    assert [
+             %{"id" => "world:7"},
+             %{
+               "id" => "sight:place:9:8",
+               "at_ms" => 1000,
+               "text" => "Mara (actor 9) placed 1 block about 4 m from me.",
+               "tags" => ["kind:sight", "actor:9"]
+             }
+           ] = s.row["pending"]
+  end
+
+  # World 事件的形状照 `VoxelRegion.World.Interactions.capture/5` 加提交处补的 `instance_removed`；散格没有所属建筑。
+  defp world_event(seq, at_ms, actor, kind, cell, placed_by),
+    do: %{
+      seq: seq,
+      at_ms: at_ms,
+      actor: actor,
+      kind: kind,
+      cell: cell,
+      material: 11,
+      placed_by: placed_by,
+      prefab: nil,
+      instance: nil,
+      anchor: nil,
+      instance_removed: false
+    }
 
   defp speech(turn),
     do: %{

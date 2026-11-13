@@ -5,7 +5,7 @@ defmodule NpcServer.Life do
   慢记忆写入期间继续接纳权威事件。
 
   经历条目（`"pending"` 与片段里）是 `%{"id", "at_ms", "text", "tags", …}`：`"text"` 是不带时刻的原文，时刻只在 `"at_ms"`，
-  `"tags"` 是字符串列表（`kind:event | activity | conversation`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
+  `"tags"` 是字符串列表（`kind:event | activity | conversation | sight`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
   交给 Hindsight 与心智快照的正文是离线测过的 `At <UTC> (UTC), <原文>`，只由本模块的 `dated/1` 一处加前缀。
   短经历先按原文字数攒到约 3000 字封成片段 `%{"id", "at_ms", "episodes" => [经历条目]}`（片段只是运输批次）；
   retain 时每条经历单独成一份 Hindsight 文档（document_id = 经历 id，timestamp = 该条 `at_ms`，tags = 该条 tags），
@@ -19,6 +19,12 @@ defmodule NpcServer.Life do
   到我的最小距离（`Life.State.approach/2`）；`activity/2` 接纳这项活动的经历时在原文末尾加一句期间事实（`Life.State.during/2`：
   谁进过 6 米内、结束时还在不在，或 `nobody came near`）。没有收到开始信号、或期间一帧观察都没有，就没有真值，不写这句。
   这份距离账只在进程内：Life 重启会丢掉正在进行的活动的账，那一条经历就不写期间事实（可接受，不持久化）。
+
+  “看到的”（`Life.Sight`，内容规范 §9 的 A 相遇与 B 附近的建造 / 拆除）：每帧观察喂一次相遇账，每秒读到的 World 事件里
+  不是我做的、没有被 `Life.State.advance/6` 写成“动我的建筑”经历的（按 seq 排除）喂一次分组账；两处都顺带做到点检查，
+  不另开定时器。写出的条目（`kind:sight`）与其它经历一样进未封存的尾部、封存、保存；观察每秒 20 帧，没有条目时不保存。
+  进行中的账在进程状态 `sight` 里，不落库：Life 重启即丢，不补写。上限挡下的打 `npc_sight_capped`，计数见 `observe/1` 的 `sight_capped`。
+
   World 事件只带被动那一格所属建筑的定义 id（`prefab`）；读取 worker 向 World 的发布元信息查出名字写进事件（`building`），
   经历原文由此说得出是哪座建筑、是整座没了还是毁掉一部分（标准描述表见 `Life.State`）。没有名字的定义与散格不点名。
   自己放下的有名字的建筑记进状态的 `"buildings"`（记忆）；`mind/2` 发问时逐座现查 World 此刻在不在，不用记忆冒充现状。
@@ -32,7 +38,7 @@ defmodule NpcServer.Life do
   """
   use GenServer
   require Logger
-  alias NpcServer.{Dialogue, Memory, Life.State, Life.Hindsight}
+  alias NpcServer.{Dialogue, Memory, Life.State, Life.Hindsight, Life.Sight}
   alias NpcServer.Life.Appraisal
   @fragment_chars 3000
   @refresh_ms 600_000
@@ -247,7 +253,9 @@ defmodule NpcServer.Life do
        job_error: nil,
        speech_pending: [],
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
-       activity: nil
+       activity: nil,
+       # “看到的”进行中的账（`Life.Sight.new/0`）：还没结束的相遇、还没合上的建造 / 拆除、每人频率上限。只在内存，重启即丢。
+       sight: Sight.new()
      }}
   end
 
@@ -278,6 +286,7 @@ defmodule NpcServer.Life do
         decision: s.decision,
         unsaved_speech: length(s.speech_pending),
         unsaved_experiences: length(s.experience_pending),
+        sight_capped: s.sight.capped,
         emotion_owner: if(s.appraise, do: :model, else: :construction_rules)
       }}, s}
   end
@@ -354,7 +363,9 @@ defmodule NpcServer.Life do
   @impl true
   def handle_cast({:observation, o}, s) do
     context = %{s.context | scene_id: Map.get(o.self, :scene_id, s.context.scene_id)}
-    s = %{s | observation: o, context: context, activity: approach(s.activity, o)}
+    {sight, seen, capped} = Sight.see(s.sight, o, s.now.())
+    s = %{s | observation: o, context: context, activity: approach(s.activity, o), sight: sight}
+    s = record_sight(s, seen, capped)
 
     s =
       if s.appraise and s.row != nil and s.row["state"]["affect"]["next_seq"] == 0 and
@@ -602,6 +613,14 @@ defmodule NpcServer.Life do
         names(s)
       )
 
+    # 所见只取没有被写成“动我的建筑”经历的事件（同一件事不写两条）；分组账与到点检查在 `Life.Sight`。
+    # 账无论保存成败都换成新的：写失败时这几条丢掉（与活动经历相同），重来的同一批事件按 seq 不再算一次。
+    {sight, seen, capped} =
+      Sight.witness(s.sight, Sight.unwritten(events.events, episodes), s.observation, s.now.())
+
+    log_capped(s, capped)
+    s = %{s | sight: sight}
+
     canonical =
       if s.appraise do
         Enum.reduce(episodes, canonical, fn episode, state ->
@@ -617,7 +636,7 @@ defmodule NpcServer.Life do
         canonical
       end
 
-    candidate = %{row | "state" => canonical, "pending" => row["pending"] ++ episodes}
+    candidate = %{row | "state" => canonical, "pending" => row["pending"] ++ episodes ++ seen}
 
     case save(s, seal(candidate, false)) do
       {:ok, s} ->
@@ -628,6 +647,39 @@ defmodule NpcServer.Life do
       {:error, s} ->
         s
     end
+  end
+
+  # 观察处写出的所见条目进未封存的尾部（与活动经历同一条路）。观察每秒 20 帧，没有条目时不保存。
+  # 写失败时这几条丢掉、错误经 `error` 可见（进行中的账已经合上，不逐帧重试写库）。首次加载之前没有行可写，丢掉并记一行。
+  defp record_sight(s, entries, capped) do
+    log_capped(s, capped)
+
+    cond do
+      entries == [] ->
+        s
+
+      s.row == nil ->
+        Logger.warning(
+          "npc_sight_dropped cid=#{s.context.cid} count=#{length(entries)} reason=life_not_ready"
+        )
+
+        s
+
+      true ->
+        case save(s, seal(Map.update!(s.row, "pending", &(&1 ++ entries)), false)) do
+          {:ok, s} -> automatic(s)
+          {:error, s} -> s
+        end
+    end
+  end
+
+  # 频率上限挡下的所见不写，但不静默：每条一行。
+  defp log_capped(s, capped) do
+    for %{actor: actor, kind: kind} <- capped do
+      Logger.info("npc_sight_capped cid=#{s.context.cid} actor=#{actor} kind=#{kind}")
+    end
+
+    :ok
   end
 
   # 写经历时人名的来源：本 owner 此刻持有的观察里的 `%{cid => 名字}`（还没收到观察时为空，人一律写 `actor <cid>`）。
