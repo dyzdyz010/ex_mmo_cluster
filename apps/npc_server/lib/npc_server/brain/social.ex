@@ -170,10 +170,10 @@ defmodule NpcServer.Brain.Social do
   defp tree_result({commands, tree}, s), do: {commands, %{s | tree: tree}}
   defp identity(choice), do: {choice.mode, choice.actor, choice.source_seq}
 
+  # 站位：离来源水平 desired 米、在自己这一侧（与 travel 走向一个角色的落脚点同一几何，`Skills.Travel.short_of/3`），高度保留自己的。
   defp target({x, y, z}, {ax, _ay, az}, desired) do
-    length = :math.sqrt((x - ax) ** 2 + (z - az) ** 2)
-    {dx, dz} = if length < 0.001, do: {1.0, 0.0}, else: {(x - ax) / length, (z - az) / length}
-    {ax + dx * desired, y, az + dz * desired}
+    {tx, tz} = NpcServer.Skills.Travel.short_of({x, z}, {ax, az}, desired)
+    {tx, y, tz}
   end
 
   defp distance({x, y, z}, {ax, ay, az}),

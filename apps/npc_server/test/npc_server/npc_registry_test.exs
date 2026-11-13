@@ -154,7 +154,20 @@ defmodule NpcServer.NpcRegistryTest do
 
         [gather, rest] = @npc["activities"]
 
+        # 走向一个角色（S1-F）：选择器 "distrusted" + 停留；由 travel 承担移动，技能表推出 travel。
+        confront = %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+
+        assert {Brain.Tree,
+                %{
+                  activities: [%{name: "confront", criterion: "Face the person I distrust.", run: {:person, :distrusted, 60}}],
+                  skills: %{travel: %{}}
+                }} = NpcRegistry.brain("npc", %{@npc | "activities" => [confront]})
+
         for bad <- [
+              # 走向一个角色：未知选择器、选择器不是字符串、与去处同写。
+              %{@npc | "activities" => [%{confront | "person" => "trusted"}]},
+              %{@npc | "activities" => [%{confront | "person" => 21}]},
+              %{@npc | "activities" => [Map.put(rest, "person", "distrusted")]},
               # 人格卡：键不在词表、级别越界、personal 不是字符串。
               %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}},
               %{@npc | "persona" => %{"traits" => %{"thrifty" => 10}, "personal" => ""}},
@@ -588,6 +601,67 @@ defmodule NpcServer.NpcRegistryTest do
         assert is_integer(recall_ms) and recall_ms >= 0
         assert asked =~ "Character: Lin, a builder."
         assert query == recall["query"]
+
+        assert :ok = NpcRegistry.remove(name)
+      end)
+    end
+
+    # 走向一个角色（S1-F），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）：Jev 选中“去找我不信任的人”，
+    # 附近没有人、Life 里也没有关系 → 不发 travel，活动以 failed (travel: nobody_distrusted) 结束，下一次发问的
+    # “最近做过的事”与“刚发生的事”里都写着它。
+    @tag timeout: 120_000
+    test "an npc row choosing to face a distrusted person with nobody distrusted nearby reports nobody_distrusted" do
+      answer = %{"answers" => %{"activity" => %{"type" => "choice", "choice" => "confront", "confidence" => 0.6}}}
+      test = self()
+
+      jev =
+        http_stub(fn :post, "/jev", body ->
+          send(test, {:jev_http, body})
+          answer
+        end) <> "/jev"
+
+      hindsight =
+        http_stub(fn
+          :put, "/v1/default/banks/npc-life-" <> _cid, _ ->
+            %{}
+
+          :get, "/v1/default/banks/npc-life-" <> rest, _ ->
+            cond do
+              rest =~ "/mental-models/" -> %{"content" => "Nothing recorded yet."}
+              rest =~ "/operations?" -> %{"operations" => [], "total" => 0}
+              rest =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
+              rest =~ "/stats" -> %{}
+            end
+
+          :post, "/v1/default/banks/npc-life-" <> rest, _body ->
+            true = String.ends_with?(rest, "/memories/recall")
+            %{"results" => []}
+        end)
+
+      name = "住民#{System.unique_integer([:positive])}"
+
+      params = %{
+        @npc
+        | "activities" => [
+            %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+          ]
+      }
+
+      with_env(%{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight}, fn ->
+        assert {:ok, %{pid: pid}} =
+                 NpcRegistry.put(name, %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "npc", params: params})
+
+        assert_receive {:jev_http, first}, 30_000
+        assert first["state"] =~ "Recent activities: None yet."
+
+        assert_receive {:jev_http, %{"state" => again}}, 20_000
+        assert again =~ "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
+
+        assert again =~
+                 ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\.\n/
+
+        # 没有发出过 travel：身体没有任何 travel 的终态。
+        refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))
 
         assert :ok = NpcRegistry.remove(name)
       end)

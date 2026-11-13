@@ -19,7 +19,9 @@ defmodule NpcServer.Brain.Tree do
   | each | `{:each, 键, as, 子}` | 遍历黑板 `键` 的列表，每项写进黑板 `as` 再执行子节点；行为同 seq |
   | succeed / fail | `{:succeed, 子, opts}` / `{:fail, 子}` | 子结束后强制 SUCCESS / FAILURE；`succeed` 带 `log: 标签` 时子 FAILURE 记一行 `标签 entity= act= reason=`（取黑板 `:last_failure`），带 `context: 键` 时追加 `context=` 该黑板值；带 `store: 键` 时把子节点的结局（`:success` / `:failure`）写进黑板 `键`（`:last_failure` 只增不清，要知道“刚才这一段是否失败”读这个键） |
 
-  `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end`（tick 时求值）。
+  `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end` / `fn 黑板, 观察 -> map end`
+  （tick 时求值；观察是树手里最新的 Observation）。参数函数可以返回 `{:error, 原因}`：这一步本地 FAILURE、不发给 Body，
+  `:last_failure` 记 `%{act: 名字, reason: 原因}`（如统一形态 NPC 选人失败 `nobody_distrusted`，见 `NpcServer.Trees.npc/1`）。
   id 由树单调分配（1, 2, …）。done → SUCCESS（`store: 键` 时把 `data` 写进黑板；`append: {键, fun}` 时把 `fun.(data)` 追加到
   黑板 `键` 的列表末尾，如 Settler 把扩张出来的新工地加进工地列表）；rejected / superseded → FAILURE，
   并把 `%{act: 名字, reason: 原因}` 写进黑板 `:last_failure`（superseded 的原因记 `:superseded`）。构造结果是
@@ -204,16 +206,27 @@ defmodule NpcServer.Brain.Tree do
 
   defp tick({:act, name, args}, node, ctx), do: tick({:act, name, args, []}, node, ctx)
 
-  # 未开始：构造命令并发出（构造失败本地 FAILURE，不发给 Body）。
+  # 未开始：构造命令并发出（参数函数给出 {:error, 原因} 或构造失败都本地 FAILURE，不发给 Body）。
   defp tick({:act, name, args, _opts}, nil, ctx) do
-    args = if is_function(args, 1), do: args.(ctx.blackboard), else: args
+    args =
+      cond do
+        is_function(args, 1) -> args.(ctx.blackboard)
+        is_function(args, 2) -> args.(ctx.blackboard, ctx.observation)
+        true -> args
+      end
 
-    case Abilities.command(name, args, ctx.next_id, ctx.profile) do
-      %{verb: verb} when verb in [:unknown_tool, :invalid_tool_arguments] ->
-        failed(name, verb, ctx)
+    case args do
+      {:error, reason} ->
+        failed(name, reason, ctx)
 
-      command ->
-        start(Map.delete(command, :id), nil, ctx)
+      args ->
+        case Abilities.command(name, args, ctx.next_id, ctx.profile) do
+          %{verb: verb} when verb in [:unknown_tool, :invalid_tool_arguments] ->
+            failed(name, verb, ctx)
+
+          command ->
+            start(Map.delete(command, :id), nil, ctx)
+        end
     end
   end
 
@@ -334,7 +347,7 @@ defmodule NpcServer.Brain.Tree do
         )
 
     cond do
-      is_function(args, 1) ->
+      is_function(args, 1) or is_function(args, 2) ->
         :ok
 
       is_map(args) ->
@@ -349,7 +362,7 @@ defmodule NpcServer.Brain.Tree do
 
       true ->
         raise ArgumentError,
-              "behaviour tree act #{inspect(name)} arguments must be a map or a 1-arity function"
+              "behaviour tree act #{inspect(name)} arguments must be a map or a 1- or 2-arity function"
     end
   end
 

@@ -19,7 +19,7 @@ defmodule NpcServer.Brain do
       %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
       %{id:, verb: :skill, skill: :gather, args: %{"box" => [[x0,y0,z0],[x1,y1,z1]], "material" => m, "units" => n, "tool_id" => t}}
       %{id:, verb: :skill, skill: :expand, args: %{"definition" => hex, "region" => [[x0,z0],[x1,z1]], "tool_id" => t, "spacing" => n}}
-      %{id:, verb: :skill, skill: :travel, args: %{"x" => x, "z" => z}}
+      %{id:, verb: :skill, skill: :travel, args: %{"x" => x, "z" => z}}            # 或 %{"entity_id" => id, "entity_epoch" => epoch}：走到该角色身边
       %{id:, verb: :cancel_skill, call: 原技能调用号}
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}

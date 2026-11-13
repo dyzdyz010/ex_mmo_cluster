@@ -35,8 +35,15 @@ defmodule NpcServer.Mind do
   哪几座来自 Life 的记忆，在不在只认发问那一刻 World 的现查结果；没有这样的建筑就一句不写。“受损但还在”不写（没有便宜的逐格读法）。
 
   `recall_query/2` 由处境拼出那一次召回的问句（附近的人 + 各候选的判据），一次选择只召回一次。
+
+  `person/2` 按选择器从此刻的观察与 Life 的信任里选一个人（候选活动“去找某人”，`NpcServer.Trees.npc/1`）；
+  “不信任”的界限与快照里写 `Distrusts` 的界限是同一个值。
   """
   alias NpcServer.Persona
+  alias NpcServer.Life.State
+
+  # 信任不高于它即“不信任”：快照写 Distrusts 与 person(:distrusted, _) 选人共用。
+  @distrusts -0.2
 
   @doc """
   一份快照：有序的栏 `[{栏名, 正文}]`。`profile` 含 `who` 与 `persona`；`observation` 是 Body 的 Observation；
@@ -77,6 +84,34 @@ defmodule NpcServer.Mind do
       " What do I remember about these people, places and tasks?"
   end
 
+  @doc """
+  按选择器选一个人 → `{:ok, %{entity_id:, entity_epoch:}}`（与关注动词的目标同一身份形状）或 `{:error, 原因}`。
+  `:distrusted`：观察里除自己以外、Life 信任 ≤ −0.2 的人中信任最低者；同值取近的（与处境栏同一距离），再同取 entity_id 小的。
+  没有这样的人 → `:nobody_distrusted`；观察里还没有 Life 的规范状态（Runtime 还没收到）→ `:life_not_ready`。
+  """
+  @spec person(:distrusted, map()) :: {:ok, map()} | {:error, :nobody_distrusted | :life_not_ready}
+  def person(:distrusted, %{life: %{state: state}, self: self, entities: entities}) do
+    trust = Map.new(State.relationships(state), &{&1.actor, &1.trust})
+
+    candidates =
+      for e <- entities,
+          e.entity_id != self.entity_id,
+          value = Map.get(trust, e.entity_id),
+          value <= @distrusts,
+          do: {{value, distance(self.position, e.position), e.entity_id}, e}
+
+    case candidates do
+      [] ->
+        {:error, :nobody_distrusted}
+
+      _ ->
+        {_, e} = Enum.min_by(candidates, &elem(&1, 0))
+        {:ok, %{entity_id: e.entity_id, entity_epoch: e.entity_epoch}}
+    end
+  end
+
+  def person(:distrusted, _observation), do: {:error, :life_not_ready}
+
   @doc "一项活动的结局的英文写法（“最近做过的事”一栏与活动经历共用）。"
   @spec result(:completed | {:failed, String.t(), String.t()}) :: String.t()
   def result(:completed), do: "completed"
@@ -104,7 +139,7 @@ defmodule NpcServer.Mind do
 
   # 中间一段（接近中立）不写：返回 nil。
   defp trust(trust) when trust <= -0.6, do: "Deeply distrusts"
-  defp trust(trust) when trust <= -0.2, do: "Distrusts"
+  defp trust(trust) when trust <= @distrusts, do: "Distrusts"
   defp trust(trust) when trust >= 0.6, do: "Deeply trusts"
   defp trust(trust) when trust >= 0.2, do: "Trusts"
   defp trust(_trust), do: nil

@@ -116,12 +116,13 @@ defmodule NpcServer.Trees do
   每一轮先发 `choose_activity`（`NpcServer.Selector`，异步问 Jev），应答写进黑板 `:choice`，再执行被选中的那一项直到它结束，
   结局（`:success` / `:failure`）写进黑板 `:ended`；下一轮发问时把它连同失败原因报给选择器。
 
-  profile：`activities` 是有序候选表 `[%{name:, criterion:, run:}]`（`NpcServer.Registry` 在登记边界构造）。`run` 两种：
+  profile：`activities` 是有序候选表 `[%{name:, criterion:, run:}]`（`NpcServer.Registry` 在登记边界构造）。`run` 三种：
 
   | run | 分支 |
   |---|---|
   | `{:skill, 能力名, 参数}` | 一次技能调用（参数是 JSON 形，原样透传给技能）；技能的终态就是这项活动的结局 |
   | `{:place, [x, z], ticks}` | `travel` 到该地点，再原地待 `ticks`（60 Hz）；走不到则失败 |
+  | `{:person, 选择器, ticks}` | 分支开始时按选择器从树手里最新的观察与 Life 关系选一个人（`NpcServer.Mind.person/2`），`travel` 到他身边（水平 2.0 米内），再原地待 `ticks`；选不到人（`nobody_distrusted`、`life_not_ready`）不发 travel，这一项以 travel 失败结束；目标离开（`stale_target`）或走远（`target_moved`）同样失败 |
 
   | 规则 | 内容 |
   |---|---|
@@ -148,6 +149,15 @@ defmodule NpcServer.Trees do
 
   defp run({:place, [x, z], ticks}),
     do: {:seq, [{:act, "travel", %{"x" => x, "z" => z}}, {:wait, ticks}]}
+
+  defp run({:person, who, ticks}),
+    do: {:seq, [{:act, "travel", &person_args(&1, &2, who)}, {:wait, ticks}]}
+
+  # 选人失败原样返回 {:error, 原因}：树把这一步记为 travel 失败，不发命令。
+  defp person_args(_blackboard, observation, who) do
+    with {:ok, %{entity_id: id, entity_epoch: epoch}} <- NpcServer.Mind.person(who, observation),
+         do: %{"entity_id" => id, "entity_epoch" => epoch}
+  end
 
   defp chosen?(%{choice: %{activity: chosen}}, _observation, name), do: chosen == name
 

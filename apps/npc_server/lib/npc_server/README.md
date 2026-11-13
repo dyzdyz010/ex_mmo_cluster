@@ -52,7 +52,9 @@
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
   内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位与 expand 走向地块都用它）、`expand`（在作者划定的区域里找地块、地表略有起伏先平整、缺料自己采、放下已发布定义，
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位与 expand 走向地块都用它。目标也可以是一个角色（`entity_id` +
+  `entity_epoch`）：每段开头 `get_target_status` 重读他的位置，水平 2.0 米内算到，否则朝他这一侧 1.5 米的落脚点走一段；段数预算 =
+  起步时段数 + 2，用完 `target_moved`，他离开观察 `stale_target`）、`expand`（在作者划定的区域里找地块、地表略有起伏先平整、缺料自己采、放下已发布定义，
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
   `Skill.call/2`（编步号、等 Outcome）；一个技能组合另一个技能（expand 调 gather 的 `run/3`）时给被组合的那次一个步号命名空间。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
@@ -394,7 +396,10 @@ flowchart LR
   `{"traits": {高标记形容词: 1..9}, "personal": 英文自由文本}`，键只能取自 `Persona.pairs/0` 的 52 个高标记词）、`tools`、
   `activities`（有序、非空、名字唯一；次序即给 Jev 的次序）。每个候选有 `name`、`criterion`（给 Jev 当判据的一句英文）和“怎么做”：
   `{"skill": "build" | "gather" | "expand" | "travel", "args": 技能参数}`，或 `{"place": [x, z], "stay_ticks": n}`（travel 过去再待
-  n tick，60 Hz）。技能表由候选推出，不另写 `skills`。坏人格卡、空候选表、重名候选、未知技能在 `put/2` 被拒并说明原因。
+  n tick，60 Hz），或 `{"person": "distrusted", "stay_ticks": n}`（选中时从当时的观察与 Life 信任里选附近信任 ≤ −0.2 中最低的人，
+  `Mind.person/2`，travel 走到他身边再待 n tick；选不到人以 `failed (travel: nobody_distrusted)` 结束，Life 状态还没到是
+  `life_not_ready`）。技能表由候选推出，不另写 `skills`。坏人格卡、空候选表、重名候选、未知技能、未知选择器、place 与 person
+  同写在 `put/2` 被拒并说明原因。
 - **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
   `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
   只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；

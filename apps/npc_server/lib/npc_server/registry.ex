@@ -26,13 +26,16 @@ defmodule NpcServer.Registry do
       activities  有序候选表（非空，名字唯一；次序即给 Jev 的次序）。每项：
                     {"name": 候选名, "criterion": 给 Jev 当判据的一句英文, "skill": 技能名, "args": 技能参数（JSON 形，原样透传）}
                     {"name": 候选名, "criterion": 同上, "place": [x, z], "stay_ticks": 待多久（tick，60 Hz，正整数）}
+                    {"name": 候选名, "criterion": 同上, "person": 选择器, "stay_ticks": 同上}
                   技能只能是 build / gather / expand / travel（参数见 `NpcServer.Brain` 的共用技能命令）；去处由 travel 走过去。
+                  “去找某人”的选择器只有 "distrusted"（附近信任 ≤ −0.2 中最低的那个人，`NpcServer.Mind.person/2`），
+                  选中时由 travel 走到他身边再待 stay_ticks。每项恰好四个键：place 与 person 同写、未知选择器都被拒。
       tools       工具带（同 settler）。
       life        可省略。统一形态必带 Life：情绪与关系、近期经历、Hindsight 的认识与召回都经它进心智快照（`NpcServer.Mind`）。
                   省略或 true → Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`（没有即拒绝登记）；`{"url": 地址}` 显式给出；
                   false 被拒。情绪评价是规则模式；不套 `Brain.Social`（情绪只通过快照影响 Jev 的选择）。
 
-  profile 的技能表由候选推出（用到哪些技能就配哪些；有去处就加 travel），不另写 `skills`。不需要任何 LLM 接口
+  profile 的技能表由候选推出（用到哪些技能就配哪些；有去处或“去找某人”就加 travel），不另写 `skills`。不需要任何 LLM 接口
   （Hindsight 服务自己的后台巩固用它自己的模型）。
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`NpcServer.Genesis`）只来自 llm / life 行的
@@ -59,6 +62,8 @@ defmodule NpcServer.Registry do
   @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
   # 统一形态的候选活动可用的技能：都不需要模型接口（design_house 要 LLM，不在其中）。
   @activity_skills %{"build" => :build, "gather" => :gather, "expand" => :expand, "travel" => :travel}
+  # “去找某人”候选可用的选择器（`NpcServer.Mind.person/2`）：现在只有 confront_wrecker 要用的 distrusted。
+  @people %{"distrusted" => :distrusted}
   # 一次 Jev 请求的超时（毫秒）。选择是秒级决策（离线实验 4,076 次里最慢 3.12 秒），不沿用给 LLM 定的 60 秒缺省。
   @jev_timeout_ms 10_000
   @life_llm_limit 60
@@ -160,11 +165,12 @@ defmodule NpcServer.Registry do
       persona: card,
       activities: activities,
       tools: belt(tools),
-      # 技能表由候选推出：技能候选用到的技能，去处候选用 travel。
+      # 技能表由候选推出：技能候选用到的技能，去处与“去找某人”候选用 travel。
       skills:
         Map.new(activities, fn
           %{run: {:skill, name, _}} -> {Map.fetch!(@activity_skills, name), %{}}
           %{run: {:place, _, _}} -> {:travel, %{}}
+          %{run: {:person, _, _}} -> {:travel, %{}}
         end),
       jev: %{
         url: System.fetch_env!("TYPESAFE_API_URL"),
@@ -421,7 +427,7 @@ defmodule NpcServer.Registry do
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}
 
-  # 统一形态的一项候选：技能调用，或去一个地点待一段时间。
+  # 统一形态的一项候选：技能调用，去一个地点待一段时间，或去找某人（按选择器）待一段时间。
   defp activity(%{"name" => name, "criterion" => criterion, "skill" => skill, "args" => args} = json)
        when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
               is_map_key(@activity_skills, skill) and is_map(args),
@@ -434,6 +440,13 @@ defmodule NpcServer.Registry do
        when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
               is_number(x) and is_number(z) and is_integer(ticks) and ticks > 0,
        do: %{name: name, criterion: criterion, run: {:place, place, ticks}}
+
+  defp activity(
+         %{"name" => name, "criterion" => criterion, "person" => person, "stay_ticks" => ticks} = json
+       )
+       when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
+              is_map_key(@people, person) and is_integer(ticks) and ticks > 0,
+       do: %{name: name, criterion: criterion, run: {:person, Map.fetch!(@people, person), ticks}}
 
   defp spell({name, program}) when is_binary(program), do: {name, program}
   defp flag(value) when is_boolean(value), do: value

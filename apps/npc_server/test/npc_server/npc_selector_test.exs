@@ -359,6 +359,56 @@ defmodule NpcServer.NpcSelectorTest do
       # 树没有结束。
       assert state.finished == nil
     end
+
+    # 走向一个角色（S1-F）：选人发生在分支开始的那一刻，读树手里最新的观察与其中的 Life 规范状态。
+    defp confront_profile do
+      confront = %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+      stub_profile(%{@params | "activities" => [confront]})
+    end
+
+    # 自己（7）在原点；2 在 5 米外，代次 5。trust：Life 关系表（角色 id => 信任）。
+    defp seen(tick, trust) do
+      state =
+        put_in(
+          NpcServer.Life.State.new(7, "w1", 0, 0),
+          ["relationships"],
+          Map.new(trust, fn {actor, value} -> {to_string(actor), %{"trust" => value, "source_seq" => 1}} end)
+        )
+
+      {:observation,
+       %{
+         self: %{entity_id: 7, tick: tick, position: {0.0, 64.0, 0.0}},
+         entities: [
+           %{entity_id: 7, entity_epoch: 1, position: {0.0, 64.0, 0.0}},
+           %{entity_id: 2, entity_epoch: 5, position: {3.0, 64.0, 4.0}}
+         ],
+         life: %{state: state, now_ms: 0, thanks: 0}
+       }}
+    end
+
+    test "a person candidate travels to the distrusted person by identity, then stays" do
+      Tree.init(confront_profile())
+      |> script([
+        {seen(0, %{2 => -0.35}), [%{id: 1, verb: :choose_activity, ended: nil}]},
+        # 选中：travel 的参数恰是那个人的身份（不是坐标）。
+        {done(1, :choose_activity, %{activity: "confront"}),
+         [%{id: 2, verb: :skill, skill: :travel, args: %{"entity_id" => 2, "entity_epoch" => 5}}]},
+        # 到了之后待 60 tick：从最近一次观察的 tick 0 起算，60 到期，下一个事件再问。
+        {done(2, :travel, %{}), []},
+        {seen(60, %{2 => -0.35}), []},
+        {seen(61, %{2 => -0.35}), [%{id: 3, verb: :choose_activity, ended: :completed}]}
+      ])
+    end
+
+    test "nobody distrusted: no command; the next ask reports failed travel nobody_distrusted" do
+      Tree.init(confront_profile())
+      |> script([
+        # 2 的信任 −0.10：不算不信任。
+        {seen(0, %{2 => -0.10}), [%{id: 1, verb: :choose_activity, ended: nil}]},
+        {done(1, :choose_activity, %{activity: "confront"}), []},
+        {seen(1, %{2 => -0.10}), [%{id: 2, verb: :choose_activity, ended: {:failed, "travel", "nobody_distrusted"}}]}
+      ])
+    end
   end
 
   describe "real Runtime + Tree + Life" do

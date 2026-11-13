@@ -1,6 +1,6 @@
 defmodule NpcServer.NpcMindTest do
   @moduledoc """
-  只测试：心智快照 `NpcServer.Mind` 的六栏英文转写、召回问句，以及 Life 给快照的只读投影
+  只测试：心智快照 `NpcServer.Mind` 的六栏英文转写、召回问句、按选择器选人（`person/2`），以及 Life 给快照的只读投影
   （`Life.State.feelings/2`、`relationships/1`）。
 
   范围与替身：
@@ -159,6 +159,59 @@ defmodule NpcServer.NpcMindTest do
       assert "I am deciding what to do next. Nobody is nearby. " <>
                "What I could do: Build the hut on the north plot. Go home and rest. " <>
                "What do I remember about these people, places and tasks?" == Mind.recall_query(profile(), alone())
+    end
+  end
+
+  # 走向一个角色（S1-F）：候选活动 `{"person": "distrusted"}` 被选中时，由此刻的观察与 Life 的信任选出一个人。
+  describe "person" do
+    # 自己（7）在原点；2 在 (3, 0, 4) → 5 米，信任 −0.35；3 在 (0, 0, 9) → 9 米，−0.70；4 在 1 米，+0.25；5 没有关系。
+    # 9 的信任 −0.90 最低，但不在观察里（不在附近）。
+    defp people(trust, entities) do
+      relationships =
+        Map.new(trust, fn {actor, value} -> {to_string(actor), %{"trust" => value, "source_seq" => 1}} end)
+
+      state = put_in(State.new(7, "w1", 0, 0), ["relationships"], relationships)
+
+      %{
+        self: %{entity_id: 7, position: {0.0, 64.0, 0.0}},
+        entities: entities,
+        life: %{state: state, now_ms: 0, thanks: 0}
+      }
+    end
+
+    defp at(id, x, z), do: %{entity_id: id, entity_epoch: id + 10, position: {x, 64.0, z}}
+
+    defp everyone, do: [at(7, 0.0, 0.0), at(2, 3.0, 4.0), at(3, 0.0, 9.0), at(4, 1.0, 0.0), at(5, 2.0, 0.0)]
+    defp trust, do: %{2 => -0.35, 3 => -0.70, 4 => 0.25, 9 => -0.90}
+
+    test "the least trusted person in sight, at −0.2 or below; nearer on a tie, then the smaller id" do
+      # 3（−0.70）比 2（−0.35）更不信任；9 更低但不在观察里。
+      assert {:ok, %{entity_id: 3, entity_epoch: 13}} == Mind.person(:distrusted, people(trust(), everyone()))
+
+      # 3 不在观察里 → 2。
+      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
+               Mind.person(:distrusted, people(trust(), List.delete(everyone(), at(3, 0.0, 9.0))))
+
+      # 2 与 3 同为 −0.35：近的 2（5 米 < 9 米）。
+      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
+               Mind.person(:distrusted, people(%{trust() | 3 => -0.35}, everyone()))
+
+      # 同信任、同距离（6 在 (−3, 0, −4) 也是 5 米）：id 小的 2，与列出的次序无关。
+      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
+               Mind.person(:distrusted, people(%{2 => -0.35, 6 => -0.35}, [at(6, -3.0, -4.0), at(2, 3.0, 4.0)]))
+
+      # 界限 −0.2 本身入选（与快照写 Distrusts 同一界限）。
+      assert {:ok, %{entity_id: 2, entity_epoch: 12}} == Mind.person(:distrusted, people(%{2 => -0.2}, everyone()))
+    end
+
+    test "nobody distrusted in sight, or no Life state yet: an explicit reason" do
+      # 只有 −0.10（接近中立）与正的信任。
+      assert {:error, :nobody_distrusted} == Mind.person(:distrusted, people(%{2 => -0.10, 4 => 0.25}, everyone()))
+      # 只有自己。
+      assert {:error, :nobody_distrusted} == Mind.person(:distrusted, people(%{7 => -1.0}, [at(7, 0.0, 0.0)]))
+      # Runtime 还没收到 Life 的规范状态：观察里没有 life。
+      assert {:error, :life_not_ready} ==
+               Mind.person(:distrusted, Map.delete(people(trust(), everyone()), :life))
     end
   end
 

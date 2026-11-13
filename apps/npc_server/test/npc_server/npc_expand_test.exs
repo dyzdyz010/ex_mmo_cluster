@@ -221,6 +221,26 @@ defmodule NpcServer.NpcExpandTest do
       assert [{30.0, 0.0}] == Travel.waypoints({0.0, 0.0}, {30.0, 0.0}, 30)
     end
 
+    test "approach: arrived within 2.0 m, else one leg toward the point 1.5 m short of the person, exhausted when out of legs" do
+      # (0, 0) → (10, 0)：落脚点在目标朝我这一侧 1.5 米 (8.5, 0)，8.5 米一段直达。
+      assert {:go, {8.5, 0.0}} == Travel.approach({0.0, 0.0}, {10.0, 0.0}, 3)
+      # 水平距离恰 2.0：到了（还剩 0 段也一样）。
+      assert :arrived == Travel.approach({0.0, 0.0}, {2.0, 0.0}, 3)
+      assert :arrived == Travel.approach({0.0, 0.0}, {0.0, -2.0}, 0)
+      # 剩 0 段且没到：放弃。
+      assert :exhausted == Travel.approach({0.0, 0.0}, {10.0, 0.0}, 0)
+
+      # (0, 0) → (60, 80)：距离 100，方向 (0.6, 0.8)，落脚点 (60 − 0.9, 80 − 1.2) = (59.1, 78.8)；到它 98.5 米，
+      # 每段上限 30 → ⌈98.5 / 30⌉ = 4 段，首段终点 (59.1 / 4, 78.8 / 4) = (14.775, 19.7)。
+      {lx, lz} = Travel.short_of({0.0, 0.0}, {60.0, 80.0}, 1.5)
+      assert_in_delta 59.1, lx, 1.0e-9
+      assert_in_delta 78.8, lz, 1.0e-9
+      assert 4 == length(Travel.waypoints({0.0, 0.0}, {lx, lz}, 30))
+      assert {:go, {x, z}} = Travel.approach({0.0, 0.0}, {60.0, 80.0}, 6)
+      assert_in_delta 14.775, x, 1.0e-9
+      assert_in_delta 19.7, z, 1.0e-9
+    end
+
     test "chunks: whole x slabs within the look limit; z strips when one slab is too big" do
       # 10 × 6 × 10 = 600 格：一片 x = 60 格 → 每块 8 片。
       assert [{{0, 0, 0}, {7, 5, 9}}, {{8, 0, 0}, {9, 5, 9}}] ==
@@ -425,6 +445,80 @@ defmodule NpcServer.NpcExpandTest do
     assert %{status: :done, data: %{columns: columns, seq: [seq, seq]}} = outcome(body, 2, 10_000)
     assert [63, 63, 64, 65, 66, 67, 68, 69, 70, 71, 71] == Enum.map(columns, & &1.y)
     assert Enum.all?(columns, &(&1.material == @stone and &1.placed_by == nil and not &1.refined))
+  end
+
+  # 走向一个角色（S1-F）：两个真实 Body 在同一真实 Scene / World 里，跟随者用 Routine 大脑直接下 travel 技能命令
+  # （目标给 entity_id + entity_epoch），目标是另一个真实 Body（Routine，空步骤，由测试直接下 move_to）。
+  defp two_bodies(target_spawn) do
+    fixture = NpcWorld.start([])
+    profile = %{steps: [], tools: %{1 => "镐"}, skills: %{travel: %{}}, memory: NpcWorld.Memory}
+    %{body: follower, sup: sup} = NpcWorld.body(fixture, {NpcServer.Brain.Routine, profile})
+
+    {:ok, target} =
+      DynamicSupervisor.start_child(
+        sup,
+        {Body,
+         [
+           cid: @neighbour,
+           scene_id: 1,
+           spawn: target_spawn,
+           claims: fixture.claims,
+           route_module: NpcWorld.Route,
+           brain: {NpcServer.Brain.Routine, %{steps: []}}
+         ]}
+      )
+
+    grounded(follower)
+    grounded(target)
+    # 跟随者的观察里有了目标：取它此刻的代次。
+    %{entity_epoch: epoch} = NpcWorld.await(fn -> Body.observe(follower).entities[@neighbour] end)
+    %{follower: follower, target: target, sup: sup, epoch: epoch}
+  end
+
+  defp horizontal({x, _, z}, {tx, _, tz}), do: :math.sqrt((x - tx) ** 2 + (z - tz) ** 2)
+
+  # 跟随者 (4, 10)，目标 (16, 10)：相距 12 米，起步时落脚点 (14.5, 10)，一段 → 预算 1 + 2 = 3 段。跟随者出发后目标向东走 8 米到
+  # (24, 10)；第一段走到 (14.5, 10) 时目标已在约 9.5 米外，重读后再走。done 的位置离目标停下的位置水平 ≤ 2.0 米，且至少走了两段
+  # （只按起步时的位置走的实现停在 (14.5, 10)，离目标约 9.5 米）。
+  @tag timeout: 300_000
+  test "travel to a person: re-reads the target each leg and ends within 2.0 m of where it stopped" do
+    %{follower: follower, target: target, epoch: epoch} = two_bodies({16.0, 66.0, 10.0})
+
+    Body.command(follower, %{
+      id: 1,
+      verb: :skill,
+      skill: :travel,
+      args: %{"entity_id" => @neighbour, "entity_epoch" => epoch}
+    })
+
+    NpcWorld.await(fn -> match?(%{verb: :move_to}, Body.observe(follower).move) end)
+    Body.command(target, %{id: 1, verb: :move_to, position: {24.0, 10.0}, tolerance: 0.5})
+    assert %{status: :done} = outcome(target, 1, 30_000)
+
+    assert %{verb: :travel, status: :done, data: %{position: position, legs: legs}} =
+             outcome(follower, 1, 120_000)
+
+    assert horizontal(position, Body.observe(target).position) <= 2.0
+    assert legs >= 2
+  end
+
+  # 目标在跟随者走第一段时离开（它的 Body 被停掉 → 离开 Scene）：下一段开头重读得 stale_target。跟随者 (4, 10)，目标 (30, 10)：
+  # 第一段 20.5 米，足够在途中停掉目标。
+  @tag timeout: 300_000
+  test "travel to a person who leaves: rejected stale_target at the next re-read" do
+    %{follower: follower, target: target, sup: sup, epoch: epoch} = two_bodies({30.0, 66.0, 10.0})
+
+    Body.command(follower, %{
+      id: 1,
+      verb: :skill,
+      skill: :travel,
+      args: %{"entity_id" => @neighbour, "entity_epoch" => epoch}
+    })
+
+    NpcWorld.await(fn -> match?(%{verb: :move_to}, Body.observe(follower).move) end)
+    :ok = DynamicSupervisor.terminate_child(sup, target)
+
+    assert %{verb: :travel, status: :rejected, reason: :stale_target} = outcome(follower, 1, 120_000)
   end
 
   @tag timeout: 600_000
