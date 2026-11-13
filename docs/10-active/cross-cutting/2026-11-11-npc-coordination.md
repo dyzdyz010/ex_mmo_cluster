@@ -17,6 +17,19 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第六个统筹会话的进展（2026-11-13）——接手先读这一节，再读下面第五个的
+
+- **A（S1-F）已实现、已测试、已提交 `4a3ea999`（未推送）**。“走向某个角色”并入 `travel`：候选 `{"person":"distrusted","stay_ticks":n}`，`Mind.person/2` 选人，`travel` 每段重读位置、2.0 m 到达、预算 = 起步段数 + 2。
+  测试：定向五文件 72 通过（`.demo/observe/npc-slice1-20261112/s1f/targeted-1.log`）；整套缺省（单进程、占位 `NPC_LLM_*`）`s1f/full-2.log` 412/413，唯一失败 `NpcBodyWorldTest` “cancelling a skill preserves an already committed World transaction”
+  （`Process.monitor` 在 worker 已退出后才挂，收到 `:noproc` 而非 `:shutdown`；该测试不涉及 travel，本次没动它，在 `full-1` 里通过）。**这一项没有在隔离环境重跑确认**（WSL 被别的会话的 CI 占用，没再抢）。
+  `s1f/full-1.log` 是交叠的两次运行，**不是证据**；`s1f/impl-report.md` 里“iso-1 / full-2 没跑过”的说法与目录不符，那两份日志是本会话重新生成的（`iso-1.log` 内容为本会话跑的 16/17，失败项 `NpcEmotionMovementTest` 是未设 `NPC_LLM_URL`，设占位后在 `full-2` 通过）。
+  真实服务端上的 `confront_wrecker` 改用 `"person":"distrusted"` 尚未实跑，并入 B 的第一次服务端短实跑。临时 PG `npc-s1f-pg-20261113` 与其匿名卷已删。
+- **B1（读接口）已做**：本线 Hindsight 容器 `npc-s1g-hindsight-20261113`（127.0.0.1:18933，卷 `npc-s1g-hindsight-20261113-pg` / `-hf`，**仍在运行**，bank `smoke-s1g` 只是冒烟）。能力清单 `s1g/hindsight-capabilities.md`，openapi 全文 `s1g/hindsight-openapi.json`。
+  要点：recall 支持 `types` / `tags`+`tags_match` / `tag_groups` / `prefer_observations` / `min_scores` / `temporal_window` / `include.entities|chunks|source_facts`；retain 支持 `context` / `tags` / `entities` / `metadata` / `observation_scopes` / `strategy`；有 reflect、directives、bank 配置（各类 mission）、实体与别名接口；
+  没有按实体过滤的 recall 字段（按实体取事实只能用 `memories/list?entity_id=`）；多路只能多次 recall 再合并。未实测：reflect、mental-model、observation 召回内容。
+- **B2/B3（内容规范与召回方案）草案已写**：[`2026-11-13-npc-mind-content-spec.md`](2026-11-13-npc-mind-content-spec.md)，**待用户过目**；用户认可前不动 `apps/` 里的 Mind / Life / Hindsight / Selector。
+  离线测量（§5）的设计已写进该页，期望“方向与归因”；尚未运行。
+
 ### 第五个统筹会话的结果（2026-11-12 / 13）——接手先读这一节
 
 **一句话**：S1-E 离线设计 → 用户批准改 Nearby 一句 → S1-C3 短实跑 → **(c) 按运行前的规则通过**。薄片一三条验收：(a) 已验收、(b) 已验收（基线少取 1 次）、(c) 已验收。
