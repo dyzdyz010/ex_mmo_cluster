@@ -13,9 +13,9 @@ defmodule NpcServer.Selector do
     T->>R: choose_activity（带上一项活动怎样结束）
     R->>R: ended/2 记账；结束的活动作为经历交给 Life
     R->>W: 起 worker
-    W->>L: question/3：Life.mind（情绪、近期经历、认识 + 一次召回）
+    W->>L: question/3：Life.mind（情绪、近期经历、认识 + 按处境并行的多路召回）
     L-->>W: 视图（读不到 → 这次选择失败，不问 Jev）
-    W-->>R: 这次问的是什么（state 全文、召回问句与耗时）
+    W-->>R: 这次问的是什么（state 全文、各路召回与耗时）
     W->>J: ask/3：HTTPS（心智快照 + 有序候选）
     J-->>W: top1
     W-->>R: 结果
@@ -29,11 +29,12 @@ defmodule NpcServer.Selector do
   - **候选**：`profile.activities`，有序列表 `[%{name:, criterion:, run:, place_name:}]`（注册参数给出，见 `NpcServer.Registry`）。
     次序由列表承载，原样进请求体。当前没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据
     （材料单、地块占用都要另查 World），做不成的候选由执行失败后写进“最近做过的事”来体现。
-  - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（六栏），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
-    近期经历、认识，并针对当前处境召回一次（问句 `Mind.recall_query/2`）。偏好类选择直接取 top1，不设置信度门槛
+  - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
+    近期经历、认识，并按处境分路召回（附近的人、我的建筑、未了与感受，`Mind.recall_queries/2`；各路在发问 worker 里并行，
+    合并成一张清单）。偏好类选择直接取 top1，不设置信度门槛
     （调研稿结论 3：这类题置信度中位数只有 0.58–0.66 而 top1 稳定）；`Jev.verdict/3` 的 0.85 门槛只留给中断与 harm 护栏。
   - **保持多久**：选定后执行到该活动的终止条件为止，不按定时器改选。
-  - **失败**：心智读不到（Life 还没加载完、认识还没有缓存、召回出错或超时，原因 `{:mind_unavailable, 细节}`，不发 Jev 请求）、
+  - **失败**：心智读不到（Life 还没加载完、认识还没有缓存、任何一路召回出错或超时，原因 `{:mind_unavailable, 细节}`，不发 Jev 请求）、
     HTTP 出错、应答不成形、选项不在候选里都是显式失败（Outcome rejected + `npc_select_failed`），
     不换别的选择器、不取缺省活动、不把读不到的记忆当成“没有记忆”；树等一会儿再问一次（`Trees.npc/1`）。
   - **过期应答**：命令与 Outcome 按 id 对应，由 `Brain.Tree` 与 Runtime 现有的编号机制丢弃。
@@ -42,13 +43,14 @@ defmodule NpcServer.Selector do
   `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, asked: 最近一次问 Jev 的内容 | nil}`，条目按选中次序排列
   （旧在前），只留最近 5 条（`@recent`）：
   `%{activity:, trigger:, confidence:, latency_ms:, recall_ms:, result: nil | :completed | {:failed, 动作名, 原因文字}}`。
-  `result` 为 nil 的末项就是正在做的活动。`asked` 是 `%{state: 给 Jev 的 state 全文, recall_query: 召回问句, recall_ms: 召回耗时}`，
+  `result` 为 nil 的末项就是正在做的活动。`asked` 是 `%{state: 给 Jev 的 state 全文, recall_queries: 各路召回的描述
+  （按优先级，每路 `%{query:, tags:, tags_match:, prefer_observations:, max_tokens:}`，R3 没有 tags 两项）, recall_ms: 并行召回的墙钟耗时}`，
   在 Jev 请求发出前记下（Jev 随后失败也留着）；心智读不到的那次没有发问，`asked` 仍是上一次的。
   `Body.observe/1` 与 `Runtime.observe/1` 的 `select` 键原样给出这份状态。
 
   日志：每次选择一行 `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`
   （trigger：`start` 首次、`completed` / `failed` 上一项活动的结局、`retry` 上次发问失败后重问；`latency_ms` 是 Jev 请求，
-  `recall_ms` 是那一次记忆召回）；失败一行 `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
+  `recall_ms` 是各路记忆召回并行的墙钟）；失败一行 `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
   """
   require Logger
   alias NpcServer.{Jev, Life, Mind}
@@ -137,26 +139,30 @@ defmodule NpcServer.Selector do
   end
 
   @doc """
-  这次要问 Jev 的内容（在 Runtime 的 worker 里调用，会阻塞到 Life 应答与那一次召回结束）：
-  `{:ok, %{state: 心智快照的英文转写, recall_query: 召回问句, recall_ms: 召回耗时}}`。
-  心智读不到 → `{:error, {:mind_unavailable, 原因}}`（原因见 `NpcServer.Life.mind/2`），这次不发问。
+  这次要问 Jev 的内容（在 Runtime 的 worker 里调用，会阻塞到 Life 应答与各路召回结束）：
+  `{:ok, %{state: 心智快照的英文转写, recall_queries: 各路召回的描述, recall_ms: 并行召回的墙钟耗时}}`。
+  各路召回由 `Mind.recall_queries/2` 按此刻的观察与 Life 记得的建筑给出（观察里 Runtime 带的 Life 规范状态的 `"buildings"`）。
+  心智读不到 → `{:error, {:mind_unavailable, 原因}}`（原因见 `NpcServer.Life.mind/2`；观察里还没有 Life 的规范状态时是
+  `:life_not_ready`），这次不发问。
   """
   def question(profile, observation, history) do
-    query = Mind.recall_query(profile, observation)
-
-    case Life.mind(observation.self.entity_id, query) do
-      {:ok, life} ->
-        {:ok,
-         %{
-           state: Mind.text(Mind.snapshot(profile, observation, history, life)),
-           recall_query: query,
-           recall_ms: life.recall_ms
-         }}
-
-      {:error, reason} ->
-        {:error, {:mind_unavailable, reason}}
+    with {:ok, buildings} <- remembered_buildings(observation),
+         queries = Mind.recall_queries(observation, buildings),
+         {:ok, life} <- Life.mind(observation.self.entity_id, queries) do
+      {:ok,
+       %{
+         state: Mind.text(Mind.snapshot(profile, observation, history, life)),
+         recall_queries: queries,
+         recall_ms: life.recall_ms
+       }}
+    else
+      {:error, reason} -> {:error, {:mind_unavailable, reason}}
     end
   end
+
+  # Runtime 收到 Life 的规范状态之后才把它放进观察（`observation.life`）；之前读不到“我的建筑”，与 `Mind.person/2` 同一原因。
+  defp remembered_buildings(%{life: %{state: state}}), do: {:ok, state["buildings"]}
+  defp remembered_buildings(_observation), do: {:error, :life_not_ready}
 
   @doc """
   发问一次（在 Runtime 的 worker 里调用，会阻塞到应答或超时）。`profile` 含 `activities`、`jev`（endpoint），

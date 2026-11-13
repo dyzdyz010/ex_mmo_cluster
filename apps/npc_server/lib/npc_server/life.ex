@@ -6,7 +6,8 @@ defmodule NpcServer.Life do
 
   经历条目（`"pending"` 与片段里）是 `%{"id", "at_ms", "text", "tags", …}`：`"text"` 是不带时刻的原文，时刻只在 `"at_ms"`，
   `"tags"` 是字符串列表（`kind:event | activity | conversation | sight`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
-  交给 Hindsight 与心智快照的正文是离线测过的 `At <UTC> (UTC), <原文>`，只由本模块的 `dated/1` 一处加前缀。
+  交给 Hindsight 的正文是离线测过的 `At <UTC> (UTC), <原文>`，只由本模块的 `dated/1` 一处加前缀；
+  心智快照拿到的是 `%{at_ms:, text:}`（不带前缀），由 `NpcServer.Mind` 按游戏时间写“多久以前”。
   短经历先按原文字数攒到约 3000 字封成片段 `%{"id", "at_ms", "episodes" => [经历条目]}`（片段只是运输批次）；
   retain 时每条经历单独成一份 Hindsight 文档（document_id = 经历 id，timestamp = 该条 `at_ms`，tags = 该条 tags），
   失败重发原片段里的同一批经历（文档 id 不变）。片段只有 `"text"` 的旧形状不做转换（用户 2026-11-13 定：开发数据清空重建）。
@@ -32,7 +33,7 @@ defmodule NpcServer.Life do
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
   统一形态（注册表 `"npc"`，规则模式）经三个入口用它：`mind/2` 是心智快照的只读视图（情绪与关系、还没写进 Hindsight 的
-  经历正文、缓存认识与一次召回），`activity_started/1` 与 `activity/2` 标出一项活动的开始与结束（结束时接纳“做了什么、
+  经历、缓存认识与按处境并行的多路召回），`activity_started/1` 与 `activity/2` 标出一项活动的开始与结束（结束时接纳“做了什么、
   结果如何、期间谁来过”的活动经历）。统一形态不读状态里的
   `traits`（`caution` / `sociability`）：人格只来自人格卡，这两个值并入人格卡待做。
   """
@@ -42,8 +43,11 @@ defmodule NpcServer.Life do
   alias NpcServer.Life.Appraisal
   @fragment_chars 3000
   @refresh_ms 600_000
-  # 心智快照那一次召回的单次请求超时（毫秒）；写入与认识刷新仍用适配器的长超时。
+  # 心智快照各路召回的单路上限（毫秒）：既是那一路 HTTP 请求的超时，也是并行时等那一路的墙钟上限。
+  # 写入与认识刷新仍用适配器的长超时。
   @mind_recall_timeout_ms 10_000
+  # 同时在途的召回路数上限（内容规范 §4：请求并发 ≤ 3）；`Mind.recall_queries/2` 至多给四路。
+  @recall_concurrency 3
 
   @doc "由 Runtime 建立关联 owner；context 包含 cid、scene_id 和路由模块。"
   def start_link(owner, context, profile) do
@@ -72,15 +76,20 @@ defmodule NpcServer.Life do
   def flush(cid), do: call(cid, :flush)
   @doc "后台刷新四份认识；立即返回任务状态，决策不会调用此入口。"
   def refresh(cid), do: call(cid, :refresh)
-  @doc "读取缓存认识并恰好召回一次；由 CLI 或模型请求 worker 调用。"
+
+  @doc """
+  读取缓存认识并以问句 `query`（字符串）恰好召回一次（一路、不加过滤，单次请求用适配器的长超时）；
+  由 CLI 或模型请求 worker 调用。
+  """
   def context(cid, query) do
-    with {:ok, snapshot, recalled} <- recollect(cid, query, & &1) do
+    with {:ok, snapshot, %{routes: [memories]} = recalled} <-
+           recollect(cid, [%{query: query}], :infinity) do
       context = %{
         mind: Appraisal.mind(snapshot.mind),
         mental_models: snapshot.cache["models"],
         model_metadata: snapshot.cache["metadata"],
         model_cached_at_ms: snapshot.cache["at_ms"],
-        memories: recalled.results,
+        memories: memories,
         recall_latency_ms: recalled.latency_ms,
         memory_retrieval: :hindsight_once,
         memory_truth: "Subjective memory; not current numeric world truth."
@@ -96,29 +105,33 @@ defmodule NpcServer.Life do
 
   @doc """
   心智快照（`NpcServer.Mind`）用的只读视图，由选择位置的发问 worker 调用；读的是规则模式的状态。
-  与 `context/2` 同样读缓存认识并恰好召回一次（单次请求最多等 #{@mind_recall_timeout_ms} 毫秒：选择是秒级决策），
-  另给出还没写进 Hindsight 的经历原文。返回 `{:ok, 视图}`：
+  `queries` 是这次的各路召回描述（`NpcServer.Mind.recall_queries/2`，按优先级排好）：各路在调用者进程里并行
+  （`Task.async_stream`，同时至多 #{@recall_concurrency} 路，每路最多等 #{@mind_recall_timeout_ms} 毫秒：选择是秒级决策），
+  结果按 `NpcServer.Mind.merge_recalled/1` 合成一张清单。另给出还没写进 Hindsight 的经历。返回 `{:ok, 视图}`：
 
+      now_ms         读视图那一刻 Life 的时钟（Unix 毫秒），Mind 用它算“多久以前”
       feelings       此刻仍活跃的情绪 `[%{emotion:, actor:, intensity:}]`（`Life.State.feelings/2`）
       relationships  对各角色的信任 `[%{actor:, trust:}]`（`Life.State.relationships/1`）
-      recent         还没写进 Hindsight 的经历正文（`At <UTC> (UTC), <原文>`；已封存待写的片段在前，未封存的尾部在后；各自旧在前）
+      recent         还没写进 Hindsight 的经历 `[%{at_ms:, text:}]`（正文不带时刻；已封存待写的片段在前，未封存的尾部在后；各自旧在前）
       models         缓存的认识 `[{id, 正文}]`，按 `Life.Hindsight.model_ids/0` 的次序
-      memories       本次召回的结果（Hindsight 的原始行，正文在 `"text"`）
-      recall_ms      本次召回耗时
+      memories       各路召回合并后的清单（适配器规范化的 `%{"id", "text", "type", "at_ms", "tags"}`）
+      recall_ms      各路并行召回的墙钟耗时
       buildings      我放下的有名字的建筑此刻在不在 `[%{name:, anchor: {x, y, z}, standing: boolean}]`，按放下的次序。
                      问哪几座来自 Life 的记忆（`Life.State` 的 `"buildings"`）；在不在只认这一刻现查 World 的结果
                      （`VoxelRegion.World.instance_cells/2`：有格 = 在，`:instance_not_found` = 不在）
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
-  {:life_models_unavailable, 原因} | 召回的失败原因 | World 路由或查询的失败原因}`。新 NPC 的空 bank 召回为空是正常结果。
-  World 读不到时不写“在”或“不在”，整份视图失败（World 调用退出时发问 worker 随之退出，同样是显式失败）。
+  {:life_models_unavailable, 原因} | 召回的失败原因 | :recall_timeout | World 路由或查询的失败原因}`。
+  **任何一路**失败或超时，整次视图都失败（不拿其余几路凑一张残缺的清单）；失败的那一路的问句与原因记进 `observe/1` 的 `recall`。
+  新 NPC 的空 bank 召回为空是正常结果。World 读不到时不写“在”或“不在”，整份视图失败（World 调用退出时发问 worker 随之退出，
+  同样是显式失败）。
   """
-  def mind(cid, query) do
-    with {:ok, snapshot, recalled} <-
-           recollect(cid, query, &Map.put(&1, :timeout_ms, @mind_recall_timeout_ms)),
+  def mind(cid, queries) do
+    with {:ok, snapshot, recalled} <- recollect(cid, queries, @mind_recall_timeout_ms),
          {:ok, buildings} <- standing(snapshot) do
       {:ok,
        %{
+         now_ms: snapshot.now_ms,
          feelings: State.feelings(snapshot.mind, snapshot.now_ms),
          relationships: State.relationships(snapshot.mind),
          recent: snapshot.recent,
@@ -128,7 +141,7 @@ defmodule NpcServer.Life do
              text = snapshot.cache["models"][id],
              do: {id, text}
            ),
-         memories: recalled.results,
+         memories: NpcServer.Mind.merge_recalled(recalled.routes),
          recall_ms: recalled.latency_ms,
          buildings: buildings
        }}
@@ -159,20 +172,56 @@ defmodule NpcServer.Life do
   defp view(building, standing),
     do: %{name: building["name"], anchor: List.to_tuple(building["anchor"]), standing: standing}
 
-  # 读一次 owner 快照，再在调用者进程里恰好召回一次；召回的成败记回 owner 供 observe 查看。
-  defp recollect(cid, query, configure) do
+  # 读一次 owner 快照，再在调用者进程里把各路召回并行做完（同时至多 @recall_concurrency 路），
+  # 返回 `%{routes: [每路的结果，按 queries 的次序], latency_ms: 墙钟}`。`timeout_ms` 是每路的上限（整数时也写进适配器的
+  # 单次请求超时；`:infinity` 时只由适配器自己的超时约束）。任何一路失败或超时就停下（其余在途的路随流结束被关掉），
+  # 整次失败。成败记回 owner 供 observe 查看。
+  defp recollect(cid, queries, timeout_ms) do
     with {:ok, snapshot} <- call(cid, :context) do
-      case snapshot.adapter.recall(configure.(snapshot.config), query, snapshot.now_ms) do
-        {:ok, recalled} ->
+      config =
+        if timeout_ms == :infinity,
+          do: snapshot.config,
+          else: Map.put(snapshot.config, :timeout_ms, timeout_ms)
+
+      started = System.monotonic_time(:millisecond)
+
+      result =
+        queries
+        |> Task.async_stream(
+          fn query -> {query, snapshot.adapter.recall(config, query, snapshot.now_ms)} end,
+          max_concurrency: @recall_concurrency,
+          timeout: timeout_ms,
+          on_timeout: :kill_task,
+          zip_input_on_exit: true
+        )
+        |> Enum.reduce_while({:ok, []}, fn
+          {:ok, {_query, {:ok, recalled}}}, {:ok, routes} ->
+            {:cont, {:ok, [recalled.results | routes]}}
+
+          {:ok, {query, {:error, reason}}}, _ ->
+            {:halt, {:error, query, reason}}
+
+          {:exit, {query, :timeout}}, _ ->
+            {:halt, {:error, query, :recall_timeout}}
+        end)
+
+      latency_ms = System.monotonic_time(:millisecond) - started
+
+      case result do
+        {:ok, routes} ->
           GenServer.cast(
             name(cid),
-            {:recall, Map.put(Map.drop(recalled, [:results]), :status, :done)}
+            {:recall, %{status: :done, routes: length(routes), latency_ms: latency_ms}}
           )
 
-          {:ok, snapshot, recalled}
+          {:ok, snapshot, %{routes: Enum.reverse(routes), latency_ms: latency_ms}}
 
-        {:error, reason} ->
-          GenServer.cast(name(cid), {:recall, %{status: :failed, error: reason}})
+        {:error, query, reason} ->
+          GenServer.cast(
+            name(cid),
+            {:recall, %{status: :failed, error: reason, query: query.query}}
+          )
+
           {:error, reason}
       end
     end
@@ -305,8 +354,12 @@ defmodule NpcServer.Life do
           cache: s.row["cache"],
           # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
           context: s.context,
-          # 还没写进 Hindsight 的经历正文：已封存待写的片段，加未封存的尾部。
-          recent: Enum.map(sealed(s.row["fragments"]) ++ s.row["pending"], &dated/1)
+          # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
+          recent:
+            for(
+              episode <- sealed(s.row["fragments"]) ++ s.row["pending"],
+              do: %{at_ms: episode["at_ms"], text: episode["text"]}
+            )
         }}, s}
     else
       {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
@@ -858,7 +911,7 @@ defmodule NpcServer.Life do
   # 已封存片段里的经历条目，按片段与片段内的次序（旧在前）。
   defp sealed(fragments), do: Enum.flat_map(fragments, & &1["episodes"])
 
-  # 经历条目交给 Hindsight 与心智快照的正文：`At <UTC> (UTC), <原文>`，UTC 取条目的 "at_ms"（ISO 8601 毫秒）。
+  # 经历条目交给 Hindsight 的正文：`At <UTC> (UTC), <原文>`，UTC 取条目的 "at_ms"（ISO 8601 毫秒）。
   # 离线测过的就是这个写法；前缀只在这里加，条目的 "text" 不带时刻。
   defp dated(%{"at_ms" => at_ms, "text" => text}),
     do:

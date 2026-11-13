@@ -581,14 +581,15 @@ defmodule NpcServer.NpcRegistryTest do
 
         assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] = rows(name)
 
-        # 一次选择恰好召回一次：问句由处境拼出（附近没人、两项候选的判据），预算与时间锚按适配器的契约。
+        # 附近没人、没有我的建筑：一次选择只有“未了与感受”一路召回（`Mind.recall_queries/2`），线上的请求体按适配器的契约。
         assert_receive {:hindsight_recall, recall}, 30_000
 
-        assert recall["query"] ==
-                 "I am deciding what to do next. Nobody is nearby. What I could do: Stay where you are. " <>
-                   "Walk to the east post. What do I remember about these people, places and tasks?"
-
-        assert recall["budget"] == "mid"
+        assert Map.delete(recall, "query_timestamp") == %{
+                 "query" => "What am I looking forward to, worried about, or have promised to do?",
+                 "budget" => "mid",
+                 "prefer_observations" => true,
+                 "max_tokens" => 600
+               }
 
         # 发问来自真实观察与真实读回的心智：人格描述、认识（四份，按建立次序）、召回、位置都在请求里。
         assert_receive {:jev_http, request}, 20_000
@@ -618,13 +619,14 @@ defmodule NpcServer.NpcRegistryTest do
         # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历（真实 Body 的观察里没有别人：nobody came near）。
         assert_receive {:jev_http, %{"state" => again}}, 20_000
         assert again =~ "Recent activities: Oldest first. walk_east: completed."
-        assert again =~ ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\. During it: nobody came near\.\n/
+        # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
+        assert again =~ ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\. During it: nobody came near\.\n/
 
-        # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与召回问句。
+        # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与各路召回的描述。
         assert %{
                  select: %{
                    activities: [%{activity: "walk_east", trigger: "start", confidence: 0.4, recall_ms: recall_ms} | _],
-                   asked: %{state: asked, recall_query: query}
+                   asked: %{state: asked, recall_queries: [%{query: query}]}
                  }
                } = Body.observe(pid)
 
@@ -691,8 +693,9 @@ defmodule NpcServer.NpcRegistryTest do
         assert_receive {:jev_http, %{"state" => again}}, 20_000
         assert again =~ "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
 
+        # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
         assert again =~
-                 ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
+                 ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
 
         # 没有发出过 travel：身体没有任何 travel 的终态。
         refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))

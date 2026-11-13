@@ -17,8 +17,9 @@ defmodule NpcServer.NpcLifeTest do
       models(config)
     end
 
-    def recall(config, query, _) do
-      send(config.owner, {:recall_called, query})
+    # 收到的是一路召回的描述（`Life.context/2` 把问句包成 `%{query: 问句}`）。
+    def recall(config, description, _) do
+      send(config.owner, {:recall_called, description})
       {:ok, %{results: [%{"text" => "remembered"}], latency_ms: 1}}
     end
 
@@ -544,7 +545,7 @@ defmodule NpcServer.NpcLifeTest do
 
     assert {:ok, context} = Life.context(cid, "Who hurt me?")
     assert context.mental_models["self"] == "builder"
-    assert_receive {:recall_called, "Who hurt me?"}
+    assert_receive {:recall_called, %{query: "Who hurt me?"}}
     refute_receive {:recall_called, _}
     old_life = :global.whereis_name({Life, node(), cid})
     life_ref = Process.monitor(old_life)
@@ -665,7 +666,7 @@ defmodule NpcServer.NpcLifeTest do
     end)
 
     {:ok, _} = Life.context(cid, "construction")
-    assert_receive {:recall_called, "construction"}
+    assert_receive {:recall_called, %{query: "construction"}}
     refute_receive :refresh_called, 100
     damage(fixture.world, cid, 3, {4, 64, 9})
 
@@ -754,7 +755,7 @@ defmodule NpcServer.NpcLifeTest do
       llm
     )
 
-    assert_receive {:recall_called, query}, 5000
+    assert_receive {:recall_called, %{query: query}}, 5000
     assert query =~ "build carefully"
     assert_receive {:llm_context, input}, 5000
     assert input["mental_models"]["self"] == "builder"

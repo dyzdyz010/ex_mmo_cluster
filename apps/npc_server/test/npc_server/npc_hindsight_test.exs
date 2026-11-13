@@ -124,7 +124,7 @@ defmodule NpcServer.NpcHindsightTest do
     cfg =
       server(fn _, _, _ -> {503, %{"detail" => "Bearer private-secret http://private-host"}} end)
 
-    assert {:error, {:http_status, 503}} = Hindsight.recall(cfg, "Who helped me?", 0)
+    assert {:error, {:http_status, 503}} = Hindsight.recall(cfg, %{query: "Who helped me?"}, 0)
   end
 
   test "models only reads four cached documents without refreshing" do
@@ -163,7 +163,7 @@ defmodule NpcServer.NpcHindsightTest do
       end)
 
     assert {:ok, %{results: [%{"id" => "fact-1"}], latency_ms: ms}} =
-             Hindsight.recall(cfg, "Who helped me?", 1_791_676_800_000)
+             Hindsight.recall(cfg, %{query: "Who helped me?"}, 1_791_676_800_000)
 
     assert ms >= 0
     requests(1)
@@ -221,11 +221,13 @@ defmodule NpcServer.NpcHindsightTest do
            }
   end
 
-  test "recall rejects a description without a string query before any request" do
+  test "recall rejects a description without a string query, and a bare query string, before any request" do
     cfg = server(fn _, _, _ -> flunk("must not be requested") end)
 
     assert {:error, :invalid_query} = Hindsight.recall(cfg, %{tags: ["a"]}, 0)
     assert {:error, :invalid_query} = Hindsight.recall(cfg, nil, 0)
+    # 过渡期的字符串入口已删除（多路召回接线后调用方一律传描述）。
+    assert {:error, :invalid_query} = Hindsight.recall(cfg, "Who helped me?", 0)
     refute_receive {:http_request, _, _, _}, 30
   end
 
@@ -257,7 +259,7 @@ defmodule NpcServer.NpcHindsightTest do
          }}
       end)
 
-    assert {:ok, %{results: results}} = Hindsight.recall(cfg, "q", 0)
+    assert {:ok, %{results: results}} = Hindsight.recall(cfg, %{query: "q"}, 0)
 
     assert results == [
              %{
@@ -306,7 +308,7 @@ defmodule NpcServer.NpcHindsightTest do
          }}
       end)
 
-    assert {:error, :invalid_response} = Hindsight.recall(cfg, "q", 0)
+    assert {:error, :invalid_response} = Hindsight.recall(cfg, %{query: "q"}, 0)
   end
 
   test "timeouts are explicit and sanitized" do
@@ -316,7 +318,8 @@ defmodule NpcServer.NpcHindsightTest do
         {200, %{"results" => []}}
       end)
 
-    assert {:error, :timeout} = Hindsight.recall(Map.put(cfg, :timeout_ms, 10), "Who?", 0)
+    assert {:error, :timeout} =
+             Hindsight.recall(Map.put(cfg, :timeout_ms, 10), %{query: "Who?"}, 0)
   end
 
   test "refresh waits for completed operations and propagates failed operations" do

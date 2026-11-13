@@ -278,13 +278,18 @@ defmodule NpcServer.NpcDialogueLifeTest do
              }
            ] == s.row["pending"]
 
-    # 心智快照读到的正文带时刻前缀（UTC 取条目的 at_ms），条目本身不带。
+    # 心智快照读到的是条目的时刻与不带前缀的正文（“多久以前”由 Mind 按游戏时间写；UTC 前缀只进 Hindsight，见下一用例）。
     {:reply, {:ok, snapshot}, _} = Life.handle_call(:context, nil, s)
 
-    assert hd(snapshot.recent) == "At 1970-01-01T00:00:01.000Z (UTC), " <> done
-
-    assert List.last(snapshot.recent) ==
-             "At 1970-01-01T00:00:04.000Z (UTC), " <> done <> " During it: nobody came near."
+    assert [
+             %{at_ms: 1000, text: done},
+             %{at_ms: 2000, text: done},
+             %{
+               at_ms: 3000,
+               text: done <> " During it: Brann (actor 21) came within 3 m and then moved away."
+             },
+             %{at_ms: 4000, text: done <> " During it: nobody came near."}
+           ] == snapshot.recent
   end
 
   # 说话人的名字取自消息（9 叫“邻居”）；World 事件里的人和 Speech 对象取自 Life 此刻持有的观察（9 在观察里叫 Mara）；

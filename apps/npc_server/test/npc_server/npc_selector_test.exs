@@ -43,8 +43,9 @@ defmodule NpcServer.NpcSelectorTest do
     ]
   }
 
-  # 只测试：Hindsight 适配器替身（只替 HTTP）。认识固定一份；召回把问句交给测试进程，结果取测试当前给定的那一个
-  # （`config.recall` 是测试持有的 Agent：`{:ok, %{results:, latency_ms:}}` 或 `{:error, 原因}`）。
+  # 只测试：Hindsight 适配器替身（只替 HTTP）。认识固定一份；召回把这一路的描述连同自己的 pid 交给测试进程
+  # （每路在 Life.mind 的并行任务里各调一次），结果取测试当前给定的那一个（`config.recall` 是测试持有的 Agent：
+  # `{:ok, %{results:, latency_ms:}}` 或 `{:error, 原因}`；为 `:held` 时这一路停住，等测试发来 `{:recall_reply, 结果}`）。
   defmodule Hindsight do
     def ensure(_, _), do: {:ok, %{}}
     def models(_), do: {:ok, %{models: %{"self" => "I am a careful builder."}, metadata: %{}}}
@@ -52,11 +53,48 @@ defmodule NpcServer.NpcSelectorTest do
     def status(_), do: {:ok, %{stats: %{}, usage: %{}}}
     def retain(_, fragments), do: {:ok, %{retained: length(fragments), facts: 1}}
 
-    def recall(config, query, _now_ms) do
-      send(config.owner, {:recall_called, query})
-      Agent.get(config.recall, & &1)
+    def recall(config, description, _now_ms) do
+      send(config.owner, {:recall_called, self(), description})
+
+      case Agent.get(config.recall, & &1) do
+        :held ->
+          receive do
+            {:recall_reply, reply} -> reply
+          end
+
+        reply ->
+          reply
+      end
     end
   end
+
+  # 各路召回的描述（`Mind.recall_queries/2` 的原文，S1-Q 的 R 部分）：期望值手写，不调被测函数。
+  defp person_route(cid, name),
+    do: %{
+      query: "What has happened between me and #{name} (actor #{cid})? Did they help, harm, or promise me anything?",
+      tags: ["actor:#{cid}"],
+      tags_match: "any_strict",
+      prefer_observations: true,
+      max_tokens: 700
+    }
+
+  defp building_route(name),
+    do: %{
+      query: ~s|What has happened at my building "#{name}"?|,
+      tags: ["place:#{name}"],
+      tags_match: "any_strict",
+      prefer_observations: true,
+      max_tokens: 700
+    }
+
+  @open_route %{
+    query: "What am I looking forward to, worried about, or have promised to do?",
+    prefer_observations: true,
+    max_tokens: 600
+  }
+
+  # “多久以前”的任一句型（`NpcServer.Mind`；集成用例里经历的真实时刻随运行而变，具体取整由 npc_mind_test 断言）。
+  @ago "(?:Just now|About [\\d.]+ (?:hour|hours|day|days) ago)"
 
   # 只测试：连不上的 Hindsight——建 bank 这一步就失败，认识读不出来。
   defmodule NoModels do
@@ -200,7 +238,7 @@ defmodule NpcServer.NpcSelectorTest do
     defp ask(profile, reply) do
       Selector.ask(
         Map.put(profile, :request, fn _endpoint, _body -> reply end),
-        %{state: "Character: Lin, a builder.", recall_query: "q", recall_ms: 41},
+        %{state: "Character: Lin, a builder.", recall_queries: [%{query: "q"}], recall_ms: 41},
         "start"
       )
     end
@@ -276,7 +314,7 @@ defmodule NpcServer.NpcSelectorTest do
              ] = Selector.history(state)
 
       # 最近一次问 Jev 的内容原样留在状态里，供 observe 读。
-      question = %{state: "Character: Lin.", recall_query: "q", recall_ms: 3}
+      question = %{state: "Character: Lin.", recall_queries: [%{query: "q"}], recall_ms: 3}
       assert %{asked: nil} = state
       assert %{asked: ^question} = Selector.asked(state, question)
     end
@@ -599,11 +637,11 @@ defmodule NpcServer.NpcSelectorTest do
           refute_received {:command, _}
         end)
 
-      # 召回耗时取自 Hindsight 替身给的 3 毫秒。
+      # 召回耗时是 Life 量的并行墙钟（替身立即返回，数值随运行而变）。
       candidates = "candidates=zeta_build_north,alpha_build_south,rest_at_home"
-      assert log =~ ~r/npc_select cid=#{cid} trigger=start #{candidates} chosen=alpha_build_south confidence=0.21 latency_ms=\d+ recall_ms=3 model=jev-test/
-      assert log =~ ~r/npc_select cid=#{cid} trigger=completed #{candidates} chosen=zeta_build_north confidence=0.9 latency_ms=\d+ recall_ms=3 model=jev-test/
-      assert log =~ ~r/npc_select cid=#{cid} trigger=retry #{candidates} chosen=alpha_build_south confidence=0.55 latency_ms=\d+ recall_ms=3 model=jev-test/
+      assert log =~ ~r/npc_select cid=#{cid} trigger=start #{candidates} chosen=alpha_build_south confidence=0.21 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+      assert log =~ ~r/npc_select cid=#{cid} trigger=completed #{candidates} chosen=zeta_build_north confidence=0.9 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+      assert log =~ ~r/npc_select cid=#{cid} trigger=retry #{candidates} chosen=alpha_build_south confidence=0.55 latency_ms=\d+ recall_ms=\d+ model=jev-test/
       assert log =~ ~s(npc_select_failed cid=#{cid} reason={:unknown_activity, "dance"})
       assert log =~ ~s(npc_select_failed cid=#{cid} reason={503, "busy"})
       # 三次成功、两次失败，各一行。
@@ -650,17 +688,26 @@ defmodule NpcServer.NpcSelectorTest do
         ])
       end
 
-      query =
-        "I am deciding what to do next. Nearby: Brann (actor #{brann}). What I could do: " <>
-          "Build the hut on the north plot. Build the hut on the south plot. Go home and rest. " <>
-          "What do I remember about these people, places and tasks?"
+      # 附近只有 Brann、还没有我的建筑：两路——Brann 一路、未了与感受一路。
+      brann_route = person_route(brann, "Brann")
+      queries = [brann_route, @open_route]
+
+      # 两路各收到一次描述（并行，到达次序不定）。
+      recalled_both = fn ->
+        assert_receive {:recall_called, _, ^brann_route}
+        assert_receive {:recall_called, _, @open_route}
+      end
 
       log =
         capture_log([level: :info], fn ->
           # —— 第 1 次：什么都还没发生。state 全文手写：情绪、近期经历为空；认识来自缓存；空 bank 的召回为空是正常结果。
+          # 首行 Now 是 Runtime 写进观察的游戏钟，随运行时刻而变，只断言句型。
           event(body, {:observation, near.(1)})
-          assert_receive {:recall_called, ^query}
+          recalled_both.()
           assert_receive {:jev_request, worker, request}
+
+          [now, rest] = String.split(request.state, "\n", parts: 2)
+          assert now =~ ~r/\ANow: It is (morning|afternoon|evening|night), \d\d:\d\d\.\z/
 
           assert "Character: Lin, a builder. Personality: very bold. Personal: Keeps promises.\n" <>
                    "Feelings and relationships: Nothing notable.\n" <>
@@ -669,11 +716,14 @@ defmodule NpcServer.NpcSelectorTest do
                    "current world facts.\n- Belief (self): I am a careful builder.\n" <>
                    "Current situation: Standing at x=1.0, z=3.0 (height 2.0). " <>
                    "Nearby: Brann (player, actor #{brann}, 5.0 m away). Inventory: not checked yet.\n" <>
-                   "Recent activities: None yet." == request.state
+                   "Recent activities: None yet." == rest
 
-          # observe 读得到这次问的全文、召回问句与耗时。
-          assert %{select: %{asked: %{state: asked, recall_query: ^query, recall_ms: 3}}} = settled(body, runtime)
+          # observe 读得到这次问的全文、各路召回的描述与并行耗时。
+          assert %{select: %{asked: %{state: asked, recall_queries: ^queries, recall_ms: recall_ms}}} =
+                   settled(body, runtime)
+
           assert asked == request.state
+          assert is_integer(recall_ms) and recall_ms >= 0
 
           send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
           assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
@@ -685,9 +735,21 @@ defmodule NpcServer.NpcSelectorTest do
             match?({:ok, %{state: %{"evidence" => %{"damage_count" => 1}}}}, Life.observe(cid))
           end)
 
-          # 这次召回带回一条记忆。
+          # 这次召回带回一条记忆（适配器规范化后的形状）；两路都返回它，合并后只出现一次。没有事件时刻，不写多久以前。
           Agent.update(recall, fn _ ->
-            {:ok, %{results: [%{"text" => "Brann once carried stone for me."}], latency_ms: 5}}
+            {:ok,
+             %{
+               results: [
+                 %{
+                   "id" => "fact-1",
+                   "text" => "Brann once carried stone for me.",
+                   "type" => "experience",
+                   "at_ms" => nil,
+                   "tags" => ["actor:#{brann}"]
+                 }
+               ],
+               latency_ms: 5
+             }}
           end)
 
           # —— 第 2 次：活动结束后发问。情绪（刚发生，strong）、关系（一次破坏 −0.35 → Distrusts）、近期经历
@@ -695,7 +757,7 @@ defmodule NpcServer.NpcSelectorTest do
           skill_step(body, 2, :done, nil)
           assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
           event(body, {:observation, near.(3)})
-          assert_receive {:recall_called, ^query}
+          recalled_both.()
           assert_receive {:jev_request, worker, request}
 
           assert request.state =~
@@ -703,11 +765,14 @@ defmodule NpcServer.NpcSelectorTest do
                      "Distrusts Brann (actor #{brann}).\n"
 
           # 经历里的人按 Life 当时持有的观察写名字（Brann 在观察里）；活动期间 Brann 一直在 5 米处，结束时还在。
+          # 句首是按游戏时间写的多久以前，不再是 UTC。
           assert request.state =~
-                   ~r/\nWhat just happened: Oldest first\. At \S+ \(UTC\), Brann \(actor #{brann}\) damaged construction I care about at \(4, 64, 8\), material 11, in world \S+ \(transaction \d+\)\. I feel angry toward this actor; my trust changed\. At \S+ \(UTC\), I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\n/
+                   ~r/\nWhat just happened: Oldest first\. #{@ago}, Brann \(actor #{brann}\) damaged construction I care about at \(4, 64, 8\), material 11, in world \S+ \(transaction \d+\)\. I feel angry toward this actor; my trust changed\. #{@ago}, I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\n/
+
+          refute request.state =~ "(UTC)"
 
           assert request.state =~
-                   "- Belief (self): I am a careful builder.\n- Recalled: Brann once carried stone for me.\n"
+                   "- Belief (self): I am a careful builder.\n- Recalled: Brann once carried stone for me.\nCurrent situation: "
 
           assert request.state =~ "\nRecent activities: Oldest first. alpha_build_south: completed."
           second = request.state
@@ -719,7 +784,7 @@ defmodule NpcServer.NpcSelectorTest do
           skill_step(body, 4, :done, nil)
           assert_receive {:runtime_outcome, %{id: 4, verb: :build, status: :done}}
           event(body, {:observation, near.(4)})
-          assert_receive {:recall_called, ^query}
+          assert_receive {:recall_called, _, ^brann_route}
 
           assert_receive {:runtime_outcome,
                           %{
@@ -740,14 +805,16 @@ defmodule NpcServer.NpcSelectorTest do
 
           # —— 第 4 次：600 tick 后照常再问（从 tick 4 起，604 到期）；记忆读得到了，照常问 Jev。
           Agent.update(recall, fn _ -> {:ok, %{results: [], latency_ms: 4}} end)
+          # 上一次失败时可能有一路还没发出就停下了：先清掉它留下的消息，再看这一次的两路。
+          flush_recalls()
           event(body, {:observation, near.(604)})
           event(body, {:observation, near.(605)})
-          assert_receive {:recall_called, ^query}
+          recalled_both.()
           assert_receive {:jev_request, worker, request}
 
           # 两项已结束的活动各是一条经历，重问没有重复记；四次 choose_activity 的往来一条也不在里面。
           assert request.state =~
-                   ~r/I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\. At \S+ \(UTC\), I did "zeta_build_north" \(Build the hut on the north plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\nWhat I remember/
+                   ~r/I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\. #{@ago}, I did "zeta_build_north" \(Build the hut on the north plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\nWhat I remember/
 
           refute request.state =~ "choose_activity"
           send(worker, {:jev_reply, answer("alpha_build_south", 0.6)})
@@ -767,9 +834,107 @@ defmodule NpcServer.NpcSelectorTest do
                ["kind:activity", "actor:#{brann}"]
              ] == Enum.map(DataService.NpcMemory.get(cid, "life", "state")["pending"], & &1["tags"])
 
-      assert log =~ ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=5 model=jev-test/
+      assert log =~ ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=\d+ model=jev-test/
       assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}"
-      assert log =~ ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=4 model=jev-test/
+      assert log =~ ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+    end
+
+    defp flush_recalls do
+      receive do
+        {:recall_called, _, _} -> flush_recalls()
+      after
+        0 -> :ok
+      end
+    end
+
+    # 有我的建筑、附近三个人 → 四路（近的两人各一路、建筑一路、未了与感受一路）。Hindsight 替身把每一路停住，由测试逐路放行：
+    # 同时在途的不超过三路；任何一路失败，整次心智读不到，这次选择显式失败、不问 Jev；之后全部成功时 observe 读得到四路的描述。
+    # 定义只有一格石料，以 “small hut” 为名发布并由本 NPC 放下（同上一用例的做法）；Brann 5 米、Mara 13 米、Tobin 20 米。
+    @tag timeout: 120_000
+    test "four recall routes run at most three at a time; one failing route fails the whole selection",
+         %{profile: profile, cid: cid, fixture: fixture} do
+      {body, runtime, recall} = start(profile, cid)
+      world = fixture.world
+      [brann, mara, tobin] = [cid + 10, cid + 11, cid + 12]
+
+      hut =
+        VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 11}], children: [], attachments: []})
+
+      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, _} = World.material_supply(world, cid, "selector-routes-supply", %{11 => 1024})
+
+      {:ok, _} =
+        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
+          definition_id: id,
+          anchor: {32, 512, 64},
+          orientation: 0,
+          client_intent_seq: 1
+        })
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"buildings" => [%{"name" => "small hut"}]}}}, Life.observe(cid))
+      end)
+
+      crowd = fn tick ->
+        Map.put(observation(tick, cid), :entities, [
+          %{entity_id: cid, kind: 1, name: "Lin", position: {1.0, 2.0, 3.0}},
+          %{entity_id: tobin, kind: 0, name: "Tobin", position: {1.0, 2.0, 23.0}},
+          %{entity_id: mara, kind: 1, name: "Mara", position: {1.0, 14.0, 8.0}},
+          %{entity_id: brann, kind: 0, name: "Brann", position: {4.0, 2.0, 7.0}}
+        ])
+      end
+
+      routes = [
+        person_route(brann, "Brann"),
+        person_route(mara, "Mara"),
+        building_route("small hut"),
+        @open_route
+      ]
+
+      ok = {:ok, %{results: [], latency_ms: 1}}
+
+      capture_log(fn ->
+        Agent.update(recall, fn _ -> :held end)
+        event(body, {:observation, crowd.(1)})
+
+        # 三路同时在途，第四路要等其中一路结束才发出。
+        first =
+          for _ <- 1..3 do
+            assert_receive {:recall_called, pid, description}, 5000
+            {pid, description}
+          end
+
+        refute_receive {:recall_called, _, _}, 300
+
+        # 放行 Brann 一路（成功）→ 第四路发出。
+        {brann_pid, _} = Enum.find(first, fn {_, d} -> d == hd(routes) end)
+        send(brann_pid, {:recall_reply, ok})
+        assert_receive {:recall_called, fourth_pid, fourth}, 5000
+        assert Enum.sort(routes) == Enum.sort([fourth | Enum.map(first, &elem(&1, 1))])
+
+        # 建筑一路失败，其余成功 → 整次失败。
+        for {pid, description} <- [{fourth_pid, fourth} | first], pid != brann_pid do
+          send(pid, {:recall_reply, if(description == building_route("small hut"), do: {:error, :service_failed}, else: ok)})
+        end
+
+        assert_receive {:runtime_outcome,
+                        %{verb: :choose_activity, status: :rejected, reason: {:mind_unavailable, :service_failed}}},
+                       5000
+
+        refute_received {:jev_request, _, _}
+
+        assert {:ok, %{recall: %{status: :failed, error: :service_failed, query: ~s|What has happened at my building "small hut"?|}}} =
+                 Life.observe(cid)
+
+        # 600 tick 后重问；四路都成功：照常问 Jev，observe 里是按优先级排好的四路描述。
+        Agent.update(recall, fn _ -> ok end)
+        flush_recalls()
+        event(body, {:observation, crowd.(601)})
+        event(body, {:observation, crowd.(602)})
+        assert_receive {:jev_request, _worker, request}, 5000
+        assert request.state =~ ~s|My building "small hut" at (4, 64, 8) is standing.|
+        assert %{select: %{asked: %{recall_queries: ^routes}}} = settled(body, runtime)
+      end)
     end
 
     # 被破坏的是我整体放下的一座已发布建筑的一部分：经历原文要说得出是哪座（名字来自 World 的发布元信息）。
@@ -821,7 +986,7 @@ What just happened: Nothing new.
       assert {:ok, %{state: %{"concerns" => %{"4,64,8" => %{"building" => "small hut", "damaged" => true}}}}} =
                Life.observe(cid)
 
-      # 第 2 次发问：近期经历一栏。时刻、世界身份、事务号是运行时的值，换成占位后整栏与手写的句子逐字相同。
+      # 第 2 次发问：近期经历一栏。多久以前、世界身份、事务号是运行时的值，换成占位后整栏与手写的句子逐字相同。
       # Brann 不在观察里（观察的 entities 为空）：人写 `actor <cid>`；活动期间观察里没有别人：nobody came near。
       skill_step(body, 2, :done, nil)
       assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
@@ -831,13 +996,13 @@ What just happened: Nothing new.
       [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
 
       assert "What just happened: Oldest first. " <>
-               "At <t> (UTC), actor #{brann} damaged part of the building \"small hut\" that I built, at (4, 64, 8), " <>
+               "<ago>, actor #{brann} damaged part of the building \"small hut\" that I built, at (4, 64, 8), " <>
                "material 11, in world <w> (transaction <n>); the building is still standing. " <>
                "I feel angry toward this actor; my trust changed. " <>
-               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
+               "<ago>, I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
                "During it: nobody came near." ==
                happened
-               |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
+               |> String.replace(~r/#{@ago}, /, "<ago>, ")
                |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
     end
 
@@ -892,7 +1057,7 @@ What just happened: Nothing new.
         match?({:ok, %{state: %{"evidence" => %{"damage_count" => 1}}}}, Life.observe(cid))
       end)
 
-      # 第 2 次发问。时刻、世界身份、事务号是运行时的值，换成占位后与手写的句子逐字相同。
+      # 第 2 次发问。多久以前、世界身份、事务号是运行时的值，换成占位后与手写的句子逐字相同。
       skill_step(body, 2, :done, nil)
       assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
       event(body, {:observation, observation(3, cid)})
@@ -902,13 +1067,13 @@ What just happened: Nothing new.
       [situation] = Regex.run(~r/^Current situation: .*$/m, request.state)
 
       assert "What just happened: Oldest first. " <>
-               "At <t> (UTC), actor #{brann} removed the entire building \"small hut\" that I built, at (4, 64, 8), " <>
+               "<ago>, actor #{brann} removed the entire building \"small hut\" that I built, at (4, 64, 8), " <>
                "material 11, in world <w> (transaction <n>); the building no longer exists. " <>
                "I feel angry toward this actor; my trust changed. " <>
-               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
+               "<ago>, I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
                "During it: nobody came near." ==
                happened
-               |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
+               |> String.replace(~r/#{@ago}, /, "<ago>, ")
                |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
 
       assert ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
@@ -985,14 +1150,26 @@ What just happened: Nothing new.
        }, "rest_at_home"}
     ]
 
-    observation = %{observation() | balances: []}
+    observation =
+      observation()
+      |> Map.put(:balances, [])
+      |> Map.put(:world_time, MmoContracts.WorldTime.at(System.os_time(:microsecond)))
 
     results =
       for {who, json, expected} <- cards, repeat <- 1..2 do
         {:ok, card} = Persona.new(json)
         profile = %{who: who, persona: card, activities: activities, jev: jev}
         # 验收 (a) 只比人格卡：情绪、近期经历、记忆三栏都是空的。
-        life = %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0, buildings: []}
+        life = %{
+          now_ms: System.os_time(:millisecond),
+          feelings: [],
+          relationships: [],
+          recent: [],
+          models: [],
+          memories: [],
+          recall_ms: 0,
+          buildings: []
+        }
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))
         {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "start")
 

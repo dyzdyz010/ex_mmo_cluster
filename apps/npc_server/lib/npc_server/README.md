@@ -236,7 +236,7 @@ brain: {NpcServer.Brain.Routine, %{
   `Body.observe(body).outcomes`
   含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
   `activity`、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；`result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
-  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_query` 召回问句、`recall_ms` 召回耗时）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
+  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted` 属于 `DayPlan` / `LlmBudget`：两者目前未接线（没有注册表入口会启动），这些行不会出现。
 
 ### 注册表（`Registry`，放置阶段 M1）
@@ -408,16 +408,21 @@ flowchart LR
   把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
 - **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
   命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
-- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。六栏，次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
+- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏，次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
 
   | 栏 | 内容 | owner |
   |---|---|---|
+  | Now | 游戏钟此刻的时段与钟点：`It is <morning / afternoon / evening / night>, <HH:MM>.`（05–11 / 12–16 / 17–20 / 其余） | 游戏钟（Runtime 写进观察的 `world_time`） |
   | Character | 人格描述 | 人格卡 |
   | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
-  | What just happened | Life 手里还没写进 Hindsight 的经历正文（`At <UTC> (UTC), <原文>`；已封存待写的片段 + 未封存的尾部，旧在前）；没有写 `Nothing new.` | Life |
-  | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加针对当前处境的一次召回（`- Recalled: …`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
-  | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包 | World / Scene（Observation）；建筑在不在是发问时现查 World |
+  | What just happened | Life 手里还没写进 Hindsight 的经历（已封存待写的片段 + 未封存的尾部，旧在前），每条句首按游戏时间写多久以前（`Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `）；没有写 `Nothing new.` | Life |
+  | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加分路召回合并后的清单（`- Recalled: [多久以前, ]<正文去掉 " \| When: …" 后缀>`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
+  | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
+
+  “多久以前”= 两个真实时刻各经 `MmoContracts.WorldTime.game_us/1` 换成游戏时间后相减：不足 0.25 游戏小时 `Just now`，不足 48 小时
+  按 0.5 小时四舍五入（`1 hour`、`0.5 hours`、`13.5 hours`），再往上按天四舍五入。句型与取整照离线测量 S1-K 的原文
+  （`docs/10-active/cross-cutting/tools/jev/s1k_design.py`）。存进 Hindsight 的正文仍是 `At <UTC> (UTC), …`，快照不解析它，用条目的 `at_ms`。
 
   情绪强度由代码转成词（≥ 0.4 strong、≥ 0.2 moderate、其余 faint；Life 衰减到 0.1 及以下的不给出：一次破坏后约 70 秒内 strong、
   约 190 秒内 moderate、约 310 秒后消失）。信任不随时间恢复（≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 四档，其间不写）。
@@ -432,8 +437,19 @@ flowchart LR
   会拖长这一次选择（目标 2–4 秒）。现在不加超时或缓存：已登记的 NPC 的建筑都在身边，等真的出现再处理。
   句子里的坐标是 Life 记下的锚点（记忆），不是现查的；建筑被整体挪动后坐标会与现状不符。“在 / 不在”只认 World。
   候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
-- **召回**：一次选择恰好召回一次（`Life.mind/2`，单次请求最多等 10 秒）。问句由处境拼出（`Mind.recall_query/2`）：
-  `I am deciding what to do next. Nearby: <名字 (actor cid), …>. What I could do: <各候选的判据>. What do I remember about these people, places and tasks?`
+- **召回**：一次选择按处境分路召回（`Mind.recall_queries/2`，问句、tags 与 token 上限照离线重测 S1-Q 的原文），
+  各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路最多等 10 秒），三路都 `prefer_observations: true`、不按类型过滤：
+
+  | 路 | 问句 | 过滤 / `max_tokens` |
+  |---|---|---|
+  | R1 附近的人（至多 2 人，近者在前；每人一路） | `What has happened between me and <名字> (actor <cid>)? Did they help, harm, or promise me anything?` | `actor:<cid>`、`any_strict` / 700 |
+  | R2 我的建筑（Life 记得的最近放下的那座；没有就省） | `What has happened at my building "<名>"?` | `place:<名>`、`any_strict` / 700 |
+  | R3 未了与感受 | `What am I looking forward to, worried about, or have promised to do?` | 无 / 600 |
+
+  合并（`Mind.merge_recalled/1`）：路的优先级 R1（近者在前）> R2 > R3，各路保持 Hindsight 返回的次序，每路取前 4 条还没被更高优先级的路
+  取走的，按 id 去重。不按时间排：S1-Q 在真实导出上看到“路内新的在前”截掉了拆屋事实与“守屋 77 次，没人来”
+  （`.demo/observe/npc-slice1-20261112/s1q/results.md`）。每路 4 条是原创取值，在那份导出上量过一次，实跑后调。
+  任何一路失败或超时，整次心智读不到（见下文“失败”），不拿其余几路凑一张残缺的清单。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
@@ -457,7 +473,7 @@ flowchart LR
   实跑导出后再调；进行中的账只在 Life 内存里，重启即丢、不补写；观察每秒 20 帧，没有条目要写的帧不保存。
   与活动句 `During it:` 的重复先两者都留。C 倒下 / 死亡不做（要改 Body）。这些句子没有离线测过。
 - **经历条目与写入 Hindsight**：每条经历是 `%{"id", "at_ms", "text", "tags"}`（World 事件另有 `seq` / `actor`，对话另有 `speech`）。
-  `"text"` 不带时刻；交给 Hindsight 与快照的正文由 `Life` 的一处函数加离线测过的 `At <UTC> (UTC), ` 前缀。tags：
+  `"text"` 不带时刻；交给 Hindsight 的正文由 `Life` 的一处函数加离线测过的 `At <UTC> (UTC), ` 前缀，快照拿到 `%{at_ms:, text:}`、由 `Mind` 写多久以前。tags：
   World 事件 `kind:event` + `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`；对话 `kind:conversation` + 对方 `actor:<cid>`；
   活动 `kind:activity` + 期间进过 6 米内的每个人 `actor:<cid>` + 候选登记了地名（注册参数 `place_name`）时 `place:<地名>`；
   所见 `kind:sight` + 那个人 `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`（id `sight:encounter:…` / `sight:place:…` / `sight:remove:…`）。
@@ -501,18 +517,19 @@ flowchart LR
   已存的旧经历不重写。
   `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历；规则模式下 `Life.experience/2`（动作终态进情绪评价流水）不建流水，
   技能内部的每一步也不进经历。
-- **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、召回出错或超时、
+- **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、任何一路召回出错或超时
+  （超时为 `:recall_timeout`；失败那一路的问句与原因见 `Life.observe/1` 的 `recall`）、
   “我的建筑”现查 World 时路由或查询失败——不写“在”或“不在”；World 调用退出时发问 worker 随之退出，记 `select_worker_failed`）
   记为 `{:mind_unavailable, 细节}`，**不发 Jev 请求**，不把读不到的记忆当成“没有记忆”；新 NPC 的空 bank 召回为空是正常结果。
   HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
   记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
   新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）每 10 秒失败一次，属于这一条。
-- **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_query`、`recall_ms`；
+- **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_queries`（各路召回的描述，按优先级）、`recall_ms`（并行墙钟）；
   在 Jev 请求发出前记下，Jev 随后失败或 worker 崩溃也留着；心智读不到的那次没有发问，仍是上一次的。
   `Life.observe(cid)` 照旧给出情绪原值与衰减值、`pending_episodes`、`pending_fragments`、`retained`、认识缓存、最近一次召回的成败与耗时。
 - **日志**：每次选择一行
   `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`；trigger 为 `start`（首次）、`completed` / `failed`
-  （上一项活动的结局）、`retry`（上次发问失败后重问）；`latency_ms` 是 Jev 请求，`recall_ms` 是那一次记忆召回。state 全文不进日志。
+  （上一项活动的结局）、`retry`（上次发问失败后重问）；`latency_ms` 是 Jev 请求，`recall_ms` 是各路记忆召回并行的墙钟。state 全文不进日志。
   技能候选另有既有的 `npc_skill_outcome`；Life 与 Hindsight 的既有日志（`npc_life_error`、`npc_life_memory_error`、`npc_hindsight_failed`）照旧。
 - **模型**：取运行环境 `TYPESAFE_MODEL`，随每行 `npc_select` 记录。模型名就是 `jev-latest`（Jev 不分版本）。
 
@@ -653,8 +670,8 @@ NpcServer.Registry.put("LifeBuilder", %{
 全局实现没有实验实例名、端口或测试服务默认值。
 
 统一形态（`"npc"`）必带 Life，用法与上面两种都不同：大脑仍是原 Tree（不包 `Brain.Social`，不问决策模型），Life 按规则模式运行；
-Life 对它多给两个入口——`Life.mind(cid, query)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历原文、
-缓存认识与恰好一次召回，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity_started(pid)` 与
+Life 对它多给两个入口——`Life.mind(cid, queries)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历、
+缓存认识与各路并行召回合并后的清单，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity_started(pid)` 与
 `Life.activity(pid, %{text:, place:})` 标出一项活动的开始与结束，结束时接纳“做了什么、结果如何、期间谁来过”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
 详见上文“统一形态”。
 

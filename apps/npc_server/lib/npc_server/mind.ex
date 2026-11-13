@@ -8,11 +8,12 @@ defmodule NpcServer.Mind do
 
   | 栏 | 内容 | owner |
   |---|---|---|
+  | Now | 游戏钟此刻的时段与钟点 | 游戏钟（`MmoContracts.WorldTime`，Runtime 每帧写进观察的 `world_time`） |
   | Character | 人格卡的英文描述 | 注册参数（`profile.who`、`profile.persona`，`NpcServer.Persona`） |
   | Feelings and relationships | 此刻仍活跃的情绪（对谁、什么情绪、多强）与对各角色的信任 | Life（`Life.mind/2` 的 `feelings`、`relationships`） |
-  | What just happened | 还没写进 Hindsight 的近期经历原文（权威事件、已结束的活动） | Life（`Life.mind/2` 的 `recent`） |
-  | What I remember | 缓存的认识（mental models）与针对当前处境的一次召回 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
-  | Current situation | 位置、生命、附近的人、我的建筑在不在、背包 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
+  | What just happened | 还没写进 Hindsight 的近期经历，每条前面写多久以前 | Life（`Life.mind/2` 的 `recent`、`now_ms`） |
+  | What I remember | 缓存的认识（mental models）与按处境分路召回、合并后的记忆 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
+  | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
@@ -29,35 +30,82 @@ defmodule NpcServer.Mind do
     （2026-11-12 S1-E 离线实测：去掉 Distrusts 一句后模型认不出附近的人就是记忆里的那个 actor；见 docs/10-active/cross-cutting/tools/jev/s1e_design.py）。
   - 与旁人的距离由代码算好。
 
+  ## 游戏时间的写法（原文出自离线测量 S1-K，`docs/10-active/cross-cutting/tools/jev/s1k_design.py` 的 `now_line` / `words_ago`）
+
+  NPC 看的是游戏钟（游戏钟设计页 `docs/10-active/cross-cutting/2026-11-13-world-clock-design.md`：现实 20 分钟 = 一个昼夜日），
+  不是 UTC；存进 Hindsight 的经历正文仍是 `At <UTC> (UTC), …`（Life 写入侧），这里不解析它，只用条目另存的毫秒时刻。
+
+  - **Now** 栏：`It is <时段>, <HH:MM>.`，钟点取观察里 `world_time.minute_of_day`。时段按钟点的小时：
+    05–11 `morning`、12–16 `afternoon`、17–20 `evening`、其余 `night`。
+  - **多久以前**：两个真实时刻（Unix 毫秒）各经 `MmoContracts.WorldTime.game_us/1` 换成游戏时间后相减，按游戏小时换词：
+    不足 0.25 小时写 `Just now, `；不足 48 小时按 0.5 小时四舍五入写 `About <N> hours ago, `（`1 hour`、`0.5 hours`、`13.5 hours`）；
+    48 小时及以上按天四舍五入写 `About <N> days ago, `。放在句首，后面接经历原文。
+    召回的记忆有事件时刻（`at_ms`）时同样前缀，没有时不写。
+
+  ## 记忆一栏的召回
+
+  `recall_queries/2` 按处境给出至多四路召回的描述（`NpcServer.Life.Hindsight.recall/3` 的入参），次序即优先级：
+
+  | 路 | 问句 | 过滤 | `max_tokens` |
+  |---|---|---|---|
+  | R1 附近的人（至多 2 人，近者在前；每人一路） | `What has happened between me and <名字> (actor <cid>)? Did they help, harm, or promise me anything?` | `tags: ["actor:<cid>"]`、`any_strict` | 700 |
+  | R2 我的建筑（Life 记得的最近放下的那座；没有就省这一路） | `What has happened at my building "<名>"?` | `tags: ["place:<名>"]`、`any_strict` | 700 |
+  | R3 未了与感受 | `What am I looking forward to, worried about, or have promised to do?` | 无 | 600 |
+
+  三路都 `prefer_observations: true`、不按 `types` 过滤（带 mission 后不少事实被抽成 `world` 类型）。问句、tags 与 token 上限
+  照离线重测 S1-Q 的原文（`.demo/observe/npc-slice1-20261112/s1q/plan.md` 的 R 部分）。
+  各路由 Life 并行召回，`merge_recalled/1` 合成记忆栏里的一张清单：路的优先级 R1（近者在前）> R2 > R3，
+  **各路保持 Hindsight 返回的次序**（它自己的相关性排序），每路取前 4 条（`@recall_quota`）还没被更高优先级的路取走的，按 id 去重。
+  不按时间排：S1-Q 在真实导出上看到“路内新的在前”截掉了拆屋事实与“守屋 77 次，没人来”，手写材料上“旧的在前”又截掉了最近的事实
+  （`s1q/results.md`）。召回条目的正文从第一个 ` | When:` 起是抽取器附加的时间 / 涉及者后缀，渲染时去掉。
+
   人格只来自人格卡：Life 状态里的 `caution` / `sociability` 不进快照（并入人格卡要迁移持久状态并牵动 `Brain.Social`，待做）。
   记忆与认识只是“我记得”，不是世界真值，这一栏的开头写明。与模型的交互一律英文；角色名字原样写入。
-  背包只有材料号与单位数：材料名在 World 的目录里，不在 Observation 里，这里不另查。
+  背包只有材料号与单位数：材料名在 World 的目录里，不在 Observation 里，这里不另查；余额为 0 的材料不写。
   我放下的有名字的建筑，每座一句，在背包之前：`My building "<名>" at (<ax>, <ay>, <az>) is standing.` 或 `… is gone.`
   （坐标是锚点所在宏格；`is gone.` 是离线对照实测过的原文，见 docs/10-active/cross-cutting/tools/jev/s1c_diag.py 的 `SIT_GONE`）。
   哪几座来自 Life 的记忆，在不在只认发问那一刻 World 的现查结果；没有这样的建筑就一句不写。“受损但还在”不写（没有便宜的逐格读法）。
 
-  `recall_query/2` 由处境拼出那一次召回的问句（附近的人 + 各候选的判据），一次选择只召回一次。
-
   `person/2` 按选择器从此刻的观察与 Life 的信任里选一个人（候选活动“去找某人”，`NpcServer.Trees.npc/1`）；
   “不信任”的界限与快照里写 `Distrusts` 的界限是同一个值。
   """
+  alias MmoContracts.WorldTime
   alias NpcServer.Persona
   alias NpcServer.Life.State
 
   # 信任不高于它即“不信任”：快照写 Distrusts 与 person(:distrusted, _) 选人共用。
   @distrusts -0.2
 
+  # 合并召回时每路最多取几条。原创取值（没有外部依据），在 S1-Q 的真实导出上量过一次（三种处境都留住了拆屋事实、
+  # 对 Corvin 的愤怒与“守屋 77 次，没人来”，见 `.demo/observe/npc-slice1-20261112/s1q/remerge-rank-order.json`），实跑后调。
+  @recall_quota 4
+
+  # 附近的人至多给几路召回（近者优先）。出处：内容规范 §4 的 R1“上限 2 个”。
+  @recall_people 2
+
+  # 各路共用的召回参数（S1-Q 的 R 部分）：偏好已巩固的认识，不按类型过滤。
+  @recall_common %{prefer_observations: true}
+
+  @open_concerns Map.merge(@recall_common, %{
+                   query: "What am I looking forward to, worried about, or have promised to do?",
+                   max_tokens: 600
+                 })
+
+  @hour_us 3_600_000_000
+  @day_us 24 * @hour_us
+
   @doc """
-  一份快照：有序的栏 `[{栏名, 正文}]`。`profile` 含 `who` 与 `persona`；`observation` 是 Body 的 Observation；
-  `history` 是已结束的活动（`NpcServer.Selector.history/1`，旧在前，每项含 `activity` 与
+  一份快照：有序的栏 `[{栏名, 正文}]`。`profile` 含 `who` 与 `persona`；`observation` 是 Body 的 Observation
+  （Runtime 已写入游戏钟 `world_time`）；`history` 是已结束的活动（`NpcServer.Selector.history/1`，旧在前，每项含 `activity` 与
   `result: :completed | {:failed, 动作名, 原因文字}`）；`life` 是 `NpcServer.Life.mind/2` 的视图。
   """
   @spec snapshot(map(), map(), [map()], map()) :: [{String.t(), String.t()}]
   def snapshot(profile, observation, history, life) do
     [
+      {"Now", clock(observation.world_time)},
       {"Character", Persona.describe(profile.who, profile.persona)},
       {"Feelings and relationships", feelings(life, observation.entities)},
-      {"What just happened", happened(life.recent)},
+      {"What just happened", happened(life.recent, life.now_ms)},
       {"What I remember", remembered(life)},
       {"Current situation", situation(observation, life.buildings)},
       {"Recent activities", recent(history)}
@@ -70,20 +118,67 @@ defmodule NpcServer.Mind do
     do: Enum.map_join(sections, "\n", fn {title, body} -> title <> ": " <> body end)
 
   @doc """
-  针对当前处境的那一次召回的问句：附近的人（名字与 cid）加各候选活动的判据（它们写着涉及的地点与对象）。
-  记忆原文用 cid 指人，所以问句里带 cid。
+  这次选择要发的各路召回（见 moduledoc 的表），按优先级排好：`[描述]`，每个描述是
+  `%{query:, tags:, tags_match:, prefer_observations:, max_tokens:}`（R3 没有 tags 两项），直接交给 `Life.mind/2`。
+  `observation` 是此刻的观察（附近的人与距离）；`buildings` 是 Life 记得的“我放下的有名字的建筑”
+  （`Life.State` 的 `"buildings"`，按放下的次序），取最后一座。
   """
-  @spec recall_query(map(), map()) :: String.t()
-  def recall_query(profile, %{entities: entities} = observation) do
+  @spec recall_queries(map(), [map()]) :: [map()]
+  def recall_queries(%{self: self} = observation, buildings) do
     people =
-      case State.others(observation) do
-        [] -> "Nobody is nearby."
-        others -> "Nearby: " <> Enum.map_join(others, ", ", &actor(&1.entity_id, entities)) <> "."
+      observation
+      |> State.others()
+      |> Enum.sort_by(&{State.distance(self.position, &1.position), &1.entity_id})
+      |> Enum.take(@recall_people)
+      |> Enum.map(fn %{entity_id: cid, name: name} ->
+        Map.merge(@recall_common, %{
+          query:
+            "What has happened between me and #{State.person(cid, %{cid => name})}? " <>
+              "Did they help, harm, or promise me anything?",
+          tags: ["actor:#{cid}"],
+          tags_match: "any_strict",
+          max_tokens: 700
+        })
+      end)
+
+    building =
+      case List.last(buildings) do
+        nil ->
+          []
+
+        %{"name" => name} ->
+          [
+            Map.merge(@recall_common, %{
+              query: ~s|What has happened at my building "#{name}"?|,
+              tags: ["place:#{name}"],
+              tags_match: "any_strict",
+              max_tokens: 700
+            })
+          ]
       end
 
-    "I am deciding what to do next. #{people} What I could do: " <>
-      Enum.map_join(profile.activities, " ", & &1.criterion) <>
-      " What do I remember about these people, places and tasks?"
+    people ++ building ++ [@open_concerns]
+  end
+
+  @doc """
+  把各路召回的结果合成记忆栏的一张清单。`routes` 是各路返回的条目列表，按 `recall_queries/2` 的次序（即优先级）；
+  每路保持 Hindsight 返回的次序，取前 #{@recall_quota} 条还没被更高优先级的路取走的（同一路里重复的 id 也只算一次）。
+  条目是适配器规范化后的 `%{"id", "text", "type", "at_ms", "tags"}`，原样留在清单里。
+  """
+  @spec merge_recalled([[map()]]) :: [map()]
+  def merge_recalled(routes) do
+    {merged, _taken} =
+      Enum.reduce(routes, {[], MapSet.new()}, fn results, {merged, taken} ->
+        picked =
+          results
+          |> Enum.reject(&MapSet.member?(taken, &1["id"]))
+          |> Enum.uniq_by(& &1["id"])
+          |> Enum.take(@recall_quota)
+
+        {merged ++ picked, Enum.into(picked, taken, & &1["id"])}
+      end)
+
+    merged
   end
 
   @doc """
@@ -119,6 +214,44 @@ defmodule NpcServer.Mind do
   def result(:completed), do: "completed"
   def result({:failed, act, reason}), do: "failed (#{act}: #{reason})"
 
+  # Now 栏：`It is <时段>, <HH:MM>.`（S1-K 的 now_line，去掉栏名）。
+  defp clock(%{minute_of_day: minute}) do
+    hour = div(minute, 60)
+    "It is #{period(hour)}, #{two_digits(hour)}:#{two_digits(rem(minute, 60))}."
+  end
+
+  defp period(hour) when hour in 5..11, do: "morning"
+  defp period(hour) when hour in 12..16, do: "afternoon"
+  defp period(hour) when hour in 17..20, do: "evening"
+  defp period(_hour), do: "night"
+
+  defp two_digits(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
+
+  # 句首的“多久以前”（S1-K 的 words_ago）：真实时刻换成游戏时间再相减，整数微秒运算，不经浮点。
+  # 不足 0.25 游戏小时 → Just now；不足 48 小时 → 四舍五入到 0.5 小时；否则四舍五入到天。
+  defp ago(at_ms, now_ms) do
+    elapsed = WorldTime.game_us(now_ms * 1000) - WorldTime.game_us(at_ms * 1000)
+
+    cond do
+      4 * elapsed < @hour_us ->
+        "Just now, "
+
+      elapsed >= 48 * @hour_us ->
+        "About #{count(div(2 * elapsed + @day_us, 2 * @day_us), "day")} ago, "
+
+      true ->
+        # 半小时数 = floor(小时 × 2 + 1/2)。
+        halves = div(4 * elapsed + @hour_us, 2 * @hour_us)
+
+        if rem(halves, 2) == 0,
+          do: "About #{count(div(halves, 2), "hour")} ago, ",
+          else: "About #{div(halves, 2)}.5 hours ago, "
+    end
+  end
+
+  defp count(1, unit), do: "1 #{unit}"
+  defp count(n, unit), do: "#{n} #{unit}s"
+
   # 情绪在前、关系在后；都没有时写一句，不留空栏。
   defp feelings(%{feelings: feelings, relationships: relationships}, entities) do
     sentences =
@@ -153,19 +286,35 @@ defmodule NpcServer.Mind do
     end
   end
 
-  # 近期经历的原文由 Life 写成，这里原样列出。
-  defp happened([]), do: "Nothing new."
-  defp happened(texts), do: "Oldest first. " <> Enum.join(texts, " ")
+  # 近期经历的原文由 Life 写成（不带时刻），这里在句首加多久以前。
+  defp happened([], _now_ms), do: "Nothing new."
+
+  defp happened(recent, now_ms),
+    do:
+      "Oldest first. " <>
+        Enum.map_join(recent, " ", fn %{at_ms: at_ms, text: text} ->
+          ago(at_ms, now_ms) <> text
+        end)
 
   defp remembered(%{models: [], memories: []}), do: "Nothing relevant."
 
-  defp remembered(%{models: models, memories: memories}) do
+  defp remembered(%{models: models, memories: memories, now_ms: now_ms}) do
     Enum.join(
       ["My own memories and beliefs; they may be out of date and are not current world facts."] ++
         for({id, text} <- models, do: "- Belief (#{id}): #{text}") ++
-        for(memory <- memories, do: "- Recalled: #{memory["text"]}"),
+        for(memory <- memories, do: "- Recalled: #{recalled(memory, now_ms)}"),
       "\n"
     )
+  end
+
+  # 召回条目：去掉抽取器的 ` | When: … | Involving: …` 后缀；有事件时刻才写多久以前。
+  defp recalled(%{"text" => text} = memory, now_ms) do
+    [plain | _] = String.split(text, " | When:", parts: 2)
+
+    case memory["at_ms"] do
+      nil -> plain
+      at_ms -> ago(at_ms, now_ms) <> plain
+    end
   end
 
   # 眼前的处境：Observation 里现有的字段，加 Life.mind 现查 World 得到的“我的建筑”在不在。
@@ -202,15 +351,20 @@ defmodule NpcServer.Mind do
   defp kind(0), do: "player"
   defp kind(1), do: "NPC"
 
-  # nil = 还没取过余额；空表 = 背包是空的。
+  # nil = 还没取过余额；只列余额非零的材料，全是零与空表一样写 empty。
   defp inventory(nil), do: "Inventory: not checked yet."
-  defp inventory([]), do: "Inventory: empty."
 
   defp inventory(rows) do
-    "Inventory: " <>
-      Enum.map_join(rows, ", ", fn %{material: material, balance: balance} ->
-        "material #{material}: #{balance} units"
-      end) <> "."
+    case Enum.reject(rows, &(&1.balance == 0)) do
+      [] ->
+        "Inventory: empty."
+
+      held ->
+        "Inventory: " <>
+          Enum.map_join(held, ", ", fn %{material: material, balance: balance} ->
+            "material #{material}: #{balance} units"
+          end) <> "."
+    end
   end
 
   defp recent([]), do: "None yet."

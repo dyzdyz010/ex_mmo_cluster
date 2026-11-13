@@ -151,18 +151,14 @@ defmodule NpcServer.Life.Hindsight do
 
   只有 `query` 必填；值为 nil 或缺省的键不进请求体，`max_tokens` 缺省 #{@default_recall_max_tokens}，
   `budget` 固定 `"mid"`。字段含义与取值以 Hindsight 的 RecallRequest 为准，本模块不重复校验。
-
-  过渡：现有调用方（`Life`）还传问句字符串，这里把它当作只有 `query` 的描述。
-  T4 接线（Life 改为传描述）后删除字符串形式。
+  不是这个形状（包括裸的问句字符串）→ `{:error, :invalid_query}`，不发请求。
+  多路召回的并行与合并在调用方（`NpcServer.Life.mind/2`），这里每次只发一路。
 
   返回的 `results` 在这里规范化一次，每条是（字符串键，沿用现有调用方读 `"text"` 的形状）：
   `%{"id", "text", "type", "at_ms", "tags"}`。`at_ms` 是 `occurred_start`（没有则 `mentioned_at`）
   解析成的 Unix 毫秒，两者都没有为 nil；时间串不是带时区的 ISO 8601 时整次召回失败
   （`{:error, :invalid_response}`），不静默丢弃。
   """
-  def recall(config, query, now_ms) when is_binary(query),
-    do: recall(config, %{query: query}, now_ms)
-
   def recall(config, %{query: query} = description, now_ms) when is_binary(query) do
     started = System.monotonic_time(:millisecond)
 
