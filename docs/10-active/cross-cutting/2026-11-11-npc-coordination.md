@@ -58,13 +58,23 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   测试（WSL）：sight / dialogue-life / life / life-state 四个文件 69 通过；npc_server 缺省全套 **447 通过、18 排除**（设了占位的 `NPC_LLM_*`；日志 `.demo/observe/npc-slice1-20261112/s1r/sight-targeted.log`、`sight-full.log`）。临时 PG `npc-s1r-pg-20261113` 与其匿名卷已删。
   实现上的取舍（统筹会话逐行看过并接受，已报用户）：别人拆我的建筑时第一下之后的各下会成为所见（`… that I placed`，不评价情绪）；频率上限按每人每类分开计；`stayed at least <N> m away` 向下取整；写库失败时那几条所见丢掉。
   风险（未处理）：两帧观察间隔超过 5 秒算观察中断，Life 自己被慢写库卡住超过 5 秒时会误判。句式与门槛没有测过，要等下一次实跑导出。
-- **T3 + T4（Mind 渲染 + 三路召回接线）已派出（2026-11-13T14:05Z），结果未回**：一个子会话串行做，临时 PG `npc-s1u-pg-20261113`（127.0.0.1:55464），日志将在 `.demo/observe/npc-slice1-20261112/s1t/t34-targeted.log`、`t34-full.log`；基线 447 通过、18 排除。**接手时工作区里 `apps/npc_server` 的未提交改动就是它的，没有本节的“已测”条目就不要提交。**接线规则见上面“对 T4 的判断”，实现拆分见下文第七个会话的“第 4 项的实现拆分”。做完后要再上一次真实服务端短实跑，一并覆盖“看到的”与三路召回（计划届时写 `s1t/plan.md`）。
+- **T3 + T4（Mind 渲染 + 三路召回接线）已实现、已测、已提交 `c30a1a85`（未推送；未在真实服务端实跑）**：`Mind.recall_queries/2`（R1 最近至多 2 人各一路按 `actor:` tag、R2 最近放下的那座建筑按 `place:` tag、R3 未了与感受；都 `prefer_observations`）、
+  `Mind.merge_recalled/1`（各路保持 Hindsight 返回次序、每路前 4、按 id 去重；配额 `@recall_quota 4` 是原创取值）、`Life.mind/2` 在发问 worker 里并行（至多 3 路在途、每路 10 秒，任何一路失败或超时整次失败 `:recall_timeout`）；
+  prompt 变七栏：最前加 Now（`It is <morning|afternoon|evening|night>, HH:MM.`），近期经历与召回行句首写 `Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `（游戏钟；措辞取自 S1-K 的 `s1k_design.py`），背包只列非零，召回行去掉 ` | When:` 起的后缀。存进 Hindsight 的正文仍是 `At <UTC> (UTC), …`。
+  删掉了 `Mind.recall_query/2` 与 `Hindsight.recall/3` 的字符串入口；`asked.recall_query` → `asked.recall_queries`；`Life.context/2`（LLM 大脑用）签名不变。测试（WSL）：改过的测试文件 90 通过、2 排除；npc_server 缺省全套 **457 通过、18 排除**（`.demo/observe/npc-slice1-20261112/s1t/t34-targeted.log`、`t34-full.log`）；
+  真实的 S1-Q 各路返回喂给 `merge_recalled` 得到的 id 与次序和 `s1q/remerge-rank-order.json` 一致（做成了测试）。临时 PG `npc-s1u-pg-20261113` 与其匿名卷已删。
+  与任务书不同处（统筹会话看过 diff，接受）：召回行写成 `- Recalled: About N hours ago, <正文>`（规范里的 `- (<多久以前>) <正文>` 没测过，没用）；背包全为零写 `Inventory: empty.`；R2 的建筑取自观察里 Runtime 带的 Life 规范状态，还没有时这次选择以 `:life_not_ready` 失败；没有写“某一路超时”的测试（要多等 10 秒）。
+  **下一步是真实服务端短实跑（计划写 `s1t/plan.md`，还没写）**：一并覆盖三路召回、新 prompt、“看到的”A / B、说话的经历；全新 PG，Hindsight 里新 NPC 的 bank 是新的（cid 重新分配）。
 - **反思写回重新提上来（用户 2026-11-13）**：用户原话“反思写回为什么不做了？这个我觉得还挺重要的，因为这里是角色静下心来不受即时决策影响能深度思考的途径，能形成 ai 小镇中所说的高级记忆”。此前搁置的两条原因——离线两轮（S1-I）用的是手写材料（已降为假设）、当时结论不稳定且对选择增量小——第一条现在可以消掉：有真实记忆库了。
   **S1-V（在真实导出上重做反思写回）已派出（约 13:40Z），结果未回**：计划与 7 条期望发问前写定在 `.demo/observe/npc-slice1-20261112/s1v/plan.md`；真实 133 份文档按产品的建法重放进新库 `s1v-copy-20261113`（本线自己建的），三个由代码模板产生的问题各调 Hindsight 的 `reflect` 3 次，取第 1 次写回为 `kind:reflection` 文档，再看它经召回与经四份认识两条路对选择的作用。脚本将在 `tools/jev/s1v_reflect.py`，读数落 `s1v/`。
   执行子会话只做关键词粗判；**盲判由统筹会话另派**（9 条反思原文在 `s1v/reflections/`，B0 / B1 认识全文在 `s1v/beliefs/`）；判定写 `s1v/results.md`，没有那个文件就是还没判。反思何时触发、放在哪个进程，本轮不测，要等结果再设计。
 - **Docker 清理（用户 2026-11-13 要求“把旧的镜像、容器和数据卷都删掉”）**：统筹会话先做只读盘点——已停止容器 151 个（受保护的如园对象 23 个，voxim-* 120 个，别的项目 8 个）、无主卷 107 个（匿名 101、有名字 6：`ollama`、`maxio_pgdata`、`docker_mysql_data`、`docker_redis_data`、`docker_minio_data`、`docker_esdata01`）、镜像 157 个（91 个没有容器在用）。
   **用户经提问框定的范围**：容器——voxim-* 且建于 11 月 6 日之前的已停止容器（118 个）；卷——匿名的无主卷 + 被删容器独占的卷，现有那 6 个有名字的别的项目的卷不动；镜像——voxim-* 仓库里没有容器在用、建于 11 月 6 日之前的。
   不变的边界：受保护对象不删、不强制删仍被引用的镜像、不用任何 prune（按名字逐个删）、构建缓存不动（用户没提，且只能用 prune 清）、运行中的容器与别的项目的容器不动。实际删除清单与前后计数存 `.demo/observe/npc-slice1-20261112/docker-cleanup-20261113/`；**该目录里没有 `done.txt` 就是还没删完。**
+  **已删完（2026-11-13T13:56Z，`done.txt` 在）**：容器 117、卷 152（匿名无主 101 + 被删容器独占 51，其中有名字的 6 个都是 10 月的 `voxim-npc-*-hf / -pg`）、镜像 76，逐个按名字删，0 个失败或跳过（`apply.log`）。前后：容器 154 → 37，卷 170 → 18，镜像 157 → 81；镜像 33.75 → 22.24 GB，卷 28.88 → 7.72 GB。
+  删后核对：23 个受保护容器都在；运行中的 3 个（Hindsight、两个 meeting_room 库）没动；Hindsight 就绪、9 个 bank 都在；`voxim-server:20261112-qinglan`、`postgres:16-alpine`、Hindsight 镜像、构建基础镜像都在。
+  **按名字多留了 3 个没删**（`held-back.txt`，名字像如园 / ymy 的一律不碰）：容器 `voxim-mail-qlry1023`、镜像 `voxim-server:ymy-20261015-taihu56-40` 与 `…-liquid40`。比用户选的范围少删 1 个容器（118 → 117，就是这个）。
+  没动的：别的项目的 8 个已停止容器、近 7 天的 `voxim-test-pg` 与 `voxim-pg-servera-20261106`、6 个有名字的无主卷、构建缓存 30.79 GB（只能用 prune 清，用户没要求，且“禁止 prune”）。此前“06:59Z 那个疑似本线的匿名卷”已随匿名无主卷一并删掉。
 - **环境（2026-11-13T13:30Z 前后；上面“T3 + T4 已派出”写的 14:05Z 有误，实际约 13:35Z）**：没有节点、tmux、临时 PG。本线容器只有 `npc-s1g-hindsight-20261113`（127.0.0.1:18933），bank：真实导出原件 `npc-life-312999940097`（**不删**）、`s1q-nomission-20261113`、以及早先的手写材料库 `smoke-s1g`、`s1i-m0/m1/m2`、`s1l-m1/m2`。
   Docker 卷数 170（S1-N 收尾时 168）：多出的两个匿名卷建于 08:36:43Z 与 09:20:54Z，那两个时刻本线没有起过容器，**不是本线的，没动**。另有一个建于 06:59:55Z 的匿名卷，时刻与本会话第一个临时 PG `npc-s1p-pg-20261113` 吻合，**很可能是它留下的，但无法按名字确认，没删**。
   voxim-d4 被用户暂停（用户 2026-11-13 原话“不用问对面了，我把对面暂停了”），它此前要求的“冒烟期间全机不编译”因此解除；它恢复后以它当时的消息为准。
