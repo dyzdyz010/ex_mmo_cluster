@@ -17,6 +17,16 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第八个统筹会话的进展（2026-11-13 起）——接手先读这一节；下面第七个会话的“交接”里“下一步”第 1、2 项的状态以这里为准
+
+- **第 1 项（补核 + 修说话人名字）已做，已提交 `c47e730b`（未推送，未在真实服务端实跑）**。`b41c0590` 里 `life/state.ex`、`dialogue.ex`、`registry.ex`、`runtime.ex`、`selector.ex`、`mind.ex` 与
+  `npc_life_state_test`、`npc_dialogue_life_test`、`npc_life_test` 的 diff 逐行看过，除说话人名字外没有发现新缺陷（`README.md`、`npc_registry_test`、`npc_selector_test`、`npc_dialogue_world_test` 的 diff 没看）。
+  修补：`Dialogue.episode/3` 的说话人名字取消息自带的 `speaker_name`（也覆盖观察里的），对象仍只取观察。测试（WSL）：dialogue 三个文件 21 通过；npc_server 缺省全套 430 / 431 通过、18 排除——
+  唯一失败是 `NpcEmotionMovementTest` 因本次脚本没设 `NPC_LLM_URL` 而报 `System.EnvError`，带占位的 `NPC_LLM_*` 单独跑通过；**没有带这些变量重跑全套**。日志 `.demo/observe/npc-slice1-20261112/s1n/fix-speaker-*.log`。临时 PG `npc-s1p-pg-20261113` 已删。
+- **第 2 项（“看到的”规范草案）已写，待用户定，未实现**：[内容规范](2026-11-13-npc-mind-content-spec.md) §9——三类所见（A 相遇、B 附近的建造 / 拆除、C 倒下 / 死亡，C 要改 Body），每类的产生者、存储、进 prompt 的路径、成条时机与频率上限；门槛都是原创取值。
+  要用户定的五条在 §9.6，**用户尚未答复**（没有答复就是没定）。
+- **第 3 项（真实服务端 NPC-only 短实跑 S1-N）计划已写，尚未起任何节点或容器**：`.demo/observe/npc-slice1-20261112/s1n/plan.md`（13 条期望运行前写定；四段；新 PG `npc-s1n-pg-20261113` 127.0.0.1:55462，复用 Hindsight 容器 18933，bank `npc-life-<cid>` 不删）。
+
 ### 交接（2026-11-13，第七个统筹会话 → 第八个，因上下文接近 300k）——接手先读这一节，再读紧接着的“第七个统筹会话的进展”页首引用块
 
 **一句话**：产品侧已提交两步——`8dfb567b`（`Life.Hindsight`：带过滤的召回、tags、mission）与 `b41c0590`（Life 写入侧：期间事实、人名、tags、逐条成文档、Registry 可选地名）。npc_server 缺省全套 430 通过、18 排除（`.demo/observe/npc-slice1-20261112/s1m/t2-full.log`）。**都没有在真实服务端实跑过**；分支未推送；工作区交接时干净。
