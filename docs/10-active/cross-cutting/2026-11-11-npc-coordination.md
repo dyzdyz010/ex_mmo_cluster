@@ -64,7 +64,7 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   删掉了 `Mind.recall_query/2` 与 `Hindsight.recall/3` 的字符串入口；`asked.recall_query` → `asked.recall_queries`；`Life.context/2`（LLM 大脑用）签名不变。测试（WSL）：改过的测试文件 90 通过、2 排除；npc_server 缺省全套 **457 通过、18 排除**（`.demo/observe/npc-slice1-20261112/s1t/t34-targeted.log`、`t34-full.log`）；
   真实的 S1-Q 各路返回喂给 `merge_recalled` 得到的 id 与次序和 `s1q/remerge-rank-order.json` 一致（做成了测试）。临时 PG `npc-s1u-pg-20261113` 与其匿名卷已删。
   与任务书不同处（统筹会话看过 diff，接受）：召回行写成 `- Recalled: About N hours ago, <正文>`（规范里的 `- (<多久以前>) <正文>` 没测过，没用）；背包全为零写 `Inventory: empty.`；R2 的建筑取自观察里 Runtime 带的 Life 规范状态，还没有时这次选择以 `:life_not_ready` 失败；没有写“某一路超时”的测试（要多等 10 秒）。
-  **下一步是真实服务端短实跑（计划写 `s1t/plan.md`，还没写）**：一并覆盖三路召回、新 prompt、“看到的”A / B、说话的经历；全新 PG，Hindsight 里新 NPC 的 bank 是新的（cid 重新分配）。
+  **下一步是真实服务端短实跑 S1-T：计划与 14 条期望已写在 `.demo/observe/npc-slice1-20261112/s1t/plan.md`（运行前定稿），还没起任何节点或容器；排在 S1-V 跑完之后（两者共用 Hindsight 容器）**：一并覆盖三路召回、新 prompt、“看到的”A / B、说话的经历；全新 PG，Hindsight 里新 NPC 的 bank 是新的（cid 重新分配）。
 - **反思写回重新提上来（用户 2026-11-13）**：用户原话“反思写回为什么不做了？这个我觉得还挺重要的，因为这里是角色静下心来不受即时决策影响能深度思考的途径，能形成 ai 小镇中所说的高级记忆”。此前搁置的两条原因——离线两轮（S1-I）用的是手写材料（已降为假设）、当时结论不稳定且对选择增量小——第一条现在可以消掉：有真实记忆库了。
   **S1-V（在真实导出上重做反思写回）已派出（约 13:40Z），结果未回**：计划与 7 条期望发问前写定在 `.demo/observe/npc-slice1-20261112/s1v/plan.md`；真实 133 份文档按产品的建法重放进新库 `s1v-copy-20261113`（本线自己建的），三个由代码模板产生的问题各调 Hindsight 的 `reflect` 3 次，取第 1 次写回为 `kind:reflection` 文档，再看它经召回与经四份认识两条路对选择的作用。脚本将在 `tools/jev/s1v_reflect.py`，读数落 `s1v/`。
   执行子会话只做关键词粗判；**盲判由统筹会话另派**（9 条反思原文在 `s1v/reflections/`，B0 / B1 认识全文在 `s1v/beliefs/`）；判定写 `s1v/results.md`，没有那个文件就是还没判。反思何时触发、放在哪个进程，本轮不测，要等结果再设计。
