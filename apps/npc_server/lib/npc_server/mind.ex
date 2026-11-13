@@ -23,6 +23,8 @@ defmodule NpcServer.Mind do
     其间不写。规则模式一次破坏 −0.35、一次帮助 +0.25。
   - 角色的写法：还在观察里的写 `名字 (actor <cid>)`，不在的写 `actor <cid>, who is not nearby`。
     带上 cid 是因为近期经历与记忆的原文只用 cid 指人（`Actor <cid> damaged …`），模型要靠它把两处对上。
+    处境栏的 `Nearby` 也写 `<名字> (<kind>, actor <cid>, <距离> m away)`：不能只靠情绪栏那一句把名字与 cid 对上
+    （2026-11-12 S1-E 离线实测：去掉 Distrusts 一句后模型认不出附近的人就是记忆里的那个 actor；见 docs/10-active/cross-cutting/tools/jev/s1e_design.py）。
   - 与旁人的距离由代码算好。
 
   人格只来自人格卡：Life 状态里的 `caution` / `sociability` 不进快照（并入人格卡要迁移持久状态并牵动 `Brain.Social`，待做）。
@@ -154,7 +156,7 @@ defmodule NpcServer.Mind do
   defp nearby(others, origin) do
     "Nearby: " <>
       Enum.map_join(others, "; ", fn other ->
-        "#{name(other.name)} (#{kind(other.kind)}, #{metres(distance(origin, other.position))} m away)"
+        "#{name(other.name)} (#{kind(other.kind)}, actor #{other.entity_id}, #{metres(distance(origin, other.position))} m away)"
       end) <> "."
   end
 

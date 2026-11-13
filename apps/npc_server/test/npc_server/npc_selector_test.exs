@@ -616,7 +616,7 @@ defmodule NpcServer.NpcSelectorTest do
                    "What I remember: My own memories and beliefs; they may be out of date and are not " <>
                    "current world facts.\n- Belief (self): I am a careful builder.\n" <>
                    "Current situation: Standing at x=1.0, z=3.0 (height 2.0). " <>
-                   "Nearby: Brann (player, 5.0 m away). Inventory: not checked yet.\n" <>
+                   "Nearby: Brann (player, actor #{brann}, 5.0 m away). Inventory: not checked yet.\n" <>
                    "Recent activities: None yet." == request.state
 
           # observe 读得到这次问的全文、召回问句与耗时。

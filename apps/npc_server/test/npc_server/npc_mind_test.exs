@@ -94,7 +94,7 @@ defmodule NpcServer.NpcMindTest do
                   "- Recalled: Brann destroyed my wall."},
                {"Current situation",
                 "Standing at x=1.0, z=3.0 (height 2.0). Life 80 of 100. " <>
-                  "Nearby: Mara (player, 5.0 m away); someone unnamed (NPC, 13.0 m away). " <>
+                  "Nearby: Mara (player, actor 21, 5.0 m away); someone unnamed (NPC, actor 22, 13.0 m away). " <>
                   ~s|My building "small hut" at (25, 518, 37) is gone. My building "shed" at (-3, 64, -12) is standing. | <>
                   "Inventory: material 11: 512 units, material 4: 0 units."},
                {"Recent activities", "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
