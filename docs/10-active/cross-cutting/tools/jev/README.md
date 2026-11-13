@@ -227,6 +227,9 @@ C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。�
   破坏者在附近 `confront_wrecker` 0.81–0.86；去掉记忆里那件事回到 `guard_hut`；只去掉 Distrusts 仍是 `confront_wrecker` 0.82–0.87；陌生人在附近 `guard_hut`、`confront_wrecker` ≤ 0.01。
 - 第 2 轮（4 份原文换成 T1，16 次全部应答）：破坏之前的基线 `visit_plaza` 4/4 ×2；破坏后第 1 次选择在重建方向 4/4；刚重建完、破坏者不在附近 `guard_hut` 4/4（`confront_wrecker` 0.01）。T1 不妨碍实跑的前半段。
 结论：离线能区分，但“只去掉 Distrusts 不回到基线”这一条要求处境栏的 Nearby 带上 cid（`apps/npc_server/lib/npc_server/mind.ex` 的一句渲染）。用户已批准，产品改动提交 `4cbdeb34`。见统筹页“S1-E 结果”。
+- 第 3 轮（2026-11-13，用户问“是不是没给够环境与驱动信息所以只知道守屋”；S1-C3 的三份真实 state 各只加一句，10 个变体各 4 次，40 次全部应答）：
+  只加“已平安过了 6 小时 / 3 天”或只加一句需求，无人时仍是 `guard_hut` 4/4；两句一起约各半；加一句当天的计划则 `visit_plaza` 4/4（0.84–0.88），破坏者在附近时加了计划仍是 `confront_wrecker` 4/4。
+  发问前的 10 条期望 4 条落空（时间 6 小时、时间 3 天、需求、时间 + 需求）。见统筹页“S1-E 第 3 轮”。
 
 ## 2026-11-13 S1-C3 实跑后的逐栏对照（`s1c3_counterfactual.py`）
 

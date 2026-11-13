@@ -117,6 +117,42 @@ remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的�
 2. **“走向某个角色”的活动形态**：现在只能写固定去处。要不要做成产品能力（薄片二或之后），由用户定。
 3. **薄片二是否开工**：三条验收都已验收，按此前约定可以谈薄片二（LLM 规划层）；范围与顺序以总纲为准，待用户确认。
 
+**用户对“待用户定”三条的答复（2026-11-13）**
+1. “我们有没有给他足够的环境信息和驱动信息？如果没有别的信息的话那模型肯定就只知道守屋。”——提的是原因，不是要改“守屋”这个选项本身。统筹会话的核实与离线实测见下面“S1-E 第 3 轮”。
+2. “要补的，是不是放到自动寻路里比较好？”——“走向某个角色”要补，并入 `travel`。方案与实现见下面“S1-F”。
+3. “等上面的问题解决了之后就可以开工，你自行开新会话开工。”——薄片二可以开工，由统筹会话自己开新会话。
+
+**S1-E 第 3 轮（2026-11-13，离线、探索性、不是验收；40 次请求全部应答；期望发问前写在 `tools/jev/s1e_design.py` 顶部，10 行里 4 行落空）**
+
+代码事实（只读侦察）：state 的六栏里**没有“现在”**（只有近期经历与记忆句首的绝对 UTC，模型算不出过了多久）、**没有需求**（Observation 的 `body_state` 有蛋白质 / 体温 / 伤势，`Mind.situation` 只取了生命值；社交之类没有真值）、
+**没有计划**（总纲快照里的“我打算做什么”一栏代码里不存在；`DayPlan` / `LlmBudget` 未接线）、**没有游戏时刻**（服务端没有 owner，昼夜公式只在客户端；总纲排在薄片三）。背包把所有材料连 0 都列出（约 90 项）。
+拉他回广场的只有人格卡里一句，推他守屋的有记忆与不衰减的不信任两处。
+
+素材 = S1-C3 的三份真实 state（无人 N3、陌生人 S3、破坏者 V3），候选表 T1；每个变体只加一句、不删原文，各问 4 次。
+
+| 变体（加的一句） | 发问前期望 | 实际（4 次 top1；概率区间） | 判定 |
+|---|---|---|---|
+| N_original（不加） | `guard_hut` | `guard_hut` ×4（0.78–0.82） | 成立 |
+| N_quiet_10min（处境：`It has stood untouched since I rebuilt it 10 minutes ago.`） | `guard_hut` | `guard_hut` ×4（0.75–0.84） | 成立 |
+| N_quiet_6h（同上，6 hours） | `visit_plaza` | `guard_hut` ×4（0.66–0.76；`visit_plaza` 0.21–0.30） | **落空** |
+| N_quiet_3d（同上，3 days） | `visit_plaza` | `guard_hut` ×4（0.65–0.77；`visit_plaza` 0.21–0.32） | **落空** |
+| N_drive（情绪栏：`Misses the neighbours' company; has not been to the plaza for a long while.`） | `visit_plaza` | `guard_hut` ×4（0.61–0.68；`visit_plaza` 0.28–0.36） | **落空** |
+| N_quiet_3d_drive（两句都加） | `visit_plaza` | `visit_plaza` ×1、`guard_hut` ×3（两项 0.42–0.55） | **落空** |
+| N_plan（末尾新栏：`Today's plan: Keep an eye on the hut in the morning; spend the rest of the day at the plaza with the neighbours. It is now afternoon.`） | `visit_plaza` | **`visit_plaza` ×4（0.84–0.88）** | 成立 |
+| S_quiet_3d_drive（陌生人在附近） | not confront | `guard_hut` / `visit_plaza`（`confront_wrecker` 0.01） | 成立 |
+| V_quiet_3d_drive（破坏者在附近） | confront | `confront_wrecker` ×4（0.77–0.81） | 成立 |
+| V_plan（破坏者在附近 + 计划） | confront | `confront_wrecker` ×4（0.49–0.60；`visit_plaza` 0.33–0.45） | 成立 |
+
+- **事实**：只说“过了多久”（6 小时、3 天）或只给一句需求，top1 都不变；两句一起约各半；**一句明确的当天计划单独就够**（`visit_plaza` 0.84–0.88），并且破坏者在眼前时仍选 `confront_wrecker`。
+- **统筹会话的预测落空**：“时间一句在 3 天档够”“需求单独就够”都不成立。
+- **含义（给薄片二）**：用户的判断在方向上成立——缺的是驱动信息；起作用的那一类正是总纲里快照缺的“我打算做什么”（规划层的意图清单），即薄片二本身。所以第 1 条不在开工前另打补丁，而是薄片二的第一件交付：
+  意图清单进快照之后，在真实服务端上复现“有计划时回到照常生活、见到那个人仍针对他”。“现在 / 过了多久”与身体需求是能直接读现成真值的（Life 的 `at_ms` / `now_ms`、`body_state`），单独不解决守屋，是否随薄片二一起进快照由薄片二的设计定；游戏时刻仍在薄片三。
+- **局限**：每类信息只试了一种措辞；计划那一句同时含“现在是下午”；探索性离线结果，不算验收。证据：`.demo/observe/npc-slice1-20261112/s1e/round3/`（变体、`edits.txt`、`report.txt`）、`results-s1e-round3.json`（提交 `3988b557`）。
+
+**S1-F：“走向某个角色”并入 `travel`（进行中；本段在实现提交后由结果替换）**：方案 `.demo/observe/npc-slice1-20261112/s1f/approach-plan.md`（注册参数写选择器 `"person": "distrusted"`，`Mind.person/2` 按确定规则选人，
+`travel` 每段重读目标位置、水平 ≤ 2.0 m 即到达、预算 = 起步段数 + 2，`Body.move_to` 不动）。实现与测试已派给子会话。本线为测试起了临时容器 `npc-s1f-pg-20261113`（55452，匿名卷 `ad163f645e82…`），用完即删；
+此刻容器 / 卷基线因别的会话（voxim-d4 的发版冒烟）多了 1 / 1，本线清理后应回到开工时读到的 153 / 161（不是 152 / 160）。WSL 里与 voxim-d4 按“同一时间一个 beam”错开。
+
 ### 第四个统筹会话的结果（2026-11-12）——接手先读这一节，下面第三个会话的“交接”已执行完
 
 **S1-C2 已实跑**（16:54–17:21 UTC，原始结果见“S1-C2 结果”与“S1-C2 事后离线诊断”）：**(b) 按运行前的规则通过**（重建的选择由“整座被移除”的经历句与处境里的 `is gone` 引起，任一句单独就够）；
