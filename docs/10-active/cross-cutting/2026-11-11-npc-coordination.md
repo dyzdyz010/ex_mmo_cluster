@@ -28,7 +28,9 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   要点：recall 支持 `types` / `tags`+`tags_match` / `tag_groups` / `prefer_observations` / `min_scores` / `temporal_window` / `include.entities|chunks|source_facts`；retain 支持 `context` / `tags` / `entities` / `metadata` / `observation_scopes` / `strategy`；有 reflect、directives、bank 配置（各类 mission）、实体与别名接口；
   没有按实体过滤的 recall 字段（按实体取事实只能用 `memories/list?entity_id=`）；多路只能多次 recall 再合并。未实测：reflect、mental-model、observation 召回内容。
 - **B2/B3（内容规范与召回方案）草案已写**：[`2026-11-13-npc-mind-content-spec.md`](2026-11-13-npc-mind-content-spec.md)，**待用户过目**；用户认可前不动 `apps/` 里的 Mind / Life / Hindsight / Selector。
-  离线测量（§5）的设计已写进该页，期望“方向与归因”；尚未运行。
+  离线测量（§5）的设计已写进该页，期望“方向与归因”；尚未运行。**用户 2026-11-13 已对该页三问全部同意**（含改总纲 :117 的 cid 写法）。
+- **用户同日提出：借鉴“AI 小镇”加反思、分层计划（周→日→半小时）。** 调研与借鉴清单见 [`2026-11-13-npc-planning-reflection-borrowing.md`](2026-11-13-npc-planning-reflection-borrowing.md)（草案，待用户过目）：
+  论文（Park et al. 2023）有日→小时→5–15 分的计划与“重要性累计 > 150”触发的带引用反思，没有周层；a16z AI Town 只有对话总结 + 反思、没有计划。结论：反思先于计划，先离线；半小时层就是 Jev 选择器，不加 LLM 层；游戏钟与计划持久化是前提。
 
 ### 第五个统筹会话的结果（2026-11-12 / 13）——接手先读这一节
 
