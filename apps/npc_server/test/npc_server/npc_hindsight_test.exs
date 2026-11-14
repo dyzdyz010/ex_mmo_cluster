@@ -1,7 +1,11 @@
+Code.require_file("../support/http_stub.exs", __DIR__)
+
 defmodule NpcServer.NpcHindsightTest do
   @moduledoc "只测试：Hindsight HTTP 信任边界；外部服务由隔离 TCP HTTP 替身代替，不验证模型质量。"
   use ExUnit.Case, async: true
+  import ExUnit.CaptureLog
   @moduletag :t0
+  alias NpcServer.HttpStub
   alias NpcServer.Life.Hindsight
 
   setup do
@@ -107,7 +111,7 @@ defmodule NpcServer.NpcHindsightTest do
       assert {:error, :invalid_episodes} = Hindsight.retain(cfg, [episode])
     end
 
-    refute_receive {:http_request, _, _, _}, 30
+    refute_receive {:http_request, _}, 30
   end
 
   test "retain rejects empty extracted facts even after HTTP success" do
@@ -167,7 +171,7 @@ defmodule NpcServer.NpcHindsightTest do
 
     assert ms >= 0
     requests(1)
-    refute_receive {:http_request, _, _, _}, 30
+    refute_receive {:http_request, _}, 30
   end
 
   test "recall description puts optional filters in the request only when given" do
@@ -228,7 +232,7 @@ defmodule NpcServer.NpcHindsightTest do
     assert {:error, :invalid_query} = Hindsight.recall(cfg, nil, 0)
     # 过渡期的字符串入口已删除（多路召回接线后调用方一律传描述）。
     assert {:error, :invalid_query} = Hindsight.recall(cfg, "Who helped me?", 0)
-    refute_receive {:http_request, _, _, _}, 30
+    refute_receive {:http_request, _}, 30
   end
 
   test "recall normalizes each result once: at_ms from occurred_start, else mentioned_at, else nil" do
@@ -420,7 +424,7 @@ defmodule NpcServer.NpcHindsightTest do
 
     assert {:error, {:http_status, 422}} = Hindsight.ensure(cfg, "Lin")
     assert [{:put, _, _}, {:patch, _, _}] = requests(2)
-    refute_receive {:http_request, _, _, _}, 30
+    refute_receive {:http_request, _}, 30
   end
 
   test "ensure keeps existing mental models and status reports token aggregates" do
@@ -468,82 +472,42 @@ defmodule NpcServer.NpcHindsightTest do
     assert Enum.count(requests(9), fn {method, _, _} -> method == :put end) == 1
   end
 
-  # 端口由 OS 分配，每个测试独占；替身只替代外部 HTTP，实际 :httpc 和 JSON 编解码仍运行。
-  defp server(handler) do
-    owner = self()
+  # 反思的存档库只要 bank 存在：一次 PUT，不写抽取 / 巩固 mission、不碰认识文档（内容规范 §10.12 R2）。
+  test "ensure_bank only PUTs the bank, without missions or mental models" do
+    cfg =
+      server(fn :put, "/v1/default/banks/npc-reflect-7", _ ->
+        {200, %{"bank_id" => "npc-reflect-7"}}
+      end)
+      |> Map.put(:bank, "npc-reflect-7")
 
-    {:ok, listener} =
-      :gen_tcp.listen(0, [:binary, active: false, packet: :http_bin, reuseaddr: true])
-
-    {:ok, {_, port}} = :inet.sockname(listener)
-    pid = spawn(fn -> accept(listener, owner, handler) end)
-
-    on_exit(fn ->
-      :gen_tcp.close(listener)
-      Process.exit(pid, :kill)
-    end)
-
-    %{url: "http://127.0.0.1:#{port}", bank: "probe", timeout_ms: 1000, poll_interval_ms: 1}
+    assert {:ok, %{bank: "npc-reflect-7"}} = Hindsight.ensure_bank(cfg, "Lin")
+    assert [{:put, _, put}] = requests(1)
+    assert put["name"] == "Lin"
+    assert put["mission"] =~ "My first-person builder journal."
+    refute_receive {:http_request, _}, 30
   end
 
-  defp accept(listener, owner, handler) do
-    case :gen_tcp.accept(listener) do
-      {:ok, socket} ->
-        {:ok, {:http_request, method, {:abs_path, path}, _}} = :gen_tcp.recv(socket, 0, 1000)
+  # 一个 Life 有经历库与反思库两个 bank，失败日志要分得清是哪一个。
+  test "ensure_bank fails explicitly and the failure log names the bank" do
+    cfg =
+      server(fn :put, _, _ -> {503, %{"detail" => "private-secret"}} end)
+      |> Map.put(:bank, "npc-reflect-7")
 
-        # Erlang 的 HTTP 解析器只把标准方法解成原子，PATCH 以二进制 "PATCH" 给出。
-        method = %{:GET => :get, :PUT => :put, :POST => :post, "PATCH" => :patch}[method]
-        size = headers(socket, 0)
-        :ok = :inet.setopts(socket, packet: :raw)
+    log =
+      capture_log(fn ->
+        assert {:error, {:http_status, 503}} = Hindsight.ensure_bank(cfg, "Lin")
+      end)
 
-        body =
-          if size == 0,
-            do: nil,
-            else:
-              with({:ok, bytes} <- :gen_tcp.recv(socket, size, 1000), do: Jason.decode!(bytes))
-
-        send(owner, {:http_request, method, path, body})
-        {status, data} = handler.(method, path, body)
-        bytes = Jason.encode!(data)
-
-        :gen_tcp.send(
-          socket,
-          "HTTP/1.1 #{status} Response\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(bytes)}\r\nConnection: close\r\n\r\n" <>
-            bytes
-        )
-
-        :gen_tcp.close(socket)
-        accept(listener, owner, handler)
-
-      {:error, :closed} ->
-        :ok
-    end
+    assert log =~ "npc_hindsight_failed bank=npc-reflect-7 reason={:http_status, 503}"
+    refute log =~ "private-secret"
+    assert [{:put, _, _}] = requests(1)
+    refute_receive {:http_request, _}, 30
   end
 
-  defp headers(socket, size) do
-    case :gen_tcp.recv(socket, 0, 1000) do
-      {:ok, :http_eoh} ->
-        size
-
-      {:ok, {:http_header, _, name, _, value}} ->
-        next =
-          if String.downcase(to_string(name)) == "content-length",
-            do: String.to_integer(value),
-            else: size
-
-        headers(socket, next)
-    end
-  end
+  # 本地 HTTP 替身（`test/support/http_stub.exs`）；这里只配上 Hindsight 的 config。
+  defp server(handler),
+    do: %{url: HttpStub.start(handler), bank: "probe", timeout_ms: 1000, poll_interval_ms: 1}
 
   defp requests(count),
-    do:
-      for(
-        _ <- 1..count,
-        do:
-          receive do
-            {:http_request, method, path, body} -> {method, path, body}
-          after
-            1000 -> flunk("missing HTTP request")
-          end
-      )
+    do: for(request <- HttpStub.requests(count), do: {request.method, request.path, request.body})
 end
