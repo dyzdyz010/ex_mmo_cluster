@@ -1,0 +1,24 @@
+Right now:
+It is evening, 18:22. It is day 1345.
+Standing at x=20.4, z=42.3 (height 510.9). Life 100 of 100. Nobody else is nearby. My building "small hut" at (25, 510, 36) is gone. Inventory: material 10: 1064960 units, material 11: 1728512 units.
+My body: life 100 of 100, no injuries or ailments.
+
+What happened:
+[1] About 3 hours ago, I did "gather_stone" (Cut 6660096 units of stone (material 11) from the stone pile beside my plot. Steady, ordinary work.). Result: completed. During it: nobody came near.
+[2] About 3 hours ago, I did "gather_limestone" (Cut 1032192 units of limestone (material 10) from the limestone pile beside my plot.). Result: completed. During it: nobody came near.
+[3] About 3 hours ago, I did "build_hut" (Build the small hut on my plot at (25, 510, 36), or rebuild it if it is gone. It takes 6660096 units of material 11 (stone) and 1032192 units of material 10 (limestone).). Result: completed. During it: nobody came near.
+[4] About 2.5 hours ago, I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. During it: nobody came near.
+[5] About 2 hours ago, I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. During it: nobody came near.
+[6] About 1 hour ago, I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. During it: nobody came near.
+[7] About 0.5 hours ago, I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. During it: nobody came near.
+[8] About 0.5 hours ago, Corvin (actor 1011812929538) removed the entire building "small hut" that I built, at (25, 512, 36), material 11, in world 4ecf1f7864707144 (transaction 42); the building no longer exists. I feel angry toward this actor; my trust changed.
+[9] Just now, I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. During it: nobody came near.
+[10] Just now, I did "build_hut" (Build the small hut on my plot at (25, 510, 36), or rebuild it if it is gone. It takes 6660096 units of material 11 (stone) and 1032192 units of material 10 (limestone).). Result: failed (build: insufficient_material). During it: nobody came near.
+
+What I thought before (my own earlier thoughts, not facts):
+About this: nothing yet
+About other things: nothing yet
+
+To think over now: My building "small hut": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?
+
+After the journal lines, add one last line that starts with "Used:" and lists the numbers of the things under "What happened" that you drew on.

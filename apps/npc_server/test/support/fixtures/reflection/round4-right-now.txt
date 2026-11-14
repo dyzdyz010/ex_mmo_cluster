@@ -1,0 +1,4 @@
+Right now:
+It is afternoon, 15:16. It is day 1346.
+Standing at x=23.5, z=36.5 (height 511.9). Life 100 of 100. Nobody else is nearby. My building "small hut" at (25, 510, 36) is standing. Inventory: material 10: 2129920 units, material 11: 3457024 units.
+My body: life 100 of 100, no injuries or ailments.

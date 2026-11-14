@@ -1,0 +1,358 @@
+{
+ "rule": {
+  "scores": {
+   "event": 8,
+   "conversation": 5,
+   "sight": 3,
+   "activity_with_actor": 3,
+   "activity": 1
+  },
+  "trigger_score": 20,
+  "min_gap_ms": 300000,
+  "max_rounds": 5
+ },
+ "export": {
+  "documents": 108,
+  "last_created_at": "2026-11-13T17:19:30.597937+00:00",
+  "states": 113,
+  "rawobs": 64
+ },
+ "self_cid": "371636310017",
+ "names": {
+  "1011812929538": "Corvin",
+  "1285994582019": "Tobin"
+ },
+ "wrecker": "1011812929538",
+ "visitor": "1285994582019",
+ "moments": [
+  {
+   "n": 1,
+   "t_ms": 1794587389649,
+   "t": "2026-11-13T16:29:49.649Z",
+   "doc_id": "4ecf1f7864707144:42",
+   "doc_kind": "event",
+   "score": 15,
+   "causes": [
+    {
+     "cause": "immediate (kind:event)",
+     "at": "2026-11-13T16:29:49.649Z",
+     "doc_id": "4ecf1f7864707144:42"
+    }
+   ],
+   "held_by_gap": false
+  },
+  {
+   "n": 2,
+   "t_ms": 1794587697730,
+   "t": "2026-11-13T16:34:57.730Z",
+   "doc_id": "activity:1794587697730",
+   "doc_kind": "activity",
+   "score": 31,
+   "causes": [
+    {
+     "cause": "score 22 >= 20",
+     "at": "2026-11-13T16:32:43.587Z",
+     "doc_id": "activity:1794587563587"
+    }
+   ],
+   "held_by_gap": true
+  },
+  {
+   "n": 3,
+   "t_ms": 1794588135904,
+   "t": "2026-11-13T16:42:15.904Z",
+   "doc_id": "activity:1794588135904",
+   "doc_kind": "activity",
+   "score": 20,
+   "causes": [
+    {
+     "cause": "score 20 >= 20",
+     "at": "2026-11-13T16:42:15.904Z",
+     "doc_id": "activity:1794588135904"
+    }
+   ],
+   "held_by_gap": false
+  },
+  {
+   "n": 4,
+   "t_ms": 1794588436737,
+   "t": "2026-11-13T16:47:16.737Z",
+   "doc_id": "sight:encounter:1285994582019:1794588341991",
+   "doc_kind": "sight",
+   "score": 29,
+   "causes": [
+    {
+     "cause": "score 20 >= 20",
+     "at": "2026-11-13T16:46:06.991Z",
+     "doc_id": "activity:1794588366991"
+    }
+   ],
+   "held_by_gap": true
+  },
+  {
+   "n": 5,
+   "t_ms": 1794589011959,
+   "t": "2026-11-13T16:56:51.959Z",
+   "doc_id": "activity:1794589011959",
+   "doc_kind": "activity",
+   "score": 20,
+   "causes": [
+    {
+     "cause": "score 20 >= 20",
+     "at": "2026-11-13T16:56:51.959Z",
+     "doc_id": "activity:1794589011959"
+    }
+   ],
+   "held_by_gap": false
+  },
+  {
+   "n": 6,
+   "t_ms": 1794589669880,
+   "t": "2026-11-13T17:07:49.880Z",
+   "doc_id": "activity:1794589669880",
+   "doc_kind": "activity",
+   "score": 20,
+   "causes": [
+    {
+     "cause": "score 20 >= 20",
+     "at": "2026-11-13T17:07:49.880Z",
+     "doc_id": "activity:1794589669880"
+    }
+   ],
+   "held_by_gap": false
+  },
+  {
+   "n": 7,
+   "t_ms": 1794590334700,
+   "t": "2026-11-13T17:18:54.700Z",
+   "doc_id": "activity:1794590334700",
+   "doc_kind": "activity",
+   "score": 20,
+   "causes": [
+    {
+     "cause": "score 20 >= 20",
+     "at": "2026-11-13T17:18:54.700Z",
+     "doc_id": "activity:1794590334700"
+    }
+   ],
+   "held_by_gap": false
+  }
+ ],
+ "rounds": [
+  {
+   "k": 1,
+   "t": "2026-11-13T16:29:49.649Z",
+   "now": "2026-11-13T16:30:18.632Z",
+   "state": "asked-20261113T163018.632Z.txt",
+   "nobody_state": "asked-20261113T163018.632Z.txt",
+   "rawobs": "rawobs-20261113T163009.388Z-auto.txt",
+   "library_documents": 0,
+   "gap_documents": [],
+   "near_now_documents": [],
+   "unsealed_after_t": 2,
+   "questions": [
+    {
+     "key": "Q_place",
+     "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?",
+     "tags": [
+      "place:small hut"
+     ],
+     "asked": true,
+     "new_documents": 3
+    },
+    {
+     "key": "Q_person",
+     "text": "Corvin (actor 1011812929538): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?",
+     "tags": [
+      "actor:1011812929538"
+     ],
+     "asked": true,
+     "new_documents": 1
+    },
+    {
+     "key": "Q_self",
+     "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
+     "tags": [],
+     "asked": true,
+     "new_documents": 10
+    }
+   ]
+  },
+  {
+   "k": 2,
+   "t": "2026-11-13T16:34:57.730Z",
+   "now": "2026-11-13T16:34:58.890Z",
+   "state": "asked-20261113T163458.890Z.txt",
+   "nobody_state": "asked-20261113T163633.329Z.txt",
+   "rawobs": "rawobs-20261113T163411.330Z-auto.txt",
+   "library_documents": 17,
+   "gap_documents": [],
+   "near_now_documents": [],
+   "unsealed_after_t": 0,
+   "questions": [
+    {
+     "key": "Q_place",
+     "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?",
+     "tags": [
+      "place:small hut"
+     ],
+     "asked": true,
+     "new_documents": 9
+    },
+    {
+     "key": "Q_person",
+     "text": "Corvin (actor 1011812929538): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?",
+     "tags": [
+      "actor:1011812929538"
+     ],
+     "asked": false,
+     "new_documents": 0
+    },
+    {
+     "key": "Q_self",
+     "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
+     "tags": [],
+     "asked": true,
+     "new_documents": 13
+    }
+   ]
+  },
+  {
+   "k": 3,
+   "t": "2026-11-13T16:42:15.904Z",
+   "now": "2026-11-13T16:42:16.874Z",
+   "state": "asked-20261113T164216.874Z.txt",
+   "nobody_state": "asked-20261113T164216.874Z.txt",
+   "rawobs": "rawobs-20261113T164215.121Z-auto.txt",
+   "library_documents": 17,
+   "gap_documents": [],
+   "near_now_documents": [],
+   "unsealed_after_t": 0,
+   "questions": [
+    {
+     "key": "Q_place",
+     "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?",
+     "tags": [
+      "place:small hut"
+     ],
+     "asked": true,
+     "new_documents": 14
+    },
+    {
+     "key": "Q_person",
+     "text": "Corvin (actor 1011812929538): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?",
+     "tags": [
+      "actor:1011812929538"
+     ],
+     "asked": false,
+     "new_documents": 0
+    },
+    {
+     "key": "Q_self",
+     "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
+     "tags": [],
+     "asked": true,
+     "new_documents": 16
+    }
+   ]
+  },
+  {
+   "k": 4,
+   "t": "2026-11-13T16:47:16.737Z",
+   "now": "2026-11-13T16:47:45.373Z",
+   "state": "asked-20261113T164745.373Z.txt",
+   "nobody_state": "asked-20261113T164745.373Z.txt",
+   "rawobs": "rawobs-20261113T164717.524Z-auto.txt",
+   "library_documents": 41,
+   "gap_documents": [],
+   "near_now_documents": [],
+   "unsealed_after_t": 1,
+   "questions": [
+    {
+     "key": "Q_place",
+     "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?",
+     "tags": [
+      "place:small hut"
+     ],
+     "asked": true,
+     "new_documents": 9
+    },
+    {
+     "key": "Q_person",
+     "text": "Corvin (actor 1011812929538): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?",
+     "tags": [
+      "actor:1011812929538"
+     ],
+     "asked": true,
+     "new_documents": 5
+    },
+    {
+     "key": "Q_self",
+     "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
+     "tags": [],
+     "asked": true,
+     "new_documents": 12
+    }
+   ]
+  },
+  {
+   "k": 5,
+   "t": "2026-11-13T16:56:51.959Z",
+   "now": "2026-11-13T16:56:53.836Z",
+   "state": "asked-20261113T165653.836Z.txt",
+   "nobody_state": "asked-20261113T165653.836Z.txt",
+   "rawobs": "rawobs-20261113T165621.977Z-auto.txt",
+   "library_documents": 60,
+   "gap_documents": [],
+   "near_now_documents": [],
+   "unsealed_after_t": 0,
+   "questions": [
+    {
+     "key": "Q_place",
+     "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?",
+     "tags": [
+      "place:small hut"
+     ],
+     "asked": true,
+     "new_documents": 17
+    },
+    {
+     "key": "Q_person",
+     "text": "Corvin (actor 1011812929538): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?",
+     "tags": [
+      "actor:1011812929538"
+     ],
+     "asked": false,
+     "new_documents": 0
+    },
+    {
+     "key": "Q_self",
+     "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
+     "tags": [],
+     "asked": true,
+     "new_documents": 17
+    }
+   ]
+  }
+ ],
+ "situations": {
+  "V": "asked-20261113T164357.820Z.txt",
+  "T": "asked-20261113T164608.409Z.txt",
+  "check": {
+   "V": {
+    "person": "Corvin",
+    "located": "asked-20261113T164357.820Z.txt",
+    "report_row": "C1",
+    "report_state": "T164357.820",
+    "agree": true
+   },
+   "T": {
+    "person": "Tobin",
+    "located": "asked-20261113T164608.409Z.txt",
+    "report_row": "D1",
+    "report_state": "T164608.409",
+    "agree": true
+   }
+  }
+ }
+}

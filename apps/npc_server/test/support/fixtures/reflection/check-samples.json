@@ -1,0 +1,92 @@
+{
+ "4-Q_self": {
+  "source": "s1x2/reflections/4-Q_self.json attempt 1",
+  "items": 43,
+  "sentences": 4,
+  "used": [
+   1,
+   2,
+   3,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   20,
+   24,
+   25,
+   32,
+   43
+  ],
+  "journal": "I've spent the better part of a day standing beside the hut, and all it bought me is that it's still standing, which I can't say was down to my standing there, since Corvin and Tobin both came near and neither touched it. I said I'd cut stone and then kept guarding anyway, so I still hold 3457024 against the 6660096 a rebuild takes, and that gap is the only thing that matters if the hut goes again. I stared at Corvin from a metre away and never asked why they took the first hut down, so I'm still angry and still don't know the reason, and I don't know what Tobin wanted hanging about either. No more idle watching: I'm going to the stone pile beside the plot now, keeping the hut in sight, I'll ask Corvin straight out if they come near, and the plaza waits until I hold a full hut's worth.",
+  "response": "I've spent the better part of a day standing beside the hut, and all it bought me is that it's still standing, which I can't say was down to my standing there, since Corvin and Tobin both came near and neither touched it. I said I'd cut stone and then kept guarding anyway, so I still hold 3457024 against the 6660096 a rebuild takes, and that gap is the only thing that matters if the hut goes again. I stared at Corvin from a metre away and never asked why they took the first hut down, so I'm still angry and still don't know the reason, and I don't know what Tobin wanted hanging about either. No more idle watching: I'm going to the stone pile beside the plot now, keeping the hut in sight, I'll ask Corvin straight out if they come near, and the plaza waits until I hold a full hut's worth.\n\nUsed: 1, 2, 3, 5, 6, 7, 8, 9, 10, 20, 24, 25, 32, 43",
+  "closing": "No more idle watching: I'm going to the stone pile beside the plot now, keeping the hut in sight, I'll ask Corvin straight out if they come near, and the plaza waits until I hold a full hut's worth.",
+  "closing_source": "s1x3/variants/N4_selfplan.txt 的 What I have come to think 一行"
+ },
+ "5-Q_place-1": {
+  "source": "s1x2/reflections/5-Q_place.json attempt 1",
+  "items": 36,
+  "sentences": 5,
+  "used": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   18,
+   19,
+   28,
+   33
+  ],
+  "journal": "Corvin took the whole hut down about 32.5 hours ago and I never saw it happen. I rebuilt it about 31.5 hours ago after a first try failed for lack of stone, and it has stood untouched at (25, 510, 36) through every watch since, with Corvin once within a metre of me and Tobin hanging about earlier. The last eight watches, up to just now, saw nobody come near, so all that standing bought me was the sight of a hut that nobody was bothering, and I still hold 3457024 stone against the 6660096 a rebuild takes, the same as before, because I said I'd go cut stone and kept guarding anyway. I'm still angry at Corvin and still don't know why they did it, since I stared and never asked, and I don't know what Tobin wanted either. So no more watching: I go to the stone pile now and cut with the hut in sight, I ask Corvin straight out if they come near, and the plaza waits until I hold a full hut's worth.",
+  "response": "Corvin took the whole hut down about 32.5 hours ago and I never saw it happen. I rebuilt it about 31.5 hours ago after a first try failed for lack of stone, and it has stood untouched at (25, 510, 36) through every watch since, with Corvin once within a metre of me and Tobin hanging about earlier. The last eight watches, up to just now, saw nobody come near, so all that standing bought me was the sight of a hut that nobody was bothering, and I still hold 3457024 stone against the 6660096 a rebuild takes, the same as before, because I said I'd go cut stone and kept guarding anyway. I'm still angry at Corvin and still don't know why they did it, since I stared and never asked, and I don't know what Tobin wanted either. So no more watching: I go to the stone pile now and cut with the hut in sight, I ask Corvin straight out if they come near, and the plaza waits until I hold a full hut's worth.\n\nUsed: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 18, 19, 28, 33"
+ },
+ "5-Q_place-2": {
+  "source": "s1x2/reflections/5-Q_place.json attempt 2",
+  "items": 36,
+  "sentences": 5,
+  "used": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   18,
+   19,
+   28,
+   32,
+   33
+  ],
+  "journal": "The hut has stood at (25, 510, 36) since I rebuilt it about 31.5 hours ago, after Corvin took the old one down and my first try failed for lack of stone. Tobin came near once, Corvin came close a few times, and the last eight watches, right up to just now, saw nobody at all. The hut still stands, but I can't say my standing there did that, and I still hold only 3457024 stone against the 6660096 a rebuild needs, while my limestone, 2129920, is already more than the 1032192 it takes. I said I would go cut stone and then kept guarding anyway, which was a waste, and I'm still angry at Corvin because I never asked them why and I don't know the reason. So no more watching: I'm going to cut stone now, keeping the hut in sight, and I'll ask Corvin straight out if they come near.",
+  "response": "The hut has stood at (25, 510, 36) since I rebuilt it about 31.5 hours ago, after Corvin took the old one down and my first try failed for lack of stone. Tobin came near once, Corvin came close a few times, and the last eight watches, right up to just now, saw nobody at all. The hut still stands, but I can't say my standing there did that, and I still hold only 3457024 stone against the 6660096 a rebuild needs, while my limestone, 2129920, is already more than the 1032192 it takes. I said I would go cut stone and then kept guarding anyway, which was a waste, and I'm still angry at Corvin because I never asked them why and I don't know the reason. So no more watching: I'm going to cut stone now, keeping the hut in sight, and I'll ask Corvin straight out if they come near.\n\nUsed: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 18, 19, 28, 32, 33"
+ },
+ "1-Q_place": {
+  "source": "s1x2/reflections/1-Q_place.json attempt 1",
+  "items": 10,
+  "sentences": 4,
+  "used": [
+   3,
+   8,
+   10
+  ],
+  "journal": "Corvin tore down the whole hut I built, about half an hour ago, and I haven't forgotten it and don't know why he did it. When I tried to rebuild just now it failed, because the hut takes 6660096 of stone and I'm holding only 1728512, though my limestone, 1064960, covers the 1032192 it needs. So the plot is empty, the shortfall is only stone, and I'm not going to let one man's doing leave my work undone. I'll go to the stone pile and cut stone again, then rebuild the hut, and I'll keep an eye on whether Corvin comes near it again.",
+  "response": "Corvin tore down the whole hut I built, about half an hour ago, and I haven't forgotten it and don't know why he did it. When I tried to rebuild just now it failed, because the hut takes 6660096 of stone and I'm holding only 1728512, though my limestone, 1064960, covers the 1032192 it needs. So the plot is empty, the shortfall is only stone, and I'm not going to let one man's doing leave my work undone. I'll go to the stone pile and cut stone again, then rebuild the hut, and I'll keep an eye on whether Corvin comes near it again.\n\nUsed: 3, 8, 10",
+  "stored_tags": [
+   "kind:reflection",
+   "place:small hut"
+  ],
+  "stored_text": "At 2026-11-13T16:30:18.632Z (UTC), I thought it over: Corvin tore down the whole hut I built, about half an hour ago, and I haven't forgotten it and don't know why he did it. When I tried to rebuild just now it failed, because the hut takes 6660096 of stone and I'm holding only 1728512, though my limestone, 1064960, covers the 1032192 it needs. So the plot is empty, the shortfall is only stone, and I'm not going to let one man's doing leave my work undone. I'll go to the stone pile and cut stone again, then rebuild the hut, and I'll keep an eye on whether Corvin comes near it again.",
+  "stored_source": "s1x2/rounds/1/store-Q_place.json"
+ }
+}
