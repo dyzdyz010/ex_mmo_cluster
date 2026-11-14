@@ -27,10 +27,10 @@ defmodule NpcServer.Life.Reflection.Round do
 
       cid          永久 cid（日志用）
       round        `%{at_ms:, score:, causes:}`（`Reflection.record/2` 或 `Reflection.manual/2` 给的那一轮；
-                   `at_ms` 是触发那条经历的时刻，只进日志）
+                   `at_ms` 是**触发那条经历的时刻**（手动一轮是手动那一刻），即触发状态的 `"last_at_ms"`，这里只进日志）
       new          自上一轮开始以来的新经历 `[%{"at_ms", "tags"}]`
-      now_ms       这一轮的“此刻”（Life 起槽那一刻的时钟，同离线的 t′）：多久以前、召回的时刻参数都相对它；
-                   日记是这一刻想的，所以 `"latest"` 各条与存档文档的时刻也是它
+      now_ms       这一轮的“此刻”（**Life 起槽那一刻的时钟**，同离线的 t′）：多久以前、召回的时刻参数都相对它；
+                   日记是这一刻想的，所以 `"latest"` 各条、`"round"` 小结与存档文档的时刻都是它
       observation  此刻的观察（Body 的 Observation，带 `world_time`）
       recent       还没写进 Hindsight 的经历 `[%{at_ms:, text:}]`，旧在前（同 `Life.mind/2` 的 `recent`）
       buildings    我放下的有名字的建筑（`Life.State` 的 `"buildings"`，记得的次序）
@@ -42,7 +42,7 @@ defmodule NpcServer.Life.Reflection.Round do
       character    人格卡一行（`Persona.describe/2`）
       context      现查 World 用（`Life.standing/2`）
 
-  返回交回 Life 落栏的结果：`%{at_ms: 这一轮的此刻 now_ms, score:, causes:, asked: [键], written: [%{key:, entry:}],
+  返回交回 Life 落栏的结果：`%{thought_at_ms: 这一轮的此刻 now_ms（不是 round.at_ms）, score:, causes:, asked: [键], written: [%{key:, entry:}],
   discarded: [键], failed: [键], reasked: 次数, error: nil | 原因, elapsed_ms:}`。`entry` 就是进持久行 `"latest"` 的那一份；
   `written` 里另带 `question`（存档用）。
 
@@ -102,7 +102,7 @@ defmodule NpcServer.Life.Reflection.Round do
     )
 
     Map.merge(outcome, %{
-      at_ms: snapshot.now_ms,
+      thought_at_ms: snapshot.now_ms,
       score: round.score,
       causes: round.causes,
       asked: asked,
@@ -111,18 +111,19 @@ defmodule NpcServer.Life.Reflection.Round do
   end
 
   @doc """
-  把 `write/1` 写成的各条存档到反思库：文档是 `Reflection.archive/3` 的那份，正文前加时刻前缀（`Life.dated/1`）。
+  把 `write/1` 写成的各条存档到反思库：文档是 `Reflection.archive/3` 的那份（时刻是这一轮的此刻 `thought_at_ms`），
+  正文前加时刻前缀（`Life.dated/1`）。
   `snapshot` 里要 `archive`（反思库的 config）与 `archive_name`（`ensure_bank/2` 的 name）。一条都没写成 → `:none`，
   不发请求；否则 `ensure_bank/2` → `retain/2`，返回 `{:ok, retain 的结果}` 或 `{:error, 原因}`。不重试。
   """
   def archive(_snapshot, %{written: []}), do: :none
 
-  def archive(snapshot, %{written: written, at_ms: at_ms}) do
+  def archive(snapshot, %{written: written, thought_at_ms: thought_at_ms}) do
     adapter = snapshot.adapter
 
     documents =
       for %{question: question, entry: entry} <- written do
-        document = Reflection.archive(question, at_ms, entry["journal"])
+        document = Reflection.archive(question, thought_at_ms, entry["journal"])
         %{document | "text" => Life.dated(document)}
       end
 

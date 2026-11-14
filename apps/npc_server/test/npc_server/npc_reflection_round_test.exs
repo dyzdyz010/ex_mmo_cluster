@@ -65,10 +65,12 @@ defmodule NpcServer.NpcReflectionRoundTest do
 
     assert result.asked == ["person:#{corvin}", "self"]
     assert Enum.map(result.written, & &1.key) == ["person:#{corvin}", "self"]
-    assert %{discarded: [], failed: [], reasked: 0, error: nil, at_ms: at_ms} = result
+
+    assert %{discarded: [], failed: [], reasked: 0, error: nil, thought_at_ms: thought_at_ms} =
+             result
 
     # 这一轮“想的时刻”是起槽那一刻（此刻 t′），不是触发那条经历的时刻。
-    assert at_ms == now_ms and at_ms != snapshot.round.at_ms
+    assert thought_at_ms == now_ms and thought_at_ms != snapshot.round.at_ms
 
     # 每问两路召回，串行、次序固定；“自己”不带 tags 两个键（nil，适配器不放进请求体）。时刻参数是这一轮的此刻。
     person_tags = %{tags: ["actor:#{corvin}"], tags_match: "any_strict"}
@@ -138,6 +140,8 @@ defmodule NpcServer.NpcReflectionRoundTest do
   end
 
   test "召回条目按 id 去重：同一份真实条目在两路里各回放一次，“发生过的事”里每条只出现一次" do
+    # 两路召回的类型不相交（experience/world 与 observation），真实 Hindsight 不会两路回同一个 id；这里是把同一份
+    # 真实条目在两路各回放一次（替身构造的情形），证明的是“按 id 去重”这条从离线脚本移植来的规则确实在生效。
     result = Round.write(snapshot(:raw_twice))
     assert result.error == nil
 

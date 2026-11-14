@@ -76,7 +76,8 @@ defmodule NpcServer.NpcLifeTest do
     只测试：反思用例的 Hindsight 替身（只替 HTTP 适配器模块）。认识固定一份。召回、建库、写入都把 bank 交给测试进程
     （经历库 `npc-life-<cid>` 与反思库 `npc-reflect-<cid>` 由此分得清）；召回按这一路的 types 回放 S1-X2 第 4 轮 Q_place
     那一次召回的真实条目（规范化后的形状，`NpcServer.ReflectionFixtures.recalled/1`）。
-    `profile.life` 带 `archive_fails: true` 时，写进反思库返回适配器真实形状的超时失败（`Life.Hindsight` 的 `:timeout`）。
+    `profile.life` 带 `archive_fails: true` 时，写进反思库返回适配器真实形状的超时失败（`Life.Hindsight` 的 `:timeout`）；
+    带 `archive_crashes: true` 时，写进反思库直接抛错（反思槽在存档阶段崩溃）。
     """
     alias NpcServer.ReflectionFixtures
 
@@ -92,10 +93,13 @@ defmodule NpcServer.NpcLifeTest do
 
     def retain(config, documents) do
       send(config.owner, {:retained, config.bank, documents})
+      archive? = String.starts_with?(config.bank, "npc-reflect-")
 
-      if config[:archive_fails] == true and String.starts_with?(config.bank, "npc-reflect-"),
-        do: {:error, :timeout},
-        else: {:ok, %{retained: length(documents), facts: 1}}
+      cond do
+        archive? and config[:archive_crashes] == true -> raise "archive retain crashed"
+        archive? and config[:archive_fails] == true -> {:error, :timeout}
+        true -> {:ok, %{retained: length(documents), facts: 1}}
+      end
     end
 
     def recall(config, description, _now_ms) do
@@ -1077,6 +1081,65 @@ defmodule NpcServer.NpcLifeTest do
     end
 
     @tag timeout: 120_000
+    test "写作阶段 worker 崩溃：Life 不崩，这一轮中止、新经历不消耗、槽已清，observe 给出原因" do
+      %{cid: cid} = reflecting()
+      life = :global.whereis_name({Life, node(), cid})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert_receive {:write, worker, _, _}, 10_000
+          {:ok, %{reflection: %{new: taken}}} = Life.observe(cid)
+          assert taken > 0
+
+          # 写日记的函数在 worker 里退出：落栏之前崩溃。
+          send(worker, {:exit, :journal_writer_crashed})
+          reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+
+          # 落栏前崩溃的小结：问到的键不知道，都是空表；没有可存的。
+          assert %{"asked" => [], "written" => [], "failed" => [], "archive" => "none"} =
+                   reflection.round
+
+          assert %{"rounds" => 1, "aborted" => 1, "written" => 0, "archive_failed" => 0} =
+                   reflection.counts
+
+          assert reflection.new == taken and reflection.latest == %{}
+          assert {:reflect_worker_crashed, detail} = reflection.error
+          assert detail =~ "journal_writer_crashed"
+        end)
+
+      assert :global.whereis_name({Life, node(), cid}) == life and Process.alive?(life)
+      assert log =~ "event=crashed" and log =~ "stage=writing"
+    end
+
+    @tag timeout: 120_000
+    test "存档阶段 worker 崩溃：日记已落栏仍在，archive_failed 加一、小结记 failed，不算中止" do
+      %{cid: cid} = reflecting(archive_crashes: true)
+      life = :global.whereis_name({Life, node(), cid})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          for _ <- 1..3 do
+            assert_receive {:write, worker, _, _}, 10_000
+            send(worker, {:reply, written_reply()})
+          end
+
+          reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+          assert_received {:retained, "npc-reflect-" <> _, [_, _, _]}
+          assert reflection.round["archive"] == "failed"
+
+          assert %{"archive_failed" => 1, "aborted" => 0, "written" => 3, "failed" => 0} =
+                   reflection.counts
+
+          # 做完的一轮：日记在 "latest"，新经历已消耗。
+          assert map_size(reflection.latest) == 3 and reflection.new == 0
+          assert {:reflect_worker_crashed, _} = reflection.error
+        end)
+
+      assert :global.whereis_name({Life, node(), cid}) == life and Process.alive?(life)
+      assert log =~ "event=crashed" and log =~ "stage=archiving"
+    end
+
+    @tag timeout: 120_000
     test "落栏那次保存失败：Life 不崩，persist_failed 一行；存档结果回来不碰行，新经历不消耗" do
       :ets.new(ControlledStore, [:named_table, :public])
       %{cid: cid} = reflecting(memory: ControlledStore)
@@ -1211,7 +1274,8 @@ defmodule NpcServer.NpcLifeTest do
     end
 
     # 起一个开着反思的 NPC，放下一座有名字的小屋，等到身体状态到了，再由另一角色（Brann）经镐的拆卸整座拆掉。
-    # opts：`memory`（存储模块，缺省真实 NpcMemory）、`clock`（Life 的时钟）、`archive_fails`（反思库写入失败，见 ReflectHindsight）。
+    # opts：`memory`（存储模块，缺省真实 NpcMemory）、`clock`（Life 的时钟）、`archive_fails` / `archive_crashes`
+    # （反思库写入失败 / 抛错，见 ReflectHindsight）。
     defp reflecting(opts \\ []) do
       test = self()
       fixture = NpcWorld.start()
@@ -1221,7 +1285,7 @@ defmodule NpcServer.NpcLifeTest do
       profile =
         reflect_profile(
           test,
-          Map.new(Keyword.take(opts, [:clock, :archive_fails])),
+          Map.new(Keyword.take(opts, [:clock, :archive_fails, :archive_crashes])),
           Keyword.get(opts, :memory, DataService.NpcMemory)
         )
 
@@ -1295,6 +1359,8 @@ defmodule NpcServer.NpcLifeTest do
 
           receive do
             {:reply, reply} -> reply
+            # 写作阶段崩溃：写日记的函数在反思槽 worker 里退出。
+            {:exit, reason} -> exit(reason)
           end
         end,
         life:

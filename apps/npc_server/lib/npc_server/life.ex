@@ -44,17 +44,19 @@ defmodule NpcServer.Life do
   并逐条 `Reflection.record/2` 计分、把 `%{"at_ms", "tags"}` 记进“自上一轮开始以来的新经历”（`"new"`）。
 
   起一轮与消耗新经历：
-  - **到点且起得了**（反思槽空着、已有观察）：在接纳经历的**同一次保存**里 `Reflection.started/2`（累计分清零、记下时刻）、
+  - **到点且起得了**（反思槽空着、已有观察）：在接纳经历的**同一次保存**里 `Reflection.started/2`（累计分清零、记下触发时刻）、
     `rounds` 加一，保存成功后起**单独的反思槽**（第三个 worker 槽 `reflect`，与读 World 的 `poll`、写 Hindsight 的 `job` 并列）。
-    一批里多条都到点只起一轮（取最后一条的时刻与累计分，原因合并）。槽里的流程见 `Reflection.Round`。
+    一批里多条都到点只起一轮：直接取最后一条给出的那一轮（时刻、累计分、原因；一批之内触发状态不清零，后一条的原因
+    必然包含前一条的）。槽里的流程见 `Reflection.Round`。
   - **到点却起不了**（槽在途 `busy`、还没有观察 `no_observation`）：不调 `started/2`，触发状态留着（下一条经历进来还会到点），
     `skipped` 加一、一行日志。
   - **新经历在落栏时才消耗**：起槽时把当时的 `"new"` 整份交给这一轮、槽上记下取走了几条；这一轮**做完**（每一问写成或丢弃）
     才在落栏那次保存里删掉 `"new"` 的前这几条（一轮进行中新来的排在后面，留给下一轮）。这一轮**中止**（写作或召回失败、
     问之前就失败、某一问没有材料、worker 在落栏前崩溃）则 `"new"` 不动，已写成的照常落栏，下一轮把这些对象再问一遍
     （“之前的想法”里就是这次写成的）。检查不合格被丢弃不算中止。Life 在一轮进行中重启也不丢新经历（触发状态已清零，等下一次到点）。
-  - **时刻**：`"latest"` 各条、`"round"` 的 `"at_ms"` 与存档文档的时刻都是起槽那一刻的时钟（同离线的 t′，日记是那一刻想的）；
-    触发状态的 `"last_at_ms"` 仍是触发那条经历的时刻（5 分钟间隔从它算）。
+  - **时刻**（两个含义见 `Reflection` 的 moduledoc）：`"latest"` 各条、`"round"` 的 `"at_ms"` 与存档文档的时刻都是**想的时刻**
+    ——起槽那一刻 Life 的时钟（槽上的 `now_ms`，同离线的 t′，日记是那一刻想的）；触发状态的 `"last_at_ms"` 是**触发时刻**
+    ——`record/2` 给出的一轮的 `at_ms`，即触发那条经历的时刻（5 分钟间隔从它算）。
 
   为什么这样分：
   - **持久行是权威**：`life/state` 行的 `"reflection"`（触发状态、新经历、各问最新一条、最近一轮小结、计数）与其它键
@@ -76,8 +78,13 @@ defmodule NpcServer.Life do
   `error`——最近一轮里最近一次失败的原因（写作阶段、落栏、存档、崩溃都算；只在进程内），起下一轮时清空，别的时候不清。
   日志一律 `npc_reflect cid=<cid> …`。
 
-  已知的未设上限处：“之前的想法”里其它对象的条数（此刻记得的建筑、关系表里的人、“自己”各一条）没有上限——现在一个 NPC
-  只有一座建筑、一个有关系的人，多个 NPC 实跑之前再定。
+  已知的未设上限处与对不上的计数（只记事实，现在不加代码）：
+  - “之前的想法”里其它对象的条数（此刻记得的建筑、关系表里的人、“自己”各一条）没有上限——现在一个 NPC
+    只有一座建筑、一个有关系的人，多个 NPC 实跑之前再定。
+  - `"new"`：写日记接口持续失败时每一轮都中止、`"new"` 不消耗，它就一直增长。
+  - `"latest"`：在持久行里只增不减；已不在建筑表与关系表里的对象那一条留着不删（只是不进“之前的想法”）。
+  - `rounds` 在两条路径上与其它计数对不上：Life 在一轮进行中重启、落栏那次保存失败——两者 `rounds` 都已加一（起轮那次
+    保存里），但没有这一轮的 `"round"` 小结，也不计 `aborted`。
   """
   use GenServer
   require Logger
@@ -459,7 +466,7 @@ defmodule NpcServer.Life do
     else
       round = Reflection.manual(s.row["reflection"]["trigger"], s.now.())
 
-      case save(s, begin_round(s.row, round)) do
+      case save(s, mark_round_started(s.row, round)) do
         {:ok, s} -> {:reply, {:ok, %{status: :started}}, start_round(s, round)}
         {:error, s} -> {:reply, {:error, s.error}, s}
       end
@@ -1046,8 +1053,9 @@ defmodule NpcServer.Life do
   end
 
   # 接纳经历（四个入口共用）：追加到未封存的尾部；开着反思时逐条计分（`Reflection.record/2`）、把 `%{"at_ms", "tags"}`
-  # 记进 "new"，并定下到点的一轮怎么办（一批里多条都到点只算一轮：取最后一条的时刻与累计分，原因合并）：
-  #   起得了（槽空着、有观察）→ 同一份行里 `begin_round/2`（started/2、rounds 加一），下一步 `{:start, 一轮}`；
+  # 记进 "new"，并定下到点的一轮怎么办（一批里多条都到点只算一轮：直接取最后一条给出的那一轮——时刻、累计分与原因；
+  # 一批之内触发状态不清零，后一条的原因必然包含前一条的）：
+  #   起得了（槽空着、有观察）→ 同一份行里 `mark_round_started/2`（started/2、rounds 加一），下一步 `{:start, 一轮}`；
   #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步 `{:skip, 一轮, :busy | :no_observation}`。
   # 返回 `{新的行, nil | 下一步}`。只改行，不保存：调用方保存成功之后才 `follow_round/2`（保存失败行没变，什么也不做）。
   defp accept(%{journaling: nil}, row, entries),
@@ -1064,7 +1072,8 @@ defmodule NpcServer.Life do
             "new" => reflection["new"] ++ [Map.take(entry, ["at_ms", "tags"])]
         }
 
-        {reflection, merge_due(due, round)}
+        # 后到点的那一轮的原因必然包含先到点的（触发条件不清零），直接取它。
+        {reflection, round || due}
       end)
 
     row = %{row | "pending" => row["pending"] ++ entries, "reflection" => reflection}
@@ -1072,23 +1081,18 @@ defmodule NpcServer.Life do
     cond do
       due == nil -> {row, nil}
       reason = cannot_start(s) -> {count_skipped(row), {:skip, due, reason}}
-      true -> {begin_round(row, due), {:start, due}}
+      true -> {mark_round_started(row, due), {:start, due}}
     end
   end
-
-  defp merge_due(due, nil), do: due
-  defp merge_due(nil, round), do: round
-
-  defp merge_due(earlier, round),
-    do: %{round | causes: Enum.uniq(earlier.causes ++ round.causes)}
 
   # 到点却起不了一轮的原因；起得了为 nil。
   defp cannot_start(%{reflect: slot}) when slot != nil, do: :busy
   defp cannot_start(%{observation: nil}), do: :no_observation
   defp cannot_start(_s), do: nil
 
-  # 起一轮那次保存里的行：触发状态 started/2（清零、记下这一轮的时刻）、rounds 加一。"new" 不动（落栏时才消耗）。
-  defp begin_round(row, round),
+  # 在行里记下起了一轮（只改行，不起 worker；保存成功后由 `start_round/2` 起槽）：触发状态 started/2（清零、记下这一轮的
+  # 触发时刻）、rounds 加一。"new" 不动（落栏时才消耗）。
+  defp mark_round_started(row, round),
     do:
       update_in(row, ["reflection"], fn reflection ->
         %{
@@ -1114,7 +1118,7 @@ defmodule NpcServer.Life do
     s
   end
 
-  # 起反思槽（起轮的那次保存已经成功）：快照在本进程里取齐，worker 不回头问 Life。当时的 "new" 整份交给这一轮，
+  # 起反思槽的 worker（`mark_round_started/2` 那次保存已经成功）：快照在本进程里取齐，worker 不回头问 Life。当时的 "new" 整份交给这一轮，
   # 槽上记下取走了几条（taken，做完时从 "new" 头上删掉这几条）、这一轮的此刻（now_ms）与落栏了没有（landed：
   # nil 还没交回写作结果、true 已落栏、false 落栏那次保存失败）。起轮时清掉上一轮的失败原因。
   defp start_round(s, round) do

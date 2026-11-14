@@ -15,8 +15,14 @@ defmodule NpcServer.Life.Reflection do
   每条经历按 tags 给分：`kind:event`（别人打或毁了我放的东西）8、`kind:conversation` 5、`kind:sight` 3、
   `kind:activity` 且带任一 `actor:`（期间有人进过 6 米）3、其余 `kind:activity` 1。
   触发条件两种：`kind:event` 的经历到来（立即触发）、累计分 ≥ 20。条件成立时距上一轮不足现实 5 分钟（按经历的 `"at_ms"`）
-  就不触发、条件保留，到满 5 分钟后的第一条经历上触发；一轮的时刻 = 触发它的那条经历的 `"at_ms"`。
-  判定与起轮分两步：`record/2` 只计分、判定到没到点；调用方真的起了一轮才 `started/2`（累计分清零、记下这一轮的时刻）。
+  就不触发、条件保留，到满 5 分钟后的第一条经历上触发。
+
+  “一轮的时刻”有两个含义，别混：
+  - **触发时刻**：`record/2` 给出的一轮的 `at_ms`、触发状态里的 `"last_at_ms"`，是触发它的那条经历的 `"at_ms"`
+    （手动一轮是手动那一刻）；5 分钟间隔只从它算。
+  - **想的时刻**：日记（Life 持久行 `"latest"` 各条）、`"round"` 小结与存档文档（`archive/3`）的时刻，是 Life 起槽那一刻的
+    时钟（同离线的 t′，`Reflection.Round` 的 `now_ms` / `thought_at_ms`）；本模块不读时钟，由调用方传进来。
+  判定与起轮分两步：`record/2` 只计分、判定到没到点；调用方真的起了一轮才 `started/2`（累计分清零、记下这一轮的触发时刻）。
   到点却起不了的那次不清零，条件留到下一条经历再判。
   分值、阈值、间隔都是原创取值（§10.3），实跑后调。
 
@@ -263,7 +269,8 @@ defmodule NpcServer.Life.Reflection do
   end
 
   @doc """
-  一条反思的存档文档，与经历条目同形：`"id"` 是 `reflection:<问题的键>:<at_ms>`，`"at_ms"` 是这一轮的时刻，
+  一条反思的存档文档，与经历条目同形：`"id"` 是 `reflection:<问题的键>:<at_ms>`，`"at_ms"` 是这一轮**想的时刻**
+  （Life 起槽那一刻的时钟，`Reflection.Round` 的 `thought_at_ms`；不是触发那条经历的时刻，见 moduledoc），
   `"text"` 是 `I thought it over: <日记>`（不带时刻前缀，Life 写库时加），`"tags"` 是问题的存档 tags。
   """
   def archive(%{"key" => key, "tags" => tags}, at_ms, journal),
