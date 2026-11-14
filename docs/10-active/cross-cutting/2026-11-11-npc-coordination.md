@@ -21,13 +21,16 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 **一句话**：S1-X2 的盲判、判定、独立评审都做完；评审的四项阻断用补测 S1-X3 与网关核实解决或给出了处理；反思模块的更正与六步拆分写进了内容规范 §10.11、§10.12；**R1、R2 两步的代码已写好，但没有编译、没有测、没有提交**——voxim-d4 对编译许可两次都没有答复。分支未推送。
 
+**用户 2026-11-14 的新指示（原话，第十个会话写完交接时收到）**：“以后编译不用再问，直接可以编译”。对应：**NPC 线在 WSL 里编译、跑 mix test 之前不必再问 voxim-d4、也不必等它答复**（取代此前“每次编译前先问它并等答复”）；已告知 voxim-d4。
+不变的：起长时间节点或占固定端口之前照旧先告知它；不并行跑 mix；重型进程与 UDP 预算照全局 CLAUDE.md。下面“下一步”第 1 条里“拿到编译许可”因此作废，直接编译。
+
 **工作区里未提交的东西（都属于本线，不要删；测过才提交）**
 - R1（回报与取舍 `.demo/observe/npc-slice1-20261112/s1y/r1-report.md`）：新增 `apps/npc_server/lib/npc_server/life/reflection.ex`、`apps/npc_server/test/npc_server/npc_reflection_test.exs`、`apps/npc_server/test/support/fixtures/reflection/`（夹具、`README.md`、`regenerate.py`）。
 - R2（回报与取舍 `s1y/r2-report.md`）：新增 `apps/npc_server/lib/npc_server/life/reflection/writer.ex`、`apps/npc_server/test/npc_server/npc_reflection_writer_test.exs`、`apps/npc_server/test/support/http_stub.exs`、夹具 `…/fixtures/reflection/gateway-response.json`；
   **修改了现有文件** `apps/npc_server/lib/npc_server/http.ex`、`apps/npc_server/lib/npc_server/life/hindsight.ex`、`apps/npc_server/test/npc_server/npc_hindsight_test.exs`（现有 Hindsight 测试换了共用替身，编译许可到了先跑它）。
 
 **下一步（按此顺序）**
-1. **拿到 voxim-d4 的编译许可**（它没答复不等于同意；长时间不答就报用户定）。然后另派一个新的短子会话在 WSL 里编译并跑 R1、R2 涉及的测试文件（`npc_reflection_test.exs`、`npc_reflection_writer_test.exs`、`npc_hindsight_test.exs`，再加用到 `Http` 的 `npc_jev_test.exs`），修错、`mix format`，每步测过再本地提交。不许为了过测试改期望或改夹具里的真实数据。
+1. **直接编译**（用户已说编译不用再问，见上）：另派一个新的短子会话在 WSL 里编译并跑 R1、R2 涉及的测试文件（`npc_reflection_test.exs`、`npc_reflection_writer_test.exs`、`npc_hindsight_test.exs`，再加用到 `Http` 的 `npc_jev_test.exs`），修错、`mix format`，每步测过再本地提交。不许为了过测试改期望或改夹具里的真实数据。
 2. **R3 之前先量一件没测过的事**（`s1y/r2-report.md`）：产品的 `retain/2` 逐文档要求事实数 > 0，否则整次失败；反思库在产品里是一个**空库**（不写 mission、不建四份认识），Hindsight 缺省抽取会不会给反思文档抽出事实没有测过。在真实 Hindsight 上建一个空库（本线命名、用完按名字删）、写一两条 S1-X2 的真实日记、读事实数；期望先写。若为 0，存档的做法要改（报用户之前先想清楚整条链，不要在 `retain` 上打补丁）。
 3. **R3 接进 Life**（§10.12）。两份回报末尾各有“下一步要知道的事”；R1 回报里子会话自己定的 8 条取舍、R2 的 6 条要先核对（尤其 R1 的第 1 条 `event_waiting`、第 2 条 `causes`）。做完派不带结论的独立代码评审再提交。
 4. **R4 新栏要等用户答复** §10.11“要用户定的”第 1 条（新栏放什么）；第 2 条（“当面问 Corvin”没有对应活动）同样未答复。第十个会话结束时两条都**没有答复**；没有答复不要按建议自行实现 R4。
