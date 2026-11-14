@@ -1,0 +1,39 @@
+{
+ "round": {
+  "archive": "ok",
+  "asked": [
+   "place:small hut",
+   "self"
+  ],
+  "at_ms": 1794624926602,
+  "causes": [
+   "score"
+  ],
+  "discarded": [],
+  "failed": [],
+  "written": [
+   "place:small hut",
+   "self"
+  ]
+ },
+ "latest": {
+  "person:281374887938": {
+   "at_ms": 1794623974807,
+   "closing": "Then I'll go to the stone pile, since 1728512 is far short of the 6660096 the hut takes, cut what I need, and rebuild, keeping an eye on where Corvin is while I work.",
+   "journal": "The only thing I know Corvin has done around me is tear down the hut I finished half an hour ago, the whole of it, and I don't know why they did it. I'm angry and I won't forget it, but that is one act and I have no reason yet, so I'm not going to treat them as an enemy before I've heard them out. They're 8.9 metres off right now, so I'll walk over and ask plainly why they removed it, and if the answer is thin I'll tell them to leave my plot alone. Then I'll go to the stone pile, since 1728512 is far short of the 6660096 the hut takes, cut what I need, and rebuild, keeping an eye on where Corvin is while I work.",
+   "text": "Corvin (actor 281374887938): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?"
+  },
+  "place:small hut": {
+   "at_ms": 1794624926602,
+   "closing": "I can't afford to lose this hut with only 3457024 stone and 32768 limestone against the 6660096 and 1032192 another one takes, so I'm done standing guard hour after hour: I'll go cut stone and limestone for a reserve close to the plot, look at the hut as I pass, ask Corvin plainly why if they turn up, and go to the plaza once the work is done.",
+   "journal": "The hut is standing on my plot at (25, 510, 36): Corvin tore the first one down about 19 hours ago, my first rebuild try failed for lack of material, and the second went up about 18.5 hours ago, which is longer ago than I wrote last time. Since then I've guarded it over and over; Tobin came near a few times early on, and every watch since has had nobody near at all, so it has held and nobody is around now. I'm still angry at Corvin and I haven't forgotten it, but I never learned why they did it, and I don't know whether they'd do it again. I can't afford to lose this hut with only 3457024 stone and 32768 limestone against the 6660096 and 1032192 another one takes, so I'm done standing guard hour after hour: I'll go cut stone and limestone for a reserve close to the plot, look at the hut as I pass, ask Corvin plainly why if they turn up, and go to the plaza once the work is done.",
+   "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?"
+  },
+  "self": {
+   "at_ms": 1794624926602,
+   "closing": "So I'm done guarding: I'll cut stone and limestone beside the plot, glance at the hut as I pass, ask Corvin plainly if they turn up, and go to the plaza only once the work is done.",
+   "journal": "I said I would stop standing guard and go cut stone, and then I stood guard about twenty more times: the hut is standing, nobody has come near it in all that time, and I still hold 3457024 stone and 32768 limestone, so those hours bought me nothing but proof it holds. Tobin drifted by early on and then left, the plaza had nobody at it when I went, and I still don't know why Corvin tore the first hut down, though I haven't forgotten it and I'm still angry. A reserve is the only thing that protects me if it happens again, since another hut takes 6660096 stone and 1032192 limestone and I'm far short of both. So I'm done guarding: I'll cut stone and limestone beside the plot, glance at the hut as I pass, ask Corvin plainly if they turn up, and go to the plaza only once the work is done.",
+   "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?"
+  }
+ }
+}

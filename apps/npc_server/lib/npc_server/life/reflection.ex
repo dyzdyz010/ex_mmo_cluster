@@ -9,6 +9,7 @@ defmodule NpcServer.Life.Reflection do
 
       每条经历 → record/2（到点了吗）→ questions/4（问哪几件事）
         → 每问：system_prompt/1 + user_message/2 →（调用方发给模型）→ check/2（应答合格吗）→ archive/3（存档文档）
+      落栏之后：thought/1（持久行里此刻该进选择的那一句，R4）
 
   ## 计分与触发（`score/1`、`new_trigger/0`、`record/2`、`started/2`、`manual/2`）
 
@@ -46,6 +47,11 @@ defmodule NpcServer.Life.Reflection do
   ## 存档文档（`archive/3`）
 
   与经历条目同形 `%{"id", "at_ms", "text", "tags"}`；`"text"` 不带时刻前缀（Life 写库时统一加 `At <UTC> (UTC), `）。
+
+  ## 新栏的那一句（`thought/1`，R4）
+
+  “选择此刻该看到哪一句想法”这条规则只在这里：最近一轮写成了“自己”一问，就是那条的收尾一句；否则没有（撤下，
+  不沿用上一轮的；只对留下了小结的一轮成立，见 `thought/1`）。Life 交给心智快照与 observe 的都是它的结果，不另判。
   """
   alias NpcServer.Life.State
 
@@ -92,6 +98,9 @@ defmodule NpcServer.Life.Reflection do
 
   # 存档正文的开头；Life 写库时在前面加 `At <UTC> (UTC), `，合起来同 S1-X2 存进反思库的原文。
   @archive_opening "I thought it over: "
+
+  # “自己”一问的键：定问题（`self_question/0`）与新栏取哪一句（`thought/1`）共用。
+  @self_key "self"
 
   @doc """
   一条经历的分值，按它的 tags（`kind:` 恰好一个）：`kind:event` 8、`kind:conversation` 5、`kind:sight` 3、
@@ -281,6 +290,26 @@ defmodule NpcServer.Life.Reflection do
       "tags" => tags
     }
 
+  @doc """
+  此刻该进选择的那一句想法（心智快照的 `What I have come to think` 栏，内容规范 §10.11 末尾用户对第 1 条的答复）。
+  `reflection` 是 Life 持久行的 `"reflection"`。
+
+  最近一轮的小结 `"round"` 里“自己”一问写成了 → `%{closing: 那条日记的收尾一句（原文）, at_ms: 那条的想的时刻}`，
+  取自 `"latest"` 里“自己”那条（落栏时它与这一轮的小结同一个时刻）。否则 → nil：还没有过任何一轮；
+  或最近一轮没写成“自己”（中止、写作失败、丢弃）——此时 `"latest"` 里还留着上一轮的那条，但**不沿用**：
+  起一轮说明其间有了够多的新经历，上一轮的打算是在那之前想的。
+  “不沿用”只对留下了小结的一轮成立：本函数只看 `"round"`，一轮已起而没留下小结时给的仍是上一轮那句
+  （哪些路径会这样，见 `NpcServer.Life` moduledoc 的“已知”清单）。
+  """
+  def thought(%{"round" => nil}), do: nil
+
+  def thought(%{"round" => %{"written" => written}, "latest" => latest}) do
+    if @self_key in written do
+      %{"closing" => closing, "at_ms" => at_ms} = latest[@self_key]
+      %{closing: closing, at_ms: at_ms}
+    end
+  end
+
   defp with_people?(tags), do: Enum.any?(tags, &String.starts_with?(&1, "actor:"))
 
   # 一个候选对象：带 `tag` 的新经历里最新的时刻与问题；没有带它的新经历就不是候选。
@@ -325,7 +354,7 @@ defmodule NpcServer.Life.Reflection do
 
   defp self_question,
     do: %{
-      "key" => "self",
+      "key" => @self_key,
       "text" =>
         "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?",
       "tags" => ["kind:reflection"]

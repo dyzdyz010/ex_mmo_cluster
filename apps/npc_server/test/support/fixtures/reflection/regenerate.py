@@ -98,5 +98,16 @@ recalled = [{key: it[key] for key in ("kind", "id", "at", "type", "tags", "text"
 assert [it["kind"] for it in items if it["kind"] != "unsealed"] == [r["kind"] for r in recalled]
 write_lines_json(OUT / "round4-recalled-Q_place.json", recalled)
 
-for p in sorted(OUT.iterdir()):
-    print(p.name, p.stat().st_size)
+# 8.（R4）S1-Z 真实服务端实跑五个时点的 Life 持久行：只取 "reflection" 对象，删去用不到的 "new" / "trigger" / "counts"，
+#    "round" 与 "latest" 原样（不改任何值）；文件名保留导出的时刻与时点标签
+S1Z_ROWS = OBS / "s1z/export/rows"
+(OUT / "s1z").mkdir(exist_ok=True)
+for label in ("built", "round1", "round3", "round4-aborted", "round5"):
+    (row_path,) = S1Z_ROWS.glob(f"*Z-{label}-row.json")
+    reflection = read_json(row_path)["reflection"]
+    kept = {key: reflection[key] for key in ("round", "latest")}
+    write_json(OUT / "s1z" / row_path.name.replace("-row.json", "-reflection.json"), kept)
+
+for p in sorted(OUT.rglob("*")):
+    if p.is_file():
+        print(p.relative_to(OUT).as_posix(), p.stat().st_size)

@@ -949,6 +949,11 @@ defmodule NpcServer.NpcLifeTest do
       assert at_ms >= reflection.trigger["last_at_ms"]
       assert Enum.all?(Map.values(reflection.latest), &(&1["at_ms"] == at_ms))
 
+      # 新栏：这一轮写成了“自己”，选择此刻看到的是它的收尾句与时刻；observe 与 `Life.mind/2` 给出同一条。
+      thought = %{closing: reflection.latest["self"]["closing"], at_ms: at_ms}
+      assert reflection.thought == thought
+      assert {:ok, %{thought: ^thought}} = Life.mind(cid, [])
+
       # 召回走经历库；存档进反思库（建库名同经历库的写法），经历库没有收到任何反思文档。
       assert_received {:recall, "npc-life-" <> _, _}
       assert_received {:ensure_bank, "npc-reflect-" <> bank_cid, "NPC " <> _}
@@ -974,6 +979,7 @@ defmodule NpcServer.NpcLifeTest do
         end)
 
       assert restored.latest == reflection.latest
+      assert restored.thought == thought
       assert restored.trigger == reflection.trigger
       assert restored.counts == reflection.counts
     end
@@ -1005,6 +1011,9 @@ defmodule NpcServer.NpcLifeTest do
       assert reflection.error == :timeout and reflection.latest == %{}
       # 中止的一轮不消耗新经历。
       assert reflection.new == taken
+      # 中止的一轮没写成“自己”：新栏没有那一句。
+      assert reflection.thought == nil
+      assert {:ok, %{thought: nil}} = Life.mind(cid, [])
 
       {:ok, observed} = Life.observe(cid)
       assert observed.error == nil and observed.job == nil
@@ -1030,9 +1039,36 @@ defmodule NpcServer.NpcLifeTest do
       assert reflection.round["causes"] == ["manual"] and map_size(reflection.latest) == 3
       assert %{"rounds" => 2, "aborted" => 1, "written" => 3} = reflection.counts
 
+      assert reflection.thought == %{
+               closing: reflection.latest["self"]["closing"],
+               at_ms: reflection.round["at_ms"]
+             }
+
       # 这一轮做完：新经历消耗掉，手动入口给 empty。
       assert reflection.new == 0
       assert {:ok, %{status: :empty}} = Life.reflect(cid)
+    end
+
+    # 新栏的核心判断是“这一轮写成了‘自己’”，不是“这一轮写成了点什么”：小屋写成、下一问失败的一轮，小屋那条落栏，新栏仍为空。
+    @tag timeout: 120_000
+    test "写成了小屋、下一问写日记失败：小屋那条落栏，没写成“自己”，新栏没有那一句" do
+      %{cid: cid} = reflecting()
+
+      assert_receive {:write, worker, _, place}, 10_000
+      assert place =~ ~s|To think over now: My building "small hut": |
+      send(worker, {:reply, written_reply()})
+
+      # 真实形状的失败（`Writer.write/3` 请求超时时的返回）。
+      assert_receive {:write, worker, _, _}, 10_000
+      send(worker, {:reply, {:error, :timeout}})
+      refute_receive {:write, _, _, _}, 300
+
+      reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+      assert reflection.round["written"] == ["place:small hut"]
+      assert Map.keys(reflection.latest) == ["place:small hut"]
+      assert %{"aborted" => 1, "written" => 1} = reflection.counts
+      assert reflection.thought == nil
+      assert {:ok, %{thought: nil}} = Life.mind(cid, [])
     end
 
     @tag timeout: 120_000
@@ -1220,6 +1256,8 @@ defmodule NpcServer.NpcLifeTest do
       {_fixture, _body, cid} = start()
       assert Life.reflect(cid) == {:error, :reflection_disabled}
       assert {:ok, %{reflection: nil}} = Life.observe(cid)
+      # 不反思的形态：交给 Mind 的那一句恒为 nil（新栏不出现）。
+      assert {:ok, %{thought: nil}} = Life.mind(cid, [])
     end
 
     test "反思之前存下的行（没有 reflection 键）：加载时补成空的一份，其余照常" do
@@ -1258,6 +1296,7 @@ defmodule NpcServer.NpcLifeTest do
                    ~w(rounds written reasked discarded failed aborted skipped archive_failed),
                    &{&1, 0}
                  ),
+               thought: nil,
                error: nil
              }
 

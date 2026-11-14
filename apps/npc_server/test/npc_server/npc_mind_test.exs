@@ -1,6 +1,9 @@
+Code.require_file("../support/reflection_fixtures.exs", __DIR__)
+
 defmodule NpcServer.NpcMindTest do
   @moduledoc """
-  只测试：心智快照 `NpcServer.Mind` 的七栏英文转写（Now 栏、按游戏时间写的“多久以前”、背包去零、召回行去后缀）、
+  只测试：心智快照 `NpcServer.Mind` 的各栏英文转写（Now 栏、按游戏时间写的“多久以前”、背包去零、召回行去后缀、
+  反思新栏的位置与写法）、
   各路召回的描述（`recall_queries/2`）与合并（`merge_recalled/1`）、按选择器选人（`person/2`），以及 Life 给快照的只读投影
   （`Life.State.feelings/2`、`relationships/1`）。
 
@@ -9,6 +12,7 @@ defmodule NpcServer.NpcMindTest do
     栏定义手写，数值档位按 moduledoc 里的阈值手算。不启动 Life、Hindsight、World 或数据库。
   - 游戏时间的句型与取整对照离线测量 S1-K 脚本算出的原文（`.demo/observe/npc-slice1-20261112/s1k/variants/edits.txt`）；
     合并对照 S1-Q 真实导出上的各路返回与重算的清单（`s1q/results.json`、`s1q/remerge-rank-order.json`），所需片段内联在用例里。
+  - 反思新栏的那一句取自 S1-Z 真实实跑的持久行（`test/support/fixtures/reflection/s1z/`，来源见该目录 README）。
   - Life 的投影用例经公共入口 `Life.State.advance/5` 接纳一条手写的 World 事件，期望值按规则模式的设计参数手算
     （一次破坏：愤怒 +0.6、信任 −0.35；半衰期 120 秒；活跃阈值 0.1）。
   - `:live_jev` 用例问真实 Jev（薄片一 S1-B 的离线预演），只在显式 `--include live_jev` 时运行；
@@ -60,7 +64,8 @@ defmodule NpcServer.NpcMindTest do
     models: [],
     memories: [],
     recall_ms: 0,
-    buildings: []
+    buildings: [],
+    thought: nil
   }
 
   # 经历原文（Life 写成的形状，不带时刻）：一次破坏的标准句与一条带期间事实的活动经历。
@@ -103,7 +108,9 @@ defmodule NpcServer.NpcMindTest do
         buildings: [
           %{name: "small hut", anchor: {25, 518, 37}, standing: false},
           %{name: "shed", anchor: {-3, 64, -12}, standing: true}
-        ]
+        ],
+        # 没有反思写成的那一句：新栏整栏不出现，仍是七栏。
+        thought: nil
       }
 
       history = [
@@ -144,6 +151,41 @@ defmodule NpcServer.NpcMindTest do
                "Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. " <>
                "Inventory: not checked yet.\n" <>
                "Recent activities: None yet." == Mind.text(Mind.snapshot(profile(), alone(), [], @empty))
+    end
+
+    # 输入：S1-Z 第 5 轮“自己”那条的收尾句与时刻（夹具 `s1z/20261114T031005.159Z-round5-reflection.json`）。
+    # 此刻取同一导出文件名的时刻 2026-11-14T03:10:05.159Z：相隔 153,341 毫秒 × 72 ≈ 3.07 游戏小时 → 按 0.5 小时取整为 3 小时。
+    test "what I have come to think: after memory, before the situation; how long ago, then the closing sentence as written" do
+      %{"closing" => closing, "at_ms" => at_ms} =
+        "s1z/20261114T031005.159Z-round5-reflection.json"
+        |> NpcServer.ReflectionFixtures.json()
+        |> get_in(["latest", "self"])
+
+      now_ms = DateTime.to_unix(~U[2026-11-14 03:10:05.159Z], :millisecond)
+      life = %{@empty | now_ms: now_ms, thought: %{closing: closing, at_ms: at_ms}}
+      sections = Mind.snapshot(profile(), alone(), [], life)
+
+      column =
+        {"What I have come to think",
+         "About 3 hours ago, I thought: This time I'm going straight to the stone beside the plot, no more guarding, " <>
+           "a glance at the hut as I pass, a plain question for Corvin if they show, and the plaza only after the stone is cut."}
+
+      assert Enum.map(sections, &elem(&1, 0)) == [
+               "Now",
+               "Character",
+               "Feelings and relationships",
+               "What just happened",
+               "What I remember",
+               "What I have come to think",
+               "Current situation",
+               "Recent activities"
+             ]
+
+      assert Enum.at(sections, 5) == column
+
+      # 没有那一句：整栏不出现，其余各栏原样。
+      assert Mind.snapshot(profile(), alone(), [], %{life | thought: nil}) ==
+               List.delete(sections, column)
     end
 
     test "strength and trust bands at their thresholds" do

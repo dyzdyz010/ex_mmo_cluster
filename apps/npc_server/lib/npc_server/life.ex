@@ -74,7 +74,12 @@ defmodule NpcServer.Life do
   检查两次都不合格丢弃、写作或召回失败或没有材料）；`aborted` 中止的轮数（含落栏前 worker 崩溃）；`skipped` 到点但没起成的次数；
   `archive_failed` 存档失败的轮数（含存档阶段 worker 崩溃）。
 
-  手动入口 `reflect/1`；`observe/1` 的 `reflection` 给出槽在不在途、触发状态、新经历条数、各问最新一条、最近一轮、计数与
+  进选择的只有一句（R4，内容规范 §10.11 末尾用户对第 1 条的答复）：`mind/2` 的 `thought` 是 `Reflection.thought/1` 对持久行
+  `"reflection"` 的结果——最近一轮写成了“自己”一问就是那条的收尾一句与时刻，否则 nil（不沿用上一轮的；边界见下面“已知”清单的最后一条）；`NpcServer.Mind`
+  据此写 `What I have come to think` 栏。本模块不另判这条规则；整条日记与小屋、人的各条不进选择的 state。
+
+  手动入口 `reflect/1`；`observe/1` 的 `reflection` 给出槽在不在途、触发状态、新经历条数、各问最新一条、最近一轮、计数、
+  `thought`（此刻新栏里的那一句，同 `mind/2`）与
   `error`——最近一轮里最近一次失败的原因（写作阶段、落栏、存档、崩溃都算；只在进程内），起下一轮时清空，别的时候不清。
   日志一律 `npc_reflect cid=<cid> …`。
 
@@ -85,6 +90,11 @@ defmodule NpcServer.Life do
   - `"latest"`：在持久行里只增不减；已不在建筑表与关系表里的对象那一条留着不删（只是不进“之前的想法”）。
   - `rounds` 在两条路径上与其它计数对不上：Life 在一轮进行中重启、落栏那次保存失败——两者 `rounds` 都已加一（起轮那次
     保存里），但没有这一轮的 `"round"` 小结，也不计 `aborted`。
+  - 新栏“不沿用上一轮”只对留下了 `"round"` 小结的一轮成立：起轮那次保存只动触发状态与 `rounds`，不动 `"round"`，所以
+    一轮已起而还没留下小结时，`thought` 仍是上一轮写成的那句，直到下一轮落栏。正常进行中的一轮如此（几次写作的时长）；
+    以下三条路径会让它一直留到**下一轮**落栏：Life 在一轮进行中重启（槽随进程没了，加载回来的行里还是上一轮的小结）；
+    落栏那次保存失败（行不变）；worker 在落栏前崩溃、记中止小结的那次保存也失败（`save_reflection/2` 失败时行不变）。
+    要不要改成“起轮即撤下”是决定层面的事，现在不改。
   """
   use GenServer
   require Logger
@@ -178,6 +188,8 @@ defmodule NpcServer.Life do
       buildings      我放下的有名字的建筑此刻在不在 `[%{name:, anchor: {x, y, z}, standing: boolean}]`，按放下的次序。
                      问哪几座来自 Life 的记忆（`Life.State` 的 `"buildings"`）；在不在只认这一刻现查 World 的结果
                      （`VoxelRegion.World.instance_cells/2`：有格 = 在，`:instance_not_found` = 不在）
+      thought        反思新栏的那一句 `%{closing:, at_ms:}` 或 nil（`Life.Reflection.thought/1` 对持久行 `"reflection"` 的结果；
+                     这个形态不反思时恒为 nil）
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
   {:life_models_unavailable, 原因} | 召回的失败原因 | :recall_timeout | World 路由或查询的失败原因}`。
@@ -202,7 +214,8 @@ defmodule NpcServer.Life do
            ),
          memories: NpcServer.Mind.merge_recalled(recalled.routes),
          recall_ms: recalled.latency_ms,
-         buildings: buildings
+         buildings: buildings,
+         thought: snapshot.thought
        }}
     end
   end
@@ -442,7 +455,8 @@ defmodule NpcServer.Life do
           cache: s.row["cache"],
           # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
           context: s.context,
-          recent: recent(s.row)
+          recent: recent(s.row),
+          thought: thought(s)
         }}, s}
     else
       {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
@@ -1217,9 +1231,14 @@ defmodule NpcServer.Life do
       latest: reflection && reflection["latest"],
       round: reflection && reflection["round"],
       counts: reflection && reflection["counts"],
+      thought: reflection && thought(s),
       error: s.reflect_error
     }
   end
+
+  # 反思新栏此刻的那一句（心智快照与 observe 共用）：规则只在 `Reflection.thought/1`；不反思的形态没有。调用方保证行已加载。
+  defp thought(%{journaling: nil}), do: nil
+  defp thought(s), do: Reflection.thought(s.row["reflection"])
 
   # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
   defp recent(row),

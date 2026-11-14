@@ -1,0 +1,41 @@
+{
+ "round": {
+  "archive": "ok",
+  "asked": [
+   "place:small hut",
+   "person:281374887938",
+   "self"
+  ],
+  "at_ms": 1794623974807,
+  "causes": [
+   "event"
+  ],
+  "discarded": [],
+  "failed": [],
+  "written": [
+   "place:small hut",
+   "person:281374887938",
+   "self"
+  ]
+ },
+ "latest": {
+  "person:281374887938": {
+   "at_ms": 1794623974807,
+   "closing": "Then I'll go to the stone pile, since 1728512 is far short of the 6660096 the hut takes, cut what I need, and rebuild, keeping an eye on where Corvin is while I work.",
+   "journal": "The only thing I know Corvin has done around me is tear down the hut I finished half an hour ago, the whole of it, and I don't know why they did it. I'm angry and I won't forget it, but that is one act and I have no reason yet, so I'm not going to treat them as an enemy before I've heard them out. They're 8.9 metres off right now, so I'll walk over and ask plainly why they removed it, and if the answer is thin I'll tell them to leave my plot alone. Then I'll go to the stone pile, since 1728512 is far short of the 6660096 the hut takes, cut what I need, and rebuild, keeping an eye on where Corvin is while I work.",
+   "text": "Corvin (actor 281374887938): what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?"
+  },
+  "place:small hut": {
+   "at_ms": 1794623974807,
+   "closing": "I will walk over and ask Corvin plainly why he removed it, then go to the stone pile, cut what I need, and rebuild on my plot, keeping an eye on him while I work.",
+   "journal": "The hut I finished half an hour ago is gone, because Corvin tore it down just now, and he is standing 8.9 metres from me. I don't know why he did it, and I am angry and will not forget it, but I'd rather hear him out than strike back blind. The plot is empty, I have enough limestone for another hut but only 1728512 stone against the 6660096 it takes, so I need to cut more stone first. I will walk over and ask Corvin plainly why he removed it, then go to the stone pile, cut what I need, and rebuild on my plot, keeping an eye on him while I work.",
+   "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?"
+  },
+  "self": {
+   "at_ms": 1794623974807,
+   "closing": "Then I'll cut the stone I'm short of, since 1728512 is far under the 6660096 the hut takes, and rebuild with the limestone I already have.",
+   "journal": "My last stretch went into cutting stone and limestone and raising the hut, and all it came to is an empty plot, because Corvin took the whole thing down barely half an hour after I finished it. The work itself was sound, so I'll keep working the same way, but I won't leave a finished hut with nobody watching it while they stand 8.9 metres away. I still don't know why they did it, so I'll walk over and ask them plainly, and if the answer is thin I'll tell them to keep off my plot. Then I'll cut the stone I'm short of, since 1728512 is far under the 6660096 the hut takes, and rebuild with the limestone I already have.",
+   "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?"
+  }
+ }
+}

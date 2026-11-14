@@ -410,7 +410,7 @@ flowchart LR
   把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
 - **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
   命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
-- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏，次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
+- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏，最近一轮反思写成了“自己”时在记忆之后多一栏（共八栏），次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
 
   | 栏 | 内容 | owner |
   |---|---|---|
@@ -419,6 +419,7 @@ flowchart LR
   | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
   | What just happened | Life 手里还没写进 Hindsight 的经历（已封存待写的片段 + 未封存的尾部，旧在前），每条句首按游戏时间写多久以前（`Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加分路召回合并后的清单（`- Recalled: [多久以前, ]<正文去掉 " \| When: …" 后缀>`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
+  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句：`<多久以前>I thought: <原文>`；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
@@ -727,7 +728,7 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 
 **是什么**：NPC 隔一段时间就自己最近经历的事想一想，给“我的建筑”“有关系的人”“自己”各写一段简短日记，
 记下“我对这件事现在怎么看”。**为什么**：经历只是一条条事实，召回给出的也是事实；反思把它们收拢成 NPC 自己的看法，
-打算以后作为 state 的一栏交给 Jev（这一步还没做，见下文“当前状态”）。设计、离线测量与取值依据在
+其中“自己”一问最新的收尾一句作为 state 的一栏 `What I have come to think` 交给 Jev（R4，见上文栏表与下文“当前状态”）。设计、离线测量与取值依据在
 [内容规范](../../../../docs/10-active/cross-cutting/2026-11-13-npc-mind-content-spec.md) §10.11、§10.12。
 
 ```mermaid
@@ -740,6 +741,7 @@ flowchart LR
   C --> R[(Life 持久行 reflection<br/>一次落栏 权威)]
   R --> A[(Hindsight 存档库<br/>npc-reflect-cid 产品不读回)]
   R -.下一轮“之前的想法”.-> M
+  R -->|最近一轮写成的“自己”的收尾一句| T[心智快照新栏<br/>What I have come to think]
 ```
 
 - **谁有**：只有 profile 带写日记接口（`reflect`）的 Life 反思，现在只有统一形态（`"npc"`）由 `Registry` 给出；别的形态不计分、不起槽。
@@ -752,14 +754,16 @@ flowchart LR
   落栏与存档的时刻、新经历何时消耗、中止与崩溃时怎么算，以 [`life.ex`](life.ex) moduledoc 的“反思”一节为准。
 - **失败不挡别的**：写作、召回、检查、存档的失败只记进这一轮的小结、计数与日志，不进 `job_error`，不挡封存、认识刷新与活动选择。
 - **观察与操作**：手动起一轮 `NpcServer.Life.reflect(cid)`（形状同 `flush/1`）；`Life.observe(cid)` 的 `reflection` 给出槽在不在途、
-  触发状态、新经历条数、各问最新一条、最近一轮、计数与最近一次失败原因；日志一律 `npc_reflect cid=<cid> …`，日记正文不进日志。
+  触发状态、新经历条数、各问最新一条、最近一轮、计数、此刻新栏里的那一句（`thought`，同 `Life.mind/2` 交给 Mind 的）与最近一次失败原因；日志一律 `npc_reflect cid=<cid> …`，日记正文不进日志。
 - **写作接口（环境变量）**：同 Jev，不入库，每次解析 `"npc"` 登记时取运行环境 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）、
   `NPC_REFLECT_KEY`、`NPC_REFLECT_MODEL`，三个都必填，缺一个时解析即 raise（`Registry.put/2` 回 `{:error, {:invalid_params, …}}`，不登记）。请求是 Anthropic Messages 形状
   （`POST`，头 `x-api-key` 与 `anthropic-version`，不带思考参数），细节见 [`life/reflection/writer.ex`](life/reflection/writer.ex) 的 moduledoc。
   这三个变量**还没有配进任何部署环境**（生产现在 NPC `enabled=0`）；启用 `"npc"` 登记之前要先补上。
 - **当前状态**（2026-11-14）：实现分 R1 纯函数核心、R2 写作与存档两个出口、R3 接进 Life 三步（R 编号是内容规范 §10.12 的实现拆分），
   三步都已实现、已测试、已评审；R3 做过一次真实服务端短实跑 S1-Z（只起 NPC 的真实服务端跑五轮反思，判定见内容规范 §10.12 末尾的进度），
-  **不算验收**。日记**还没有进入给 Jev 的 state**：新栏 `What I have come to think` 是 R4，等用户答复后才做，所以上文“七栏”不变。
+  **不算验收**。R4 新栏 `What I have come to think`（用户答复选 A：只放“自己”一问最新的收尾一句；按处境带出对应的想法放到 R6 之后离线测）
+  **已实现、已过单元与 Life 集成测试，未实跑、未验收**；`Selector` 的问法不变（不点名新栏）。句首“多久以前 + `I thought: `”这一标注写法
+  是原创取值，**没有离线读数**（S1-X3 测的形态不带标注），R6 之前要用产品渲染出的真实 state 补一轮小测。
   验收要到 R6 的真实服务端闭环实跑。
 
 ## 附近对话（2026-10-11）

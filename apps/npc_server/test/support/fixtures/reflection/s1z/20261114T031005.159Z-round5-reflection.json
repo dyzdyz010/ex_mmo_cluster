@@ -1,0 +1,41 @@
+{
+ "round": {
+  "archive": "ok",
+  "asked": [
+   "place:small hut",
+   "person:281374887938",
+   "self"
+  ],
+  "at_ms": 1794625651818,
+  "causes": [
+   "score"
+  ],
+  "discarded": [],
+  "failed": [],
+  "written": [
+   "place:small hut",
+   "person:281374887938",
+   "self"
+  ]
+ },
+ "latest": {
+  "person:281374887938": {
+   "at_ms": 1794625651818,
+   "closing": "The next time Corvin is near I'll walk straight over and ask plainly why they took it down, and if the answer is thin I'll tell them to keep off my plot, but for now I'm going to cut the missing stone close to the hut and go to the plaza once it's done.",
+   "journal": "Corvin has torn my hut down twice, once about 33.5 hours ago and again about 7.5 hours ago, both times the whole of it at (25, 512, 36), and I still don't know why. The same Corvin came within 6 m of me twice afterward, about 7.5 hours ago for four minutes and again while I guarded about 7 hours ago, and both times they left without touching the new hut at (25, 510, 36), which is still standing, so I can't call them an enemy, but I haven't forgotten it and I'm still angry. The last three watches saw nobody at all, so standing guard buys me nothing, and I hold 5185536 stone and 1097728 limestone, which leaves me about 1474560 stone short of a spare hut. The next time Corvin is near I'll walk straight over and ask plainly why they took it down, and if the answer is thin I'll tell them to keep off my plot, but for now I'm going to cut the missing stone close to the hut and go to the plaza once it's done.",
+   "text": "actor 281374887938: what have they actually done around me, where do things stand between us now, and how exactly will I act the next time they are near?"
+  },
+  "place:small hut": {
+   "at_ms": 1794625651818,
+   "closing": "So no more standing beside it: I'll cut that stone close to the plot, glance at the hut as I pass, ask Corvin plainly why if they turn up, and go to the plaza only once the stone is cut.",
+   "journal": "The hut stands on my plot at (25, 510, 36), I raised it about 33 hours ago, and Corvin has torn a hut of mine down twice at (25, 512, 36), once about 33.5 hours ago and again about 7.5 hours ago, and I still don't know why. Since then I've guarded it again and again, and the only time anyone came near was Corvin, within 6 m about 7 hours ago, who then moved off, while the last three watches had nobody near at all. I'm still angry at Corvin and I haven't forgotten it, but it's guarding that has gotten me nowhere: I hold 5185536 stone and 1097728 limestone, so the limestone covers another hut and I'm 1474560 stone short of the 6660096 it takes. So no more standing beside it: I'll cut that stone close to the plot, glance at the hut as I pass, ask Corvin plainly why if they turn up, and go to the plaza only once the stone is cut.",
+   "text": "My building \"small hut\": what has actually happened there, where do things stand with it now, and what exactly will I do about it next?"
+  },
+  "self": {
+   "at_ms": 1794625651818,
+   "closing": "This time I'm going straight to the stone beside the plot, no more guarding, a glance at the hut as I pass, a plain question for Corvin if they show, and the plaza only after the stone is cut.",
+   "journal": "I keep saying I'll stop guarding and then I stand beside the hut again, three more times just now, and each time nobody came near and the hut stood exactly as before, so that's hours of work with nothing to show for it. The only visitors lately were Tobin long ago and Corvin about seven hours back, who came within 6 m and moved off; I'm still angry about the two huts Corvin tore down, and I still don't know why they did it. I hold 5185536 stone and 1097728 limestone, so the limestone already covers a spare hut and I'm 1474560 stone short of the 6660096 it needs, and my tries at gathering stone about five hours ago don't seem to have closed that gap, so I'll go at it harder. This time I'm going straight to the stone beside the plot, no more guarding, a glance at the hut as I pass, a plain question for Corvin if they show, and the plaza only after the stone is cut.",
+   "text": "How I have been spending my time lately: what came of it, and what exactly will I keep doing or do differently from here?"
+  }
+ }
+}

@@ -13,8 +13,16 @@ defmodule NpcServer.Mind do
   | Feelings and relationships | 此刻仍活跃的情绪（对谁、什么情绪、多强）与对各角色的信任 | Life（`Life.mind/2` 的 `feelings`、`relationships`） |
   | What just happened | 还没写进 Hindsight 的近期经历，每条前面写多久以前 | Life（`Life.mind/2` 的 `recent`、`now_ms`） |
   | What I remember | 缓存的认识（mental models）与按处境分路召回、合并后的记忆 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
+  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，句首写多久以前想的：`<多久以前>I thought: <原文>` | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
   | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
+
+  **What I have come to think**（R4，内容规范 §10.11 末尾用户对第 1 条的答复）：只有一条，原文不改写、不截断；
+  “多久以前”与近期经历同一写法，时刻取那条的 `at_ms`（想的时刻）。**撤下的规则**：Life 给出 nil 时整栏不出现——
+  还没有过任何一轮、这个形态不反思、或最近一轮没写成“自己”（中止、失败、丢弃；不沿用上一轮的那条——只对留下了小结的一轮成立，
+  一轮已起而没留下小结时仍是上一轮那句，边界见 `NpcServer.Life` moduledoc 的“已知”清单）。
+  位置是 S1-X2 / S1-X3 离线测过的；`I thought: ` 这一标注写法是原创取值，没有离线读数（R6 之前用产品渲染的真实 state 补测）。
+  整条日记、小屋与人的各条不进这里。
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
 
@@ -40,7 +48,7 @@ defmodule NpcServer.Mind do
   - **多久以前**：两个真实时刻（Unix 毫秒）各经 `MmoContracts.WorldTime.game_us/1` 换成游戏时间后相减，按游戏小时换词：
     不足 0.25 小时写 `Just now, `；不足 48 小时按 0.5 小时四舍五入写 `About <N> hours ago, `（`1 hour`、`0.5 hours`、`13.5 hours`）；
     48 小时及以上按天四舍五入写 `About <N> days ago, `。放在句首，后面接经历原文。
-    召回的记忆有事件时刻（`at_ms`）时同样前缀，没有时不写。
+    召回的记忆有事件时刻（`at_ms`）时同样前缀，没有时不写；反思新栏那一句同样前缀。
 
   ## 记忆一栏的召回
 
@@ -106,11 +114,20 @@ defmodule NpcServer.Mind do
       {"Character", Persona.describe(profile.who, profile.persona)},
       {"Feelings and relationships", feelings(life, observation.entities)},
       {"What just happened", happened(life.recent, life.now_ms)},
-      {"What I remember", remembered(life)},
-      {"Current situation", situation(observation, life.buildings)},
-      {"Recent activities", recent(history)}
-    ]
+      {"What I remember", remembered(life)}
+    ] ++
+      thought(life) ++
+      [
+        {"Current situation", situation(observation, life.buildings)},
+        {"Recent activities", recent(history)}
+      ]
   end
+
+  # 反思新栏：Life 给出那一句才有这一栏，没有就整栏不出现（state 与没有这一栏时逐字节相同）。
+  defp thought(%{thought: nil}), do: []
+
+  defp thought(%{thought: %{closing: closing, at_ms: at_ms}, now_ms: now_ms}),
+    do: [{"What I have come to think", ago(at_ms, now_ms) <> "I thought: " <> closing}]
 
   @doc "快照的英文转写：每栏一行 `栏名: 正文`，按栏的次序（“What I remember”一栏的正文自己可以有多行）。"
   @spec text([{String.t(), String.t()}]) :: String.t()

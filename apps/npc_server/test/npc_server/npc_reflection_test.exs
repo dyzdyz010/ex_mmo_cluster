@@ -1,7 +1,8 @@
 defmodule NpcServer.NpcReflectionTest do
   @moduledoc """
-  只测试：反思纯函数核心 `NpcServer.Life.Reflection` 的契约——计分与触发、定问题、提示词拼装、应答检查、存档文档。
-  输入全部是真实导出或对它的删减（S1-T 实跑的 108 份文档、S1-X2 真实发出的提示词与真实应答；来源与重新生成见
+  只测试：反思纯函数核心 `NpcServer.Life.Reflection` 的契约——计分与触发、定问题、提示词拼装、应答检查、存档文档、
+  新栏取哪一句（`thought/1`）。
+  输入全部是真实导出或对它的删减（S1-T 实跑的 108 份文档、S1-X2 真实发出的提示词与真实应答、S1-Z 实跑的持久行；来源与重新生成见
   `test/support/fixtures/reflection/README.md`），期望取自 S1-X2 / S1-X3 的真实读数或契约原文。
   不证明：取材料、写日记的网络调用、Life 的接线与持久化（R2、R3）。
   """
@@ -209,6 +210,39 @@ defmodule NpcServer.NpcReflectionTest do
     assert "At 2026-11-13T16:30:18.632Z (UTC), " <> doc["text"] == sample["stored_text"]
   end
 
+  # 新栏取哪一句：S1-Z 真实实跑五个时点的持久行 "reflection"（夹具 `s1z/`）。期望是导出里“自己”那条的收尾句原文与时刻。
+  test "新栏的那一句：最近一轮写成了“自己”才有，取它的收尾句与时刻；还没有过一轮、或最近一轮中止，都没有" do
+    # 还没有任何一轮。
+    assert Reflection.thought(s1z("20261114T023925.286Z-built")) == nil
+
+    # 第 1 轮三问都写成。
+    assert Reflection.thought(s1z("20261114T024020.470Z-round1")) == %{
+             closing:
+               "Then I'll cut the stone I'm short of, since 1728512 is far under the 6660096 the hut takes, " <>
+                 "and rebuild with the limestone I already have.",
+             at_ms: 1_794_623_974_807
+           }
+
+    # 第 3 轮只问了小屋与自己（Corvin 那条还是第 1 轮的）。
+    assert Reflection.thought(s1z("20261114T025628.369Z-round3")) == %{
+             closing:
+               "So I'm done guarding: I'll cut stone and limestone beside the plot, glance at the hut as I pass, " <>
+                 "ask Corvin plainly if they turn up, and go to the plaza only once the work is done.",
+             at_ms: 1_794_624_926_602
+           }
+
+    # 第 4 轮出口连不上而中止：各问最新一条还是第 3 轮的，不沿用。
+    assert Reflection.thought(s1z("20261114T030131.647Z-round4-aborted")) == nil
+
+    # 恢复后的第 5 轮。
+    assert Reflection.thought(s1z("20261114T031005.159Z-round5")) == %{
+             closing:
+               "This time I'm going straight to the stone beside the plot, no more guarding, a glance at the hut " <>
+                 "as I pass, a plain question for Corvin if they show, and the plaza only after the stone is cut.",
+             at_ms: 1_794_625_651_818
+           }
+  end
+
   # 第 k 轮问的问题：新经历 = 时刻落在上一轮的此刻 t′（不含）与本轮 t′（含）之间（S1-X2 plan.md 运行前补记第 4 条）；
   # 我的建筑只有 small hut，有关系的人只有 Corvin（S1-T 实跑的事实）。
   defp asked(k) do
@@ -242,6 +276,7 @@ defmodule NpcServer.NpcReflectionTest do
   defp experiences, do: json("s1t-experiences.json")
   defp moments, do: json("s1x2-moments.json")
   defp samples, do: json("check-samples.json")
+  defp s1z(moment), do: json("s1z/#{moment}-reflection.json")
   defp json(name), do: name |> fixture() |> Jason.decode!()
   defp fixture(name), do: File.read!(Path.join(@fixtures, name))
 

@@ -29,7 +29,8 @@ defmodule NpcServer.Selector do
   - **候选**：`profile.activities`，有序列表 `[%{name:, criterion:, run:, place_name:}]`（注册参数给出，见 `NpcServer.Registry`）。
     次序由列表承载，原样进请求体。当前没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据
     （材料单、地块占用都要另查 World），做不成的候选由执行失败后写进“最近做过的事”来体现。
-  - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
+  - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏；最近一轮反思写成了“自己”时多一栏
+    `What I have come to think`，栏表见 `Mind` 的 moduledoc），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
     近期经历、认识，并按处境分路召回（附近的人、我的建筑、未了与感受，`Mind.recall_queries/2`；各路在发问 worker 里并行，
     合并成一张清单）。偏好类选择直接取 top1，不设置信度门槛
     （调研稿结论 3：这类题置信度中位数只有 0.58–0.66 而 top1 稳定）；`Jev.verdict/3` 的 0.85 门槛只留给中断与 harm 护栏。
@@ -59,6 +60,7 @@ defmodule NpcServer.Selector do
   @recent 5
 
   # 问法取自离线实验（tools/jev/persona.py 的 INSTRUCTIONS），栏名换成心智快照现有的栏。
+  # 不点名反思新栏 `What I have come to think`：S1-X2 / S1-X3 都是在这句问法下测的（内容规范 §10.11），照测过的条件发。
   @instructions "Decide what this specific character does next. Choose the single option this character " <>
                   "would actually pick, given their personality, feelings and relationships, what just happened, " <>
                   "what they remember, current situation and recent activities."
