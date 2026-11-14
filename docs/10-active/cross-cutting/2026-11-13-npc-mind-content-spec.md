@@ -349,7 +349,7 @@ flowchart LR
 | R1 | **纯函数核心** `NpcServer.Life.Reflection`：经历按 tags 计分、触发判定（累计 20、`kind:event` 立即、至少隔现实 5 分钟、条件保留）、定问题（每座建筑 / 每个有关系的人 / 自己；只问有新经历的；至多 3 问；次序 小屋 → 人 → 自己）、四块材料与提示词的拼装（S1-X2 定稿原文）、应答检查（`Used` 行、句数 ≤ 5）、取收尾一句。不做任何 I/O。 | 单测（`:t0`）。计分与触发用 **S1-T 真实导出的 108 份文档的 id / tags / 时刻** 作夹具，断言得到 S1-X2 算出的同样 7 个时刻（`s1x2/moments.json`）；检查函数用 S1-X2 的真实应答（含那两次 5 句的）作样本。 | 无 |
 | R2 | **两个出口**：① 写日记的客户端（Anthropic Messages 形状，`x-api-key`，按块的 `type` 取 `text`，`stop_reason` 不是 `end_turn` 即失败；endpoint 从环境变量经 Registry 进 profile，同现有 `NPC_LLM_*` 的做法）；② Hindsight 客户端补“只建一个空 bank”（不写 mission、不建四份认识）与按 tags / 类型取材料的召回（现有 `recall/3` 够用就不加）。失败返回可诊断错误，日志带 cid 与 bank。 | 本地 `:gen_tcp` HTTP 替身（同 `npc_hindsight_test.exs` 的做法），含一条真实响应（空的 `thinking` 块在前）与失败路径。 | 无 |
 | R3 | **接进 Life**：持久行加 `reflection`（累计分、上次时刻、各问最新一条与其时刻、计数）；四个经历入口进来时计分；到点起**单独的反思槽**（不占封存 / 刷新的 `job` 槽，失败不停掉它们）；槽里取材料（“此刻”取这一刻的观察，渲染复用 `Mind` 的同一套函数）→ 串行写 → 检查 → 一次写回持久行 → 存档到反思库；`Life.observe` 加 `reflection`；手动入口 `Life.reflect/1`（同 `flush/1`）；日志 `npc_reflect …`。 | `npc_life_test.exs` 的做法（真实 World / Body，Hindsight 模块替身，写日记的发送函数注入）：一次真实的“小屋被拆”事件 → 触发 → 材料里有那条未封存的事件 → 写回持久行 → 重启后还在；写作失败、检查不合格各一条。 | R1、R2 |
-| R4 | **新栏**：`Mind` 在 `What I remember` 之后、`Current situation` 之前加 `What I have come to think`（没有内容时整栏不出现）；内容按用户对 §10.11“要用户定”第 1 条的答复；`Selector` 的问法点名新栏；改掉对 state 全文与栏下标做断言的测试；README 与 moduledoc 的“七栏”。 | `npc_mind_test.exs`、`npc_selector_test.exs`。 | R3、用户的答复 |
+| R4 | **新栏**：`Mind` 在 `What I remember` 之后、`Current situation` 之前加 `What I have come to think`（没有内容时整栏不出现）；内容按用户对 §10.11“要用户定”第 1 条的答复；~~`Selector` 的问法点名新栏~~（2026-11-14 改为问法不改，理由见 §10.11 末尾）；改掉对 state 全文与栏下标做断言的测试；README 与 moduledoc 的“七栏”。 | `npc_mind_test.exs`、`npc_selector_test.exs`。 | R3、用户的答复 |
 | R5 | npc_server 全套测试；README（Life 一节加反思）；统筹页。 | 全套（共享契约：state 文本与 Life 持久行都动了）。 | R1–R4 |
 | R6 | **真实服务端闭环实跑**（NPC-only，同 S1-T），期望运行前写下；导出后判定。这一步才谈得上验收。 | 实跑 | R5 |
 
@@ -359,7 +359,8 @@ flowchart LR
 空的反思库用产品的 `ensure_bank/2` + `retain/2` 写两条真实日记，各抽出 3、4 条事实——**存档不需要改 `retain/2`**。R3 的任务书与其中统筹会话定的细节见统筹页“第十一个统筹会话的进展”。
 **R3 已实现、已测试、已独立评审两轮、已本地提交 `c6b610c1`（未实跑、未验收）。** 与上表 R3 一行相比，评审后定下的几处：`Reflection.record/2` 只计分与判定，真的起一轮时才由 `started/2` 清零（到点但槽在途或还没有观察时条件留着）；
 “自上一轮以来的新经历”记在持久行里，一轮做完落栏时才消耗，中止的一轮不消耗；日记与存档文档的时刻用起槽那一刻；落栏不等存档，存档失败只计数与记日志；写日记的 endpoint 取运行环境 `NPC_REFLECT_URL` / `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（`"npc"` 形态必填，**部署清单里还没有，部署前要补**）。
-R4 仍等用户对 §10.11“要用户定的”第 1 条的答复。
+~~R4 仍等用户对 §10.11“要用户定的”第 1 条的答复。~~（用户 2026-11-14 已答复“A”，见 §10.11 末尾；R4 的进度见统筹页“第十二个统筹会话的进展”。）
 **进度（2026-11-14，第十二个统筹会话）：R3 已做真实服务端短实跑 S1-Z（已实跑，不算验收）**，判定 `.demo/observe/npc-slice1-20261112/s1z/results.md`：14 条期望 11 条成立、“无事时空转会发生”成立、两条各有一小项落空（日志名写错；存档期间选择的召回超时 1 次）。
+**R4 已实现、已测试（npc_server 全套 493 passed）、已独立评审（无阻断项，两条应改已修）、已本地提交；未实跑、未验收**：新栏只放最近一轮写成的“自己”一问的收尾一句（规则在 `Life.Reflection.thought/1`），问法不改；“不沿用上一轮”有三条少见的失败路径例外（写在 `life.ex` moduledoc 的已知清单里）。带标注的写法没有离线读数。R5 的全套测试已随 R4 做；R6 未开始。
 五轮反思（含一轮出口连不上而中止、一轮恢复后）整条链没有丢在哪一步。R3 留下的两件：写作失败后小屋的反思推迟 6 分 19 秒；无事时每 20 次无人活动确实空转一轮——改不改留到 R6 之后定。R4 的测试数据取自这次导出的 Life 持久行（`s1z/export/rows/`）。
 
