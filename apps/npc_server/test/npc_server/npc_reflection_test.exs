@@ -17,9 +17,13 @@ defmodule NpcServer.NpcReflectionTest do
         # 触发状态进 Life 持久行：每步先过一遍 JSON，证明它是能原样存取的普通 map。
         trigger = trigger |> Jason.encode!() |> Jason.decode!()
 
+        # 离线测量里每次到点都起了一轮：到点就 started/2（判定与起轮分两步，规则不变）。
         case Reflection.record(trigger, entry) do
-          {trigger, nil} -> {trigger, rounds}
-          {trigger, round} -> {trigger, [{entry["id"], round} | rounds]}
+          {trigger, nil} ->
+            {trigger, rounds}
+
+          {trigger, round} ->
+            {Reflection.started(trigger, round.at_ms), [{entry["id"], round} | rounds]}
         end
       end)
 
@@ -30,6 +34,54 @@ defmodule NpcServer.NpcReflectionTest do
              %{at_ms: m["t_ms"], score: m["score"], causes: Enum.map(m["causes"], &cause/1)}}
 
     assert Enum.reverse(rounds) == expected
+  end
+
+  test "到点而没有起轮（不调 started/2）：触发状态不清零，下一条经历仍给出到点，累计分接着加" do
+    # 记到第一个反思时刻（小屋被拆）为止的真实经历：那一条给出到点，但这里不起轮。
+    %{"doc_id" => first_id, "t_ms" => first_ms, "score" => first_score} =
+      hd(moments()["moments"])
+
+    {before, [first, next | _]} = Enum.split_while(experiences(), &(&1["id"] != first_id))
+
+    trigger =
+      Enum.reduce(before, Reflection.new_trigger(), fn entry, trigger ->
+        {trigger, nil} = Reflection.record(trigger, entry)
+        trigger
+      end)
+
+    {trigger, %{at_ms: ^first_ms, score: ^first_score}} = Reflection.record(trigger, first)
+    assert trigger == %{"score" => first_score, "last_at_ms" => nil, "event_waiting" => true}
+
+    # 紧接着的下一条真实经历：仍到点（事件那个条件留着），时刻是这一条的，累计分含两条。
+    total = first_score + Reflection.score(next)
+
+    assert {trigger, %{at_ms: at_ms, score: ^total, causes: [:event | _]}} =
+             Reflection.record(trigger, next)
+
+    assert at_ms == next["at_ms"]
+    assert trigger == %{"score" => total, "last_at_ms" => nil, "event_waiting" => true}
+
+    # 起了一轮之后才清零、记下时刻，此后 5 分钟内不再到点。
+    trigger = Reflection.started(trigger, at_ms)
+    assert trigger == %{"score" => 0, "last_at_ms" => at_ms, "event_waiting" => false}
+  end
+
+  test "手动起一轮：拿走此前的累计分、时刻是手动那一刻；起了之后同到点一样 started/2 清零" do
+    # 记到第一个反思时刻（小屋被拆，累计 15，其中拆屋一条 8 分）之前的真实经历：累计分应为 15 − 8 = 7。
+    %{"doc_id" => first_id, "t_ms" => at_ms} = hd(moments()["moments"])
+
+    trigger =
+      experiences()
+      |> Enum.take_while(&(&1["id"] != first_id))
+      |> Enum.reduce(Reflection.new_trigger(), fn entry, trigger ->
+        {trigger, nil} = Reflection.record(trigger, entry)
+        trigger
+      end)
+
+    assert Reflection.manual(trigger, at_ms) == %{at_ms: at_ms, score: 7, causes: [:manual]}
+
+    assert Reflection.started(trigger, at_ms) ==
+             %{"score" => 0, "last_at_ms" => at_ms, "event_waiting" => false}
   end
 
   test "计分表：真实经历按 tags 各得 8 / 5 / 3 / 3 / 1" do

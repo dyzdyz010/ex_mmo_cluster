@@ -214,8 +214,31 @@ defmodule NpcServer.Mind do
   def result(:completed), do: "completed"
   def result({:failed, act, reason}), do: "failed (#{act}: #{reason})"
 
-  # Now 栏：`It is <时段>, <HH:MM>.`（S1-K 的 now_line，去掉栏名）。
-  defp clock(%{minute_of_day: minute}) do
+  @doc """
+  反思用的“此刻”一块（`Right now:` 标题之后的三行，内容规范 §10.11、离线脚本 `s1x2_reflect.py` 的 `right_now_block`）：
+
+      <Now 栏正文> It is day <world_time.day>.
+      <Current situation 栏正文>
+      My body: life <四舍五入> of 100, <no injuries or ailments | with <伤病的词>>.
+
+  Now 栏与 Current situation 栏就是快照的同一套渲染（`clock/1`、`situation/2`）；`buildings` 是现查 World 的结果
+  （`Life.standing/2`）。`observation.self.body_state` 必须已收到（不是 nil，调用方先判）。伤病标签按离线脚本的
+  `INJURY_WORDS` / `MECHANICAL_INJURY` 写成词（标签集合取自 scene_server `body.ex` 的 `injuries/1`）；未知的标签直接崩，同脚本。
+  """
+  @spec right_now(map(), [map()]) :: [String.t()]
+  def right_now(
+        %{self: %{body_state: %{} = body}, world_time: world_time} = observation,
+        buildings
+      ),
+      do: [
+        clock(world_time) <> " It is day #{world_time.day}.",
+        situation(observation, buildings),
+        body_sentence(body)
+      ]
+
+  @doc "Now 栏的正文：`It is <时段>, <HH:MM>.`（S1-K 的 now_line，去掉栏名）；`world_time` 是观察里的游戏钟。"
+  @spec clock(map()) :: String.t()
+  def clock(%{minute_of_day: minute}) do
     hour = div(minute, 60)
     "It is #{period(hour)}, #{two_digits(hour)}:#{two_digits(rem(minute, 60))}."
   end
@@ -290,11 +313,14 @@ defmodule NpcServer.Mind do
   defp happened([], _now_ms), do: "Nothing new."
 
   defp happened(recent, now_ms),
-    do:
-      "Oldest first. " <>
-        Enum.map_join(recent, " ", fn %{at_ms: at_ms, text: text} ->
-          ago(at_ms, now_ms) <> text
-        end)
+    do: "Oldest first. " <> Enum.map_join(recent, " ", &recent_item(&1, now_ms))
+
+  @doc """
+  一条还没写进 Hindsight 的近期经历（`Life.mind/2` 的 `recent` 的一项 `%{at_ms:, text:}`）：句首写多久以前，后接原文。
+  “What just happened”一栏与反思的“发生过的事”共用这一写法。
+  """
+  @spec recent_item(map(), integer()) :: String.t()
+  def recent_item(%{at_ms: at_ms, text: text}, now_ms), do: ago(at_ms, now_ms) <> text
 
   defp remembered(%{models: [], memories: []}), do: "Nothing relevant."
 
@@ -307,8 +333,12 @@ defmodule NpcServer.Mind do
     )
   end
 
-  # 召回条目：去掉抽取器的 ` | When: … | Involving: …` 后缀；有事件时刻才写多久以前。
-  defp recalled(%{"text" => text} = memory, now_ms) do
+  @doc """
+  一条召回条目（适配器规范化的 `%{"text", "at_ms", …}`）的正文：去掉抽取器的 ` | When: … | Involving: …` 后缀；
+  有事件时刻才在句首写多久以前。记忆栏与反思的“发生过的事”共用这一写法。
+  """
+  @spec recalled(map(), integer()) :: String.t()
+  def recalled(%{"text" => text} = memory, now_ms) do
     [plain | _] = String.split(text, " | When:", parts: 2)
 
     case memory["at_ms"] do
@@ -317,8 +347,12 @@ defmodule NpcServer.Mind do
     end
   end
 
-  # 眼前的处境：Observation 里现有的字段，加 Life.mind 现查 World 得到的“我的建筑”在不在。
-  defp situation(%{self: %{position: {x, y, z} = position} = self} = observation, buildings) do
+  @doc """
+  Current situation 栏的正文：Observation 里现有的字段（位置、生命、附近的人、背包），加现查 World 得到的“我的建筑”
+  在不在（`buildings` 是 `Life.standing/2` 的结果）。快照与反思的“此刻”共用这一写法。
+  """
+  @spec situation(map(), [map()]) :: String.t()
+  def situation(%{self: %{position: {x, y, z} = position} = self} = observation, buildings) do
     others = State.others(observation)
 
     Enum.join(
@@ -337,6 +371,41 @@ defmodule NpcServer.Mind do
   # 本会话还没收到身体状态（nil）时不写这一句。
   defp life(nil), do: []
   defp life(%{life: life}), do: ["Life #{round(life)} of 100."]
+
+  # 反思“此刻”的身体一句（离线脚本 `body_sentence` 逐字移植；原创写法，量是真实的；不写开尔文数、不写因果）。
+  # 生命四舍五入用 Elixir 的 round/1（同上面 `life/1`）；离线脚本的 Python round 在恰好 .5 时取偶，两者只在这时不同。
+  defp body_sentence(%{life: life, injuries: injuries}) do
+    tail =
+      case Enum.map(injuries, &injury_word(&1.tag)) do
+        [] -> "no injuries or ailments"
+        words -> "with " <> join_words(words)
+      end
+
+    "My body: life #{round(life)} of 100, #{tail}."
+  end
+
+  # 伤病标签 → 英文词（离线脚本 `INJURY_WORDS` / `MECHANICAL_INJURY`，标签集合取自 scene_server body.ex 的 injuries/1）。
+  # 未知标签直接崩（同脚本）：新的伤病种类要先在这里写词。正则写在函数里（较新的 OTP 不能把编译好的正则存进模块属性）。
+  defp injury_word("temperature.hypothermia"), do: "hypothermia"
+  defp injury_word("temperature.hyperthermia"), do: "hyperthermia"
+  defp injury_word("trauma.thermal.burn"), do: "a burn"
+  defp injury_word("trauma.thermal.frostbite"), do: "frostbite"
+  defp injury_word("nutrition.hunger"), do: "hunger"
+  defp injury_word("recovery.weakness"), do: "weakness"
+  defp injury_word("nervous.daze"), do: "a daze"
+
+  defp injury_word(tag) do
+    [_, part] = Regex.run(~r/^trauma\.mechanical\.(head|torso|legs)$/, tag)
+    "an injury to the #{part}"
+  end
+
+  # 同脚本 `join_words`：一个词原样；多个词前面的用逗号连、最后一个用 and。
+  defp join_words([word]), do: word
+
+  defp join_words(words) do
+    {init, [last]} = Enum.split(words, -1)
+    Enum.join(init, ", ") <> " and " <> last
+  end
 
   defp nearby([], _origin), do: "Nobody else is nearby."
 

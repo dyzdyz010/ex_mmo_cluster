@@ -10,12 +10,14 @@ defmodule NpcServer.Life.Reflection do
       每条经历 → record/2（到点了吗）→ questions/4（问哪几件事）
         → 每问：system_prompt/1 + user_message/2 →（调用方发给模型）→ check/2（应答合格吗）→ archive/3（存档文档）
 
-  ## 计分与触发（`score/1`、`new_trigger/0`、`record/2`）
+  ## 计分与触发（`score/1`、`new_trigger/0`、`record/2`、`started/2`、`manual/2`）
 
   每条经历按 tags 给分：`kind:event`（别人打或毁了我放的东西）8、`kind:conversation` 5、`kind:sight` 3、
   `kind:activity` 且带任一 `actor:`（期间有人进过 6 米）3、其余 `kind:activity` 1。
   触发条件两种：`kind:event` 的经历到来（立即触发）、累计分 ≥ 20。条件成立时距上一轮不足现实 5 分钟（按经历的 `"at_ms"`）
-  就不触发、条件保留，到满 5 分钟后的第一条经历上触发；一轮的时刻 = 触发它的那条经历的 `"at_ms"`；触发后累计分清零。
+  就不触发、条件保留，到满 5 分钟后的第一条经历上触发；一轮的时刻 = 触发它的那条经历的 `"at_ms"`。
+  判定与起轮分两步：`record/2` 只计分、判定到没到点；调用方真的起了一轮才 `started/2`（累计分清零、记下这一轮的时刻）。
+  到点却起不了的那次不清零，条件留到下一条经历再判。
   分值、阈值、间隔都是原创取值（§10.3），实跑后调。
 
   ## 定问题（`questions/4`）
@@ -115,11 +117,14 @@ defmodule NpcServer.Life.Reflection do
   def new_trigger, do: %{"score" => 0, "last_at_ms" => nil, "event_waiting" => false}
 
   @doc """
-  记入一条经历（`%{"at_ms", "tags"}`），返回 `{新的触发状态, nil | 一轮}`。
+  记入一条经历（`%{"at_ms", "tags"}`），返回 `{新的触发状态, nil | 到点的一轮}`。只计分与判定，**不清零**：
+  累计分照加、等着的 `kind:event` 照记、`"last_at_ms"` 不动；真的起了一轮由调用方再调 `started/2`。
+  所以条件成立且间隔已满时，之后每一条经历都给出“到点”，直到调用方起了一轮——起不了（槽在途、还没有观察）的那次
+  不会把条件吃掉。
 
-  一轮是 `%{at_ms: 这条经历的时刻, score: 触发时的累计分（含这一条）, causes: 成立的条件}`，`causes` 是
-  `[:event]`、`[:score]` 或 `[:event, :score]`——保留期间先后成立的条件都算。条件成立但距上一轮不足 5 分钟时返回 nil，
-  累计分照加、等着的 `kind:event` 照记，到满 5 分钟后的第一条经历上触发。触发后累计分清零、记下这一轮的时刻。
+  一轮是 `%{at_ms: 这条经历的时刻, score: 此刻的累计分（含这一条）, causes: 成立的条件}`，`causes` 是
+  `[:event]`、`[:score]` 或 `[:event, :score]`——保留期间先后成立的条件都算。条件成立但距上一轮不足 5 分钟时给 nil，
+  到满 5 分钟后的第一条经历上给出一轮。
   """
   def record(
         %{"score" => accumulated, "last_at_ms" => last_at_ms, "event_waiting" => event_waiting},
@@ -127,21 +132,32 @@ defmodule NpcServer.Life.Reflection do
       ) do
     total = accumulated + score(entry)
     event_waiting = event_waiting or "kind:event" in entry["tags"]
+    trigger = %{"score" => total, "last_at_ms" => last_at_ms, "event_waiting" => event_waiting}
 
     causes =
       if(event_waiting, do: [:event], else: []) ++
         if(total >= @trigger_score, do: [:score], else: [])
 
-    cond do
-      # 没有条件成立，或条件成立但离上一轮还不满 5 分钟：累计分与等着的事件都留着。
-      causes == [] or (last_at_ms != nil and at_ms - last_at_ms < @min_gap_ms) ->
-        {%{"score" => total, "last_at_ms" => last_at_ms, "event_waiting" => event_waiting}, nil}
-
-      true ->
-        {%{"score" => 0, "last_at_ms" => at_ms, "event_waiting" => false},
-         %{at_ms: at_ms, score: total, causes: causes}}
-    end
+    # 没有条件成立，或条件成立但离上一轮还不满 5 分钟：不到点。
+    if causes == [] or (last_at_ms != nil and at_ms - last_at_ms < @min_gap_ms),
+      do: {trigger, nil},
+      else: {trigger, %{at_ms: at_ms, score: total, causes: causes}}
   end
+
+  @doc """
+  真的起了一轮（到点的或手动的）：返回起轮之后的触发状态——累计分清零、等着的事件清掉、`"last_at_ms"` 记下 `at_ms`。
+  `at_ms` 是那一轮的 `at_ms`（`record/2` 给的触发那条经历的时刻，或 `manual/2` 的手动时刻），下一轮的 5 分钟间隔从它算。
+  """
+  def started(%{"score" => _, "last_at_ms" => _, "event_waiting" => _}, at_ms),
+    do: %{"score" => 0, "last_at_ms" => at_ms, "event_waiting" => false}
+
+  @doc """
+  手动起一轮（`NpcServer.Life.reflect/1`）：给出 `%{at_ms:, score: 此前的累计分, causes: [:manual]}`，`at_ms` 由调用方给
+  （手动那一刻的时钟）。不看间隔、不改触发状态：手动入口是运维 / 调试用的，要不要起由调用方决定；起了之后与到点的一轮
+  一样调 `started/2`。
+  """
+  def manual(%{"score" => accumulated}, at_ms),
+    do: %{at_ms: at_ms, score: accumulated, causes: [:manual]}
 
   @doc """
   这一轮要问的问题（有序，至多 3 个）。`buildings` 是我的建筑名（同名的只问一次：`place:` tag 分不出同名的两座），

@@ -36,11 +36,54 @@ defmodule NpcServer.Life do
   经历、缓存认识与按处境并行的多路召回），`activity_started/1` 与 `activity/2` 标出一项活动的开始与结束（结束时接纳“做了什么、
   结果如何、期间谁来过”的活动经历）。统一形态不读状态里的
   `traits`（`caution` / `sociability`）：人格只来自人格卡，这两个值并入人格卡待做。
+
+  ## 反思（内容规范 §10.11、§10.12 的 R3）
+
+  只有 profile 带写日记接口（`reflect`，统一形态由 `NpcServer.Registry` 给出）的 Life 反思；没有的形态不计分、不记新经历、
+  不起槽（形态差别，不是降级）。四个经历入口（World 事件、所见、活动、对话）经同一个私有函数接纳经历：进未封存的尾部，
+  并逐条 `Reflection.record/2` 计分、把 `%{"at_ms", "tags"}` 记进“自上一轮开始以来的新经历”（`"new"`）。
+
+  起一轮与消耗新经历：
+  - **到点且起得了**（反思槽空着、已有观察）：在接纳经历的**同一次保存**里 `Reflection.started/2`（累计分清零、记下时刻）、
+    `rounds` 加一，保存成功后起**单独的反思槽**（第三个 worker 槽 `reflect`，与读 World 的 `poll`、写 Hindsight 的 `job` 并列）。
+    一批里多条都到点只起一轮（取最后一条的时刻与累计分，原因合并）。槽里的流程见 `Reflection.Round`。
+  - **到点却起不了**（槽在途 `busy`、还没有观察 `no_observation`）：不调 `started/2`，触发状态留着（下一条经历进来还会到点），
+    `skipped` 加一、一行日志。
+  - **新经历在落栏时才消耗**：起槽时把当时的 `"new"` 整份交给这一轮、槽上记下取走了几条；这一轮**做完**（每一问写成或丢弃）
+    才在落栏那次保存里删掉 `"new"` 的前这几条（一轮进行中新来的排在后面，留给下一轮）。这一轮**中止**（写作或召回失败、
+    问之前就失败、某一问没有材料、worker 在落栏前崩溃）则 `"new"` 不动，已写成的照常落栏，下一轮把这些对象再问一遍
+    （“之前的想法”里就是这次写成的）。检查不合格被丢弃不算中止。Life 在一轮进行中重启也不丢新经历（触发状态已清零，等下一次到点）。
+  - **时刻**：`"latest"` 各条、`"round"` 的 `"at_ms"` 与存档文档的时刻都是起槽那一刻的时钟（同离线的 t′，日记是那一刻想的）；
+    触发状态的 `"last_at_ms"` 仍是触发那条经历的时刻（5 分钟间隔从它算）。
+
+  为什么这样分：
+  - **持久行是权威**：`life/state` 行的 `"reflection"`（触发状态、新经历、各问最新一条、最近一轮小结、计数）与其它键
+    同一次保存，重启后还在；Hindsight 的反思库（`npc-reflect-<cid>`）只是存档，产品不从它读回。
+  - **单独的槽**：一轮要串行写 2–3 次（每次约 9 秒），不能占住封存与认识刷新；它的失败不进 `job_error`、不挡 `automatic/1`。
+  - **落栏时刻**：一轮写完才一次落进持久行（不逐问落），存档在落栏之后做、不挡落栏；存档失败只记数，不重试、不动已落栏的日记。
+    落栏那次保存失败：一行 `event=persist_failed`，这一轮写成的日记没有落栏（不重试，同其它经历保存失败）；随后回来的存档结果
+    只打日志、不碰行（槽上记着这一轮落栏了没有，存档结局只写进本轮自己的小结）。
+
+  `"round"`（最近一轮的小结）：`"at_ms"`、`"causes"`、`"asked"` / `"written"` / `"discarded"` / `"failed"`（问题的键；worker 在
+  落栏前崩溃时都是空表）、`"archive"`——`"none"` 没有可存的、`"pending"` 已落栏而存档结果还没回来（Life 在此期间重启就停在
+  这个值，表示结果未知）、`"ok"`、`"failed"`。
+
+  `"counts"`（累计，随行持久）：`rounds` 起了槽的轮数；`written` / `reasked` / `discarded` / `failed` 按问题计（写成、重问、
+  检查两次都不合格丢弃、写作或召回失败或没有材料）；`aborted` 中止的轮数（含落栏前 worker 崩溃）；`skipped` 到点但没起成的次数；
+  `archive_failed` 存档失败的轮数（含存档阶段 worker 崩溃）。
+
+  手动入口 `reflect/1`；`observe/1` 的 `reflection` 给出槽在不在途、触发状态、新经历条数、各问最新一条、最近一轮、计数与
+  `error`——最近一轮里最近一次失败的原因（写作阶段、落栏、存档、崩溃都算；只在进程内），起下一轮时清空，别的时候不清。
+  日志一律 `npc_reflect cid=<cid> …`。
+
+  已知的未设上限处：“之前的想法”里其它对象的条数（此刻记得的建筑、关系表里的人、“自己”各一条）没有上限——现在一个 NPC
+  只有一座建筑、一个有关系的人，多个 NPC 实跑之前再定。
   """
   use GenServer
   require Logger
-  alias NpcServer.{Dialogue, Memory, Life.State, Life.Hindsight, Life.Sight}
-  alias NpcServer.Life.Appraisal
+  alias NpcServer.{Dialogue, Memory, Persona, Life.State, Life.Hindsight, Life.Sight}
+  alias NpcServer.Life.{Appraisal, Reflection}
+  alias NpcServer.Life.Reflection.{Round, Writer}
   @fragment_chars 3000
   @refresh_ms 600_000
   # 心智快照各路召回的单路上限（毫秒）：既是那一路 HTTP 请求的超时，也是并行时等那一路的墙钟上限。
@@ -76,6 +119,15 @@ defmodule NpcServer.Life do
   def flush(cid), do: call(cid, :flush)
   @doc "后台刷新四份认识；立即返回任务状态，决策不会调用此入口。"
   def refresh(cid), do: call(cid, :refresh)
+
+  @doc """
+  手动起一轮反思（CLI / 调试用，同 `flush/1` 的形状）：行没加载 → `{:error, :life_not_ready}`；没开反思 →
+  `{:error, :reflection_disabled}`；槽在途 → `{:ok, %{status: :busy}}`；还没收到观察 → `{:error, :no_observation}`（不动触发状态、
+  不计 `skipped`）；自上一轮以来没有新经历 → `{:ok, %{status: :empty}}`；否则这一刻起一轮（`Reflection.manual/2`，
+  `causes: [:manual]`；同到点的一轮一样 `Reflection.started/2`、`rounds` 加一，与之同一次保存）→ `{:ok, %{status: :started}}`；
+  那次保存失败 → `{:error, 原因}`，不起槽。
+  """
+  def reflect(cid), do: call(cid, :reflect)
 
   @doc """
   读取缓存认识并以问句 `query`（字符串）恰好召回一次（一路、不加过滤，单次请求用适配器的长超时）；
@@ -128,7 +180,7 @@ defmodule NpcServer.Life do
   """
   def mind(cid, queries) do
     with {:ok, snapshot, recalled} <- recollect(cid, queries, @mind_recall_timeout_ms),
-         {:ok, buildings} <- standing(snapshot) do
+         {:ok, buildings} <- standing(snapshot.mind["buildings"], snapshot.context) do
       {:ok,
        %{
          now_ms: snapshot.now_ms,
@@ -148,10 +200,15 @@ defmodule NpcServer.Life do
     end
   end
 
-  # 记得的每座“我的建筑”此刻在不在：逐座现查 World。没有记得的建筑就不路由、不查。
-  defp standing(%{mind: %{"buildings" => []}}), do: {:ok, []}
+  @doc """
+  记得的每座“我的建筑”（`Life.State` 的 `"buildings"`）此刻在不在：在调用者进程里逐座现查 World
+  （`VoxelRegion.World.instance_cells/2`：有格 = 在，`:instance_not_found` = 不在），`context` 是本 owner 的会话身份（路由用）。
+  返回 `{:ok, [%{name:, anchor: {x, y, z}, standing: boolean}]}`（记得的次序）或路由 / 查询的失败原因；没有记得的建筑就不路由、不查。
+  心智快照（`mind/2`）与反思的“此刻”（`Reflection.Round`）共用。
+  """
+  def standing([], _context), do: {:ok, []}
 
-  defp standing(%{mind: %{"buildings" => remembered}, context: context}) do
+  def standing(remembered, context) do
     with {:ok, route} <- context.router.route(context.scene_id) do
       Enum.reduce_while(remembered, {:ok, []}, fn building, {:ok, acc} ->
         [birth, occurrence] = building["instance"]
@@ -304,9 +361,32 @@ defmodule NpcServer.Life do
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
        activity: nil,
        # “看到的”进行中的账（`Life.Sight.new/0`）：还没结束的相遇、还没合上的建造 / 拆除、每人频率上限。只在内存，重启即丢。
-       sight: Sight.new()
+       sight: Sight.new(),
+       # 写日记所需（不变的配置）：nil = 这个形态不反思；否则是写日记的函数、人格卡一行与反思库（见 `journaling/3`）。
+       # 与持久行的 "reflection"（反思的状态）不是一回事。
+       journaling: journaling(profile, config, context.cid),
+       # 反思槽（worker，同 poll / job）：nil 或 `%{pid, ref, round, now_ms, taken, landed}`（见 `start_round/2`）。
+       reflect: nil,
+       # 最近一轮里最近一次失败的原因（只在内存，observe 用）：起下一轮时清空。
+       reflect_error: nil
      }}
   end
+
+  # 写日记所需：profile 有写日记的接口（`reflect`）才有。写日记的函数可经 `profile.write_journal` 注入
+  # （同 Selector 经 `profile.request` 注入 Jev 发送函数的做法），缺省是 `Writer.write(profile.reflect, …)`。
+  # 反思库的 config 是经历库的换一个 bank。
+  defp journaling(%{reflect: endpoint} = profile, config, cid),
+    do: %{
+      write:
+        Map.get(profile, :write_journal, fn system, user ->
+          Writer.write(endpoint, system, user)
+        end),
+      character: Persona.describe(profile.who, profile.persona),
+      archive: %{config | bank: "npc-reflect-#{cid}"},
+      archive_name: "NPC #{cid} journal"
+    }
+
+  defp journaling(_profile, _config, _cid), do: nil
 
   @impl true
   def handle_call(:observe, _, s) do
@@ -336,7 +416,8 @@ defmodule NpcServer.Life do
         unsaved_speech: length(s.speech_pending),
         unsaved_experiences: length(s.experience_pending),
         sight_capped: s.sight.capped,
-        emotion_owner: if(s.appraise, do: :model, else: :construction_rules)
+        emotion_owner: if(s.appraise, do: :model, else: :construction_rules),
+        reflection: observe_reflection(s)
       }}, s}
   end
 
@@ -354,15 +435,34 @@ defmodule NpcServer.Life do
           cache: s.row["cache"],
           # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
           context: s.context,
-          # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
-          recent:
-            for(
-              episode <- sealed(s.row["fragments"]) ++ s.row["pending"],
-              do: %{at_ms: episode["at_ms"], text: episode["text"]}
-            )
+          recent: recent(s.row)
         }}, s}
     else
       {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
+    end
+  end
+
+  def handle_call(:reflect, _, %{row: nil} = s), do: {:reply, {:error, :life_not_ready}, s}
+
+  def handle_call(:reflect, _, %{journaling: nil} = s),
+    do: {:reply, {:error, :reflection_disabled}, s}
+
+  def handle_call(:reflect, _, %{reflect: slot} = s) when slot != nil,
+    do: {:reply, {:ok, %{status: :busy}}, s}
+
+  def handle_call(:reflect, _, %{observation: nil} = s),
+    do: {:reply, {:error, :no_observation}, s}
+
+  def handle_call(:reflect, _, s) do
+    if s.row["reflection"]["new"] == [] do
+      {:reply, {:ok, %{status: :empty}}, s}
+    else
+      round = Reflection.manual(s.row["reflection"]["trigger"], s.now.())
+
+      case save(s, begin_round(s.row, round)) do
+        {:ok, s} -> {:reply, {:ok, %{status: :started}}, start_round(s, round)}
+        {:error, s} -> {:reply, {:error, s.error}, s}
+      end
     end
   end
 
@@ -484,9 +584,10 @@ defmodule NpcServer.Life do
     }
 
     s = %{s | activity: nil}
+    {row, next} = accept(s, s.row, [episode])
 
-    case save(s, seal(Map.update!(s.row, "pending", &(&1 ++ [episode])), false)) do
-      {:ok, s} -> {:noreply, automatic(s)}
+    case save(s, seal(row, false)) do
+      {:ok, s} -> {:noreply, s |> automatic() |> follow_round(next)}
       {:error, s} -> {:noreply, s}
     end
   end
@@ -574,6 +675,118 @@ defmodule NpcServer.Life do
     {:noreply, s}
   end
 
+  # 反思槽交回的写作结果（槽还在途：接着存档）。落栏是一次保存：写成的各问进 "latest"、"round" 小结、各计数；
+  # 这一轮做完（error 为 nil）才删掉 "new" 里起槽时取走的那几条，中止则 "new" 不动。槽上记下落栏了没有，存档结果据此处理。
+  def handle_info({:reflected, outcome}, %{reflect: slot} = s) do
+    complete = outcome.error == nil
+
+    row =
+      update_in(s.row, ["reflection"], fn reflection ->
+        %{
+          reflection
+          | "new" =>
+              if(complete, do: Enum.drop(reflection["new"], slot.taken), else: reflection["new"]),
+            "latest" =>
+              Enum.reduce(outcome.written, reflection["latest"], &Map.put(&2, &1.key, &1.entry)),
+            "round" => round_summary(slot, outcome),
+            "counts" =>
+              count(reflection["counts"], %{
+                "written" => length(outcome.written),
+                "reasked" => outcome.reasked,
+                "discarded" => length(outcome.discarded),
+                "failed" => length(outcome.failed),
+                "aborted" => if(complete, do: 0, else: 1)
+              })
+        }
+      end)
+
+    case save(s, row) do
+      {:ok, s} ->
+        {:noreply, %{s | reflect: %{slot | landed: true}, reflect_error: outcome.error}}
+
+      # 没落栏：这一轮写成的日记不在持久行里（不重试，同其它经历保存失败）；"new" 与触发状态也就都没动。
+      {:error, s} ->
+        Logger.warning(
+          "npc_reflect cid=#{s.context.cid} event=persist_failed at_ms=#{slot.now_ms} " <>
+            "written=#{length(outcome.written)} reason=#{inspect(s.error)}"
+        )
+
+        {:noreply, %{s | reflect: %{slot | landed: false}, reflect_error: s.error}}
+    end
+  end
+
+  # 反思槽结束（存档的结果）：清槽。落栏了才把存档结局写进本轮的小结（失败另记 archive_failed）；没落栏只打日志、不碰行。
+  # 存档失败不重试，已落栏的日记不动。
+  def handle_info({:result, :reflect, archived}, %{reflect: slot} = s) do
+    s = done(s, :reflect)
+
+    {archive, s} =
+      case archived do
+        :none -> {nil, s}
+        {:ok, _} -> {"ok", s}
+        {:error, reason} -> {"failed", %{s | reflect_error: reason}}
+      end
+
+    cond do
+      archive == nil ->
+        {:noreply, s}
+
+      slot.landed ->
+        {:noreply, archive_outcome(s, archive)}
+
+      true ->
+        Logger.warning(
+          "npc_reflect cid=#{s.context.cid} event=archive_unrecorded at_ms=#{slot.now_ms} " <>
+            "archive=#{archive} reason=not_persisted"
+        )
+
+        {:noreply, s}
+    end
+  end
+
+  # 反思槽崩溃：落栏之前崩 → 这一轮中止（"round" 记这一轮、问到的键不知道就留空表，"new" 不动）；落栏之后（存档阶段）崩
+  # → 存档失败；落栏没存成 → 不碰行。日志带原始退出原因（截断）。
+  def handle_info({:DOWN, ref, :process, _, reason}, %{reflect: %{ref: ref} = slot} = s) do
+    detail = reason |> inspect(limit: 10, printable_limit: 200) |> String.slice(0, 400)
+
+    stage =
+      case slot.landed do
+        nil -> "writing"
+        true -> "archiving"
+        false -> "archiving_unpersisted"
+      end
+
+    Logger.warning(
+      "npc_reflect cid=#{s.context.cid} event=crashed at_ms=#{slot.now_ms} stage=#{stage} reason=#{detail}"
+    )
+
+    s = %{done(s, :reflect) | reflect_error: {:reflect_worker_crashed, detail}}
+
+    s =
+      case slot.landed do
+        nil ->
+          save_reflection(s, fn reflection ->
+            %{
+              reflection
+              | "round" =>
+                  round_summary(slot, %{asked: [], written: [], discarded: [], failed: []}),
+                "counts" => count(reflection["counts"], %{"aborted" => 1})
+            }
+          end)
+
+        # 只有本轮有东西要存（"pending"）时，存档阶段的崩溃才算存档失败。
+        true ->
+          if s.row["reflection"]["round"]["archive"] == "pending",
+            do: archive_outcome(s, "failed"),
+            else: s
+
+        false ->
+          s
+      end
+
+    {:noreply, s}
+  end
+
   def handle_info({:DOWN, ref, :process, _, reason}, s) do
     slot =
       cond do
@@ -598,7 +811,7 @@ defmodule NpcServer.Life do
   end
 
   def handle_info({:EXIT, owner, _}, %{owner: owner} = s) do
-    for w <- [s.poll, s.job], w != nil, do: Process.exit(w.pid, :shutdown)
+    for w <- [s.poll, s.job, s.reflect], w != nil, do: Process.exit(w.pid, :shutdown)
     {:stop, :shutdown, s}
   end
 
@@ -629,12 +842,30 @@ defmodule NpcServer.Life do
       "retained" => 0,
       "dirty" => false,
       "refresh_at_ms" => nil,
-      "thanked_seq" => 0
+      "thanked_seq" => 0,
+      "reflection" => empty_reflection()
+    }
+
+  # 持久行的 "reflection"（形状见 moduledoc 的反思一节）：空的一份。字符串键，能原样过 JSON。
+  defp empty_reflection,
+    do: %{
+      "trigger" => Reflection.new_trigger(),
+      "new" => [],
+      "latest" => %{},
+      "round" => nil,
+      "counts" =>
+        Map.new(
+          ~w(rounds written reasked discarded failed aborted skipped archive_failed),
+          &{&1, 0}
+        )
     }
 
   # 只有 owner 推进当前 canonical；在途 World 读取不能覆盖模型刚提交的情绪。
+  # 加载边界：反思之前存下的行没有 "reflection"，只在这里补成空的一份，别处一律直接读。
   defp accept_world(s, loaded, events) do
-    row = s.row || loaded || initial(s.context.cid, events, s.now.())
+    row =
+      s.row || (loaded && Map.put_new(loaded, "reflection", empty_reflection())) ||
+        initial(s.context.cid, events, s.now.())
 
     if row["state"]["world_id"] != events.world_id do
       error(s, :life_world_identity_mismatch)
@@ -689,11 +920,11 @@ defmodule NpcServer.Life do
         canonical
       end
 
-    candidate = %{row | "state" => canonical, "pending" => row["pending"] ++ episodes ++ seen}
+    {candidate, next} = accept(s, %{row | "state" => canonical}, episodes ++ seen)
 
     case save(s, seal(candidate, false)) do
       {:ok, s} ->
-        s = s |> save_experiences() |> save_speech()
+        s = s |> follow_round(next) |> save_experiences() |> save_speech()
         publish(s)
         automatic(s)
 
@@ -719,8 +950,10 @@ defmodule NpcServer.Life do
         s
 
       true ->
-        case save(s, seal(Map.update!(s.row, "pending", &(&1 ++ entries)), false)) do
-          {:ok, s} -> automatic(s)
+        {row, next} = accept(s, s.row, entries)
+
+        case save(s, seal(row, false)) do
+          {:ok, s} -> s |> automatic() |> follow_round(next)
           {:error, s} -> s
         end
     end
@@ -783,7 +1016,7 @@ defmodule NpcServer.Life do
   defp save_speech(s) do
     # Scene 已保证一次权威投递；存储失败不提交 row，不清空输入，原 outbox 重试无需第二套去重状态。
     episodes = Enum.map(s.speech_pending, &Dialogue.episode(&1, s.context.cid, names(s)))
-    row = Map.update!(s.row, "pending", &(&1 ++ episodes))
+    {row, next} = accept(s, s.row, episodes)
 
     canonical =
       if s.appraise do
@@ -805,12 +1038,192 @@ defmodule NpcServer.Life do
     case save(s, seal(row, false)) do
       {:ok, s} ->
         publish(s)
-        automatic(%{s | speech_pending: []})
+        automatic(%{s | speech_pending: []}) |> follow_round(next)
 
       {:error, s} ->
         s
     end
   end
+
+  # 接纳经历（四个入口共用）：追加到未封存的尾部；开着反思时逐条计分（`Reflection.record/2`）、把 `%{"at_ms", "tags"}`
+  # 记进 "new"，并定下到点的一轮怎么办（一批里多条都到点只算一轮：取最后一条的时刻与累计分，原因合并）：
+  #   起得了（槽空着、有观察）→ 同一份行里 `begin_round/2`（started/2、rounds 加一），下一步 `{:start, 一轮}`；
+  #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步 `{:skip, 一轮, :busy | :no_observation}`。
+  # 返回 `{新的行, nil | 下一步}`。只改行，不保存：调用方保存成功之后才 `follow_round/2`（保存失败行没变，什么也不做）。
+  defp accept(%{journaling: nil}, row, entries),
+    do: {Map.update!(row, "pending", &(&1 ++ entries)), nil}
+
+  defp accept(s, row, entries) do
+    {reflection, due} =
+      Enum.reduce(entries, {row["reflection"], nil}, fn entry, {reflection, due} ->
+        {trigger, round} = Reflection.record(reflection["trigger"], entry)
+
+        reflection = %{
+          reflection
+          | "trigger" => trigger,
+            "new" => reflection["new"] ++ [Map.take(entry, ["at_ms", "tags"])]
+        }
+
+        {reflection, merge_due(due, round)}
+      end)
+
+    row = %{row | "pending" => row["pending"] ++ entries, "reflection" => reflection}
+
+    cond do
+      due == nil -> {row, nil}
+      reason = cannot_start(s) -> {count_skipped(row), {:skip, due, reason}}
+      true -> {begin_round(row, due), {:start, due}}
+    end
+  end
+
+  defp merge_due(due, nil), do: due
+  defp merge_due(nil, round), do: round
+
+  defp merge_due(earlier, round),
+    do: %{round | causes: Enum.uniq(earlier.causes ++ round.causes)}
+
+  # 到点却起不了一轮的原因；起得了为 nil。
+  defp cannot_start(%{reflect: slot}) when slot != nil, do: :busy
+  defp cannot_start(%{observation: nil}), do: :no_observation
+  defp cannot_start(_s), do: nil
+
+  # 起一轮那次保存里的行：触发状态 started/2（清零、记下这一轮的时刻）、rounds 加一。"new" 不动（落栏时才消耗）。
+  defp begin_round(row, round),
+    do:
+      update_in(row, ["reflection"], fn reflection ->
+        %{
+          reflection
+          | "trigger" => Reflection.started(reflection["trigger"], round.at_ms),
+            "counts" => count(reflection["counts"], %{"rounds" => 1})
+        }
+      end)
+
+  defp count_skipped(row),
+    do: update_in(row, ["reflection", "counts"], &count(&1, %{"skipped" => 1}))
+
+  # 接纳经历的那次保存成功之后：照 `accept/3` 定下的下一步起槽，或打跳过的日志（计数已在那次保存里）。
+  defp follow_round(s, nil), do: s
+  defp follow_round(s, {:start, round}), do: start_round(s, round)
+
+  defp follow_round(s, {:skip, round, reason}) do
+    Logger.info(
+      "npc_reflect cid=#{s.context.cid} event=skipped trigger_at_ms=#{round.at_ms} " <>
+        "causes=#{Enum.join(round.causes, ",")} reason=#{reason}"
+    )
+
+    s
+  end
+
+  # 起反思槽（起轮的那次保存已经成功）：快照在本进程里取齐，worker 不回头问 Life。当时的 "new" 整份交给这一轮，
+  # 槽上记下取走了几条（taken，做完时从 "new" 头上删掉这几条）、这一轮的此刻（now_ms）与落栏了没有（landed：
+  # nil 还没交回写作结果、true 已落栏、false 落栏那次保存失败）。起轮时清掉上一轮的失败原因。
+  defp start_round(s, round) do
+    new = s.row["reflection"]["new"]
+    now_ms = s.now.()
+
+    snapshot =
+      Map.merge(s.journaling, %{
+        cid: s.context.cid,
+        round: round,
+        new: new,
+        now_ms: now_ms,
+        observation: s.observation,
+        recent: recent(s.row),
+        buildings: s.row["state"]["buildings"],
+        people: Enum.map(State.relationships(s.row["state"]), & &1.actor),
+        names: names(s),
+        latest: s.row["reflection"]["latest"],
+        adapter: s.adapter,
+        # 每路召回的上限同心智快照（召回是一问一问串行发的）。
+        config: Map.put(s.config, :timeout_ms, @mind_recall_timeout_ms),
+        context: s.context
+      })
+
+    owner = self()
+
+    s =
+      worker(s, :reflect, fn ->
+        {:ok, _} = Application.ensure_all_started(:inets)
+        {:ok, _} = Application.ensure_all_started(:ssl)
+        outcome = Round.write(snapshot)
+
+        # 先交回写作结果落栏，再存档（落栏不等存档）；存档的结果随槽结束交回。
+        send(owner, {:reflected, outcome})
+        Round.archive(snapshot, outcome)
+      end)
+
+    %{
+      s
+      | reflect:
+          Map.merge(s.reflect, %{round: round, now_ms: now_ms, taken: length(new), landed: nil}),
+        reflect_error: nil
+    }
+  end
+
+  # 一轮的小结（进 "round"）：时刻是这一轮的此刻；`outcome` 是 `Round.write/1` 的结果（worker 落栏前崩溃时各键为空表）。
+  # 写成了才有可存的（存档结果回来之前是 "pending"）。
+  defp round_summary(slot, outcome) do
+    written = Enum.map(outcome.written, & &1.key)
+
+    %{
+      "at_ms" => slot.now_ms,
+      "causes" => Enum.map(slot.round.causes, &Atom.to_string/1),
+      "asked" => outcome.asked,
+      "written" => written,
+      "discarded" => outcome.discarded,
+      "failed" => outcome.failed,
+      "archive" => if(written == [], do: "none", else: "pending")
+    }
+  end
+
+  # 把存档结局写进本轮已落栏的小结（调用方保证本轮已落栏，"round" 就是本轮的）；失败另记 archive_failed。
+  defp archive_outcome(s, archive) do
+    save_reflection(s, fn reflection ->
+      %{
+        reflection
+        | "round" => %{reflection["round"] | "archive" => archive},
+          "counts" =>
+            count(reflection["counts"], %{
+              "archive_failed" => if(archive == "failed", do: 1, else: 0)
+            })
+      }
+    end)
+  end
+
+  # 改持久行的 "reflection" 并保存；保存失败时错误经 `save/2` 可见（npc_life_error），行不变。
+  defp save_reflection(s, fun) do
+    case save(s, Map.update!(s.row, "reflection", fun)) do
+      {:ok, s} -> s
+      {:error, s} -> s
+    end
+  end
+
+  defp count(counts, increments), do: Map.merge(counts, increments, fn _, a, b -> a + b end)
+
+  defp observe_reflection(%{journaling: nil}), do: nil
+
+  defp observe_reflection(s) do
+    reflection = s.row && s.row["reflection"]
+
+    %{
+      enabled: true,
+      running: s.reflect != nil,
+      trigger: reflection && reflection["trigger"],
+      new: if(reflection, do: length(reflection["new"]), else: 0),
+      latest: reflection && reflection["latest"],
+      round: reflection && reflection["round"],
+      counts: reflection && reflection["counts"],
+      error: s.reflect_error
+    }
+  end
+
+  # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
+  defp recent(row),
+    do:
+      for(
+        episode <- sealed(row["fragments"]) ++ row["pending"],
+        do: %{at_ms: episode["at_ms"], text: episode["text"]}
+      )
 
   defp seal(row, force) do
     {fragments, tail} = fragments(row["pending"], force, [])
@@ -911,9 +1324,11 @@ defmodule NpcServer.Life do
   # 已封存片段里的经历条目，按片段与片段内的次序（旧在前）。
   defp sealed(fragments), do: Enum.flat_map(fragments, & &1["episodes"])
 
-  # 经历条目交给 Hindsight 的正文：`At <UTC> (UTC), <原文>`，UTC 取条目的 "at_ms"（ISO 8601 毫秒）。
-  # 离线测过的就是这个写法；前缀只在这里加，条目的 "text" 不带时刻。
-  defp dated(%{"at_ms" => at_ms, "text" => text}),
+  @doc """
+  交给 Hindsight 的正文：`At <UTC> (UTC), <原文>`，UTC 取条目的 `"at_ms"`（ISO 8601 毫秒），原文是条目的 `"text"`。
+  离线测过的就是这个写法；前缀只在这里加（经历条目与反思的存档文档都经它），条目的 `"text"` 不带时刻。
+  """
+  def dated(%{"at_ms" => at_ms, "text" => text}),
     do:
       "At #{at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()} (UTC), " <> text
 

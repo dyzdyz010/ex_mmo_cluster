@@ -148,7 +148,11 @@ defmodule NpcServer.NpcSelectorTest do
       "TYPESAFE_API_URL" => "http://127.0.0.1:9/jev",
       "TYPESAFE_API_KEY" => "test-key",
       "TYPESAFE_MODEL" => "jev-test",
-      "NPC_LIFE_HINDSIGHT_URL" => "http://life.test.invalid"
+      "NPC_LIFE_HINDSIGHT_URL" => "http://life.test.invalid",
+      # 反思写日记的接口（R3 起统一形态必带）：本机不监听的端口，不会被请求到外部。
+      "NPC_REFLECT_URL" => "http://127.0.0.1:9/v1/messages",
+      "NPC_REFLECT_KEY" => "test-key",
+      "NPC_REFLECT_MODEL" => "reflect-test"
     }
 
     old = Map.new(env, fn {key, _} -> {key, System.get_env(key)} end)
@@ -223,13 +227,19 @@ defmodule NpcServer.NpcSelectorTest do
       System.put_env(%{
         "TYPESAFE_API_URL" => "http://127.0.0.1:9/jev",
         "TYPESAFE_API_KEY" => "test-key",
-        "TYPESAFE_MODEL" => "jev-test"
+        "TYPESAFE_MODEL" => "jev-test",
+        # 只缺 Hindsight 地址：反思写日记的接口照给（R3 起统一形态必带）。
+        "NPC_REFLECT_URL" => "http://127.0.0.1:9/v1/messages",
+        "NPC_REFLECT_KEY" => "test-key",
+        "NPC_REFLECT_MODEL" => "reflect-test"
       })
 
       try do
         assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn -> NpcServer.Registry.brain("npc", @params) end
       after
-        for key <- ~w(TYPESAFE_API_URL TYPESAFE_API_KEY TYPESAFE_MODEL), do: System.delete_env(key)
+        for key <-
+              ~w(TYPESAFE_API_URL TYPESAFE_API_KEY TYPESAFE_MODEL NPC_REFLECT_URL NPC_REFLECT_KEY NPC_REFLECT_MODEL),
+            do: System.delete_env(key)
       end
     end
   end

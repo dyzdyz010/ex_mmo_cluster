@@ -13,7 +13,7 @@ defmodule NpcServer.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：每次解析时取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须） |
+  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：每次解析时取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须）；反思写日记的 endpoint（profile 的 `reflect`，`Life.Reflection.Writer`）同样不入库，取 `NPC_REFLECT_URL`（完整的 `/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须） |
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
@@ -38,8 +38,8 @@ defmodule NpcServer.Registry do
                   省略或 true → Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`（没有即拒绝登记）；`{"url": 地址}` 显式给出；
                   false 被拒。情绪评价是规则模式；不套 `Brain.Social`（情绪只通过快照影响 Jev 的选择）。
 
-  profile 的技能表由候选推出（用到哪些技能就配哪些；有去处或“去找某人”就加 travel），不另写 `skills`。不需要任何 LLM 接口
-  （Hindsight 服务自己的后台巩固用它自己的模型）。
+  profile 的技能表由候选推出（用到哪些技能就配哪些；有去处或“去找某人”就加 travel），不另写 `skills`。选择不用 LLM 接口
+  （Hindsight 服务自己的后台巩固用它自己的模型）；只有 Life 的反思写日记要一个（`NPC_REFLECT_*`，见上表）。
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`NpcServer.Genesis`）只来自 llm / life 行的
   `genesis: true`：它同时成为 `profile.genesis`（投影创世条目）与 Body 启动选项 `genesis`（Body 受理 `genesis_edit`）。
@@ -143,7 +143,7 @@ defmodule NpcServer.Registry do
   注册表行的大脑名与 JSON 形参数 → `{大脑模块, profile}`（形状见 moduledoc 的表）。参数不合法时 raise：缺必填键、类型不对、
   建树失败（`Brain.Tree.init/1`）、工具表投影失败（`Abilities.tools/1`）、巡逻路线不足两点（`Brain.Patrol.init/1`）、
   组名不在本 profile 的条目里、llm 的运行环境没有模型接口；npc 的人格卡不合法、候选表为空或重名、候选的地名不是非空字符串、
-  运行环境没有 Jev 接口、
+  运行环境没有 Jev 接口或反思写日记的接口（`NPC_REFLECT_*`）、
   `life` 为 false 或没有 Hindsight 地址。
   """
   def brain(
@@ -187,6 +187,12 @@ defmodule NpcServer.Registry do
         key: System.fetch_env!("TYPESAFE_API_KEY"),
         model: System.fetch_env!("TYPESAFE_MODEL"),
         timeout_ms: @jev_timeout_ms
+      },
+      # 反思写日记的接口（`NpcServer.Life.Reflection.Writer`，Anthropic Messages 形状）：同 Jev，不入库，每次解析时取运行环境。
+      reflect: %{
+        url: System.fetch_env!("NPC_REFLECT_URL"),
+        key: System.fetch_env!("NPC_REFLECT_KEY"),
+        model: System.fetch_env!("NPC_REFLECT_MODEL")
       }
     }
 

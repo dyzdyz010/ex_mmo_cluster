@@ -1,4 +1,5 @@
 Code.require_file("../support/npc_world.exs", __DIR__)
+Code.require_file("../support/reflection_fixtures.exs", __DIR__)
 
 defmodule NpcServer.NpcLifeTest do
   @moduledoc "只测试：真实 World/Scene/Body/NpcMemory；Hindsight 替身控制慢请求和失败，验证 owner 接缝。"
@@ -70,9 +71,65 @@ defmodule NpcServer.NpcLifeTest do
     end
   end
 
+  defmodule ReflectHindsight do
+    @moduledoc """
+    只测试：反思用例的 Hindsight 替身（只替 HTTP 适配器模块）。认识固定一份。召回、建库、写入都把 bank 交给测试进程
+    （经历库 `npc-life-<cid>` 与反思库 `npc-reflect-<cid>` 由此分得清）；召回按这一路的 types 回放 S1-X2 第 4 轮 Q_place
+    那一次召回的真实条目（规范化后的形状，`NpcServer.ReflectionFixtures.recalled/1`）。
+    `profile.life` 带 `archive_fails: true` 时，写进反思库返回适配器真实形状的超时失败（`Life.Hindsight` 的 `:timeout`）。
+    """
+    alias NpcServer.ReflectionFixtures
+
+    def ensure(_, _), do: {:ok, %{}}
+    def models(_), do: {:ok, %{models: %{"self" => "builder"}, metadata: %{}}}
+    def refresh(config), do: models(config)
+    def status(_), do: {:ok, %{stats: %{"memory_unit_count" => 1}, usage: %{}}}
+
+    def ensure_bank(config, name) do
+      send(config.owner, {:ensure_bank, config.bank, name})
+      {:ok, %{bank: config.bank}}
+    end
+
+    def retain(config, documents) do
+      send(config.owner, {:retained, config.bank, documents})
+
+      if config[:archive_fails] == true and String.starts_with?(config.bank, "npc-reflect-"),
+        do: {:error, :timeout},
+        else: {:ok, %{retained: length(documents), facts: 1}}
+    end
+
+    def recall(config, description, _now_ms) do
+      send(config.owner, {:recall, config.bank, description})
+      kind = if description[:types] == ["observation"], do: "observation", else: "raw"
+      {:ok, %{results: ReflectionFixtures.recalled(kind), latency_ms: 1}}
+    end
+  end
+
   defmodule FailingStore do
     def get(_, _, _), do: nil
     def put(_, _, _, _), do: {:error, :write_denied}
+  end
+
+  defmodule ControlledStore do
+    @moduledoc """
+    只测试：真实 NpcMemory 之上由测试进程控制的一次保存失败。测试进程在同名 ETS 表里放下 `{cid, 测试进程}` 之后，
+    这个 cid 的 Life 行的**下一次**保存被拒（同 `FailingStore` 的 `:write_denied`），被拒的那份行交给测试进程；其余读写照常。
+    """
+    defdelegate get(cid, kind, key), to: DataService.NpcMemory
+
+    def put(cid, "life", "state", row) do
+      # 表随测试进程结束而消失；测试收尾时 Life 的保存照常落库。
+      case :ets.whereis(__MODULE__) != :undefined and :ets.take(__MODULE__, cid) do
+        [{^cid, test}] ->
+          send(test, {:save_refused, row})
+          {:error, :write_denied}
+
+        _ ->
+          DataService.NpcMemory.put(cid, "life", "state", row)
+      end
+    end
+
+    def put(cid, kind, key, value), do: DataService.NpcMemory.put(cid, kind, key, value)
   end
 
   defmodule NoLexical do
@@ -828,5 +885,485 @@ defmodule NpcServer.NpcLifeTest do
     {:ok, accepted} = Life.observe(cid)
     assert accepted.state["cursor"] > before.state["cursor"]
     assert accepted.pending_episodes == 1
+  end
+
+  describe "reflection" do
+    # 范围与替身：真实 World / Scene / Body / Runtime / NpcMemory 与真实 Life；“小屋被拆”是经 World 正式入口做出来的真实事务
+    # （同 npc_selector_test 的整座移除用例）。替身两处：Hindsight 适配器（ReflectHindsight）与写日记的函数
+    # （`profile.write_journal`：把系统提示词与用户消息交给测试进程，由测试逐次给出真实应答或真实形状的错误）。
+    # 个别用例另有：落栏保存失败用 ControlledStore（真实 NpcMemory 之上由测试控制的一次 `:write_denied`）；槽在途时又到点
+    # 注入 Life 的时钟（同本文件 thirty controlled days 的注入点）、让它比 World 慢 10 分钟以跨过 5 分钟间隔，第二件事是
+    # `damage/4` 经 World 正式入口做出的。
+    # 人格卡用 S1-T 的注册参数（`.demo/observe/npc-slice1-20261112/s1t/scripts/params-s1t.exs`），所以系统提示词应与
+    # S1-X2 真实发出的逐字节相同。不证明：真实模型写什么、真实 Hindsight 把日记抽成什么；`Life.reflect/1` 的 `:no_observation`
+    # 与到点时 `reason=no_observation` 的跳过（真实 Body 下“行已加载而还没有观察”的时序不受测试控制，不测）。
+    import NpcServer.ReflectionFixtures, only: [fixture: 1, json: 1]
+
+    @tag timeout: 120_000
+    test "小屋被拆立即反思：材料齐全，三问写成落进持久行，存档进反思库，重启后还在" do
+      %{fixture: fixture, cid: cid, brann: brann} = reflecting()
+      reply = written_reply()
+
+      # 第一问是建筑：此刻三行齐全（小屋现查 World 已不在），发生过的事第一条是那条还没封存的拆屋经历。
+      assert_receive {:write, worker, system, place}, 10_000
+      assert system == fixture("system-prompt.txt")
+
+      assert place =~
+               ~r/^Right now:\nIt is (morning|afternoon|evening|night), \d\d:\d\d\. It is day \d+\.\nStanding at .* My building "small hut" at \(4, 64, 8\) is gone\. .*\nMy body: life 100 of 100, no injuries or ailments\.\n\nWhat happened:\n\[1\] Just now, actor #{brann} removed the entire building "small hut" that I built/
+
+      assert place =~ ~s|To think over now: My building "small hut": |
+      send(worker, {:reply, reply})
+
+      assert_receive {:write, worker, _, person}, 10_000
+      assert person =~ "To think over now: actor #{brann}: "
+      send(worker, {:reply, reply})
+
+      # “自己”一问看得到本轮刚写成的两条。
+      assert_receive {:write, worker, _, self_message}, 10_000
+      journal = json("check-samples.json")["1-Q_place"]["journal"]
+
+      assert self_message =~
+               "About other things: #{journal}\n#{journal}\n\nTo think over now: How I have been"
+
+      send(worker, {:reply, reply})
+
+      reflection = await_reflection(cid, &(&1.round && &1.round["archive"] == "ok"))
+      keys = ["person:#{brann}", "place:small hut", "self"]
+      assert Enum.sort(Map.keys(reflection.latest)) == keys
+      assert reflection.round["written"] == ["place:small hut", "person:#{brann}", "self"]
+      assert reflection.round["causes"] == ["event"]
+
+      assert %{"rounds" => 1, "written" => 3, "failed" => 0, "aborted" => 0, "skipped" => 0} =
+               reflection.counts
+
+      assert reflection.trigger["score"] == 0 and is_integer(reflection.trigger["last_at_ms"])
+      # 做完的一轮消耗了起槽时取走的新经历（这期间没有新来的）。
+      assert reflection.new == 0 and not reflection.running and reflection.error == nil
+
+      # 这一轮“想的时刻”是起槽那一刻：各问最新一条与小结同一个时刻，不早于触发那条经历的时刻。
+      at_ms = reflection.round["at_ms"]
+      assert at_ms >= reflection.trigger["last_at_ms"]
+      assert Enum.all?(Map.values(reflection.latest), &(&1["at_ms"] == at_ms))
+
+      # 召回走经历库；存档进反思库（建库名同经历库的写法），经历库没有收到任何反思文档。
+      assert_received {:recall, "npc-life-" <> _, _}
+      assert_received {:ensure_bank, "npc-reflect-" <> bank_cid, "NPC " <> _}
+      assert bank_cid == to_string(cid)
+      assert_received {:retained, "npc-reflect-" <> _, documents}
+
+      assert Enum.map(documents, & &1["id"]) |> Enum.map(&hd(String.split(&1, ":"))) ==
+               ~w(reflection reflection reflection)
+
+      assert Enum.all?(documents, &(&1["at_ms"] == at_ms))
+
+      refute_received {:retained, "npc-life-" <> _, _}
+
+      # 重启：持久行是权威，各问最新一条与触发状态都还在。
+      old_life = :global.whereis_name({Life, node(), cid})
+      ref = Process.monitor(old_life)
+      Process.exit(fixture.body, :kill)
+      assert_receive {:DOWN, ^ref, _, _, _}, 5000
+
+      restored =
+        await_reflection(cid, fn r ->
+          :global.whereis_name({Life, node(), cid}) != old_life and r.latest != nil
+        end)
+
+      assert restored.latest == reflection.latest
+      assert restored.trigger == reflection.trigger
+      assert restored.counts == reflection.counts
+    end
+
+    @tag timeout: 120_000
+    test "写日记失败一次：这一轮中止，不再发请求、新经历不消耗；封存不受影响；手动再起一轮把它们再问一遍" do
+      %{cid: cid} = reflecting()
+
+      # 槽在途：手动入口给 busy；这一刻的新经历条数（起槽时整份交给了这一轮）。
+      assert_receive {:write, worker, _, place}, 10_000
+      assert {:ok, %{status: :busy}} = Life.reflect(cid)
+      {:ok, %{reflection: %{new: taken}}} = Life.observe(cid)
+      assert taken > 0
+
+      # 真实形状的失败（`Writer.write/3` 请求超时时的返回）。
+      send(worker, {:reply, {:error, :timeout}})
+      refute_receive {:write, _, _, _}, 300
+
+      reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+
+      assert reflection.round["failed"] == ["place:small hut"] and
+               reflection.round["written"] == []
+
+      assert reflection.round["archive"] == "none"
+
+      assert %{"rounds" => 1, "failed" => 1, "written" => 0, "aborted" => 1} =
+               reflection.counts
+
+      assert reflection.error == :timeout and reflection.latest == %{}
+      # 中止的一轮不消耗新经历。
+      assert reflection.new == taken
+
+      {:ok, observed} = Life.observe(cid)
+      assert observed.error == nil and observed.job == nil
+      assert {:ok, %{status: :started}} = Life.flush(cid)
+      assert_receive {:retained, "npc-life-" <> _, [document]}, 5000
+      assert document["text"] =~ ~s|removed the entire building "small hut"|
+      refute_received {:ensure_bank, "npc-reflect-" <> _, _}
+
+      # 手动再起一轮：同样的新经历，又从小屋问起；起轮时清掉上一轮的失败原因。
+      assert {:ok, %{status: :started}} = Life.reflect(cid)
+      assert {:ok, %{reflection: %{running: true, error: nil}}} = Life.observe(cid)
+      assert_receive {:write, worker, _, again}, 10_000
+      assert again =~ ~s|To think over now: My building "small hut": |
+      assert place =~ ~s|To think over now: My building "small hut": |
+      send(worker, {:reply, written_reply()})
+
+      for _ <- 1..2 do
+        assert_receive {:write, worker, _, _}, 10_000
+        send(worker, {:reply, written_reply()})
+      end
+
+      reflection = await_reflection(cid, &(&1.round["archive"] == "ok"))
+      assert reflection.round["causes"] == ["manual"] and map_size(reflection.latest) == 3
+      assert %{"rounds" => 2, "aborted" => 1, "written" => 3} = reflection.counts
+
+      # 这一轮做完：新经历消耗掉，手动入口给 empty。
+      assert reflection.new == 0
+      assert {:ok, %{status: :empty}} = Life.reflect(cid)
+    end
+
+    @tag timeout: 120_000
+    test "应答检查不合格：同一份请求原样重问一次，仍不合格就丢弃，持久行里没有它" do
+      %{cid: cid} = reflecting()
+
+      # 不合格的真实应答：S1-X2 第 4 轮 Q_self 的应答引用到第 43 条材料，这里的材料只有 30 条左右（Used 编号越界）。
+      # （check-samples 里没有 Used 缺失或超句数的真实应答；这是同一份真实应答落在条数更少的材料上的真实失败。）
+      unfit = {:ok, %{text: json("check-samples.json")["4-Q_self"]["response"], usage: %{}}}
+      assert_receive {:write, worker, system, user}, 10_000
+      send(worker, {:reply, unfit})
+      assert_receive {:write, ^worker, ^system, ^user}, 10_000
+      send(worker, {:reply, unfit})
+
+      for _ <- 1..2 do
+        assert_receive {:write, worker, _, _}, 10_000
+        send(worker, {:reply, written_reply()})
+      end
+
+      reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+      assert reflection.round["discarded"] == ["place:small hut"]
+      refute Map.has_key?(reflection.latest, "place:small hut")
+      assert map_size(reflection.latest) == 2
+
+      # 检查不合格被丢弃不算中止：这一轮做完，新经历照样消耗。
+      assert %{"reasked" => 1, "discarded" => 1, "written" => 2, "aborted" => 0} =
+               reflection.counts
+
+      assert reflection.new == 0 and reflection.error == nil
+    end
+
+    @tag timeout: 120_000
+    test "存档失败：archive_failed 加一、小结记 failed，已落栏的日记仍在" do
+      %{cid: cid} = reflecting(archive_fails: true)
+
+      for _ <- 1..3 do
+        assert_receive {:write, worker, _, _}, 10_000
+        send(worker, {:reply, written_reply()})
+      end
+
+      reflection = await_reflection(cid, &(&1.round != nil and not &1.running))
+      assert_received {:retained, "npc-reflect-" <> _, [_, _, _]}
+      assert reflection.round["archive"] == "failed"
+      assert %{"archive_failed" => 1, "written" => 3, "failed" => 0} = reflection.counts
+      assert map_size(reflection.latest) == 3 and reflection.error == :timeout
+    end
+
+    @tag timeout: 120_000
+    test "落栏那次保存失败：Life 不崩，persist_failed 一行；存档结果回来不碰行，新经历不消耗" do
+      :ets.new(ControlledStore, [:named_table, :public])
+      %{cid: cid} = reflecting(memory: ControlledStore)
+      life = :global.whereis_name({Life, node(), cid})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          for n <- 1..3 do
+            assert_receive {:write, worker, _, _}, 10_000
+
+            # 最后一问交回之前放下“下一次保存被拒”：下一次保存就是落栏。
+            if n == 3, do: :ets.insert(ControlledStore, {cid, self()})
+            send(worker, {:reply, written_reply()})
+          end
+
+          assert_receive {:save_refused, refused}, 10_000
+          assert refused["reflection"]["round"]["archive"] == "pending"
+          assert length(refused["reflection"]["round"]["written"]) == 3
+
+          # 槽结束（存档结果已回来）。
+          reflection = await_reflection(cid, &(not &1.running))
+          assert_received {:retained, "npc-reflect-" <> _, [_, _, _]}
+
+          # 行没落栏、存档结果也没写进来：首轮的小结仍是 nil（不在 nil 上写、不记到别的轮头上）。
+          assert reflection.round == nil and reflection.latest == %{}
+          assert %{"rounds" => 1, "written" => 0, "archive_failed" => 0} = reflection.counts
+          assert reflection.new > 0
+          assert reflection.error == {:memory_unavailable, :write_denied}
+          assert DataService.NpcMemory.get(cid, "life", "state")["reflection"]["round"] == nil
+        end)
+
+      assert :global.whereis_name({Life, node(), cid}) == life
+      assert log =~ "event=persist_failed"
+      assert log =~ "event=archive_unrecorded"
+    end
+
+    @tag timeout: 120_000
+    test "槽在途时又到点：跳过这一次（skipped 加一），触发状态不清零，留给下一次" do
+      # 间隔按经历的时刻算：World 事件的时刻是 World 提交的时刻，手动一轮的时刻是 Life 的时钟。让 Life 的时钟比 World 慢
+      # 10 分钟，手动起的一轮记下的时刻就比随后真实发生的 World 事件早 5 分钟以上——不用等墙钟就能在槽在途时到点。
+      %{fixture: fixture, cid: cid} =
+        reflecting(clock: fn -> System.system_time(:millisecond) - 10 * 60_000 end)
+
+      # 小屋被拆那一轮先中止（写日记失败），新经历留着；再手动起一轮，让它在途（写日记的函数不放行）。
+      assert_receive {:write, worker, _, _}, 10_000
+      send(worker, {:reply, {:error, :timeout}})
+      await_reflection(cid, &(&1.round != nil and not &1.running))
+      assert {:ok, %{status: :started}} = Life.reflect(cid)
+      assert_receive {:write, worker, _, _}, 10_000
+
+      {:ok, %{reflection: started}} = Life.observe(cid)
+      manual_at_ms = started.trigger["last_at_ms"]
+      assert started.running and started.trigger["score"] == 0
+
+      # 又一件真实的“动我放的东西”：Brann 打掉我放的一格（World 正式入口）。距手动那一轮已过 5 分钟：到点了，但槽在途。
+      damage(fixture.world, cid, 2, {5, 64, 8})
+      skipped = await_reflection(cid, &(&1.counts["skipped"] == 1))
+
+      assert skipped.running
+      assert skipped.trigger["last_at_ms"] == manual_at_ms
+      assert skipped.trigger["event_waiting"] and skipped.trigger["score"] > 0
+      assert skipped.new == started.new + 1
+
+      # 放行手动这一轮：它只消耗起槽时取走的那几条，后来的那一条留给下一轮；触发状态仍是跳过时的样子。
+      send(worker, {:reply, written_reply()})
+
+      for _ <- 1..2 do
+        assert_receive {:write, worker, _, _}, 10_000
+        send(worker, {:reply, written_reply()})
+      end
+
+      done = await_reflection(cid, &(&1.round["causes"] == ["manual"] and not &1.running))
+      assert done.new == 1 and done.counts["rounds"] == 2 and done.counts["skipped"] == 1
+      assert done.trigger == skipped.trigger
+    end
+
+    test "没开反思的形态：手动入口给 reflection_disabled，observe 没有反思" do
+      {_fixture, _body, cid} = start()
+      assert Life.reflect(cid) == {:error, :reflection_disabled}
+      assert {:ok, %{reflection: nil}} = Life.observe(cid)
+    end
+
+    test "反思之前存下的行（没有 reflection 键）：加载时补成空的一份，其余照常" do
+      fixture = NpcWorld.start()
+      cid = System.unique_integer([:positive]) + 100_000
+      profile = reflect_profile(self(), %{}, DataService.NpcMemory)
+
+      # 真实代码路径存下一份行，停掉这个 NPC，再把行里的 "reflection" 删掉。
+      NpcWorld.body(fixture, {Spy, profile}, cid: cid)
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"cursor" => _}, cache: %{}, job: nil}}, Life.observe(cid))
+      end)
+
+      {:ok, before} = Life.observe(cid)
+      ref = Process.monitor(:global.whereis_name({Life, node(), cid}))
+      stop_supervised!(DynamicSupervisor)
+      assert_receive {:DOWN, ^ref, _, _, _}, 5000
+
+      saved = DataService.NpcMemory.get(cid, "life", "state")
+      old = Map.delete(saved, "reflection")
+      :ok = DataService.NpcMemory.put(cid, "life", "state", old)
+
+      NpcWorld.body(fixture, {Spy, profile}, cid: cid)
+      restored = await_reflection(cid, & &1.trigger)
+
+      assert restored == %{
+               enabled: true,
+               running: false,
+               trigger: %{"score" => 0, "last_at_ms" => nil, "event_waiting" => false},
+               new: 0,
+               latest: %{},
+               round: nil,
+               counts:
+                 Map.new(
+                   ~w(rounds written reasked discarded failed aborted skipped archive_failed),
+                   &{&1, 0}
+                 ),
+               error: nil
+             }
+
+      {:ok, reloaded} = Life.observe(cid)
+      assert reloaded.state == before.state
+
+      # 补上的那份随下一次保存落库，其余各键照旧。
+      NpcWorld.await(fn ->
+        DataService.NpcMemory.get(cid, "life", "state")["reflection"] != nil
+      end)
+
+      stored = DataService.NpcMemory.get(cid, "life", "state")
+      assert Map.delete(stored, "reflection") == old
+    end
+
+    # 起一个开着反思的 NPC，放下一座有名字的小屋，等到身体状态到了，再由另一角色（Brann）经镐的拆卸整座拆掉。
+    # opts：`memory`（存储模块，缺省真实 NpcMemory）、`clock`（Life 的时钟）、`archive_fails`（反思库写入失败，见 ReflectHindsight）。
+    defp reflecting(opts \\ []) do
+      test = self()
+      fixture = NpcWorld.start()
+      world = fixture.world
+      cid = System.unique_integer([:positive]) + 100_000
+
+      profile =
+        reflect_profile(
+          test,
+          Map.new(Keyword.take(opts, [:clock, :archive_fails])),
+          Keyword.get(opts, :memory, DataService.NpcMemory)
+        )
+
+      %{body: body} = NpcWorld.body(fixture, {Spy, profile}, cid: cid)
+      NpcWorld.await(fn -> match?({:ok, %{cache: %{}, job: nil}}, Life.observe(cid)) end)
+
+      hut =
+        VoxelRegion.Prefab.encode(%{
+          cells: [],
+          macro_cells: [{{0, 0, 0}, 11}],
+          children: [],
+          attachments: []
+        })
+
+      {:ok, id} =
+        World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+
+      {:ok, _} = World.material_supply(world, cid, "reflect-hut-supply", %{11 => 1024})
+
+      {:ok, _placed} =
+        World.prefab_intent(
+          world,
+          actor(cid),
+          :voxel_prefab_place_v1,
+          %{
+            definition_id: id,
+            anchor: {32, 512, 64},
+            orientation: 0,
+            client_intent_seq: 1
+          }
+        )
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"buildings" => [%{"name" => "small hut"}]}}}, Life.observe(cid))
+      end)
+
+      # 身体状态是 Scene 下行的真实值；到了之后 Life 手里的观察才带着它。
+      await_body_state()
+      brann = cid + 10
+      remove(world, brann, {4, 64, 8})
+      %{fixture: Map.put(fixture, :body, body), cid: cid, brann: brann}
+    end
+
+    # 开着反思的 profile：人格卡用 S1-T 的注册参数；写日记的函数把系统提示词与用户消息交给测试进程，由测试逐次给出应答。
+    # `life_options` 并进 `profile.life`（Life 的时钟、替身开关）；`memory` 是 Life 的存储模块。
+    defp reflect_profile(test, life_options, memory) do
+      {:ok, card} =
+        NpcServer.Persona.new(%{
+          "traits" => %{
+            "hardworking" => 8,
+            "responsible" => 8,
+            "thorough" => 7,
+            "bold" => 7,
+            "practical" => 7,
+            "friendly" => 6
+          },
+          "personal" =>
+            "Takes pride in the things he builds and is slow to forget a wrong done to him. " <>
+              "Once his work is done he likes to spend his time at the plaza with the neighbours."
+        })
+
+      %{
+        owner: test,
+        memory: memory,
+        who: "Garen, a builder",
+        persona: card,
+        # 写日记的接口只是让 Life 开反思；发送函数被替换，这个地址不会被请求。
+        reflect: %{url: "http://127.0.0.1:9/v1/messages", key: "test-key", model: "reflect-test"},
+        write_journal: fn system, user ->
+          send(test, {:write, self(), system, user})
+
+          receive do
+            {:reply, reply} -> reply
+          end
+        end,
+        life:
+          Map.merge(
+            %{
+              hindsight: ReflectHindsight,
+              owner: test,
+              poll_ms: 30,
+              url: "http://life.test.invalid"
+            },
+            life_options
+          )
+      }
+    end
+
+    defp await_body_state do
+      receive do
+        {:life_observation, %{self: %{body_state: %{}}}} -> :ok
+        {:life_observation, _} -> await_body_state()
+      after
+        10_000 -> flunk("没有收到带身体状态的观察")
+      end
+    end
+
+    # 另一角色站在 (4.5, 65.5, 8.5) 用镐拆下 cell 所在的整个构件（action 2，先查询命中目标，再按它出手）。
+    # 角色替身经 `actor/1` 取（同一角色只起一个，`damage/4` 随后还能用它）。
+    defp remove(world, attacker_cid, {x, y, z}) do
+      attacker = actor(attacker_cid)
+
+      query = %{
+        request_id: 1,
+        client_intent_seq: 1,
+        logical_scene_id: 1,
+        action: 0,
+        tool_id: 1,
+        direction: {x + 0.5 - 4.5, y + 0.5 - 65.5, z + 0.5 - 8.5},
+        micro: {0, 0, 0},
+        granularity: 0,
+        incarnation: 0,
+        owner: {0, 0},
+        material: 0
+      }
+
+      {:ok, target} = World.tool_intent(world, attacker, query)
+
+      {:ok, _} =
+        World.tool_intent(
+          world,
+          Map.merge(attacker, %{received_us: 1_000_000, clock_node: node()}),
+          query
+          |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
+          |> Map.put(:action, 2)
+        )
+    end
+
+    # 合格的真实应答：S1-X2 第 1 轮 Q_place（Used 编号 3、8、10，都在这里的材料条数内）。
+    defp written_reply,
+      do: {:ok, %{text: json("check-samples.json")["1-Q_place"]["response"], usage: %{}}}
+
+    defp await_reflection(cid, ready) do
+      NpcWorld.await(
+        fn ->
+          case Life.observe(cid) do
+            {:ok, %{reflection: %{} = reflection}} -> ready.(reflection) && reflection
+            _ -> false
+          end
+        end,
+        15_000
+      )
+    end
   end
 end

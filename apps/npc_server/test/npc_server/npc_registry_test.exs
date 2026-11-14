@@ -38,7 +38,14 @@ defmodule NpcServer.NpcRegistryTest do
     "TYPESAFE_MODEL" => "jev-test"
   }
   # 只测试：统一形态必带 Life，Hindsight 的地址取自运行环境；集成用例里指向本文件起的本机 HTTP 替身。
-  @npc_env Map.put(@jev_env, "NPC_LIFE_HINDSIGHT_URL", "http://life.test.invalid")
+  # 只测试：反思写日记的接口同样取自运行环境；本文件不触发反思（地址是本机不监听的端口，不会被请求到外部）。
+  @npc_env @jev_env
+           |> Map.put("NPC_LIFE_HINDSIGHT_URL", "http://life.test.invalid")
+           |> Map.merge(%{
+             "NPC_REFLECT_URL" => "http://127.0.0.1:9/v1/messages",
+             "NPC_REFLECT_KEY" => "test-key",
+             "NPC_REFLECT_MODEL" => "reflect-test"
+           })
   @npc %{
     "who" => "Lin, a builder",
     "persona" => %{"traits" => %{"thrifty" => 8, "extraverted" => 3}, "personal" => "Dislikes crowds."},
@@ -141,6 +148,8 @@ defmodule NpcServer.NpcRegistryTest do
                   tools: %{1 => "镐"},
                   skills: %{gather: %{}, travel: %{}},
                   jev: %{url: "http://127.0.0.1:9/jev", key: "test-key", model: "jev-test", timeout_ms: 10_000},
+                  # 反思写日记的接口取运行环境（R3 起）。
+                  reflect: %{url: "http://127.0.0.1:9/v1/messages", key: "test-key", model: "reflect-test"},
                   # 必带 Life：行里没写 life，地址取运行环境。大脑仍是 Tree，不套 Social。
                   life: %{url: "http://life.test.invalid"}
                 }} == NpcRegistry.brain("npc", @npc)
@@ -220,6 +229,11 @@ defmodule NpcServer.NpcRegistryTest do
       # 运行环境没有 Jev 接口：登记不了。
       with_env(%{@npc_env | "TYPESAFE_API_URL" => nil}, fn ->
         assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, :no_jev_url)
+      end)
+
+      # 运行环境没有反思写日记的接口：登记不了。
+      with_env(%{@npc_env | "NPC_REFLECT_URL" => nil}, fn ->
+        assert_raise System.EnvError, ~r/NPC_REFLECT_URL/, fn -> NpcRegistry.brain("npc", @npc) end
       end)
 
       # 运行环境没有 Hindsight 地址、行里也没给：登记不了。

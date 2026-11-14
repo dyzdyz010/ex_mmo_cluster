@@ -87,5 +87,16 @@ write_json(OUT / "check-samples.json", samples)
 # 6. 写日记客户端的样本：网关核实时一次真实响应（content 第一块是空的 thinking），原样复制
 shutil.copyfile(X3 / "gateway/resp-a-repro.json", OUT / "gateway-response.json")
 
+# 7.（R3）第 1、4 轮“此刻”用的那份原始观察导出（各轮 plan.json 的 rawobs），原样复制；
+#    第 4 轮 Q_place 两次召回的真实条目（materials 里 kind 为 raw / observation 的各条），只删去编号与整行，次序不变
+for k in (1, 4):
+    rawobs = read_json(X2 / "rounds" / str(k) / "plan.json")["rawobs"]
+    shutil.copyfile(S1T / "export/rawobs" / rawobs, OUT / f"round{k}-rawobs.txt")
+items = read_json(X2 / "rounds/4/materials-Q_place.json")["items"]
+recalled = [{key: it[key] for key in ("kind", "id", "at", "type", "tags", "text", "body")}
+            for it in items if it["kind"] in ("raw", "observation")]
+assert [it["kind"] for it in items if it["kind"] != "unsealed"] == [r["kind"] for r in recalled]
+write_lines_json(OUT / "round4-recalled-Q_place.json", recalled)
+
 for p in sorted(OUT.iterdir()):
     print(p.name, p.stat().st_size)
