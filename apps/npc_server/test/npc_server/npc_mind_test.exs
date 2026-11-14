@@ -154,8 +154,9 @@ defmodule NpcServer.NpcMindTest do
     end
 
     # 输入：S1-Z 第 5 轮“自己”那条的收尾句与时刻（夹具 `s1z/20261114T031005.159Z-round5-reflection.json`）。
-    # 此刻取同一导出文件名的时刻 2026-11-14T03:10:05.159Z：相隔 153,341 毫秒 × 72 ≈ 3.07 游戏小时 → 按 0.5 小时取整为 3 小时。
-    test "what I have come to think: after memory, before the situation; how long ago, then the closing sentence as written" do
+    # 此刻取同一导出文件名的时刻 2026-11-14T03:10:05.159Z（晚于想的时刻约 3 游戏小时，是 Life 给得出的视图）。
+    # 正文只有收尾句原文：不加“多久以前”、不加 `I thought: `（R4b）。
+    test "what I have come to think: after memory, before the situation; only the closing sentence as written" do
       %{"closing" => closing, "at_ms" => at_ms} =
         "s1z/20261114T031005.159Z-round5-reflection.json"
         |> NpcServer.ReflectionFixtures.json()
@@ -167,7 +168,7 @@ defmodule NpcServer.NpcMindTest do
 
       column =
         {"What I have come to think",
-         "About 3 hours ago, I thought: This time I'm going straight to the stone beside the plot, no more guarding, " <>
+         "This time I'm going straight to the stone beside the plot, no more guarding, " <>
            "a glance at the hut as I pass, a plain question for Corvin if they show, and the plaza only after the stone is cut."}
 
       assert Enum.map(sections, &elem(&1, 0)) == [

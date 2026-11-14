@@ -419,7 +419,7 @@ flowchart LR
   | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
   | What just happened | Life 手里还没写进 Hindsight 的经历（已封存待写的片段 + 未封存的尾部，旧在前），每条句首按游戏时间写多久以前（`Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加分路召回合并后的清单（`- Recalled: [多久以前, ]<正文去掉 " \| When: …" 后缀>`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
-  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句：`<多久以前>I thought: <原文>`；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
+  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文（不加“多久以前”与 `I thought: `，R4b）；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
@@ -762,9 +762,9 @@ flowchart LR
 - **当前状态**（2026-11-14）：实现分 R1 纯函数核心、R2 写作与存档两个出口、R3 接进 Life 三步（R 编号是内容规范 §10.12 的实现拆分），
   三步都已实现、已测试、已评审；R3 做过一次真实服务端短实跑 S1-Z（只起 NPC 的真实服务端跑五轮反思，判定见内容规范 §10.12 末尾的进度），
   **不算验收**。R4 新栏 `What I have come to think`（用户答复选 A：只放“自己”一问最新的收尾一句；按处境带出对应的想法放到 R6 之后离线测）
-  **已实现、已过单元与 Life 集成测试，未实跑、未验收**；`Selector` 的问法不变（不点名新栏）。句首“多久以前 + `I thought: `”这一标注写法
-  是原创取值，**没有离线读数**（S1-X3 测的形态不带标注），R6 之前要用产品渲染出的真实 state 补一轮小测。
-  验收要到 R6 的真实服务端闭环实跑。
+  **已实现、已过单元与 Life 集成测试**；`Selector` 的问法不变（不点名新栏）。R4 在句首加过“多久以前 + `I thought: `”两段标注（原创取值）；
+  R6 闭环实跑（已实跑；选择的召回超时一条未通过，没有记为验收）之后的离线对照（`.demo/observe/npc-slice1-20261112/s1r6/why-results.md`、`age-results.md`）显示两段都在削弱这句话，
+  R4b（用户 2026-11-14 定）改成只放收尾句原文，依据与代价见 [`mind.ex`](mind.ex) moduledoc；R4b 已过单元测试，**未实跑、未验收**。
 
 ## 附近对话（2026-10-11）
 

@@ -13,16 +13,20 @@ defmodule NpcServer.Mind do
   | Feelings and relationships | 此刻仍活跃的情绪（对谁、什么情绪、多强）与对各角色的信任 | Life（`Life.mind/2` 的 `feelings`、`relationships`） |
   | What just happened | 还没写进 Hindsight 的近期经历，每条前面写多久以前 | Life（`Life.mind/2` 的 `recent`、`now_ms`） |
   | What I remember | 缓存的认识（mental models）与按处境分路召回、合并后的记忆 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
-  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，句首写多久以前想的：`<多久以前>I thought: <原文>` | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
+  | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文，句首不加任何标注 | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
   | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
 
-  **What I have come to think**（R4，内容规范 §10.11 末尾用户对第 1 条的答复）：只有一条，原文不改写、不截断；
-  “多久以前”与近期经历同一写法，时刻取那条的 `at_ms`（想的时刻）。**撤下的规则**：Life 给出 nil 时整栏不出现——
+  **What I have come to think**（R4，内容规范 §10.11 末尾用户对第 1 条的答复；写法 R4b，用户 2026-11-14 定）：只有一条，
+  正文就是那句收尾句的原文——不改写、不截断，句首不加“多久以前”、不加 `I thought: `。**撤下的规则**：Life 给出 nil 时整栏不出现——
   还没有过任何一轮、这个形态不反思、或最近一轮没写成“自己”（中止、失败、丢弃；不沿用上一轮的那条——只对留下了小结的一轮成立，
   一轮已起而没留下小结时仍是上一轮那句，边界见 `NpcServer.Life` moduledoc 的“已知”清单）。
-  位置是 S1-X2 / S1-X3 离线测过的；`I thought: ` 这一标注写法是原创取值，没有离线读数（R6 之前用产品渲染的真实 state 补测）。
-  整条日记、小屋与人的各条不进这里。
+  位置是 S1-X2 / S1-X3 离线测过的。R4 曾在句首加“多久以前”与 `I thought: ` 两段标注（原创取值）；离线对照显示两段都在削弱这句话，
+  所以去掉：同一份 state 里句首从 `About 12 hours ago` 换成 `Just now`，打算的活动的概率从约 .09 升到约 .8，
+  而实跑中含这一栏的 state 过半（100 份里 55 份）句首在 5 小时以上（`.demo/observe/npc-slice1-20261112/s1r6/why-results.md`）；
+  三份无人的基准上只有句子比 `I thought: <句>` 高 .18–.45（同目录 `age-results.md`；只有句子也是 S1-X3 当初测过的形态）。
+  **已知代价**：这一句在一轮之内不随时间淡下去（从落栏到下一轮约现实 10 分钟，游戏里约 12 小时），过时的打算只靠下一轮重写或撤下；
+  这在闭环里是好是坏离线看不出，要再实跑。整条日记、小屋与人的各条不进这里。
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
 
@@ -48,7 +52,7 @@ defmodule NpcServer.Mind do
   - **多久以前**：两个真实时刻（Unix 毫秒）各经 `MmoContracts.WorldTime.game_us/1` 换成游戏时间后相减，按游戏小时换词：
     不足 0.25 小时写 `Just now, `；不足 48 小时按 0.5 小时四舍五入写 `About <N> hours ago, `（`1 hour`、`0.5 hours`、`13.5 hours`）；
     48 小时及以上按天四舍五入写 `About <N> days ago, `。放在句首，后面接经历原文。
-    召回的记忆有事件时刻（`at_ms`）时同样前缀，没有时不写；反思新栏那一句同样前缀。
+    召回的记忆有事件时刻（`at_ms`）时同样前缀，没有时不写；反思新栏那一句不加（见上）。
 
   ## 记忆一栏的召回
 
@@ -124,10 +128,9 @@ defmodule NpcServer.Mind do
   end
 
   # 反思新栏：Life 给出那一句才有这一栏，没有就整栏不出现（state 与没有这一栏时逐字节相同）。
+  # 正文只有收尾句原文，不加“多久以前”与 `I thought: `（R4b，依据见 moduledoc）；那一句的 `at_ms` 这里不读。
   defp thought(%{thought: nil}), do: []
-
-  defp thought(%{thought: %{closing: closing, at_ms: at_ms}, now_ms: now_ms}),
-    do: [{"What I have come to think", ago(at_ms, now_ms) <> "I thought: " <> closing}]
+  defp thought(%{thought: %{closing: closing}}), do: [{"What I have come to think", closing}]
 
   @doc "快照的英文转写：每栏一行 `栏名: 正文`，按栏的次序（“What I remember”一栏的正文自己可以有多行）。"
   @spec text([{String.t(), String.t()}]) :: String.t()

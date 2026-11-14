@@ -76,7 +76,8 @@ defmodule NpcServer.Life do
 
   进选择的只有一句（R4，内容规范 §10.11 末尾用户对第 1 条的答复）：`mind/2` 的 `thought` 是 `Reflection.thought/1` 对持久行
   `"reflection"` 的结果——最近一轮写成了“自己”一问就是那条的收尾一句与时刻，否则 nil（不沿用上一轮的；边界见下面“已知”清单的最后一条）；`NpcServer.Mind`
-  据此写 `What I have come to think` 栏。本模块不另判这条规则；整条日记与小屋、人的各条不进选择的 state。
+  据此写 `What I have come to think` 栏，正文只有那句收尾句的原文（R4b：不加“多久以前”与 `I thought: `；时刻只给 observe 看）。
+  本模块不另判这条规则；整条日记与小屋、人的各条不进选择的 state。
 
   手动入口 `reflect/1`；`observe/1` 的 `reflection` 给出槽在不在途、触发状态、新经历条数、各问最新一条、最近一轮、计数、
   `thought`（此刻新栏里的那一句，同 `mind/2`）与
@@ -189,7 +190,7 @@ defmodule NpcServer.Life do
                      问哪几座来自 Life 的记忆（`Life.State` 的 `"buildings"`）；在不在只认这一刻现查 World 的结果
                      （`VoxelRegion.World.instance_cells/2`：有格 = 在，`:instance_not_found` = 不在）
       thought        反思新栏的那一句 `%{closing:, at_ms:}` 或 nil（`Life.Reflection.thought/1` 对持久行 `"reflection"` 的结果；
-                     这个形态不反思时恒为 nil）
+                     这个形态不反思时恒为 nil；与 observe 的 `thought` 同形，Mind 只用 `closing`）
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
   {:life_models_unavailable, 原因} | 召回的失败原因 | :recall_timeout | World 路由或查询的失败原因}`。
