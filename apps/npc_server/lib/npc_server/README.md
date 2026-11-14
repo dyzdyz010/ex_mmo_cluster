@@ -260,7 +260,9 @@ NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
 # 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：每次解析取运行环境
 # TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）。必带 Life：Hindsight 地址取运行环境 NPC_LIFE_HINDSIGHT_URL
-# （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。NPC 自己不需要任何 LLM 接口。
+# （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。选择本身不用 LLM 接口；Life 的反思写日记要一个，
+# 同样不入库：每次解析取运行环境 NPC_REFLECT_URL（完整的 …/v1/messages 地址）/ NPC_REFLECT_KEY / NPC_REFLECT_MODEL（必须，
+# 缺一个登记即 raise；用途与请求形状见下文“反思”）。
 NpcServer.Registry.put("阿林", %{scene_id: 1, spawn: {22.5, 520.0, 34.5}, brain: "npc",
   params: %{
     "who" => "Lin, a builder",
@@ -375,8 +377,8 @@ brain: {NpcServer.Brain.Tree, %{
 
 ### 统一形态（`Trees.npc/1`、`Selector`、`Mind` 与 Life，薄片一 S1-A / S1-B）
 
-注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。规划（LLM）、说话、活动进行中的打断是后续薄片；NPC 自己不调用任何 LLM
-（Hindsight 服务的后台巩固用它自己的模型）。
+注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。规划（LLM）、说话、活动进行中的打断是后续薄片；选择不调用任何 LLM
+（Hindsight 服务的后台巩固用它自己的模型）；唯一的模型调用是 Life 的反思写日记（见下文“反思”），它不参与选择。
 
 ```mermaid
 flowchart LR
@@ -720,6 +722,45 @@ observe 返回 `{:ok, map}`：state 是持久 canonical，mind 是当前衰减�
 retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight facts/operations/usage、召回耗时及 Social 目标/真实终态。
 需 JSON 时用 `NpcServer.Context.plain(map) |> Jason.encode!()`。flush/refresh 立即返回 started/busy/empty，随后用 observe
 等待真实完成；context 在调用者中执行一次网络召回，返回 `{:ok, context}` 或显式错误，Llm 只在自己的请求 worker 中调用。
+
+### 反思（`Life.Reflection`，内容规范 §10.11、§10.12）
+
+**是什么**：NPC 隔一段时间就自己最近经历的事想一想，给“我的建筑”“有关系的人”“自己”各写一段简短日记，
+记下“我对这件事现在怎么看”。**为什么**：经历只是一条条事实，召回给出的也是事实；反思把它们收拢成 NPC 自己的看法，
+打算以后作为 state 的一栏交给 Jev（这一步还没做，见下文“当前状态”）。设计、离线测量与取值依据在
+[内容规范](../../../../docs/10-active/cross-cutting/2026-11-13-npc-mind-content-spec.md) §10.11、§10.12。
+
+```mermaid
+flowchart LR
+  E[四个经历入口<br/>World 事件 所见 活动 对话] --> S[计分<br/>到点?]
+  S -->|到点且槽空着| W[单独的反思槽<br/>与 poll / job 并列]
+  W --> M[取材料<br/>此刻 + 未封存经历 + 召回 + 之前的想法]
+  M --> J[写日记<br/>外部写作接口 /v1/messages]
+  J --> C[检查<br/>不合格重问一次 再不合格丢弃]
+  C --> R[(Life 持久行 reflection<br/>一次落栏 权威)]
+  R --> A[(Hindsight 存档库<br/>npc-reflect-cid 产品不读回)]
+  R -.下一轮“之前的想法”.-> M
+```
+
+- **谁有**：只有 profile 带写日记接口（`reflect`）的 Life 反思，现在只有统一形态（`"npc"`）由 `Registry` 给出；别的形态不计分、不起槽。
+- **何时想**：四个经历入口接纳经历时逐条计分，到点后起**单独的反思槽**（Life 的第三个 worker 槽，与读 World 的 `poll`、
+  写 Hindsight 的 `job` 并列）。一轮要串行写 2–3 次，所以不占封存与认识刷新的槽；计分规则与触发条件见
+  [`life/reflection.ex`](life/reflection.ex) 的 moduledoc。
+- **一轮做什么**：定问题（至多 3 问）→ 取材料 → 写日记 → 检查，流程见 [`life/reflection/round.ex`](life/reflection/round.ex) 的 moduledoc。
+- **落在哪**：一轮写完**一次**落进 Life 持久行（`life/state` 的 `"reflection"`：触发状态、新经历、各问最新一条、最近一轮小结、计数），
+  这是权威、随行持久、重启后还在；之后再存档到单独的 Hindsight 库 `npc-reflect-<cid>`——只是存档，产品不从它读回。
+  落栏与存档的时刻、新经历何时消耗、中止与崩溃时怎么算，以 [`life.ex`](life.ex) moduledoc 的“反思”一节为准。
+- **失败不挡别的**：写作、召回、检查、存档的失败只记进这一轮的小结、计数与日志，不进 `job_error`，不挡封存、认识刷新与活动选择。
+- **观察与操作**：手动起一轮 `NpcServer.Life.reflect(cid)`（形状同 `flush/1`）；`Life.observe(cid)` 的 `reflection` 给出槽在不在途、
+  触发状态、新经历条数、各问最新一条、最近一轮、计数与最近一次失败原因；日志一律 `npc_reflect cid=<cid> …`，日记正文不进日志。
+- **写作接口（环境变量）**：同 Jev，不入库，每次解析 `"npc"` 登记时取运行环境 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）、
+  `NPC_REFLECT_KEY`、`NPC_REFLECT_MODEL`，三个都必填，缺一个时解析即 raise（`Registry.put/2` 回 `{:error, {:invalid_params, …}}`，不登记）。请求是 Anthropic Messages 形状
+  （`POST`，头 `x-api-key` 与 `anthropic-version`，不带思考参数），细节见 [`life/reflection/writer.ex`](life/reflection/writer.ex) 的 moduledoc。
+  这三个变量**还没有配进任何部署环境**（生产现在 NPC `enabled=0`）；启用 `"npc"` 登记之前要先补上。
+- **当前状态**（2026-11-14）：实现分 R1 纯函数核心、R2 写作与存档两个出口、R3 接进 Life 三步（R 编号是内容规范 §10.12 的实现拆分），
+  三步都已实现、已测试、已评审；R3 做过一次真实服务端短实跑 S1-Z（只起 NPC 的真实服务端跑五轮反思，判定见内容规范 §10.12 末尾的进度），
+  **不算验收**。日记**还没有进入给 Jev 的 state**：新栏 `What I have come to think` 是 R4，等用户答复后才做，所以上文“七栏”不变。
+  验收要到 R6 的真实服务端闭环实跑。
 
 ## 附近对话（2026-10-11）
 

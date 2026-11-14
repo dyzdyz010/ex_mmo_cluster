@@ -56,6 +56,10 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
     反思库 60 条记忆里 15 条把“我”写成 `the narrator`，Hindsight 对反思库排了 4 次巩固（额外用量）；连不上的原因在日志里地址被打成字符编码表。
   - **R4 的夹具来源**：`s1z/export/rows/` 七个时点的 Life 持久行全文（built、round1、round2、round3、round4-aborted、round5、final）与同时刻的 `Life.observe`；67 份 state 在 `s1z/states/`。进仓库的夹具要复制到 `apps/npc_server/test/support/fixtures/`。
   - **环境（S1-Z 之后）**：没有节点、tmux、转发进程；`npc-s1z-pg-20261114` 与它的匿名卷已按名字删除，容器 / 卷 37 / 19，UDP 81；已告知 voxim-d4 节点已停。新增两个真实 bank **不删**：`npc-life-114244456449`（63 份文档）、`npc-reflect-114244456449`（10 份文档）。WSL `~/npc-s1-run/` 里留着 `*-s1z.*` 脚本与 `server-s1z.log`。
+- **第 3 项 R5 里不依赖 R4 的文档部分：已做**（子会话只改 Markdown，统筹会话逐行看过 diff）：`apps/npc_server/lib/npc_server/README.md` 的 Life 一章加“反思”一节（是什么、为什么、流程图、与持久行 / 存档库 / 失败 / 手动入口 / observe / 日志的关系、三个环境变量、当前状态；细节链接到 moduledoc），
+  并改掉两处已不准确的“NPC 自己不调用任何 LLM”；`apps/npc_server/README.md` 的链接说明；`deploy/README.md`“NPC 常驻应用”补一段：`"npc"` 登记要的三组环境变量（Jev、Hindsight、`NPC_REFLECT_*`）与现状。
+  **没有改的**：`deploy/.env.example` 与 `deploy/docker-compose.yml` 里本来就没有任何 NPC 变量（生产 NPC `enabled=0`），这次没有动非文档文件；启用 `"npc"` 登记之前要把这三组变量补进 `.env` 与 `.env.example`（属部署，须先向用户确认）。R5 剩下的：R4 之后的全套测试、README 的“七栏”随 R4 改。
+- **第 2 项 R4：2026-11-14 用对话框把三种放法与建议再问了用户一次，用户没有选，表示想先澄清**；还没有答复，R4 不动。
 - **用户 2026-11-14 定下的一个方向（候选活动的来源；原话与确认记在内容规范 §10.11 末尾）**：候选不再逐个情形手写，由“角色会做的操作 × 眼下可行的对象”生成；“对某人说话”是一项操作，走近与开启对话交给执行层，台词由 LLM 写；操作粒度停在技能一级；组合与开放参数归规划位置的 LLM，Jev 只在封闭候选里选。
   用户原话“全部同意”确认了两点：这两个边界；“对某人说话”排在 R6 之后、作为薄片二说话部分的第一件。§10.11“要用户定的”第 2 条因此有了答复（不单独设计“问”的活动）；**第 1 条（新栏放什么）仍没有答复**。
 

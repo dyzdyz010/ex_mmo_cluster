@@ -110,6 +110,13 @@ L1–L5 baseline before anything listens) → Scenes (topology) → Auth + Gate.
 Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 enabled 登记。
 详见 [NPC 应用说明](../apps/npc_server/README.md)。升级请重启 release，旧 `GateServer.Npc.*` 名称不保留兼容转发。
 
+统一形态（注册表 brain `"npc"`）的登记要求运行环境里有三组变量，都不入库、缺一个登记即失败：选择用的 Jev 接口
+`TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`，记忆库地址 `NPC_LIFE_HINDSIGHT_URL`（或写在登记参数里），
+反思写日记的接口 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`。
+各自的用途与请求形状以 [NPC 运行时说明](../apps/npc_server/lib/npc_server/README.md) 为准（“注册表”“反思”两节），这里不复述。
+**现状（2026-11-14）**：生产 NPC `enabled=0`，这些变量没有配进任何部署环境，`deploy/.env.example` 里也还没有 NPC 一组；
+启用 `"npc"` 登记之前要先把它们补进 `.env` 与 `.env.example`。
+
 ### 青岚内存兜底
 
 `qinglan-memory-guard.py` 是青岚部署运维脚本，安装于 `/data/voxim_qinglan/ops/`，dyz cron每分钟调用。

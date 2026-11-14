@@ -18,7 +18,7 @@ flowchart TD
 
 Body 崩溃由动态监督器恢复；名字表或动态监督器故障使后续子树按依赖顺序重建，Bootstrap 重新读取 enabled 登记。
 Scene 暂不可用由 Body 原有会话维护机制处理。内部进程恢复不表示 NPC 产品下线；运维仍可显式登记、修改或停用。
-模型、记忆、情绪与动作契约详见 [运行时说明](lib/npc_server/README.md)。
+模型、记忆、情绪、反思与动作契约详见 [运行时说明](lib/npc_server/README.md)（反思在其中“可选人生闭环（Life）”一章的“反思”一节）。
 
 正式 release CLI（`bin/voxim_server rpc`）：
 
