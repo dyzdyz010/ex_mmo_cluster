@@ -61,12 +61,13 @@
 - 统一形态 NPC 的“心智 → 选择 → 执行”（总纲
   [`2026-11-12-npc-architecture-overview.md`](../../../../docs/10-active/cross-cutting/2026-11-12-npc-architecture-overview.md)，薄片一 S1-A / S1-B）：
   `Persona` 是人格卡（52 对形容词 × 9 级 + 英文自由文本）的唯一校验与英文转写；`Mind` 把人格、情绪与关系、近期经历、
-  记忆（认识 + 一次召回）、眼前处境、最近做过的事拼成心智快照（发问时现读的只读视图，给模型的英文 state 只在这里拼；
+  记忆（认识 + 按处境分路召回，至多 4 路）、眼前处境、最近做过的事拼成心智快照（发问时现读的只读视图，给模型的英文 state 只在这里拼；
   情绪、经历、记忆三栏经 `Life.mind/2` 向 Life 这个 owner 现读）；`Selector` 是选择位置：一项活动结束时把快照与有序候选交给
   Jev，直接取 top1（不设置信度门槛，`Jev.top1/1`；0.85 门槛只留给中断与 harm 护栏的 `Jev.verdict/3`），并持有“正在做什么、
   最近选过什么、最近一次问了什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
-- `DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）**未接线**：读计划的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、
-  注册参数 `daily` 与写死的轮换台词已随 S1-A 删除，没有注册表入口会启动它们；代码与单测留到薄片二改成规划位置的外壳。
+- 旧的 `NpcServer.DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）已删除，Runtime 里对应的挂接也一并没了
+  （它们读的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、注册参数 `daily` 与写死的轮换台词早已随 S1-A 删除，此前没有任何注册表入口会启动它们）。
+  新的日计划是 `Life.DayPlan`（意图持有者，在 Life 里，不是 Runtime 的挂接），见下文“日计划”。
 - `Memory` 提供模型记忆工具与上下文投影；`DataService.NpcMemory` 按永久 cid 持久化、检索，并拥有保留上限。
 
 ```mermaid
@@ -237,7 +238,7 @@ brain: {NpcServer.Brain.Routine, %{
   含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
   `activity`、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；`result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
   `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
-  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted` 属于 `DayPlan` / `LlmBudget`：两者目前未接线（没有注册表入口会启动），这些行不会出现。
+  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。日计划的日志是 `npc_plan cid=<cid> event=…`（`start` / `end` / `landed` / `persist_failed` / `crashed` / `skipped`，见下文“日计划”）。
 
 ### 注册表（`Registry`，放置阶段 M1）
 
@@ -377,21 +378,24 @@ brain: {NpcServer.Brain.Tree, %{
 
 ### 统一形态（`Trees.npc/1`、`Selector`、`Mind` 与 Life，薄片一 S1-A / S1-B）
 
-注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。规划（LLM）、说话、活动进行中的打断是后续薄片；选择不调用任何 LLM
-（Hindsight 服务的后台巩固用它自己的模型）；唯一的模型调用是 Life 的反思写日记（见下文“反思”），它不参与选择。
+注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。说话、活动进行中的打断是后续薄片；选择不调用任何 LLM
+（Hindsight 服务的后台巩固用它自己的模型）；选择本身之外的模型调用只有 Life 的两处写作：反思写日记（见下文“反思”）与日计划的规划（见下文“日计划”），
+两者共用同一个写作接口，都不在选择的发问里；日计划的结果经 `Plans and promises` 一栏进入选择的 state。
 
 ```mermaid
 flowchart LR
   T[Trees.npc<br/>树根] -- choose_activity（上一项怎样结束） --> R[Runtime]
   R -- 起 worker --> W[发问 worker]
   W -- 刚结束的活动（经历）--> L[Life<br/>规则模式]
-  W -- mind：情绪 关系 近期经历 认识 + 一次召回 --> L
+  W -- mind：情绪 关系 近期经历 认识 + 分路召回（至多 4 路并行） --> L
   L -- 召回 --> H[(Hindsight)]
   W -- 心智快照 + 有序候选 HTTPS --> J[Jev]
   J -- top1 --> W -- 结果 --> R
   R -- Outcome: 候选名 --> T
   T -- 被选中的分支：技能 / travel + wait --> R
   World[World 事件：建设被帮助 / 被破坏] --> L
+  Obs[每帧观察：所见<br/>相遇 附近的建造 / 拆除] --> L
+  Speech[对话：听到的与说出的] --> L
 ```
 
 - **参数**：`who`（英文自称，如 `"Lin, a builder"`；注册名可以是中文，不进模型）、`persona`（人格卡
@@ -410,7 +414,7 @@ flowchart LR
   把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
 - **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
   命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
-- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏，最近一轮反思写成了“自己”时在记忆之后多一栏（共八栏），次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
+- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏；最近一轮反思写成了“自己”时在记忆之后多一栏 `What I have come to think`，Life 里有今天的计划或想做而做不到的事时再多一栏 `Plans and promises`（最多九栏），次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
 
   | 栏 | 内容 | owner |
   |---|---|---|
@@ -420,6 +424,7 @@ flowchart LR
   | What just happened | Life 手里还没写进 Hindsight 的经历（已封存待写的片段 + 未封存的尾部，旧在前），每条句首按游戏时间写多久以前（`Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加分路召回合并后的清单（`- Recalled: [多久以前, ]<正文去掉 " \| When: …" 后缀>`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文（不加“多久以前”与 `I thought: `，R4b）；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
+  | Plans and promises（可缺） | 今天的各条意图一条一行（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`），再是想做而现在做不到的事各一行 `I would like to <want>, but I cannot do that yet`；不点名该选什么；Life 给 nil（不规划的形态、还没有计划、没有意图也没有 wants）时整栏不出现，state 与没有这一栏时逐字节相同。与上一栏先并存（决策稿 D-3） | Life 持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（见下文“日计划”） |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
@@ -441,7 +446,7 @@ flowchart LR
   句子里的坐标是 Life 记下的锚点（记忆），不是现查的；建筑被整体挪动后坐标会与现状不符。“在 / 不在”只认 World。
   候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
 - **召回**：一次选择按处境分路召回（`Mind.recall_queries/2`，问句、tags 与 token 上限照离线重测 S1-Q 的原文），
-  各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路最多等 10 秒），三路都 `prefer_observations: true`、不按类型过滤：
+  各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路最多等 10 秒），各路都 `prefer_observations: true`、不按类型过滤（至多 4 路：R1 附近至多 2 人各一路，加 R2、R3）：
 
   | 路 | 问句 | 过滤 / `max_tokens` |
   |---|---|---|
@@ -735,7 +740,7 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 flowchart LR
   E[四个经历入口<br/>World 事件 所见 活动 对话] --> S[计分<br/>到点?]
   S -->|到点且槽空着| W[单独的反思槽<br/>与 poll / job 并列]
-  W --> M[取材料<br/>此刻 + 未封存经历 + 召回 + 之前的想法]
+  W --> M[取材料<br/>此刻 + 还没写进 Hindsight 的经历<br/>已封存待写 + 未封存 + 召回 + 之前的想法]
   M --> J[写日记<br/>外部写作接口 /v1/messages]
   J --> C[检查<br/>不合格重问一次 再不合格丢弃]
   C --> R[(Life 持久行 reflection<br/>一次落栏 权威)]
@@ -769,6 +774,52 @@ flowchart LR
   **用户 2026-11-14 定记为已验收：反思 R1–R4b 的链路与新栏规则已验收**（一个 NPC、一场实跑；NPC 照不照那句话做属于行为读数，不在验收范围内）。
   已知的行为问题（实跑与离线对照的读数，未改产品）：新栏那句推得动“去广场 / 守屋”，推不动“采集”；句子要到下一轮反思写成“自己”时才换，
   说的事做完了也还挂着；收尾句会照抄背包原始数字。见 `s1r7/results.md`、`why-results.md`、`rewrite-results.md`。
+
+### 日计划（`Life.DayPlan`，决策稿与实现设计）
+
+**是什么**：NPC 每个游戏日开头（以及遇到一件事之后）规划一次“今天我打算做几件事”：每条**意图**是词表里的一项活动 + 次数 + 时限
+（日内分钟），词表就是这个 NPC 登记的 `activities`，计划不新增任何动作；词表写不出的想法记为 `wants`（想做而现在做不到的事）。
+意图被做了几次由代码按活动结果记账，不是模型说了算；计划与账作为 `Plans and promises` 一栏交给选择。
+**为什么**：经历与反思给出的都是“已经发生的 / 我怎么看”，选择里没有“我答应过自己今天要做什么、做了没有”；这一栏把它放进 state，
+让选择看得见承诺与进度，而不是靠一句反思的收尾句去推。是否真的改变选择还没测过（见“当前状态”）。设计与取舍在
+[决策稿](../../../../docs/10-active/cross-cutting/2026-11-14-npc-day-plan-decision.md)（含用户的四项决定），怎么拆实现在
+[实现设计稿](../../../../docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md)。旧的 `NpcServer.DayPlan` / `LlmBudget` 已删除。
+
+```mermaid
+flowchart LR
+  T[触发<br/>每帧观察上查<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 5<br/>两次至少隔 3 分钟]
+  Q -->|通过并保存调用数| W[单独的规划槽<br/>第四个 worker 槽<br/>写一次 不重问]
+  W --> C[检查<br/>JSON 形状 活动在词表内<br/>by 晚于此刻 条数不超过 5]
+  C -->|合格| A[(Life 持久行 plan<br/>采用 一次落栏 权威)]
+  C -->|不合格或写作失败| F[记一笔计数与 last<br/>沿用上一份]
+  X[活动完成<br/>Life.activity] --> B[活动记账<br/>同名 今天 未过时限的意图 done 加一<br/>与那条经历同一次保存]
+  B --> A
+  A -->|DayPlan.column| M[心智快照新栏<br/>Plans and promises]
+```
+
+- **谁有**：只有“规划的形态”：profile 带写作接口（同反思，`NPC_REFLECT_*`）且有候选表，现在只有统一形态（`"npc"`）；别的形态不触发、
+  不记账，`Life.mind/2` 与 `Life.observe/1` 的 `plan` 为 nil。
+- **何时规划**：`DayPlan.due/3`——本游戏日还没有采用过计划（`:day`），或接纳经历时来了一条 `kind:event`（`:event`，重排）。日号与日内分钟取观察里的游戏钟
+  `world_time`。到点后 `DayPlan.admit/2` 记一次调用、保存成功才起槽；当日额度用完或起不了槽记 `counts.skipped` 与一行日志，触发条件不清。
+- **一次规划做什么**：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 系统提示词与用户消息（逐字照离线测量 S1-R8）→ 写一次 →
+  `DayPlan.check/3`。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
+- **持久行 `"plan"`**（Life 是唯一 owner，字符串键、能原样过 JSON，形状见 [`life/day_plan.ex`](life/day_plan.ex) 的 `new/0`）：
+  `day`（意图属于哪个游戏日）、`intents`（`id` / `activity` / `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
+  `calls`（当日已发调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
+  意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
+- **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）；模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
+  不挡选择，行里沿用上一份；同日重排保留已完成与已过时的旧意图、换掉未了的；计划不是今天的则栏里只剩 `wants`。
+- **原创取值（没有外部依据，实跑后调）**：每游戏日 5 次规划调用（规划加重排共计）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
+  `by` 是日内分钟（0..1439）。
+- **观察与日志**：`Life.observe(cid).plan` 给出 `enabled`、`running`、持久行 `row`、此刻的栏数据 `column` 与最近一次规划失败的原因；日志一律
+  `npc_plan cid=<cid> event=…`：`start` / `end`（在规划槽里，`end` 带结局、耗时与 token 数）、`landed`（落栏）、`persist_failed`（落栏那次保存失败）、
+  `crashed`（worker 崩溃）、`skipped`（到点却起不了）；计划正文不进日志。
+- **当前状态**（2026-11-15）：**已实现**，单元测试与 Life 集成测试通过；规划提示词与检查做过离线测量 S1-R8（探索性，在真实 S1-R7 材料上：意图形状成立，
+  `cannot_yet` 多半是想说话而写不出的事），**还没有闭环实跑、没有验收**。已知局限：
+  ① 计划栏对选择的作用没有测过（栏的位置与写法是原创，只有离线 S1-R8 测了规划这一半）；
+  ② “路过看一眼”这类想法没有登记缺口：词表里没有一个只停留一下的 `place` 候选，这类想法只能记成 `wants`（登记内容，不是代码，要不要加是后期的决定）；
+  ③ `wants` 目前只展示在栏里，不触发任何动作，也与 `What I have come to think` 并存（是否保留其一等离线对照后再定）；
+  ④ 计划耗尽、被直呼等其它重排触发、`times` 作完成条件的校准、计划进 Hindsight 都在后期范围。
 
 ## 附近对话（2026-10-11）
 

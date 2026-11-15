@@ -14,6 +14,7 @@ defmodule NpcServer.Mind do
   | What just happened | 还没写进 Hindsight 的近期经历，每条前面写多久以前 | Life（`Life.mind/2` 的 `recent`、`now_ms`） |
   | What I remember | 缓存的认识（mental models）与按处境分路召回、合并后的记忆 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文，句首不加任何标注 | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
+  | Plans and promises（可缺） | 今天打算做的几件事（活动、次数、时限、做了几次、此刻的状态）与想做而现在做不到的事 | Life 的持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（`Life.mind/2` 的 `plan`） |
   | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
 
@@ -27,6 +28,17 @@ defmodule NpcServer.Mind do
   三份无人的基准上只有句子比 `I thought: <句>` 高 .18–.45（同目录 `age-results.md`；只有句子也是 S1-X3 当初测过的形态）。
   **已知代价**：这一句在一轮之内不随时间淡下去（从落栏到下一轮约现实 10 分钟，游戏里约 12 小时），过时的打算只靠下一轮重写或撤下；
   这在闭环里是好是坏离线看不出，要再实跑。整条日记、小屋与人的各条不进这里。
+
+  **Plans and promises**（日计划，决策稿 `docs/10-active/cross-cutting/2026-11-14-npc-day-plan-decision.md` D-3，实现设计
+  `2026-11-15-npc-day-plan-implementation.md` §5）：位置在 `What I have come to think` 之后、`Current situation` 之前
+  （计划是“想做什么”，处境是“现在有什么”，先让模型读到前者；位置本身没有离线对照过）。
+  **可缺的理由**：Life 给 nil 时整栏不出现——这个形态不规划、持久行还没采用过计划、或今天没有意图而 `wants` 也空——
+  此时 state 与没有这一栏时逐字节相同。正文多行（栏内换行同 `What I remember`），先今天的各条意图、一条一行，写法是
+  `plan_intent_line/1`（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`）；
+  再是 `wants`，每条一行 `I would like to <want>, but I cannot do that yet`，`<want>` 取模型原文，不改写、不去标点。
+  意图的状态由 `Life.DayPlan.column/3` 在读时推出；计划不是今天的则只剩 `wants` 行。
+  **不点名该选什么**：不写 `you should` / `next` / `remember` 之类的话，只陈述数目、时限与做不到的事（用户 2026-11-13 定“靠内容涌现”）。
+  与 `What I have come to think` **先并存**（决策稿 D-3：离线对照计划栏对选择的作用之后再定留哪个）；这一栏对选择的作用还没测过。
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
 
@@ -121,10 +133,24 @@ defmodule NpcServer.Mind do
       {"What I remember", remembered(life)}
     ] ++
       thought(life) ++
+      plans(life) ++
       [
         {"Current situation", situation(observation, life.buildings)},
         {"Recent activities", recent(history)}
       ]
+  end
+
+  # 日计划新栏：Life 给出 `plan`（`Life.DayPlan.column/3` 的结果）才有这一栏，nil 时整栏不出现（state 与没有这一栏时逐字节相同）。
+  # 严格取键（同 `thought/1`）：手造 `life` 的测试只有三处，都补了 `plan: nil`，漏给的调用方会在这里立刻崩而不是悄悄少一栏。
+  # 正文多行：先今天的各条意图一条一行（`plan_intent_line/1`），再 wants 各一行；不点名该选什么，不写任何指令性的话。
+  defp plans(%{plan: nil}), do: []
+
+  defp plans(%{plan: %{intents: intents, wants: wants}}) do
+    lines =
+      Enum.map(intents, &plan_intent_line/1) ++
+        Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
+
+    [{"Plans and promises", Enum.join(lines, "\n")}]
   end
 
   # 反思新栏：Life 给出那一句才有这一栏，没有就整栏不出现（state 与没有这一栏时逐字节相同）。

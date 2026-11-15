@@ -7,7 +7,7 @@ defmodule NpcServer.Runtime do
   取消期间到达的技能内部结果原样放进终态的 `settled`，已提交的事务不撤销、也不隐瞒。
   中断策略只来自 `profile.interrupt_policy`；策略失败只记一笔，不中断正在进行的技能。
   活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
-  （含一次记忆召回）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
+  （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
   发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
   选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
   一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
@@ -38,16 +38,7 @@ defmodule NpcServer.Runtime do
           life
         end
 
-      # 开了日计划的作息 NPC（profile.utility + endpoint，registry daily.plan）的 LLM 日计划 owner；计划经 {:day_plan, plan} 回来，挂到 observation.plan。
-      day_plan =
-        if Map.has_key?(profile, :utility) and Map.has_key?(profile, :endpoint) do
-          {:ok, pid} = NpcServer.DayPlan.start_link(self(), context, profile)
-          pid
-        end
-
       loop(%{
-        day_plan: day_plan,
-        plan: nil,
         body: body,
         backend: backend,
         mind: backend.init(profile),
@@ -99,9 +90,6 @@ defmodule NpcServer.Runtime do
           if state.life, do: NpcServer.Life.observation(state.life, observation)
 
           observation =
-            if state.plan, do: Map.put(observation, :plan, state.plan), else: observation
-
-          observation =
             if state.life_state do
               observation
               |> Map.put(:life, %{state: state.life_state, now_ms: now, thanks: state.life_thanks})
@@ -119,11 +107,7 @@ defmodule NpcServer.Runtime do
           deliver(%{state | observation: observation}, {:observation, observation})
 
         {:life_state, canonical, thanks} ->
-          if state.day_plan, do: NpcServer.DayPlan.life_state(state.day_plan, canonical)
           %{state | life_state: canonical, life_thanks: thanks}
-
-        {:day_plan, plan} ->
-          %{state | plan: plan}
 
         {:outcome, %{id: {:skill, id, step}} = outcome} ->
           case state.skill do
@@ -154,7 +138,6 @@ defmodule NpcServer.Runtime do
 
           if kind == :heard and Dialogue.direct?(message, cid) do
             if state.skill, do: send(self(), {:skill_check, state.skill.command.id})
-            if state.day_plan, do: NpcServer.DayPlan.speech(state.day_plan, message)
             deliver(state, {:heard, message})
           else
             state
@@ -164,7 +147,6 @@ defmodule NpcServer.Runtime do
           GenServer.reply(from, %{
             heard: state.heard,
             skill: state.skill && state.skill.command,
-            plan: state.plan,
             select: state.select
           })
 
@@ -175,7 +157,6 @@ defmodule NpcServer.Runtime do
             from,
             snapshot
             |> Map.put(:dialogue, state.heard)
-            |> Map.put(:plan, state.plan)
             |> Map.put(:select, state.select)
           )
 
@@ -252,9 +233,6 @@ defmodule NpcServer.Runtime do
         {:EXIT, life, reason} when life == state.life ->
           exit(reason)
 
-        {:EXIT, day_plan, reason} when day_plan == state.day_plan ->
-          exit(reason)
-
         {:EXIT, _, _} ->
           state
       end
@@ -269,13 +247,6 @@ defmodule NpcServer.Runtime do
   defp step(_, _, _, _), do: {:error, :unsupported_backend}
 
   defp deliver(state, event) do
-    if state.day_plan do
-      case event do
-        {:outcome, outcome} -> NpcServer.DayPlan.outcome(state.day_plan, outcome)
-        _ -> :ok
-      end
-    end
-
     if state.life do
       case event do
         {:outcome, outcome} -> NpcServer.Life.experience(state.life, outcome)

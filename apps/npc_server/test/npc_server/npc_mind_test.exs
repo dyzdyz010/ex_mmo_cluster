@@ -20,7 +20,7 @@ defmodule NpcServer.NpcMindTest do
   """
   use ExUnit.Case, async: true
   alias NpcServer.{Mind, Persona, Selector}
-  alias NpcServer.Life.State
+  alias NpcServer.Life.{DayPlan, State}
 
   defp profile do
     {:ok, card} = Persona.new(%{"traits" => %{"bold" => 8}, "personal" => "Keeps promises."})
@@ -65,7 +65,8 @@ defmodule NpcServer.NpcMindTest do
     memories: [],
     recall_ms: 0,
     buildings: [],
-    thought: nil
+    thought: nil,
+    plan: nil
   }
 
   # 经历原文（Life 写成的形状，不带时刻）：一次破坏的标准句与一条带期间事实的活动经历。
@@ -110,7 +111,9 @@ defmodule NpcServer.NpcMindTest do
           %{name: "shed", anchor: {-3, 64, -12}, standing: true}
         ],
         # 没有反思写成的那一句：新栏整栏不出现，仍是七栏。
-        thought: nil
+        thought: nil,
+        # 没有日计划：计划栏同样整栏不出现。
+        plan: nil
       }
 
       history = [
@@ -187,6 +190,107 @@ defmodule NpcServer.NpcMindTest do
       # 没有那一句：整栏不出现，其余各栏原样。
       assert Mind.snapshot(profile(), alone(), [], %{life | thought: nil}) ==
                List.delete(sections, column)
+    end
+
+    # 输入：S1-R8 真实应答夹具（`test/support/fixtures/day_plan/s1r8-*.json`）经 `DayPlan.check/3`、`adopt/6` 写成持久行，
+    # 再由 `DayPlan.column/3` 给出此刻的栏数据（Life 给 Mind 的 `plan` 就是这个形状）。不手写意图。
+    @plan_fixtures Path.expand("../support/fixtures/day_plan", __DIR__)
+    @plan_day 1299
+
+    defp adopted(name) do
+      sample = Path.join(@plan_fixtures, "s1r8-#{name}.json") |> File.read!() |> Jason.decode!()
+
+      {:ok, checked} =
+        DayPlan.check(sample["text"], sample["activity_names"], sample["now_minute"])
+
+      {DayPlan.adopt(DayPlan.new(), @plan_day, sample["now_minute"], checked, :day, 0),
+       sample["now_minute"]}
+    end
+
+    defp plan_column(life), do: Enum.at(Mind.snapshot(profile(), alone(), [], life), 5)
+
+    test "plans and promises: absent without a plan, so the state is byte-identical to before" do
+      assert "Now: It is night, 21:25.\n" <>
+               "Character: Lin, a builder. Personality: very bold. Personal: Keeps promises.\n" <>
+               "Feelings and relationships: Nothing notable.\n" <>
+               "What just happened: Nothing new.\n" <>
+               "What I remember: Nothing relevant.\n" <>
+               "Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. " <>
+               "Inventory: not checked yet.\n" <>
+               "Recent activities: None yet." ==
+               Mind.text(Mind.snapshot(profile(), alone(), [], %{@empty | plan: nil}))
+
+      # 刚采用的空计划（没有意图也没有 wants）：`DayPlan.column/3` 给 nil，栏同样不出现。
+      assert nil == DayPlan.column(DayPlan.new(), @plan_day, 0)
+    end
+
+    # R3-r1（12:11 的真实应答）：guard_hut 13:00 前一次、visit_plaza 16:00 前一次、visit_plaza 21:00 前一次，一条 cannot_yet。
+    # 13:20 完成一次 visit_plaza（记在最早的那条上）；14:00 时 guard_hut 已过 13:00 没做 → missed。三种状态各一条。
+    test "plans and promises: after the thought, before the situation; one line per intent, then one per want" do
+      {plan, _now_minute} = adopted("R3-r1")
+      plan = DayPlan.record_activity(plan, "visit_plaza", @plan_day, 13 * 60 + 20)
+      life = %{@empty | plan: DayPlan.column(plan, @plan_day, 14 * 60)}
+
+      assert Enum.map(Mind.snapshot(profile(), alone(), [], life), &elem(&1, 0)) == [
+               "Now",
+               "Character",
+               "Feelings and relationships",
+               "What just happened",
+               "What I remember",
+               "Plans and promises",
+               "Current situation",
+               "Recent activities"
+             ]
+
+      assert {"Plans and promises",
+              "guard_hut: 0 of 1 done — not finished by 13:00\n" <>
+                "visit_plaza: 1 of 1 done — finished\n" <>
+                "visit_plaza: 0 of 1 done, by 21:00\n" <>
+                "I would like to Find out why Corvin tore down my first hut and keep track of where they are, " <>
+                "but I cannot do that yet"} == plan_column(life)
+
+      # 与“What I have come to think”并存：反思栏在前、计划栏在后，其间没有别的栏。
+      thought = %{closing: "I will go to the stone.", at_ms: @now_ms - 1_000}
+      both = Mind.snapshot(profile(), alone(), [], %{life | thought: thought})
+
+      assert Enum.map(both, &elem(&1, 0)) |> Enum.slice(4, 4) == [
+               "What I remember",
+               "What I have come to think",
+               "Plans and promises",
+               "Current situation"
+             ]
+
+      # 没有计划：整栏不出现，其余各栏原样。
+      assert Mind.snapshot(profile(), alone(), [], %{life | plan: nil}) ==
+               List.delete(Mind.snapshot(profile(), alone(), [], life), plan_column(life))
+    end
+
+    # R5-r1（01:42）：两条意图（visit_plaza 要两次）、两条 cannot_yet；wants 的原文不改写、不去标点。
+    test "plans and promises: several wants, each as written; an open intent shows its count" do
+      {plan, now_minute} = adopted("R5-r1")
+      plan = DayPlan.record_activity(plan, "visit_plaza", @plan_day, now_minute + 60)
+      life = %{@empty | plan: DayPlan.column(plan, @plan_day, now_minute + 120)}
+
+      assert {"Plans and promises",
+              "guard_hut: 0 of 1 done, by 08:00\n" <>
+                "visit_plaza: 1 of 2 done, by 18:00\n" <>
+                "I would like to Find out from Corvin why they took my hut down and have words with them, " <>
+                "but I cannot do that yet\n" <>
+                "I would like to Ask Tobin why they asked whether the hut was mine, but I cannot do that yet"} ==
+               plan_column(life)
+    end
+
+    # 只有 wants：计划不是今天的（R5-r1 的计划在第二天读）时意图为空列表而 wants 仍在，栏里只有 wants 行。
+    test "plans and promises: wants alone still make the column; no intent lines" do
+      {plan, _now_minute} = adopted("R5-r1")
+      column = DayPlan.column(plan, @plan_day + 1, 30)
+      assert %{intents: [], wants: [_, _]} = column
+
+      assert {"Plans and promises",
+              "I would like to Find out from Corvin why they took my hut down and have words with them, " <>
+                "but I cannot do that yet\n" <>
+                "I would like to Ask Tobin why they asked whether the hut was mine, but I cannot do that yet"} ==
+               plan_column(%{@empty | plan: column})
     end
 
     test "strength and trust bands at their thresholds" do

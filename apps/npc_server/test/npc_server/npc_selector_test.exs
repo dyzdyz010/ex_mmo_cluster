@@ -1192,7 +1192,8 @@ What just happened: Nothing new.
           memories: [],
           recall_ms: 0,
           buildings: [],
-          thought: nil
+          thought: nil,
+          plan: nil
         }
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))
         {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "start")
