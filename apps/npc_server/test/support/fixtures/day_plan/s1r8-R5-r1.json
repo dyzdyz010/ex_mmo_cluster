@@ -1,0 +1,29 @@
+{
+ "source": "s1r8/raw/W_R5-r1.json 的 text 块；此刻与检查结果取自 s1r8/results.json 的 rows[R5-r1]",
+ "now": "night, 01:42",
+ "now_minute": 102,
+ "activity_names": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "text": "{\"intents\": [{\"activity\": \"guard_hut\", \"times\": 1, \"by\": \"08:00\", \"why\": \"I want to stand by my hut in the morning in case Corvin or anyone else comes toward it.\"}, {\"activity\": \"visit_plaza\", \"times\": 2, \"by\": \"18:00\", \"why\": \"I want to pass the time with the neighbours once my work is done, and Tobin has been about lately.\"}], \"cannot_yet\": [{\"want\": \"Find out from Corvin why they took my hut down and have words with them\", \"why\": \"I still don't know why they did it and none of my kinds of work lets me actually talk to them.\"}, {\"want\": \"Ask Tobin why they asked whether the hut was mine\", \"why\": \"I don't know why they asked and I'd like to speak to them directly, which I can't do yet.\"}]}",
+ "s1r8_checks": {
+  "check1": true,
+  "check2": true,
+  "check3": true,
+  "check4": true,
+  "check5": true,
+  "all_pass": true,
+  "fenced": false,
+  "intents_n": 2,
+  "cannot_n": 2,
+  "by_values": [
+   "08:00",
+   "18:00"
+  ]
+ }
+}

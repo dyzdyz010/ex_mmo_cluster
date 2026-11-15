@@ -1,0 +1,32 @@
+{
+ "source": "s1r8/raw/W_R1-r1.json 的 text 块；此刻与检查结果取自 s1r8/results.json 的 rows[R1-r1]",
+ "now": "afternoon, 13:00",
+ "now_minute": 780,
+ "activity_names": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "text": "{\"intents\": [{\"activity\": \"confront_wrecker\", \"times\": 1, \"by\": \"13:30\", \"why\": \"Corvin took down my whole hut and is only nine metres away, so I'll stand in front of them and watch them closely to make it plain I haven't forgotten.\"}, {\"activity\": \"gather_stone\", \"times\": 1, \"by\": \"14:30\", \"why\": \"I hold only 1728512 stone and the hut needs 6660096, so I must cut more before I can rebuild.\"}, {\"activity\": \"build_hut\", \"times\": 1, \"by\": \"15:30\", \"why\": \"My plot is empty again and I already carry enough limestone, so once I have the stone I'll rebuild the hut at (25, 510, 36).\"}, {\"activity\": \"guard_hut\", \"times\": 1, \"by\": \"17:00\", \"why\": \"I want to stand beside the new hut and keep an eye on it so no one takes it down again.\"}, {\"activity\": \"visit_plaza\", \"times\": 1, \"by\": \"19:00\", \"why\": \"With the work done I like to spend the evening at the plaza with the neighbours.\"}], \"cannot_yet\": [{\"want\": \"Ask Corvin face to face why they removed my hut\", \"why\": \"I don't know their reasons and none of my kinds of work lets me speak with them to find out.\"}]}",
+ "s1r8_checks": {
+  "check1": true,
+  "check2": true,
+  "check3": true,
+  "check4": true,
+  "check5": false,
+  "all_pass": false,
+  "fenced": false,
+  "intents_n": 5,
+  "cannot_n": 1,
+  "by_values": [
+   "13:30",
+   "14:30",
+   "15:30",
+   "17:00",
+   "19:00"
+  ]
+ }
+}

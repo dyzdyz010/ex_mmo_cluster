@@ -1,0 +1,29 @@
+{
+ "source": "s1r8/raw/W_R2-r1.json 的 text 块；此刻与检查结果取自 s1r8/results.json 的 rows[R2-r1]",
+ "now": "night, 22:26",
+ "now_minute": 1346,
+ "activity_names": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "text": "{\"intents\": [{\"activity\": \"guard_hut\", \"times\": 1, \"by\": \"22:50\", \"why\": \"I want one more look around the hut to be sure it's still standing before I leave it.\"}, {\"activity\": \"visit_plaza\", \"times\": 1, \"by\": \"23:30\", \"why\": \"My work is done and I hold enough material to rebuild, so I'll spend the rest of the evening with the neighbours at the plaza.\"}], \"cannot_yet\": [{\"want\": \"Walk back past the hut after the plaza to check on it before midnight\", \"why\": \"I said I'd walk back past it when I'm done, but none of my kinds of work covers just walking by.\"}]}",
+ "s1r8_checks": {
+  "check1": true,
+  "check2": true,
+  "check3": true,
+  "check4": true,
+  "check5": true,
+  "all_pass": true,
+  "fenced": false,
+  "intents_n": 2,
+  "cannot_n": 1,
+  "by_values": [
+   "22:50",
+   "23:30"
+  ]
+ }
+}
