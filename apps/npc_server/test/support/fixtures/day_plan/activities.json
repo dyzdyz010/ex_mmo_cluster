@@ -1,0 +1,26 @@
+[
+  {
+    "name": "build_hut",
+    "criterion": "Build the small hut on my plot at (25, 510, 36), or rebuild it if it is gone. It takes 6660096 units of material 11 (stone) and 1032192 units of material 10 (limestone)."
+  },
+  {
+    "name": "gather_stone",
+    "criterion": "Cut 6660096 units of stone (material 11) from the stone pile beside my plot. Steady, ordinary work."
+  },
+  {
+    "name": "gather_limestone",
+    "criterion": "Cut 1032192 units of limestone (material 10) from the limestone pile beside my plot."
+  },
+  {
+    "name": "guard_hut",
+    "criterion": "Stand beside the small hut for a while and keep an eye on it."
+  },
+  {
+    "name": "visit_plaza",
+    "criterion": "Walk to the plaza and pass the time with the neighbours."
+  },
+  {
+    "name": "confront_wrecker",
+    "criterion": "Walk over to the person standing nearby, stand in front of them and watch them closely, to make it plain I have not forgotten what they did. Only do this when that person is someone who once destroyed or removed something I built; otherwise there is no reason to."
+  }
+]

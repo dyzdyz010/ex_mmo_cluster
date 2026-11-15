@@ -219,7 +219,21 @@ defmodule NpcServer.Life.Reflection do
 
   之前的日记各压成一行（连续空白换成一个空格），一条日记才占一行。
   """
-  def user_message(%{"text" => question}, %{
+  def user_message(%{"text" => question}, materials) do
+    Enum.join(
+      materials_blocks(materials) ++ ["To think over now: " <> question, @used_instruction],
+      "\n\n"
+    )
+  end
+
+  @doc """
+  用户消息里的三块材料（`Right now:` / `What happened:` / `What I thought before …`），返回三块字符串的列表
+  （块内行间用 `\\n`，块与块之间的 `\\n\\n` 由调用方连）。入参是 `user_message/2` 的第二个参数那张 map。
+
+  反思（`user_message/2`）与日计划（`NpcServer.Life.DayPlan.Prompt.user_message/2`）共用这一个拼法：两处的材料取自
+  同一条路径、写法必须一致，所以只在这里写一遍。`happened` 至少一条（空列表没有“发生过的事”，直接崩）。
+  """
+  def materials_blocks(%{
         right_now: right_now,
         happened: [_ | _] = happened,
         thought_before: thought_before,
@@ -234,19 +248,14 @@ defmodule NpcServer.Life.Reflection do
         _ -> Enum.map_join(other_thoughts, "\n", &one_line/1)
       end
 
-    Enum.join(
-      [
-        Enum.join(["Right now:" | right_now], "\n"),
-        Enum.join(["What happened:" | numbered], "\n"),
-        Enum.join(
-          [@thoughts_heading, "About this: " <> this, "About other things: " <> others],
-          "\n"
-        ),
-        "To think over now: " <> question,
-        @used_instruction
-      ],
-      "\n\n"
-    )
+    [
+      Enum.join(["Right now:" | right_now], "\n"),
+      Enum.join(["What happened:" | numbered], "\n"),
+      Enum.join(
+        [@thoughts_heading, "About this: " <> this, "About other things: " <> others],
+        "\n"
+      )
+    ]
   end
 
   @doc """
