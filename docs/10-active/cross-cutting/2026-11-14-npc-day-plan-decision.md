@@ -1,0 +1,81 @@
+# NPC 日计划层（意图持有者 + Plans and promises 栏）决策稿（草案，待用户定；未实现）
+
+2026-11-14，第十四个统筹会话。上位文档：[借鉴稿](2026-11-13-npc-planning-reflection-borrowing.md) §4–§6（分层与顺序）、[架构总览](2026-11-12-npc-architecture-overview.md) “薄片二”、[内容规范](2026-11-13-npc-mind-content-spec.md) §10.11（边界：技能一级、组合归规划 LLM，Jev 只在封闭候选里选）。
+
+## 1. 为什么现在做（结构问题，不是措辞问题）
+
+薄片一的实跑与离线对照（`.demo/observe/npc-slice1-20261112/s1r7/` 的 `results.md`、`why-results.md`、`rewrite-results.md`、`corvin-results.md`）反复指向同一处缺口：
+**NPC 的“打算”只是一句文字（反思“自己”一问的收尾句，进 `What I have come to think`），没有任何地方记录“这件事做了没有、算不算完”。**
+
+- 句子要到下一轮反思写成“自己”时才换：说的事做完了还挂着（R7 第 7 轮采了一次石灰石后回到守屋；M1f 里小屋已重建，句子还说去采石重建），没做到的也没人记。
+- “刚对质过他”只由三处文字间接带出（`Recent activities` 5 件窗口、`What just happened` 那条、之后那轮的收尾句）；只删其中一处几乎不动（S1-R7d D3 落空）。
+- 改写作提示词的收尾规则（S1-R7c）不改善兑现率（.708 = .708），还会把打算本身推向某一类。
+
+用户 2026-11-14：“如果不是结构的问题就后期再优化”。上面这一条是结构问题，而且正是借鉴稿 §6 排在反思之后的第 3 步。
+
+## 2. 已有做法（AGENTS.md §2.2 第 8 条查证；一手来源，调研子会话读原文 / 源码，统筹会话未逐条复读）
+
+| 来源 | 计划 / 意图怎么表示 | 谁、凭什么判“做完” | 对我们的意义 |
+|---|---|---|---|
+| Generative Agents（Park et al. 2023，§4.3；代码 `generative_agents@fe05a71` `scratch.py`、`plan.py`） | 时段表 `f_daily_schedule`（`[描述, 分钟]`）存在持久 scratch，记忆流里只有派生的一条“这是 X 的计划” | **只看时间**：`act_check_finished`（scratch.py L533–560）按开始 + 时长到点即完成，不核对世界状态；反应时从当刻起重排（`_create_react`，plan.py L806–857） | 时段表作唯一真值、记忆里是派生物可借；“到点即完成”正是我们缺的那一半，照搬解决不了 |
+| F.E.A.R.（Orkin, GDC 2006；SDK 第三方镜像 `AIGoalMgr.cpp`） | goal 竞争 + 规划；action 自带 `IsActionComplete` / `ValidateAction` | **代码对照世界状态**：goal 已满足（`IsWSSatisfied`）相关度清零、触发重选（L590–596、L658–670）；同分保留当前 goal 防过早放弃（L451–462） | “已满足就不再拉人”直接对应我们的问题 |
+| HTN（Humphreys, Game AI Pro 第 12 章 §12.4–12.8） | 任务网络 | 任务成功才把 effects 写进世界状态；计划完成 / 失败 / 世界变化时重排；只接受同级或更高优先级的新计划（承诺） | 完成 = 代码写 effects |
+| Utility（Lewis, Game AI Pro 3 第 13 章 §13.3.1、§13.5.3） | 打分 | commitment bonus、runtime / cooldown 考量防振荡（作者自认 bonus 只把振荡挪位） | 在 Jev（封闭分类器）上没有可加分的地方，只能体现为“改候选”或“改内容” |
+| Voyager（`voyager.py` L266–269、`curriculum.py` L204–205、L329–360） | 任务列表 | critic LLM 对照背包等环境状态判成功，**代码记账** completed / failed 两张表并落盘，展示给出题 LLM | “LLM 判、代码记账、把已完成 / 失败列给决策者看” |
+| SayCan（§3、Algorithm 1） | 技能列表 | 可行性（价值函数）× 有用度（LLM）；已执行的技能追加进提示 | 可行性过滤：我们的 Selector 现在没有（selector.ex L30–31） |
+
+未核实：F.E.A.R. SDK 是第三方镜像；Orkin “Applying GOAP”、Voyager 论文 §2.3 正文、Plan-and-Solve 未读。
+
+## 3. 仓库现状（能复用什么）
+
+- **游戏钟**：`MmoContracts.WorldTime` 纯函数（`day` / `minute_of_day` / `weekday`），Runtime 每帧写进观察，`Now` 栏已在读。时段可直接按 WorldTime 编号。
+- **`DayPlan`**：未接线（只有 profile 同时带 `utility` 与 `endpoint` 才起，读它的 `Utility` 已删）；时段 `{from, to, activity, target}` 千分位、整份校验、不修补；重排保留已过部分；活动名表 `avoid/work/rest/social` 与 `profile.activities` 不是一套；**不持久化、时段没有完成状态、提示词是中文**（与 Mind “对模型一律英文”不符）；分日用现实 24 分钟，与 WorldTime 的 20 分钟（×72）**对不上**。`LlmBudget` 同样的分日问题，值只在进程里。
+- **Life 持久行**：唯一 owner、整行原子保存；`"reflection"` 键的加法（初值 + 加载时 `put_new` 补旧行）、独立 worker 槽、“持久行 → Mind 一栏”的通路（thought → `What I have come to think`）都有现成先例。
+- **Selector**：候选 = `profile.activities` 的 name + criterion；历史 5 条带结果；选定后执行到终止条件；问法不点名任何栏。
+
+## 4. 决策项与建议
+
+### D-1 “做完”由谁判（核心）
+
+- **A 只按时间（GA 式）**：时段过了就算过去。最便宜，但不解决“做完了还在拉人”。
+- **B 代码判（F.E.A.R. / HTN 式）**：每条意图用我们的封闭词汇写——`活动名`（取自 `profile.activities`）+ 可选对象 / 地点 + 次数（缺省 1）。对应活动以 `completed` 结束时，持有者在持久行里计数，够了标 `done`；时段过了没做够标 `missed`。不花 LLM、可审计。代价：规划 LLM 只能写出我们词表表达得了的意图。
+- **C LLM 判、代码记账（Voyager 式）**：在重排 / 日界时让 LLM 对照经历判断。能处理开放意图，但要调用、会误判。
+- **建议：B 为主，C 只处理 B 表达不了的**——规划 LLM 写不进词表的意图（例如“当面问 Corvin”，候选里没有“问”）不丢弃，原样记为 `cannot_yet`（“我想做但没有这项本事”），在日界的规划调用里由 LLM 决定留或撤；它同时是“对某人说话”上线后的输入。次数作完成条件是**原创决策**（GA 无完成判定、F.E.A.R. / HTN 的谓词是世界状态，我们的世界状态谓词按活动逐个写成本高；次数是 Outcome 已有的量），风险：“采到够用为止”这类意图用次数表达不准，实跑看。
+
+### D-2 持有者与持久化
+
+- **建议：Life 持久行新键 `"plan"`**（照 `"reflection"` 的先例：初值、加载补旧行、整行原子保存），Life 是唯一 owner；规划调用走独立 worker 槽（与反思槽同构，可共用写作接口 `NPC_REFLECT_*`）。`DayPlan` 不复用：按借鉴稿 §5.6 “优先删、其次复用”，重写成更小的意图持有者，`DayPlan` / `LlmBudget` 的分日改为 WorldTime 日号；额度计数也进持久行（否则重启即重置）。
+
+### D-3 给 Jev 看什么
+
+- 新栏 `Plans and promises`（借鉴稿 §4 已定名）：今天的各条意图与状态（`done` / `not yet` / `missed` / 时段），代码渲染，英文，**不点名“该选什么”**（守用户 11-13 定的“靠内容涌现、不强行要求”）；候选集不改（不做 commitment bonus / cooldown，那会变成改候选）。
+- `What I have come to think` 是否保留：**建议先并存**，离线对照“只计划栏 / 只想法栏 / 两栏”再定（用 R7 真实 state 换栏，不生造计划——计划正文须由规划 LLM 读真实材料写出）。
+
+### D-4 什么时候规划
+
+- 借鉴稿 §4：每游戏日一次（现实 20 分钟）+ 事件重排（≤ 4）。触发点放在 Life（与反思同一套“经历入口 → 计分 / 时刻”）；每 NPC 每日调用量重估（借鉴稿 §5.3 估最多约 10 次，现有上限 5）——**要用户定上限**。
+
+## 5. 不变量
+
+1. 计划只有一个 owner（Life 持久行）；Mind 只读、不另存。
+2. 意图状态只由代码按 Outcome 与时钟改；LLM 只在规划调用里新写 / 撤销意图，不直接改 `done`。
+3. Jev 仍只在 `profile.activities` 里选；计划栏是内容，不是指令。
+4. 规划失败（写作接口不可用、检查不过）不挡选择：沿用上一份计划或没有计划栏。
+
+## 6. 验证方式（先离线、后实跑；期望运行前写）
+
+1. 规划提示词与检查：用 R7 真实材料（同反思取材料的路径）离线写计划，检查词表合规率、`cannot_yet` 比例。
+2. 计划栏对选择的作用：R7 真实 state 换进规划 LLM 写出的计划栏，按驱动力读（有 / 无计划栏、done 与 not yet 的翻转）。
+3. 实现：持久行键、完成计数、渲染、规划槽；单元 + Life 集成 + npc_server 全套；独立代码评审。
+4. 闭环实跑：看“做完不再拉人”“说了没做的记成 missed”“对质类意图做过一次即 done”。
+
+## 7. 要用户定的
+
+1. D-1：“做完”的判法——B 为主、C 兜底（建议） / 只 A / 只 C。
+2. D-2：持有者放 Life 持久行、`DayPlan` 重写（建议） / 复用 `DayPlan`。
+3. D-4：每 NPC 每游戏日（现实 20 分钟）规划调用上限（借鉴稿估约 10 次，现有 5）。
+4. 先后：本层先做、“对某人说话”随后（建议） / 两者并行。
+
+## 进度
+
+- 2026-11-14：草案，调研回报（统筹会话代存要点于本稿 §2；源码与 PDF 在调研子会话的临时目录，未入库）。未实现。
