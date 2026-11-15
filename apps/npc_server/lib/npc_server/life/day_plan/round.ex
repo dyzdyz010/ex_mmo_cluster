@@ -15,7 +15,7 @@ defmodule NpcServer.Life.DayPlan.Round do
 
   Life 起槽那一刻把需要的一切取齐成快照交进来（见 `write/1`），I/O 只经快照里的 Hindsight 适配器、写作函数与 World 路由。
   只写一次：写作失败或检查不过都是这一次的结局，交回 Life 记一笔（`DayPlan.fail/5`），不重问——当日调用有额度
-  （`DayPlan.admit/2`），重问只会把额度花在同一份材料上；下一次到点（跨日或新的 event）再规划。
+  （`DayPlan.admit/3`），重问只会把额度花在同一份材料上；下一次到点（跨日或新的 event）再规划。
 
   日志每一步一行 `npc_plan cid=<cid> event=start|end …`；计划原文（意图的 `why`、`wants`）不进日志，从 Life 的 observe 读。
   """

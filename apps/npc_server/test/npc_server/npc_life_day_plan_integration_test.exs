@@ -17,7 +17,10 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   只读这两个键与 `place_name`）。
 
   `kind:event` 经历同时触发反思，反思的写作请求一律给写作接口真实形状的失败（`await_plan_write/0`），不影响规划。
-  不证明：真实模型写什么；Mind 的计划栏（T4）；墙钟驱动的游戏钟与 Runtime 的接线（`npc_runtime_world_time_test.exs`）。
+  保存失败的用例换用 `RefusingStore`（真实 NpcMemory 之上由测试控制的一次 `:write_denied`，同 `npc_life_test.exs` 的
+  `ControlledStore`）。
+  不证明：真实模型写什么；Mind 的计划栏（T4）；墙钟驱动的游戏钟与 Runtime 的接线（`npc_runtime_world_time_test.exs`）；
+  规划在途时 Life 重启（槽随进程没了的边界只写在 Life moduledoc 的“已知”清单里）。
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
@@ -25,6 +28,28 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   import NpcServer.ReflectionFixtures, only: [rawobs: 1]
   alias NpcServer.{Life, NpcWorld, Selector}
   alias NpcServer.Life.DayPlan
+
+  defmodule RefusingStore do
+    @moduledoc """
+    只测试：真实 NpcMemory 之上由测试进程控制的一次保存失败（同 `npc_life_test.exs` 的 `ControlledStore`）。测试进程在同名
+    ETS 表里放下 `{cid, 测试进程}` 之后，这个 cid 的 Life 行的**下一次**保存被拒（`:write_denied`，同 `FailingStore`），
+    被拒的那份行交给测试进程；其余读写照常。
+    """
+    defdelegate get(cid, kind, key), to: DataService.NpcMemory
+
+    def put(cid, "life", "state", row) do
+      case :ets.whereis(__MODULE__) != :undefined and :ets.take(__MODULE__, cid) do
+        [{^cid, test}] ->
+          send(test, {:save_refused, row})
+          {:error, :write_denied}
+
+        _ ->
+          DataService.NpcMemory.put(cid, "life", "state", row)
+      end
+    end
+
+    def put(cid, kind, key, value), do: DataService.NpcMemory.put(cid, kind, key, value)
+  end
 
   @plan_fixtures Path.expand("../support/fixtures/day_plan", __DIR__)
   # 两次规划调用的最小间隔（`DayPlan` 的 3 分钟）再多 1 毫秒。
@@ -311,7 +336,196 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert log =~ "npc_plan cid=#{cid} event=crashed"
   end
 
+  @tag timeout: 90_000
+  test "规划在途时到来的 event：起调用即清标记并记 last_at_ms；落栏后标记仍在，间隔过后触发 :event；:event 失败恢复标记" do
+    %{fixture: fixture, cid: cid, life: life, clock: clock} = context = planning()
+    plan_today(context, @day, "R3-r1")
+
+    damage(fixture.world, cid, 1, {5, 64, 8})
+    await_plan(cid, & &1.row["event_waiting"])
+    advance(clock, @gap_ms)
+    started_at = now(clock)
+    frame(life, @day, 800)
+    {worker, _user} = await_plan_write()
+
+    # 起调用那次保存已落库：调用数、起调用的时刻、清掉的标记（这次调用的材料里已有那条 event）。
+    stored = DataService.NpcMemory.get(cid, "life", "state")["plan"]
+    assert stored["calls"] == %{"day" => @day, "n" => 2}
+    assert stored["last_at_ms"] == started_at
+    refute stored["event_waiting"]
+
+    # 调用在途时又来一条 event：这次规划的材料里没有它。
+    damage(fixture.world, cid, 2, {4, 64, 8})
+    await_plan(cid, &(&1.row["event_waiting"] and &1.running))
+
+    reply(worker, "R2-r1")
+    plan = await_plan(cid, &(&1.row["counts"]["replanned"] == 1 and not &1.running))
+    assert plan.row["event_waiting"]
+    assert plan.row["last_at_ms"] == started_at
+
+    # 间隔不足：不起；间隔过后：:event 触发。
+    frame(life, @day, 801)
+    refute_plan_write(300)
+    advance(clock, @gap_ms)
+    frame(life, @day, 802)
+    {worker, _user} = await_plan_write()
+    assert {:ok, %{plan: %{row: %{"event_waiting" => false}}}} = Life.observe(cid)
+
+    # 这次重排失败：条件恢复，留到下次。
+    send(worker, {:reply, {:error, :timeout}})
+    plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+    assert %{"kind" => "event", "result" => "failed"} = plan.row["last"]
+    assert plan.row["event_waiting"]
+  end
+
+  @tag timeout: 60_000
+  test "身体状态还没到（body_state 为 nil）不起规划、不计调用；身体状态到了就触发" do
+    %{cid: cid, life: life} = planning()
+    observation = rawobs(4)
+    no_body = put_in(observation.self.body_state, nil)
+
+    Life.observation(
+      life,
+      %{no_body | world_time: %{observation.world_time | day: @day, minute_of_day: 600}}
+    )
+
+    refute_plan_write(500)
+    assert {:ok, %{plan: %{running: false, row: row}}} = Life.observe(cid)
+    assert row == DayPlan.new()
+
+    frame(life, @day, 601)
+    {worker, _user} = await_plan_write()
+    send(worker, {:reply, {:error, :timeout}})
+    await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+  end
+
+  @tag timeout: 60_000
+  test "有写日记接口但候选表为空（不规划的形态）：收到 kind:event 后持久行的 plan 仍是空的一份" do
+    %{fixture: fixture, cid: cid} = planning(activities: [])
+    damage(fixture.world, cid, 1, {5, 64, 8})
+
+    NpcWorld.await(fn -> match?({:ok, %{pending_episodes: n}} when n >= 1, Life.observe(cid)) end)
+    assert {:ok, %{plan: nil}} = Life.observe(cid)
+    assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == DayPlan.new()
+  end
+
+  @tag timeout: 60_000
+  test "起调用那次保存失败：行不变、不起槽，一秒之内不再试；之后恢复" do
+    :ets.new(RefusingStore, [:named_table, :public])
+    %{cid: cid, life: life, clock: clock} = planning(memory: RefusingStore)
+    :ets.insert(RefusingStore, {cid, self()})
+
+    frame(life, @day, 600)
+    assert_receive {:save_refused, refused}, 5_000
+    assert refused["plan"]["calls"] == %{"day" => @day, "n" => 1}
+
+    assert {:ok, %{plan: %{running: false, row: row}}} = Life.observe(cid)
+    assert row == DayPlan.new()
+    assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == DayPlan.new()
+
+    # 防抖期内：下一帧不再写库（保存放行也不起槽）。
+    frame(life, @day, 601)
+    refute_plan_write(300)
+    refute_received {:save_refused, _}
+
+    advance(clock, 1_001)
+    frame(life, @day, 602)
+    {worker, _user} = await_plan_write()
+    assert DataService.NpcMemory.get(cid, "life", "state")["plan"]["calls"]["n"] == 1
+    send(worker, {:reply, {:error, :timeout}})
+    await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+  end
+
+  @tag timeout: 60_000
+  test "落栏那次保存失败：意图没落，起调用时记下的 last_at_ms 照算，最小间隔内不再调用；间隔过后再起 :day" do
+    :ets.new(RefusingStore, [:named_table, :public])
+    %{cid: cid, life: life, clock: clock} = planning(memory: RefusingStore)
+    started_at = now(clock)
+
+    log =
+      capture_log(fn ->
+        frame(life, @day, plan_sample("R3-r1")["now_minute"])
+        {worker, _user} = await_plan_write()
+        :ets.insert(RefusingStore, {cid, self()})
+        reply(worker, "R3-r1")
+
+        assert_receive {:save_refused, refused}, 5_000
+        assert length(refused["plan"]["intents"]) == 3
+        await_plan(cid, &(not &1.running))
+      end)
+
+    assert log =~ "npc_plan cid=#{cid} event=persist_failed"
+    assert {:ok, %{plan: %{row: row}}} = Life.observe(cid)
+    assert row["intents"] == [] and row["day"] == nil
+    assert row["calls"] == %{"day" => @day, "n" => 1}
+    assert row["last_at_ms"] == started_at
+    assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == row
+
+    frame(life, @day, 740)
+    refute_plan_write(300)
+
+    advance(clock, @gap_ms)
+    frame(life, @day, 741)
+    {worker, _user} = await_plan_write()
+    send(worker, {:reply, {:error, :timeout}})
+    plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+    assert %{"kind" => "day"} = plan.row["last"]
+    assert plan.row["calls"]["n"] == 2
+  end
+
+  @tag timeout: 60_000
+  test "规划槽 worker 崩溃且记失败的那次保存也失败：行不变，Life 不死，槽清空" do
+    :ets.new(RefusingStore, [:named_table, :public])
+    %{cid: cid, life: life} = planning(memory: RefusingStore)
+
+    capture_log(fn ->
+      frame(life, @day, 600)
+      {worker, _user} = await_plan_write()
+      before = DataService.NpcMemory.get(cid, "life", "state")["plan"]
+      :ets.insert(RefusingStore, {cid, self()})
+      send(worker, {:exit, :plan_writer_crashed})
+
+      assert_receive {:save_refused, refused}, 5_000
+      assert refused["plan"]["counts"]["failed"] == 1
+
+      plan = await_plan(cid, &(not &1.running))
+      assert plan.row == before
+      assert plan.row["counts"]["failed"] == 0 and plan.row["calls"]["n"] == 1
+      assert {:plan_worker_crashed, _} = plan.error
+    end)
+
+    assert Process.alive?(life) and :global.whereis_name({Life, node(), cid}) == life
+  end
+
+  @tag timeout: 60_000
+  test "调用期间越过日界：按起槽那天的日号落栏，下一帧观察按新日触发 :day（间隔过后）" do
+    %{cid: cid, life: life, clock: clock} = planning()
+    minute = plan_sample("R3-r1")["now_minute"]
+
+    frame(life, @day, minute)
+    {worker, _user} = await_plan_write()
+    # 调用在途时游戏钟进入下一日（槽在途，这一帧不触发）。
+    frame(life, @day + 1, 5)
+    reply(worker, "R3-r1")
+
+    plan = await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
+    assert plan.row["day"] == @day
+    assert Enum.map(plan.row["intents"], & &1["id"]) == ["#{@day}:1", "#{@day}:2", "#{@day}:3"]
+    # 栏按此刻（新日）给：昨天的意图不进，wants 仍给。
+    assert %{intents: [], wants: [_]} = plan.column
+
+    advance(clock, @gap_ms)
+    frame(life, @day + 1, 6)
+    {worker, _user} = await_plan_write()
+    assert {:ok, %{plan: %{row: %{"calls" => calls}}}} = Life.observe(cid)
+    assert calls == %{"day" => @day + 1, "n" => 1}
+    send(worker, {:reply, {:error, :timeout}})
+    plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+    assert %{"kind" => "day"} = plan.row["last"]
+  end
+
   # 起一个开着规划的 Life（`journaling: false` 时不带写日记接口）：真实 World 与 NpcMemory，Life 的时钟是测试拨动的 Agent。
+  # `memory:` 换存储（保存失败的用例用 `RefusingStore`），`activities:` 换候选表（空表即不规划的形态）。
   # 同一用例里起第二个 Life 时用 `fixture:` 共用同一个世界（世界进程是具名的，一个用例只起一个）。
   defp planning(opts \\ []) do
     test = self()
@@ -327,8 +541,11 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
     profile =
       test
-      |> reflect_profile(%{clock: fn -> Agent.get(clock, & &1) end}, DataService.NpcMemory)
-      |> Map.put(:activities, activities())
+      |> reflect_profile(
+        %{clock: fn -> Agent.get(clock, & &1) end},
+        Keyword.get(opts, :memory, DataService.NpcMemory)
+      )
+      |> Map.put(:activities, Keyword.get_lazy(opts, :activities, &activities/0))
 
     profile =
       if Keyword.get(opts, :journaling, true),
@@ -391,6 +608,12 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     end
   end
 
+  # 这段时间里没有起规划写作（只认规划的系统提示词；途中到来的反思写作留在邮箱里，由下一次 `await_plan_write/0` 处理）。
+  defp refute_plan_write(ms) do
+    plan_system = plan_request()["system"]
+    refute_receive {:write, _, ^plan_system, _}, ms
+  end
+
   defp reply(worker, name),
     do: send(worker, {:reply, {:ok, %{text: plan_sample(name)["text"], usage: %{}}}})
 
@@ -425,6 +648,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
   defp dones(plan), do: Enum.map(plan.row["intents"], & &1["done"])
   defp advance(clock, ms), do: Agent.update(clock, &(&1 + ms))
+  defp now(clock), do: Agent.get(clock, & &1)
 
   defp plan_sample(name), do: plan_fixture("s1r8-#{name}.json")
   defp plan_request, do: plan_fixture("requests-R1.json")

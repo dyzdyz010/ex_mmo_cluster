@@ -106,13 +106,16 @@ defmodule NpcServer.Life do
 
   - **持久行 `"plan"`**（形状见 `DayPlan.new/0`）与其它键同一次保存，重启后还在；日计划之前存下的行在加载边界补成空的一份。
   - **触发只在每帧观察上查**（`maybe_plan/1`，便宜：不到点不写库、不打日志）：行已加载、规划的形态、规划槽空着、观察里有
-    游戏钟（`world_time`；日号与日内分钟都取它）、不在防抖期内，且 `DayPlan.due/3` 给出 `:day`（本游戏日还没有采用过计划）
-    或 `:event`（接纳经历时有 `kind:event`，在那次保存里 `DayPlan.note_event/1`）。到点后 `DayPlan.admit/2` 记一次调用并保存，
-    保存成功才起槽；保存失败行不变，一秒之内不再试。当日 5 次额度用完：每个游戏日只记一笔 `skipped` 与一行日志。
+    游戏钟（`world_time`；日号与日内分钟都取它）与身体状态（`self.body_state`，与规划“此刻”一块同一条件，没到就起只会白耗
+    额度）、不在防抖期内，且 `DayPlan.due/3` 给出 `:day`（本游戏日还没有采用过计划）或 `:event`（接纳经历时有 `kind:event`，
+    在那次保存里 `DayPlan.note_event/1`）。到点后 `DayPlan.admit/3` 记一次调用、起调用的时刻（`last_at_ms`，最小间隔从它算）
+    并清 event 标记（这次的材料已含那条 event），保存成功才起槽；保存失败行不变，一秒之内不再试。槽在途、没有观察时不查，
+    不计数。当日 5 次额度用完：每个游戏日只记一笔 `skipped` 与一行日志（那次保存成功之后才记下这一日；失败则一秒之内不再试）。
   - **规划槽**（第四个 worker 槽 `plan`，与 `poll` / `job` / `reflect` 并列，可与反思槽同时在途）：快照在起槽那一刻取齐，
     worker 不回头问 Life。结果落栏是一次保存：写成且检查通过 → `DayPlan.adopt/6`；写作失败、检查不过、worker 崩溃 →
-    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常）。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
-    日号落栏，下一帧观察因日号变了再触发 `:day`。
+    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常；`:event` 失败把 event 标记恢复，留到下次）。调用在途时又来的 `kind:event`
+    照常记标记，落栏不清它，过了最小间隔再重排。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
+    日号落栏，下一帧观察因日号变了再触发 `:day`（过了最小间隔）。
   - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动按此刻观察里的游戏钟 `DayPlan.record_activity/4`；
     失败的不计（`done` 只由代码按活动结果增）。
   - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果；`observe/1` 的 `plan` 是
@@ -121,9 +124,11 @@ defmodule NpcServer.Life do
 
   已知的未设上限处与边界（只记事实）：
   - “当日额度用完只记一次 skipped”的标记只在内存：Life 在同一游戏日重启后，再到点会再记一次。
-  - 规划槽在途时 Life 重启：调用已在那次保存里记过（`calls` 不退还），结果随进程丢掉，不记 `failed`；行里的意图沿用上一份。
-  - 落栏那次保存失败：调用已记、这一次的计划或失败都没有落进行里（`last_at_ms` 也没记，最小间隔只从上一次落了栏的调用算），
-    所以随后的帧可能立即再起一次（额度照扣，至多到当日 5 次）。
+  - 规划槽在途时 Life 重启：调用已在那次保存里记过（`calls` 与 `last_at_ms` 不退还，重启后照样隔最小间隔才再调用），
+    结果随进程丢掉，不记 `failed`；行里的意图沿用上一份。
+  - 落栏那次保存失败：调用已记、这一次的计划或失败都没有落进行里；`last_at_ms` 在起调用时已记，最小间隔照算。
+  - 上面两条路径都会丢掉触发那次 `:event` 的条件：起调用时已清掉 event 标记，而落栏（含 `:event` 失败时的恢复）没有发生，
+    这条 event 不再触发重排（调用在途期间新来的 event 已在接纳它的那次保存里记下，不受影响）。
   - 每帧都调一次 Life 的时钟与 `DayPlan.due/3`（都是常数时间）。
   """
   use GenServer
@@ -1193,7 +1198,8 @@ defmodule NpcServer.Life do
   # 一批之内触发状态不清零，后一条的原因必然包含前一条的）：
   #   起得了（槽空着、有观察）→ 同一份行里 `mark_round_started/2`（started/2、rounds 加一），下一步 `{:start, 一轮}`；
   #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步 `{:skip, 一轮, :busy | :no_observation}`。
-  # 这一批里有 `kind:event` 的经历时，同一份行里给日计划记下“有 event 在等着重排”（`DayPlan.note_event/1`；下一帧观察到点就起）。
+  # 规划的形态在这一批里有 `kind:event` 的经历时，同一份行里给日计划记下“有 event 在等着重排”（`DayPlan.note_event/1`；
+  # 下一帧观察到点就起）；不规划的形态不动 `"plan"`。
   # 返回 `{新的行, nil | 下一步}`。只改行，不保存：调用方保存成功之后才 `follow_round/2`（保存失败行没变，什么也不做）。
   defp accept(%{journaling: nil}, row, entries),
     do: {Map.update!(row, "pending", &(&1 ++ entries)), nil}
@@ -1214,7 +1220,7 @@ defmodule NpcServer.Life do
       end)
 
     plan =
-      if Enum.any?(entries, &("kind:event" in &1["tags"])),
+      if Enum.any?(entries, &("kind:event" in &1["tags"])) and planning?(s),
         do: DayPlan.note_event(row["plan"]),
         else: row["plan"]
 
@@ -1380,13 +1386,15 @@ defmodule NpcServer.Life do
   defp planning?(%{journaling: %{activities: activities}}), do: activities != []
 
   # 每帧观察上的触发检查（观察每秒 20 帧，所以这里要便宜：不到点不写库、不打日志）。条件依次：行已加载、规划的形态、
-  # 规划槽空着、观察里有游戏钟、不在保存失败后的防抖期内、`DayPlan.due/3` 给出 `:day` 或 `:event`。
+  # 规划槽空着、观察里有游戏钟与身体状态、不在保存失败后的防抖期内、`DayPlan.due/3` 给出 `:day` 或 `:event`。
+  # 身体状态与 `Reflection.Round.right_now/1` 同一条件：它为 nil 时此刻一块写不出，起了也只是白耗一次额度并锁住最小间隔。
   defp maybe_plan(%{row: nil} = s), do: s
 
   defp maybe_plan(s) do
     with true <- planning?(s),
          nil <- s.plan,
-         %{world_time: %{day: day, minute_of_day: minute}} <- s.observation,
+         %{world_time: %{day: day, minute_of_day: minute}, self: %{body_state: body_state}}
+         when body_state != nil <- s.observation,
          now_ms = s.now.(),
          true <- s.plan_not_before_ms == nil or now_ms >= s.plan_not_before_ms,
          kind when kind != nil <- DayPlan.due(s.row["plan"], day, now_ms) do
@@ -1396,10 +1404,11 @@ defmodule NpcServer.Life do
     end
   end
 
-  # 到点：先记一次调用（`DayPlan.admit/2`）并保存，保存成功才起槽；保存失败行不变（错误经 `save/2` 可见），
-  # 一秒之内不再试。当日额度用完：每个游戏日只记一笔 skipped 与一行日志（内存里记下这一日），跨日 `admit/2` 自然恢复。
+  # 到点：先记一次调用（`DayPlan.admit/3`：调用数、起调用的时刻、清 event 标记）并保存，保存成功才起槽；保存失败行不变
+  # （错误经 `save/2` 可见），一秒之内不再试。当日额度用完：每个游戏日只记一笔 skipped 与一行日志——记 skipped 的那次保存
+  # 成功之后才在内存里记下这一日；保存失败同样一秒之内不再试，不记这一日（下次再记）。跨日 `admit/3` 自然恢复。
   defp admit_plan(s, kind, day, minute, now_ms) do
-    case DayPlan.admit(s.row["plan"], day) do
+    case DayPlan.admit(s.row["plan"], day, now_ms) do
       {:ok, admitted} ->
         case save(s, %{s.row | "plan" => admitted}) do
           {:ok, s} -> start_plan(%{s | plan_not_before_ms: nil}, kind, day, minute, now_ms)
@@ -1410,15 +1419,16 @@ defmodule NpcServer.Life do
         s
 
       {:error, :day_budget_exhausted} ->
-        Logger.info(
-          "npc_plan cid=#{s.context.cid} event=skipped kind=#{kind} day=#{day} reason=day_budget_exhausted"
-        )
-
-        s = %{s | plan_exhausted_day: day}
-
         case save(s, %{s.row | "plan" => DayPlan.skip(s.row["plan"])}) do
-          {:ok, s} -> s
-          {:error, s} -> s
+          {:ok, s} ->
+            Logger.info(
+              "npc_plan cid=#{s.context.cid} event=skipped kind=#{kind} day=#{day} reason=day_budget_exhausted"
+            )
+
+            %{s | plan_exhausted_day: day, plan_not_before_ms: nil}
+
+          {:error, s} ->
+            %{s | plan_not_before_ms: now_ms + @plan_retry_ms}
         end
     end
   end

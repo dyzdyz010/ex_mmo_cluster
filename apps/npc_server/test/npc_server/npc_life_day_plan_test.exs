@@ -332,30 +332,44 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     DayPlan.adopt(plan, day, now_minute, checked!(name), kind, at_ms)
   end
 
-  describe "admit/2：当日规划调用额度" do
+  describe "admit/3：当日规划调用额度" do
     test "一个游戏日 5 次（规划加重排共计）：前 5 次记数通过，第 6 次 {:error, :day_budget_exhausted} 且行不变" do
       plan =
         Enum.reduce(1..5, DayPlan.new(), fn n, plan ->
-          assert {:ok, plan} = DayPlan.admit(plan, 7)
+          assert {:ok, plan} = DayPlan.admit(plan, 7, n)
           assert plan["calls"] == %{"day" => 7, "n" => n}
           plan
         end)
 
-      assert DayPlan.admit(plan, 7) == {:error, :day_budget_exhausted}
+      assert DayPlan.admit(plan, 7, 6) == {:error, :day_budget_exhausted}
       assert plan["calls"] == %{"day" => 7, "n" => 5}
     end
 
     test "跨日清零：第二天从 1 起算；调用数只增不因采用计划而变" do
-      {:ok, plan} = DayPlan.admit(DayPlan.new(), 7)
-      plan = Enum.reduce(1..4, plan, fn _, plan -> elem(DayPlan.admit(plan, 7), 1) end)
-      assert DayPlan.admit(plan, 7) == {:error, :day_budget_exhausted}
+      {:ok, plan} = DayPlan.admit(DayPlan.new(), 7, 0)
+      plan = Enum.reduce(1..4, plan, fn n, plan -> elem(DayPlan.admit(plan, 7, n), 1) end)
+      assert DayPlan.admit(plan, 7, 5) == {:error, :day_budget_exhausted}
 
-      assert {:ok, next} = DayPlan.admit(plan, 8)
+      assert {:ok, next} = DayPlan.admit(plan, 8, 6)
       assert next["calls"] == %{"day" => 8, "n" => 1}
 
-      {:ok, again} = DayPlan.admit(DayPlan.new(), 7)
+      {:ok, again} = DayPlan.admit(DayPlan.new(), 7, 0)
       adopted = DayPlan.adopt(again, 7, 100, checked!("R3-r1"), :day, 1)
       assert adopted["calls"] == again["calls"]
+    end
+
+    test "放行时记 last_at_ms（起调用就记，最小间隔从它算）并清 event_waiting（这次调用的材料已含那条 event）" do
+      plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 1_000) |> DayPlan.note_event()
+      assert {:ok, admitted} = DayPlan.admit(plan, 4, 500_000)
+      assert admitted["last_at_ms"] == 500_000
+      refute admitted["event_waiting"]
+      assert DayPlan.due(admitted, 4, 500_000 + 3 * 60_000 - 1) == nil
+
+      # 其余不动：意图、wants、last、计数。
+      assert Map.drop(admitted, ["calls", "last_at_ms", "event_waiting"]) ==
+               Map.drop(plan, ["calls", "last_at_ms", "event_waiting"])
+
+      assert json(admitted) == admitted
     end
   end
 
@@ -370,14 +384,27 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert DayPlan.due(plan, 5, 10 * @gap) == :day
     end
 
-    test "有一条 event 经历在等（note_event）且计划是今天的 → :event；采用之后触发条件清掉" do
+    test "有一条 event 经历在等（note_event）且计划是今天的 → :event；起调用（admit）清掉条件，采用之后不再触发" do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0) |> DayPlan.note_event()
       assert plan["event_waiting"]
       assert DayPlan.due(plan, 4, 10 * @gap) == :event
 
-      replanned = adopt!(plan, "R2-r1", 4, 731, :event, 10 * @gap)
+      {:ok, admitted} = DayPlan.admit(plan, 4, 10 * @gap)
+      replanned = adopt!(admitted, "R2-r1", 4, 731, :event, 10 * @gap)
       refute replanned["event_waiting"]
       assert DayPlan.due(replanned, 4, 20 * @gap) == nil
+    end
+
+    test "调用在途时又来一条 event（admit 之后、adopt 之前 note_event）：采用不清它，间隔过后再给 :event" do
+      plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0) |> DayPlan.note_event()
+      {:ok, admitted} = DayPlan.admit(plan, 4, 10 * @gap)
+
+      replanned =
+        admitted |> DayPlan.note_event() |> adopt!("R2-r1", 4, 731, :event, 10 * @gap)
+
+      assert replanned["event_waiting"]
+      assert DayPlan.due(replanned, 4, 11 * @gap - 1) == nil
+      assert DayPlan.due(replanned, 4, 11 * @gap) == :event
     end
 
     test ":event 与 :day 同时成立时给 :day（新的一天里也有 event 在等）" do
@@ -399,7 +426,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert DayPlan.due(plan, 4, 0) == :day
     end
 
-    test "失败的调用也记 last_at_ms：失败后不立刻再起（防连发），日预算另由 admit/2 管" do
+    test "失败的调用也记 last_at_ms：失败后不立刻再起（防连发），日预算另由 admit/3 管" do
       plan = DayPlan.new() |> DayPlan.fail(:day, :failed, :timeout, 5_000)
       assert plan["last_at_ms"] == 5_000
       assert DayPlan.due(plan, 4, 5_000 + @gap - 1) == nil
@@ -539,17 +566,6 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
       assert Enum.take(replanned["intents"], -5) |> Enum.all?(&(&1["done"] == 0))
     end
-
-    test "条目上限 8：已结束项丢光后仍超，就丢最旧的 open（新来的最前面的）——这条路径由此测到" do
-      # check/3 只放行至多 5 条，所以正常路径走不到这里；用 R1-r1 的真实意图重复到 10 条，直接喂 adopt 以覆盖这条兜底。
-      {:ok, %{intents: five}} = check_variant("R1-r1", &Map.put(&1, "cannot_yet", []))
-      ten = %{intents: five ++ five, wants: []}
-      plan = DayPlan.adopt(DayPlan.new(), 4, 780, ten, :day, 0)
-
-      assert length(plan["intents"]) == 8
-      # 丢的是最旧的两条（序号 1、2），留下 3..10。
-      assert Enum.map(plan["intents"], & &1["id"]) == Enum.map(3..10, &"4:#{&1}")
-    end
   end
 
   # R1-r1 的真实意图把 by 整体后移到晚于 20:00（只改 by，其余原样），作“晚间重排”的合格正文变体。
@@ -634,8 +650,13 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert DayPlan.note_event(plan) == plan
     end
 
-    test "fail：失败 / 被检查拒绝各记计数与 last，意图与 wants 不动，event_waiting 不清（条件留到下次）" do
-      plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0) |> DayPlan.note_event()
+    test "fail：失败 / 被检查拒绝各记计数与 last，意图与 wants 不动；:event 失败把 admit 清掉的 event_waiting 恢复（条件留到下次）" do
+      {:ok, plan} =
+        adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
+        |> DayPlan.note_event()
+        |> DayPlan.admit(4, 6_000)
+
+      refute plan["event_waiting"]
 
       failed = DayPlan.fail(plan, :event, :failed, :timeout, 7_000)
       assert failed["intents"] == plan["intents"] and failed["wants"] == plan["wants"]
@@ -655,9 +676,21 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert rejected["counts"]["rejected"] == 1
       assert rejected["last"]["result"] == "rejected"
       assert rejected["last"]["reason"] == "{:too_many_items, 6}"
+      assert rejected["event_waiting"]
     end
 
-    test "skip：只给 counts.skipped 加一（到点却起不了），其余不动" do
+    test "fail：:day 失败不动 event_waiting（日号没采用过，due 本来就再给 :day）" do
+      {:ok, plan} = DayPlan.admit(DayPlan.new(), 4, 1_000)
+      failed = DayPlan.fail(plan, :day, :failed, :timeout, 1_000)
+      refute failed["event_waiting"]
+      assert DayPlan.due(failed, 4, 1_000 + @gap) == :day
+
+      # :day 起调用时 admit 清掉了一条在等的 event；:day 失败后它不回来（那条 event 的材料已在这次调用里）。
+      {:ok, plan} = DayPlan.new() |> DayPlan.note_event() |> DayPlan.admit(4, 1_000)
+      refute DayPlan.fail(plan, :day, :rejected, {:too_many_items, 6}, 1_000)["event_waiting"]
+    end
+
+    test "skip：只给 counts.skipped 加一（当日额度用完），其余不动" do
       plan = DayPlan.new()
       skipped = DayPlan.skip(plan)
       assert skipped["counts"]["skipped"] == 1

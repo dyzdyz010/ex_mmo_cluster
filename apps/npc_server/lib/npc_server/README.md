@@ -800,7 +800,8 @@ flowchart LR
 - **谁有**：只有“规划的形态”：profile 带写作接口（同反思，`NPC_REFLECT_*`）且有候选表，现在只有统一形态（`"npc"`）；别的形态不触发、
   不记账，`Life.mind/2` 与 `Life.observe/1` 的 `plan` 为 nil。
 - **何时规划**：`DayPlan.due/3`——本游戏日还没有采用过计划（`:day`），或接纳经历时来了一条 `kind:event`（`:event`，重排）。日号与日内分钟取观察里的游戏钟
-  `world_time`。到点后 `DayPlan.admit/2` 记一次调用、保存成功才起槽；当日额度用完或起不了槽记 `counts.skipped` 与一行日志，触发条件不清。
+  `world_time`，且要等身体状态到了。到点后 `DayPlan.admit/3` 记一次调用与起调用的时刻、清 event 标记，保存成功才起槽；当日额度用完记
+  `counts.skipped` 与一行日志（每个游戏日一次），触发条件不清；槽在途、没有观察时不查、不计数。规划在途时又来的 event 留着，落栏后过了最小间隔再重排。
 - **一次规划做什么**：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 系统提示词与用户消息（逐字照离线测量 S1-R8）→ 写一次 →
   `DayPlan.check/3`。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
 - **持久行 `"plan"`**（Life 是唯一 owner，字符串键、能原样过 JSON，形状见 [`life/day_plan.ex`](life/day_plan.ex) 的 `new/0`）：
@@ -813,7 +814,7 @@ flowchart LR
   `by` 是日内分钟（0..1439）。
 - **观察与日志**：`Life.observe(cid).plan` 给出 `enabled`、`running`、持久行 `row`、此刻的栏数据 `column` 与最近一次规划失败的原因；日志一律
   `npc_plan cid=<cid> event=…`：`start` / `end`（在规划槽里，`end` 带结局、耗时与 token 数）、`landed`（落栏）、`persist_failed`（落栏那次保存失败）、
-  `crashed`（worker 崩溃）、`skipped`（到点却起不了）；计划正文不进日志。
+  `crashed`（worker 崩溃）、`skipped`（到点而当日额度用完）；计划正文不进日志。
 - **当前状态**（2026-11-15）：**已实现**，单元测试与 Life 集成测试通过；规划提示词与检查做过离线测量 S1-R8（探索性，在真实 S1-R7 材料上：意图形状成立，
   `cannot_yet` 多半是想说话而写不出的事），**还没有闭环实跑、没有验收**。已知局限：
   ① 计划栏对选择的作用没有测过（栏的位置与写法是原创，只有离线 S1-R8 测了规划这一半）；

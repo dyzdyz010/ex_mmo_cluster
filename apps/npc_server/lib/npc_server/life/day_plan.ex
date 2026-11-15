@@ -19,9 +19,17 @@ defmodule NpcServer.Life.DayPlan do
 
   ## 调用流程
 
-      观察 / 经历到来 → due/3（该不该规划）→ admit/2（今天还有额度吗）→（调用方起写作调用）→ check/3（应答合格吗）
-        → 合格：adopt/6；不合格或写作失败：fail/5；到点却起不了：skip/1
+      观察 / 经历到来 → due/3（该不该规划）→ admit/3（今天还有额度吗）→（调用方起写作调用）→ check/3（应答合格吗）
+        → 合格：adopt/6；不合格或写作失败：fail/5；到点而当日额度用完：skip/1
       活动结束 → record_activity/4；经历是 event 类 → note_event/1；选择之前 → column/3（给 Mind 的栏）
+
+  槽在途、没有观察时调用方根本不查 `due/3`，所以不计 `skipped`（触发是逐帧查的，那样记会随帧数增长）。
+
+  ## `event_waiting` 的生命周期
+
+  `note_event/1` 置真；`admit/3` 放行时清掉——这次调用的材料在起调用那一刻取，已经含了那条 event。调用在途时又来的 event
+  再置真，`adopt/6` 不碰它，所以落栏之后过了最小间隔还会因它重排。`:event` 调用失败（`fail/5`）把它恢复为真（这次重排没成，
+  条件留到下次）；`:day` 失败不恢复（日号没采用过，`due/3` 本来就再给 `:day`）。
 
   ## 持久行 `"plan"`（`new/0`）
 
@@ -29,8 +37,8 @@ defmodule NpcServer.Life.DayPlan do
       "intents"       [%{"id", "activity", "times", "by", "why", "done"}]，by 为日内分钟（0..1439），id 为 "<日号>:<序号>"
       "wants"         [%{"want", "why"}]
       "calls"         %{"day", "n"}：本游戏日已发的规划调用数（起调用时就记，崩溃不重置，跨日清零）
-      "event_waiting" 有一条 event 经历进来、等着触发重排
-      "last_at_ms"    上一次规划调用的时钟（防连发的最小间隔用；采用与失败都记）
+      "event_waiting" 有一条 event 经历进来、等着触发重排（生命周期见上）
+      "last_at_ms"    上一次规划调用的时钟（防连发的最小间隔用；起调用时 admit/3 就记，采用与失败再记一次）
       "last"          nil | %{"at_ms", "kind" => "day" | "event", "result" => "adopted" | "failed" | "rejected", "reason"}
       "counts"        %{"planned", "replanned", "failed", "rejected", "skipped"}
 
@@ -231,15 +239,27 @@ defmodule NpcServer.Life.DayPlan do
 
   @doc """
   今天还能不能再起一次规划调用：当日 `calls.n < 5`（规划加重排共计）返回 `{:ok, 记了一次调用的 plan}`，跨日清零；
-  否则 `{:error, :day_budget_exhausted}`。调用在**起调用时**就记，崩溃或失败都不退还。
+  否则 `{:error, :day_budget_exhausted}`（行不变）。调用在**起调用时**就记，崩溃或失败都不退还。
+
+  放行时还：记 `last_at_ms = now_ms`——起调用就记而不是落栏才记，这样规划在途时 Life 重启、落栏那次保存失败之后，
+  也至少隔最小间隔才再调用；清 `event_waiting`——这次调用的材料在起调用那一刻取，已含那条 event。
   """
-  @spec admit(plan(), integer()) :: {:ok, plan()} | {:error, :day_budget_exhausted}
-  def admit(plan, day) do
+  @spec admit(plan(), integer(), integer()) :: {:ok, plan()} | {:error, :day_budget_exhausted}
+  def admit(plan, day, now_ms) do
     case plan["calls"] do
       %{"day" => ^day, "n" => n} when n >= @day_calls -> {:error, :day_budget_exhausted}
-      %{"day" => ^day, "n" => n} -> {:ok, %{plan | "calls" => %{"day" => day, "n" => n + 1}}}
-      _other_day -> {:ok, %{plan | "calls" => %{"day" => day, "n" => 1}}}
+      %{"day" => ^day, "n" => n} -> {:ok, started(plan, day, n + 1, now_ms)}
+      _other_day -> {:ok, started(plan, day, 1, now_ms)}
     end
+  end
+
+  defp started(plan, day, n, now_ms) do
+    %{
+      plan
+      | "calls" => %{"day" => day, "n" => n},
+        "last_at_ms" => now_ms,
+        "event_waiting" => false
+    }
   end
 
   @doc """
@@ -270,10 +290,11 @@ defmodule NpcServer.Life.DayPlan do
 
   同日重排：旧意图里已 `done` 与已 `missed`（按 `status/3`，用此刻的日号与分钟）的保留，open 的换成新的；跨日整份换。
   新意图 `id` 为 `"<日号>:<序号>"`（序号接着保留项里最大的往下排，同一份里不重复）、`done` 为 0。`wants` 整份换成新的。
-  清 `event_waiting`，记 `last`、`last_at_ms` 与计数（`:day` → `planned`，`:event` → `replanned`）。
+  记 `last`、`last_at_ms` 与计数（`:day` → `planned`，`:event` → `replanned`）。不碰 `event_waiting`：起调用时 `admit/3`
+  已清过，此刻若为真，是调用在途时新来的 event，这次的材料没看到它，要留着触发下一次重排。
 
-  条目总数上限 8：保留项在前、新的在后，超出就丢最前面的——先是最旧的已结束项，已结束项丢光后仍超才丢最旧的 open。
-  `check/3` 一次至多放行 5 条，所以丢 open 的那条路径只有直接给 `adopt/6` 超长的 `checked` 才会走到。
+  条目总数上限 8：保留项在前、新的在后，超出时丢最旧的保留项（保留项都是已结束的）。新意图至多 5 条（`check/3` 的上限）、
+  小于上限 8，所以不会丢到新意图。
   """
   @spec adopt(plan(), integer(), non_neg_integer(), checked(), :day | :event, integer()) :: plan()
   def adopt(plan, day, now_minute, %{intents: intents, wants: wants}, kind, at_ms) do
@@ -295,7 +316,6 @@ defmodule NpcServer.Life.DayPlan do
       | "day" => day,
         "intents" => Enum.take(kept ++ fresh, -@max_intents),
         "wants" => wants,
-        "event_waiting" => false,
         "last_at_ms" => at_ms,
         "last" => %{
           "at_ms" => at_ms,
@@ -323,14 +343,16 @@ defmodule NpcServer.Life.DayPlan do
 
   @doc """
   一次规划调用没有成功：`outcome` 是 `:failed`（写作失败、崩溃、超时）或 `:rejected`（应答没过 `check/3`），`reason` 记进 `last`
-  （不是字符串的用 `inspect/1` 转成字符串，保证能过 JSON）。意图与 `wants` 不动（沿用上一份）、`event_waiting` 不清（条件留到下次）；
-  `last_at_ms` 记下，两次调用的最小间隔照算。
+  （不是字符串的用 `inspect/1` 转成字符串，保证能过 JSON）。意图与 `wants` 不动（沿用上一份）；`last_at_ms` 记下，两次调用的
+  最小间隔照算。`kind == :event` 时把 `event_waiting` 恢复为真（起调用时 `admit/3` 清掉了它，这次重排没成，条件留到下次）；
+  `:day` 失败不恢复（日号没采用过，`due/3` 本来就再给 `:day`）。
   """
   @spec fail(plan(), :day | :event, :failed | :rejected, term(), integer()) :: plan()
   def fail(plan, kind, outcome, reason, at_ms) when outcome in [:failed, :rejected] do
     %{
       plan
-      | "last_at_ms" => at_ms,
+      | "event_waiting" => plan["event_waiting"] or kind == :event,
+        "last_at_ms" => at_ms,
         "last" => %{
           "at_ms" => at_ms,
           "kind" => Atom.to_string(kind),
@@ -341,7 +363,10 @@ defmodule NpcServer.Life.DayPlan do
     }
   end
 
-  @doc "到点却起不了（槽被占、没有观察、当日额度用完）：只给 `counts.skipped` 加一，触发条件不清。"
+  @doc """
+  到点而当日额度用完（`admit/3` 拒绝）：只给 `counts.skipped` 加一，触发条件不清。槽在途、没有观察时调用方不查 `due/3`，
+  不走这里、不计数。
+  """
   @spec skip(plan()) :: plan()
   def skip(plan), do: %{plan | "counts" => bump(plan["counts"], "skipped")}
 
