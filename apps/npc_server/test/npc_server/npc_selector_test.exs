@@ -301,8 +301,15 @@ defmodule NpcServer.NpcSelectorTest do
       assert nil == Selector.current(state)
       assert [%{activity: "rest_at_home", result: ^failure}] = Selector.history(state)
 
-      # 刚结束的活动写成一句经历：候选名、它的判据、结局；候选登记的地名一并交给 Life（作 place: tag）。
-      assert %{text: ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|, place: "home"} ==
+      # 刚结束的活动写成一句经历：候选名、它的判据、结局；候选登记的地名一并交给 Life（作 place: tag）；
+      # 候选名与“是否完成”交给 Life 给日计划记账（失败的不算完成）。
+      assert %{
+               text:
+                 ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|,
+               place: "home",
+               activity: "rest_at_home",
+               completed: false
+             } ==
                Selector.experience(state, profile)
 
       # 发问失败后树带着同一份报告重问：不重复记账，trigger 是 retry。
@@ -315,7 +322,13 @@ defmodule NpcServer.NpcSelectorTest do
       assert {"completed", state} = Selector.ended(state, :completed)
 
       # 没登记地名的候选：place 为 nil。
-      assert %{text: ~s|I did "zeta_build_north" (Build the hut on the north plot.). Result: completed.|, place: nil} ==
+      assert %{
+               text:
+                 ~s|I did "zeta_build_north" (Build the hut on the north plot.). Result: completed.|,
+               place: nil,
+               activity: "zeta_build_north",
+               completed: true
+             } ==
                Selector.experience(state, profile)
 
       assert [

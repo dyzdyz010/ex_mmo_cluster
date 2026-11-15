@@ -263,6 +263,35 @@ defmodule NpcServer.Mind do
     "It is #{period(hour)}, #{two_digits(hour)}:#{two_digits(rem(minute, 60))}."
   end
 
+  @doc """
+  今天的一条意图写成一行英文（`NpcServer.Life.DayPlan.column/3` 的一项，`by` 是日内分钟，写成两位的 `HH:MM`）：
+
+      :open    <activity>: <done> of <times> done, by HH:MM
+      :done    <activity>: <done> of <times> done — finished
+      :missed  <activity>: <done> of <times> done — not finished by HH:MM
+
+  规划的用户消息里 `What I meant to do today, as it stands:` 一块（`NpcServer.Life.DayPlan.Round`）用它；写法是原创取值，
+  S1-R8 没有测过这一块。只陈述数目与时限，不点名该做什么。
+  """
+  @spec plan_intent_line(%{
+          activity: String.t(),
+          times: pos_integer(),
+          done: non_neg_integer(),
+          by: non_neg_integer(),
+          status: :open | :done | :missed
+        }) :: String.t()
+  def plan_intent_line(%{activity: activity, times: times, done: done, by: by, status: status}) do
+    count = "#{activity}: #{done} of #{times} done"
+
+    case status do
+      :open -> "#{count}, by #{hh_mm(by)}"
+      :done -> "#{count} — finished"
+      :missed -> "#{count} — not finished by #{hh_mm(by)}"
+    end
+  end
+
+  defp hh_mm(minute), do: "#{two_digits(div(minute, 60))}:#{two_digits(rem(minute, 60))}"
+
   defp period(hour) when hour in 5..11, do: "morning"
   defp period(hour) when hour in 12..16, do: "afternoon"
   defp period(hour) when hour in 17..20, do: "evening"

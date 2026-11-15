@@ -596,7 +596,11 @@ defmodule NpcServer.NpcRegistryTest do
         assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] = rows(name)
 
         # 附近没人、没有我的建筑：一次选择只有“未了与感受”一路召回（`Mind.recall_queries/2`），线上的请求体按适配器的契约。
-        assert_receive {:hindsight_recall, recall}, 30_000
+        # 这个形态也规划（`Life.DayPlan`，首帧到点）：规划槽的“自己”一问另有两路召回，与选择的那一路先后不定，按问句认出选择的那一路。
+        assert_receive {:hindsight_recall,
+                        %{"query" => "What am I looking forward to, worried about, or have promised to do?"} =
+                          recall},
+                       30_000
 
         assert Map.delete(recall, "query_timestamp") == %{
                  "query" => "What am I looking forward to, worried about, or have promised to do?",

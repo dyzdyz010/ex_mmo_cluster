@@ -188,10 +188,14 @@ defmodule NpcServer.NpcDialogueLifeTest do
       experience_pending: [],
       activity: nil,
       sight: Life.Sight.new(),
-      # 这份状态代表“不反思”的形态；反思三字段的取值须与 `Life.init/1` 在该形态下的返回保持一致。
+      # 这份状态代表“不反思”的形态；反思三字段与日计划四字段的取值须与 `Life.init/1` 在该形态下的返回保持一致。
       journaling: nil,
       reflect: nil,
       reflect_error: nil,
+      plan: nil,
+      plan_error: nil,
+      plan_not_before_ms: nil,
+      plan_exhausted_day: nil,
       row: %{
         "state" => Life.State.new(7, "world", 6, 0),
         "pending" => [],

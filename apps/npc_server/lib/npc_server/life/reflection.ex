@@ -362,7 +362,11 @@ defmodule NpcServer.Life.Reflection do
       "tags" => ["kind:reflection", "actor:#{cid}"]
     }
 
-  defp self_question,
+  @doc """
+  “自己”那一问（`questions/4` 每一轮都带的那条）：`%{"key" => "self", "text", "tags"}`。日计划的取材也用它
+  （`NpcServer.Life.DayPlan.Round`：离线测量 S1-R8 的材料就是这一问的两次召回与“之前的想法”）。
+  """
+  def self_question,
     do: %{
       "key" => @self_key,
       "text" =>

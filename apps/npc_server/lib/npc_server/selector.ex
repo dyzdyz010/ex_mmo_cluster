@@ -39,6 +39,8 @@ defmodule NpcServer.Selector do
     HTTP 出错、应答不成形、选项不在候选里都是显式失败（Outcome rejected + `npc_select_failed`），
     不换别的选择器、不取缺省活动、不把读不到的记忆当成“没有记忆”；树等一会儿再问一次（`Trees.npc/1`）。
   - **过期应答**：命令与 Outcome 按 id 对应，由 `Brain.Tree` 与 Runtime 现有的编号机制丢弃。
+  - **经历**：一项活动结束，`experience/2` 给出 Runtime 交给 Life 的那条经历（`Life.activity/2`）：一句英文、候选登记的地名，
+    以及候选名与是否完成——后两者是 Life 的日计划记账用的（“按活动结果计数”的唯一计数事件，只记完成的）。
 
   本模块的状态（`new/0`）由 Runtime 持有，是总纲心智快照里“我正在做什么”一栏的 owner：
   `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, asked: 最近一次问 Jev 的内容 | nil}`，条目按选中次序排列
@@ -128,8 +130,10 @@ defmodule NpcServer.Selector do
 
   @doc """
   刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2` 记完账的状态。返回
-  `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil}`。候选的判据一并写进句子：候选名只是标识，
-  判据才说得清做的是什么。地名来自注册参数的 `place_name`（`NpcServer.Registry`），Life 把它写成这条经历的 `place:` tag。
+  `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil, activity: 候选名, completed: 是否完成}`。
+  候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`（`NpcServer.Registry`），
+  Life 把它写成这条经历的 `place:` tag。`activity` 与 `completed`（结局是 `:completed` 为真，失败为假）给 Life 的日计划记账
+  （`NpcServer.Life.DayPlan.record_activity/4`：只记完成的）。
   """
   def experience(state, profile) do
     %{activity: name, result: result} = List.last(history(state))
@@ -137,7 +141,12 @@ defmodule NpcServer.Selector do
     %{criterion: criterion, place_name: place} =
       Enum.find(profile.activities, &(&1.name == name))
 
-    %{text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|, place: place}
+    %{
+      text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|,
+      place: place,
+      activity: name,
+      completed: result == :completed
+    }
   end
 
   @doc """

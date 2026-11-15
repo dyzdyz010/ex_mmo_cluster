@@ -5,7 +5,9 @@ defmodule NpcServer.Life.Reflection.Round do
   这里只把它们按离线测量 S1-X2 的做法（`.demo/observe/npc-slice1-20261112/s1x2/plan.md` 的“做法”与“运行前补记”）串起来。
 
   不回头问 Life：Life 起槽那一刻把需要的一切取齐成快照交进来（见 `write/1`），I/O 只经快照里的 Hindsight 适配器、
-  写日记的函数与 World 路由。两个公开入口对应“落栏不等存档”：worker 先 `write/1`、把结果交回 Life 落栏，再 `archive/2`。
+  写日记的函数与 World 路由。两个流程入口对应“落栏不等存档”：worker 先 `write/1`、把结果交回 Life 落栏，再 `archive/2`。
+  另有两个取材函数公开给日计划的规划槽复用（`NpcServer.Life.DayPlan.Round`，同一条取材路径不复制）：此刻一块 `right_now/1`、
+  一问的材料 `materials/3`。
 
       write/1：定问题 → 此刻一块（一轮渲染一次）→ 每问：两次召回 → 四块材料 → 写 → 检查 →（不合格原样重问一次）
       archive/2：本轮写成的各条 → 反思库 ensure_bank + retain（一条都没写成就不存）
@@ -152,12 +154,44 @@ defmodule NpcServer.Life.Reflection.Round do
     end
   end
 
-  # 此刻一块：身体状态还没收到就不渲染（这一轮失败）；我的建筑在不在现查 World。
-  defp right_now(%{observation: %{self: %{body_state: nil}}}), do: {:error, :no_body_state}
+  @doc """
+  此刻一块（`Right now:` 之后的各行，`Mind.right_now/2`）：身体状态还没收到就不渲染（`{:error, :no_body_state}`）；
+  我的建筑在不在现查 World（`Life.standing/2`，失败原样返回）。`snapshot` 要 `observation`、`buildings`、`context`。
+  反思的一轮与日计划的规划槽（`NpcServer.Life.DayPlan.Round`）共用。
+  """
+  def right_now(%{observation: %{self: %{body_state: nil}}}), do: {:error, :no_body_state}
 
-  defp right_now(snapshot) do
+  def right_now(snapshot) do
     with {:ok, views} <- Life.standing(snapshot.buildings, snapshot.context),
          do: {:ok, Mind.right_now(snapshot.observation, views)}
+  end
+
+  @doc """
+  一问的材料：两次召回（问题原文；时刻参数是快照的 `now_ms`）→ “发生过的事”（还没写进 Hindsight 的经历在前，召回条目按 id 去重）
+  → 同一问题之前的日记与其它对象各自最新的日记。返回 `{:ok, materials}`，`materials` 就是 `Reflection.user_message/2`
+  第二个参数那张 map（`right_now` / `happened` / `thought_before` / `other_thoughts`）；一条材料都没有 → `{:error, :no_materials}`；
+  召回失败 → `{:error, 原因}`（不重试）。
+
+  “之前的想法”取自 `snapshot.latest`：`thought_before` 是 `latest[问题的键]["journal"]`，`other_thoughts` 是此刻还在的其它对象
+  （记得的建筑、关系表里的人、“自己”，不含本问）各自最新的一条。
+  反思的每一问（传进来的是本轮写成后更新过的 `latest`）与日计划的规划槽（“自己”一问，`Reflection.self_question/0`）共用这一条取材路径。
+  `snapshot` 要 `recent`、`latest`、`buildings`、`people`、`adapter`、`config`、`now_ms`。
+  """
+  def materials(question, right_now, snapshot) do
+    with {:ok, first} <- recall(question, Enum.at(@recalls, 0), snapshot),
+         {:ok, second} <- recall(question, Enum.at(@recalls, 1), snapshot),
+         [_ | _] = happened <- happened(snapshot.recent, first, second, snapshot.now_ms) do
+      {:ok,
+       %{
+         right_now: right_now,
+         happened: happened,
+         thought_before: get_in(snapshot.latest, [question["key"], "journal"]),
+         other_thoughts: others(snapshot.latest, question["key"], snapshot)
+       }}
+    else
+      [] -> {:error, :no_materials}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # 按 `questions/4` 的次序一问一问写；写成的立即并进 latest，后面的问题在“之前的想法”里看得到它。
@@ -233,24 +267,16 @@ defmodule NpcServer.Life.Reflection.Round do
     outcome
   end
 
-  # 一问：两次召回 → 四块材料 → 写，不合格原样重问一次。返回 {:written, check 的结果, 次数} |
-  # {:discarded, 原因, 次数} | {:failed, 原因, 次数}（召回失败、没有材料时次数为 0）。
+  # 一问：取材料（`materials/3`，“之前的想法”看本轮已写成的 latest）→ 四块 → 写，不合格原样重问一次。
+  # 返回 {:written, check 的结果, 次数} | {:discarded, 原因, 次数} | {:failed, 原因, 次数}（召回失败、没有材料时次数为 0）。
   defp ask(question, latest, right_now, system, snapshot) do
-    with {:ok, first} <- recall(question, Enum.at(@recalls, 0), snapshot),
-         {:ok, second} <- recall(question, Enum.at(@recalls, 1), snapshot),
-         [_ | _] = happened <- happened(snapshot.recent, first, second, snapshot.now_ms) do
-      user =
-        Reflection.user_message(question, %{
-          right_now: right_now,
-          happened: happened,
-          thought_before: get_in(latest, [question["key"], "journal"]),
-          other_thoughts: others(latest, question["key"], snapshot)
-        })
+    case materials(question, right_now, %{snapshot | latest: latest}) do
+      {:ok, materials} ->
+        user = Reflection.user_message(question, materials)
+        attempt(snapshot, system, user, length(materials.happened), 1)
 
-      attempt(snapshot, system, user, length(happened), 1)
-    else
-      [] -> {:failed, :no_materials, 0}
-      {:error, reason} -> {:failed, reason, 0}
+      {:error, reason} ->
+        {:failed, reason, 0}
     end
   end
 
