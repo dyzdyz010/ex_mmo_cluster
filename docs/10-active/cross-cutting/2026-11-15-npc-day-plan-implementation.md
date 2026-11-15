@@ -35,9 +35,10 @@
 
 - `new/0`（空的一份，上面的形状）。
 - `check(text, activity_names, now_minute)`：S1-R8 的检查 1–5 原样（`stop_reason` 在调用方）：至多去一对 ``` 围栏；一个 JSON 对象、只有 `intents` / `cannot_yet` 两个键；意图键恰为 `activity,times,by,why`，`activity` ∈ 词表（逐字）、`times` 整数 ≥ 1、`by` 为 `HH:MM` 且严格晚于此刻、不晚于 23:59、`why` 非空串；`cannot_yet` 条键恰为 `want,why` 非空串；两表总条数 ≤ 5。返回 `{:ok, %{intents:, wants:}}`（`by` 已换成分钟）或 `{:error, 原因}`。
-- `admit(plan, day)`：当日 `calls.n < 5`（决策稿：规划 + 重排共 5 次）返回 `{:ok, 记了一次调用的 plan}`，跨日清零；否则 `{:error, :day_budget_exhausted}`。
+- `admit(plan, day, now_ms)`：当日 `calls.n < 5`（决策稿：规划 + 重排共 5 次）返回 `{:ok, plan'}`，跨日清零；否则 `{:error, :day_budget_exhausted}`。放行时记一次调用，并**记 `last_at_ms = now_ms`、清 `event_waiting`**（起调用就记：规划在途时 Life 重启、落栏保存失败之后也至少隔最小间隔；这次调用的材料在起槽时取，已含那条 event。T5，独立评审后）。
 - `due(plan, day, now_ms)`：此刻该不该起一次规划——`:day`（`plan["day"] != day`）或 `:event`（`plan["day"] == day` 且 `event_waiting`）或 nil；距 `last_at_ms` 不足 `@min_gap_ms`（3 分钟，原创取值，实跑后调）一律 nil。
-- `adopt(plan, day, checked, kind, at_ms)`：采用一份检查合格的计划：同日重排保留已 `done` 与已 `missed` 的旧意图、换掉 open 的；跨日整份换；新意图 `id = "<day>:<序号>"`、`done = 0`；`wants` 整份换成新的；清 `event_waiting`；记 `last`、计数。条目总数上限 8（超出先丢最旧的已结束项）。
+- `adopt(plan, day, now_minute, checked, kind, at_ms)`（实现里多了 `now_minute`：判断旧意图是否已结束要用它）：采用一份检查合格的计划：同日重排保留已 `done` 与已 `missed` 的旧意图、换掉 open 的；跨日整份换；新意图 `id = "<day>:<序号>"`、`done = 0`；`wants` 整份换成新的；记 `last`、`last_at_ms`、计数；**不碰 `event_waiting`**（调用在途时新来的 event 要留给下一次重排）。条目总数上限 8（超出丢最旧的保留项；新意图至多 5 条，丢不到）。
+- `fail(plan, kind, :failed | :rejected, reason, at_ms)`：写作失败 / 崩溃 / 检查不过：意图与 `wants` 不动，记 `last`、`last_at_ms`、计数；`:event` 失败把 `event_waiting` 恢复为真，`:day` 失败不恢复。`skip(plan)`：当日额度用完时 `counts.skipped + 1`。`status(plan, intent, {day, minute})`：`:done | :missed | :open`。
 - `record_activity(plan, activity, day, minute)`：一项活动 **completed**（失败不计）时调用：给同名、今天、`open`（`done < times` 且 `minute <= by`）的意图里 `by` 最早的一条 `done + 1`。
 - `note_event(plan)`：`event_waiting = true`。
 - `column(plan, day, minute)`：给 Mind 的数据：今天的各条 `%{activity, times, done, by, status}` 与 `wants`；没有意图也没有 `wants` 为 nil。
@@ -50,12 +51,12 @@
 
 - `NpcServer.Life.DayPlan.Round.write(snapshot)`：此刻一块（`Life.standing` + `Mind.right_now`）→ 材料（用“自己”一问的两次召回与“之前的想法”，与 S1-R8 取材同一路径；从 `Reflection.Round` 抽出公用的取材函数，不复制）→ 写一次（不重问）→ `DayPlan.check/3`。返回 `%{result: {:ok, checked} | {:error, 原因}, elapsed_ms, usage}`；每步一行 `npc_plan cid=… event=…` 日志，正文不进日志。
 - Life：新槽 `plan`（与 `poll` / `job` / `reflect` 并列）；`EXIT` / `DOWN` 照反思槽的处理；落栏 `{:planned, outcome}` 是一次保存：成功 → `adopt/5`，失败 → `counts.failed`（或 `rejected`）、行里意图不动。**只有 profile 带写日记接口的 Life 规划**（同反思）。
-- 触发（在 `{:observation, …}` 与接纳经历的路径里查 `due/3`，到点且槽空、有观察、`admit` 过才起）：`:day`（本游戏日还没有采纳过的计划）与 `:event`（`kind:event` 经历到来，经 `note_event`）。到点却起不了：`counts.skipped + 1` 与一行日志，不清触发条件。其余触发（计划耗尽、被直呼等）记后期。
+- 触发（在 `{:observation, …}` 与接纳经历的路径里查 `due/3`，到点且槽空、有观察、`admit` 过才起）：`:day`（本游戏日还没有采纳过的计划）与 `:event`（`kind:event` 经历到来，经 `note_event`）。到点而当日额度用完：每个游戏日只记一笔 `counts.skipped` 与一行日志（槽在途、没有观察、身体状态还没到时不查、不计数——触发逐帧查，那样记会随帧数增长），不清触发条件；触发还要求观察里有身体状态（规划的“此刻”一块需要它）。其余触发（计划耗尽、被直呼等）记后期。
 - 活动记账：`Selector.experience/2` 的返回加 `activity`（名字）与 `completed`（布尔）；`Life.activity/2` 在接纳那条经历的**同一次保存**里 `record_activity`。
 
 ## 5. Mind 栏（`Plans and promises`）
 
-Life 的 `mind/2` 视图加 `plan`（`column/3` 的结果）；`Mind.snapshot` 在 `What I have come to think` 之后、`Current situation` 之前加一栏，英文、代码渲染，**不点名该选什么**。形式：每条意图一行，`<activity>: <done> of <times> done, by HH:MM` / `… — done` / `… — not done in time`；`wants` 各一行 `I would like to <want>, but I cannot do that yet`。没有内容整栏不出现（state 与现在逐字节相同）。`What I have come to think` 先与它并存（决策稿 D-3）。
+Life 的 `mind/2` 视图加 `plan`（`column/3` 的结果）；`Mind.snapshot` 在 `What I have come to think` 之后、`Current situation` 之前加一栏，英文、代码渲染，**不点名该选什么**。形式：每条意图一行，`<activity>: <done> of <times> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；`wants` 各一行 `I would like to <want>, but I cannot do that yet`。没有内容整栏不出现（state 与现在逐字节相同）。`What I have come to think` 先与它并存（决策稿 D-3）。
 
 ## 6. 拆任务（顺序做；同一个 worktree，不并行跑 mix）
 
