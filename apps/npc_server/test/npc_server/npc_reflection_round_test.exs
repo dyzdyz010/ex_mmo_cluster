@@ -8,7 +8,7 @@ defmodule NpcServer.NpcReflectionRoundTest do
   各回各的、或同一份原始经历条目两路各回放一次、或返回适配器真实形状的失败——并把每路描述交给测试进程）与写日记的函数
   （回放真实应答，并把系统提示词与用户消息交给测试进程）。
   我的建筑给空表（现查 World 不发生，所以不问建筑），有关系的人给 Corvin：问 Corvin 与“自己”两问。
-  证明：“发生过的事”的次序与各条正文与离线测量逐字一致；召回条目按 id 去重（同一条在两路里各出现一次只写一次）；召回的参数；
+  证明：“发生过的事”的次序与各条正文与离线测量逐字一致（句首的多久以前按游戏钟 × 24 手算，离线是 × 72）；召回条目按 id 去重（同一条在两路里各出现一次只写一次）；召回的参数；
   “之前的想法”只带此刻还在的对象、次序人 → 自己（含本轮刚写成的）；进持久行的那一份（时刻是这一轮的此刻，问题原文）；
   召回失败时这一轮即止；存档文档。
   不证明：未封存经历在前、建筑一问与现查 World、建筑 → 人的次序（Life 用例）；真实模型与真实 Hindsight。
@@ -89,13 +89,14 @@ defmodule NpcServer.NpcReflectionRoundTest do
                Map.merge(tags, %{types: types, max_tokens: max_tokens})
     end
 
-    # 发生过的事：没有未封存的，先第一次召回、再第二次召回的各条；正文与离线渲染的逐字相同（多久以前相对此刻、去掉后缀）。
+    # 发生过的事：没有未封存的，先第一次召回、再第二次召回的各条；正文与离线渲染的逐字相同（去掉后缀），
+    # 句首的多久以前按 × 24 手算（见 `expected_bodies/0`）。
     assert_received {:write, system, person_message}
     assert system == fixture("system-prompt.txt")
-    assert happened(person_message) == recalled_bodies()
+    assert happened(person_message) == expected_bodies()
 
     assert_received {:write, _system, self_message}
-    assert happened(self_message) == recalled_bodies()
+    assert happened(self_message) == expected_bodies()
 
     # 之前的想法：同一问题上一轮的那条；其它问题各自最新的，只取此刻还在的对象（记得的建筑、关系表里的人、自己），
     # 次序 建筑 → 人 → 自己，本轮刚写成的 Corvin 那条在内。持久行里有小屋上一轮的日记，但此刻记得的建筑里没有它
@@ -148,7 +149,7 @@ defmodule NpcServer.NpcReflectionRoundTest do
     # 两路都回放同样的 21 条原始经历：不去重会是 42 条。离线渲染里这 21 条就是前 21 条正文。
     raw = length(recalled("raw"))
     assert_received {:write, _system, message}
-    assert happened(message) == Enum.take(recalled_bodies(), raw)
+    assert happened(message) == Enum.take(expected_bodies(), raw)
   end
 
   test "召回失败：这一问记失败、这一轮到此为止，后面的问题不再发请求、不写日记" do
@@ -241,6 +242,53 @@ defmodule NpcServer.NpcReflectionRoundTest do
   end
 
   # 用户消息里 What happened 一块的各条正文（去掉编号，编号从 1 起连续）。
+  # 夹具里每条的离线渲染 `body` 是 × 72 算出的句首（“About 20.5 hours ago, …”）。游戏钟 2026-11-15 改为 × 24 后句首变了，
+  # 正文（句首之后的部分）与倍率无关、仍取夹具原文；句首换成下面按 × 24 手算的值：29 条各自 此刻 − 条目时刻（毫秒）
+  # × 24 换成游戏小时，不足 0.25 小时写 Just now，不足 48 小时按 0.5 小时四舍五入，否则按天。
+  # 这份值由与被测代码无关的 Python 脚本从夹具的 `at` 与第 4 轮此刻算出；同一脚本在 × 72 下复现了夹具里全部 29 个离线句首，
+  # 才用它出 × 24 的值。
+  @ago_x24 [
+    "About 7 hours ago",
+    "About 7 hours ago",
+    "About 5.5 hours ago",
+    "About 5.5 hours ago",
+    "About 2 hours ago",
+    "About 6.5 hours ago",
+    "About 4.5 hours ago",
+    "About 4 hours ago",
+    "About 2 hours ago",
+    "About 7 hours ago",
+    "About 3 hours ago",
+    "About 4.5 hours ago",
+    "About 2.5 hours ago",
+    "About 3.5 hours ago",
+    "About 3 hours ago",
+    "About 4 hours ago",
+    "About 2.5 hours ago",
+    "About 4.5 hours ago",
+    "About 8 hours ago",
+    "About 6 hours ago",
+    "About 3 hours ago",
+    "About 7 hours ago",
+    "About 7 hours ago",
+    "About 7 hours ago",
+    "About 5.5 hours ago",
+    "About 6.5 hours ago",
+    "About 8 hours ago",
+    "About 5.5 hours ago",
+    "About 8 hours ago"
+  ]
+
+  defp expected_bodies do
+    bodies = recalled_bodies()
+    assert length(bodies) == length(@ago_x24)
+
+    for {ago, body} <- Enum.zip(@ago_x24, bodies) do
+      rest = String.replace(body, ~r/^(?:Just now|About [\d.]+ (?:hours?|days?) ago), /, "")
+      ago <> ", " <> rest
+    end
+  end
+
   defp happened(message) do
     [_, block] = Regex.run(~r/\nWhat happened:\n(.*?)\n\n/s, message)
 

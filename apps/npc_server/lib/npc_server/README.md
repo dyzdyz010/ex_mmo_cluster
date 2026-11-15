@@ -476,7 +476,7 @@ flowchart LR
   `<人> placed <N> blocks | the building "<名>" | an unnamed building about <M> m from me.`、
   `<人> removed the entire | broke off part of the | damaged part of the building "<名>"[ that <原放置者> placed,] about <M> m from me.`、
   `<人> removed | damaged <N> blocks[ …] about <M> m from me.`（全部句型与取整规则在 `Life.Sight` 的 moduledoc）。时长按游戏钟写
-  （现实 50 秒 = 游戏 1 小时，`about <N> minutes / hours`）。同一人每类每 20 分钟至多 4 条，挡下的不写、记 `npc_sight_capped`
+  （现实 150 秒 = 游戏 1 小时，`about <N> minutes / hours`；已于 2026-11-15 由 ×72 改为 ×24，见游戏钟设计页）。同一人每类每 20 分钟至多 4 条，挡下的不写、记 `npc_sight_capped`
   （`Life.observe/1` 的 `sight_capped` 按类计数）。只写看到的：不写意图与评价，不动情绪与信任。门槛与上限都是原创取值，
   实跑导出后再调；进行中的账只在 Life 内存里，重启即丢、不补写；观察每秒 20 帧，没有条目要写的帧不保存。
   与活动句 `During it:` 的重复先两者都留。C 倒下 / 死亡不做（要改 Body）。这些句子没有离线测过。

@@ -55,7 +55,7 @@ flowchart LR
 | `@avoid_threat` / `@avoid_cautious` | 1.5 / 0.4 | mode 为 `:avoid` / `:cautious` 时的 avoid 加分 |
 | `@thank_bonus` | 0.7 | mode 为 `:thank` 时 social 加分 |
 | `@nearby_bonus`/`@nearby_range` | 0.15 / 10 m | 有他人在范围内时 social 加分 |
-| `day_ms` | 1_440_000 | **旧假设（现实 24 分钟 = 1 游戏日），2026-11-13 更正**：实际昼夜日 = 现实 20 分钟（×72，客户端冻结值；服务端 `MmoContracts.WorldTime`）。`DayPlan` 未接线，重做时读 `WorldTime`，不再用 `day_ms`；`config.day_ms` 现无调用方 |
+| `day_ms` | 1_440_000 | **旧假设（现实 24 分钟 = 1 游戏日），2026-11-13 更正**：实际昼夜日 = 现实 20 分钟（×72，客户端冻结值；服务端 `MmoContracts.WorldTime`）。`DayPlan` 未接线，重做时读 `WorldTime`，不再用 `day_ms`；`config.day_ms` 现无调用方 【已于 2026-11-15 改为 ×24（昼夜日 = 现实 60 分钟），见游戏钟设计页 `2026-11-13-world-clock-design.md` 页首】 |
 | 默认日程 | 千分位 0–250 夜（rest）、250–700 日（work）、700–850 晚（social）、850–1000 夜（rest） | 有序，取第一个覆盖当前时刻的段 |
 
 时钟：（写于 2026-11-10；**2026-11-13 更正**）当时服务端没有游戏日时钟；现已有 `MmoContracts.WorldTime`（纯函数，与客户端昼夜同公式，设计见 `2026-11-13-world-clock-design.md`）。下面一句是旧设计的原话。

@@ -90,16 +90,16 @@ defmodule NpcServer.NpcMindTest do
         ],
         # −0.7 → Deeply distrusts；0.1 接近中立，不写；0.25 → Trusts。
         relationships: [%{actor: 21, trust: -0.7}, %{actor: 22, trust: 0.1}, %{actor: 30, trust: 0.25}],
-        # 125 秒前：× 72 = 2.5 游戏小时；10 秒前：0.2 游戏小时，不足 0.25 → Just now。
-        recent: [%{at_ms: @now_ms - 125_000, text: @damage}, %{at_ms: @now_ms - 10_000, text: @built}],
+        # 375 秒前：× 24 = 9000 游戏秒 = 2.5 游戏小时；30 秒前：720 游戏秒 = 0.2 游戏小时，不足 0.25 → Just now。
+        recent: [%{at_ms: @now_ms - 375_000, text: @damage}, %{at_ms: @now_ms - 30_000, text: @built}],
         models: [{"self", "I am a careful builder."}, {"relationships", "Mara has helped me before."}],
-        # 第一条 50 秒前（1 游戏小时），带抽取器的后缀；第二条没有事件时刻，不写多久以前。
+        # 第一条 150 秒前（× 24 = 3600 游戏秒 = 1 游戏小时），带抽取器的后缀；第二条没有事件时刻，不写多久以前。
         memories: [
           %{
             "id" => "fact-1",
             "text" => "Mara repaired my wall. | When: Friday, November 13, 2026 at 07:33 UTC",
             "type" => "experience",
-            "at_ms" => @now_ms - 50_000,
+            "at_ms" => @now_ms - 150_000,
             "tags" => ["actor:21"]
           },
           %{"id" => "fact-2", "text" => "Brann destroyed my wall.", "type" => "observation", "at_ms" => nil, "tags" => []}
@@ -157,7 +157,7 @@ defmodule NpcServer.NpcMindTest do
     end
 
     # 输入：S1-Z 第 5 轮“自己”那条的收尾句与时刻（夹具 `s1z/20261114T031005.159Z-round5-reflection.json`）。
-    # 此刻取同一导出文件名的时刻 2026-11-14T03:10:05.159Z（晚于想的时刻约 3 游戏小时，是 Life 给得出的视图）。
+    # 此刻取同一导出文件名的时刻 2026-11-14T03:10:05.159Z（晚于想的时刻约现实 153 秒，× 24 约 1 游戏小时，是 Life 给得出的视图）。
     # 正文只有收尾句原文：不加“多久以前”、不加 `I thought: `（R4b）。
     test "what I have come to think: after memory, before the situation; only the closing sentence as written" do
       %{"closing" => closing, "at_ms" => at_ms} =
@@ -344,11 +344,11 @@ defmodule NpcServer.NpcMindTest do
         "at_ms" => DateTime.to_unix(~U[2026-11-13 07:33:47.438Z], :millisecond)
       }
 
-      # 42 分 16.33 秒 × 72 ≈ 50.7 游戏小时 → 按天四舍五入：2 天。
+      # 42 分 16.33 秒 = 2536.33 秒 × 24 ≈ 60872 游戏秒 ≈ 16.9 游戏小时 → 不足 48 小时，按 0.5 小时四舍五入：17 小时。
       # 第二条：只认 ` | When:`，别处的竖线不动；没有事件时刻不写多久以前。
       # 第三条：从第一个 ` | When:` 起整段去掉（含其后的 ` | Involving: …`）。
       assert "My own memories and beliefs; they may be out of date and are not current world facts.\n" <>
-               "- Recalled: About 2 days ago, I visited the plaza and passed time with the neighbours; nobody came near me.\n" <>
+               "- Recalled: About 17 hours ago, I visited the plaza and passed time with the neighbours; nobody came near me.\n" <>
                "- Recalled: I guarded the hut | the gate stayed shut.\n" <>
                "- Recalled: I confronted Corvin (actor 3494090117122)." ==
                section(
@@ -408,24 +408,26 @@ defmodule NpcServer.NpcMindTest do
       end
     end
 
-    # “多久以前”的取整，按真实毫秒差给出（游戏时间 = 真实 × 72：1 游戏小时 = 50 秒，0.25 小时 = 12.5 秒，48 小时 = 40 分钟）。
+    # “多久以前”的取整，按真实毫秒差给出（游戏时间 = 真实 × 24，2026-11-15 起；此前 × 72）：
+    # 1 游戏小时 = 150 秒；0.25 小时 = 37.5 秒；0.75 小时 = 112.5 秒；1.25 小时 = 187.5 秒；2 小时 = 300 秒；
+    # 48 小时 = 7200 秒；2.5 天（60 小时）= 9000 秒；3 天 = 10800 秒；3.5 天 = 12600 秒。
     test "how long ago: just now under a quarter hour, half hours under two days, then whole days" do
       for {real_ms, words} <- [
             {-5_000, "Just now, "},
             {0, "Just now, "},
-            {12_499, "Just now, "},
-            {12_500, "About 0.5 hours ago, "},
-            {37_499, "About 0.5 hours ago, "},
-            {37_500, "About 1 hour ago, "},
-            {62_499, "About 1 hour ago, "},
-            {62_500, "About 1.5 hours ago, "},
-            {100_000, "About 2 hours ago, "},
-            {2_399_999, "About 48 hours ago, "},
-            {2_400_000, "About 2 days ago, "},
-            {2_999_999, "About 2 days ago, "},
-            {3_000_000, "About 3 days ago, "},
-            {3_600_000, "About 3 days ago, "},
-            {4_200_000, "About 4 days ago, "}
+            {37_499, "Just now, "},
+            {37_500, "About 0.5 hours ago, "},
+            {112_499, "About 0.5 hours ago, "},
+            {112_500, "About 1 hour ago, "},
+            {187_499, "About 1 hour ago, "},
+            {187_500, "About 1.5 hours ago, "},
+            {300_000, "About 2 hours ago, "},
+            {7_199_999, "About 48 hours ago, "},
+            {7_200_000, "About 2 days ago, "},
+            {8_999_999, "About 2 days ago, "},
+            {9_000_000, "About 3 days ago, "},
+            {10_800_000, "About 3 days ago, "},
+            {12_600_000, "About 4 days ago, "}
           ] do
         assert "Oldest first. " <> words <> @built ==
                  section(%{@empty | recent: [%{at_ms: @now_ms - real_ms, text: @built}]}, 3),
@@ -433,15 +435,18 @@ defmodule NpcServer.NpcMindTest do
       end
     end
 
-    # 对照离线原文：S1-K 脚本按同一公式算出的 Now 行与“多久以前”（`s1k/variants/edits.txt` 的 N3 / V3 computed 行）。
-    test "the offline S1-K moments render as the lines the offline script computed" do
+    # 离线 S1-K 的真实时刻（`s1k/variants/edits.txt` 的 N3 / V3）。离线脚本按 × 72 算出的是 21:25 / 22:39 与 13.5 / 7 / 15 / 8 小时；
+    # 2026-11-15 改 × 24 后同样的真实时刻手算为：纪元起 18 天 + 1:12:50.994（1:13:53.298），× 24 + 6 小时对 24 小时取余
+    # = 11:08（11:33）；两件事距此刻 685.4 / 346.1 秒（747.7 / 408.4 秒）× 24 = 4.57 / 2.31 小时（4.98 / 2.72 小时）
+    # → 四舍五入到半小时 4.5 / 2.5 小时（5 / 2.5 小时）。不再与离线脚本的原文逐字相同。
+    test "the offline S1-K moments render as the hand-computed lines at ×24" do
       ms = &DateTime.to_unix(&1, :millisecond)
       wrecked = ms.(~U[2026-11-13 01:01:25.591Z])
       social_end = ms.(~U[2026-11-13 01:07:04.875Z])
 
       for {asked, now_line, wrecked_words, social_words} <- [
-            {~U[2026-11-13 01:12:50.994Z], "It is night, 21:25.", "About 13.5 hours ago, ", "About 7 hours ago, "},
-            {~U[2026-11-13 01:13:53.298Z], "It is night, 22:39.", "About 15 hours ago, ", "About 8 hours ago, "}
+            {~U[2026-11-13 01:12:50.994Z], "It is morning, 11:08.", "About 4.5 hours ago, ", "About 2.5 hours ago, "},
+            {~U[2026-11-13 01:13:53.298Z], "It is morning, 11:33.", "About 5 hours ago, ", "About 2.5 hours ago, "}
           ] do
         now_ms = ms.(asked)
         observation = %{alone() | world_time: MmoContracts.WorldTime.at(now_ms * 1000)}

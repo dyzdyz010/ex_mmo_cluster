@@ -15,16 +15,24 @@ defmodule NpcServer.NpcLifeSightTest do
   # —— 时长 ——
 
   test "durations are written on the game clock: rounded minutes below an hour, rounded hours above" do
-    # 现实 50 秒 = 游戏 1 小时：现实 1 秒 = 游戏 1.2 分钟。
+    # 现实 150 秒 = 游戏 1 小时（×24）：现实 1 秒 = 游戏 0.4 分钟；游戏分钟 = ⌊(毫秒 × 24 + 30000) ÷ 60000⌋，手算。
     assert Sight.duration(0) == "about 1 minute"
+    # 1 秒 = 0.4 分钟，四舍五入到 0，最小写 1。
     assert Sight.duration(1000) == "about 1 minute"
-    assert Sight.duration(2000) == "about 2 minutes"
-    assert Sight.duration(10_000) == "about 12 minutes"
-    assert Sight.duration(49_000) == "about 59 minutes"
-    assert Sight.duration(49_600) == "about 1 hour"
-    assert Sight.duration(60_000) == "about 1 hour"
-    assert Sight.duration(125_000) == "about 3 hours"
-    assert Sight.duration(300_000) == "about 6 hours"
+    # 2 秒 = 0.8 分钟 → 1。
+    assert Sight.duration(2000) == "about 1 minute"
+    # 5 秒 = 2 分钟；10 秒 = 4 分钟；60 秒 = 24 分钟。
+    assert Sight.duration(5000) == "about 2 minutes"
+    assert Sight.duration(10_000) == "about 4 minutes"
+    assert Sight.duration(60_000) == "about 24 minutes"
+    # 148 秒 = 59.2 分钟 → 59；148.75 秒 = 59.5 分钟 → 60 分钟 → 1 小时。
+    assert Sight.duration(148_000) == "about 59 minutes"
+    assert Sight.duration(148_750) == "about 1 hour"
+    assert Sight.duration(150_000) == "about 1 hour"
+
+    # 300 秒 = 120 分钟 = 2 小时；375 秒 = 150 分钟 → 小时数四舍五入 2.5 → 3。
+    assert Sight.duration(300_000) == "about 2 hours"
+    assert Sight.duration(375_000) == "about 3 hours"
   end
 
   # —— A 相遇 ——
@@ -42,7 +50,7 @@ defmodule NpcServer.NpcLifeSightTest do
                "id" => "sight:encounter:21:0",
                "at_ms" => 2000,
                "text" =>
-                 "Brann (actor 21) was around for about 2 minutes; came within 3 m of me, then left.",
+                 "Brann (actor 21) was around for about 1 minute; came within 3 m of me, then left.",
                "tags" => ["kind:sight", "actor:21"]
              }
            ] == entries
@@ -60,7 +68,7 @@ defmodule NpcServer.NpcLifeSightTest do
                "id" => "sight:encounter:23:0",
                "at_ms" => 60_000,
                "text" =>
-                 "Cora (actor 23) was around for about 1 hour; stayed at least 20 m away, then left.",
+                 "Cora (actor 23) was around for about 24 minutes; stayed at least 20 m away, then left.",
                "tags" => ["kind:sight", "actor:23"]
              }
            ] == entries
@@ -78,7 +86,7 @@ defmodule NpcServer.NpcLifeSightTest do
     assert [%{"id" => "sight:encounter:21:0", "at_ms" => 60_000, "text" => text}] = entries
 
     assert text ==
-             "Brann (actor 21) was around for about 1 hour; stayed at least 15 m away, then left."
+             "Brann (actor 21) was around for about 24 minutes; stayed at least 15 m away, then left."
 
     # 离开满 10 秒后再来：两次相遇，各一条。
     {_ledger, entries, []} =
@@ -108,27 +116,27 @@ defmodule NpcServer.NpcLifeSightTest do
                "id" => "sight:encounter:21:0:still",
                "at_ms" => 300_000,
                "text" =>
-                 "Brann (actor 21) has been around for about 6 hours and is still here; has come within 3 m of me.",
+                 "Brann (actor 21) has been around for about 2 hours and is still here; has come within 3 m of me.",
                "tags" => ["kind:sight", "actor:21"]
              },
              %{
                "id" => "sight:encounter:22:0:still",
                "at_ms" => 300_000,
                "text" =>
-                 "Arlo (actor 22) has been around for about 6 hours and is still here; has stayed at least 12 m away.",
+                 "Arlo (actor 22) has been around for about 2 hours and is still here; has stayed at least 12 m away.",
                "tags" => ["kind:sight", "actor:22"]
              },
              %{
                "id" => "sight:encounter:21:0",
                "at_ms" => 400_000,
                "text" =>
-                 "Brann (actor 21) was around for about 8 hours; came within 3 m of me, then left."
+                 "Brann (actor 21) was around for about 3 hours; came within 3 m of me, then left."
              },
              %{
                "id" => "sight:encounter:22:0",
                "at_ms" => 400_000,
                "text" =>
-                 "Arlo (actor 22) was around for about 8 hours; stayed at least 12 m away, then left."
+                 "Arlo (actor 22) was around for about 3 hours; stayed at least 12 m away, then left."
              }
            ] = entries
   end
@@ -142,7 +150,7 @@ defmodule NpcServer.NpcLifeSightTest do
     assert lost == %{
              "id" => "sight:encounter:21:0",
              "at_ms" => 3000,
-             "text" => "Brann (actor 21) was around for about 4 minutes; came within 2 m of me.",
+             "text" => "Brann (actor 21) was around for about 1 minute; came within 2 m of me.",
              "tags" => ["kind:sight", "actor:21"]
            }
 
@@ -186,10 +194,10 @@ defmodule NpcServer.NpcLifeSightTest do
            ] = entries
 
     assert brann ==
-             "Brann (actor 21) was around for about 4 minutes; came within 4 m of me, then left."
+             "Brann (actor 21) was around for about 1 minute; came within 4 m of me, then left."
 
     assert unnamed ==
-             "someone unnamed (actor 23) was around for about 4 minutes; came within 6 m of me, then left."
+             "someone unnamed (actor 23) was around for about 1 minute; came within 6 m of me, then left."
   end
 
   test "at most 4 encounter entries per person per 20 minutes; the rest are reported as capped" do

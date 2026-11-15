@@ -64,7 +64,7 @@ defmodule NpcServer.Life.Sight do
 
   ## 时长
 
-  句子里的时长按游戏钟写（`MmoContracts.WorldTime` 的 `rate`：现实 50 秒 = 游戏 1 小时），门槛都是现实时间。
+  句子里的时长按游戏钟写（`MmoContracts.WorldTime` 的 `rate`：现实 150 秒 = 游戏 1 小时；2026-11-15 起 ×24，此前 ×72），门槛都是现实时间。
   游戏分钟 = 现实毫秒 × rate ÷ 60000 四舍五入；不足 60 写 `about <N> minute(s)`（最小 1），否则游戏小时 = 游戏分钟 ÷ 60
   四舍五入，写 `about <N> hour(s)`。
 

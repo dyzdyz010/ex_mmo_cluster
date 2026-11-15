@@ -399,7 +399,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
                "id" => "sight:encounter:21:0",
                "at_ms" => 2000,
                "text" =>
-                 "Brann (actor 21) was around for about 2 minutes; came within 3 m of me, then left.",
+                 "Brann (actor 21) was around for about 1 minute; came within 3 m of me, then left.",
                "tags" => ["kind:sight", "actor:21"]
              }
            ] == s.row["pending"]

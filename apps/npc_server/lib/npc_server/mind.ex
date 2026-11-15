@@ -26,7 +26,7 @@ defmodule NpcServer.Mind do
   所以去掉：同一份 state 里句首从 `About 12 hours ago` 换成 `Just now`，打算的活动的概率从约 .09 升到约 .8，
   而实跑中含这一栏的 state 过半（100 份里 55 份）句首在 5 小时以上（`.demo/observe/npc-slice1-20261112/s1r6/why-results.md`）；
   三份无人的基准上只有句子比 `I thought: <句>` 高 .18–.45（同目录 `age-results.md`；只有句子也是 S1-X3 当初测过的形态）。
-  **已知代价**：这一句在一轮之内不随时间淡下去（从落栏到下一轮约现实 10 分钟，游戏里约 12 小时），过时的打算只靠下一轮重写或撤下；
+  **已知代价**：这一句在一轮之内不随时间淡下去（从落栏到下一轮约现实 10 分钟，游戏里约 4 小时；2026-11-15 前 ×72 时是约 12 小时），过时的打算只靠下一轮重写或撤下；
   这在闭环里是好是坏离线看不出，要再实跑。整条日记、小屋与人的各条不进这里。
 
   **Plans and promises**（日计划，决策稿 `docs/10-active/cross-cutting/2026-11-14-npc-day-plan-decision.md` D-3，实现设计
@@ -56,7 +56,7 @@ defmodule NpcServer.Mind do
 
   ## 游戏时间的写法（原文出自离线测量 S1-K，`docs/10-active/cross-cutting/tools/jev/s1k_design.py` 的 `now_line` / `words_ago`）
 
-  NPC 看的是游戏钟（游戏钟设计页 `docs/10-active/cross-cutting/2026-11-13-world-clock-design.md`：现实 20 分钟 = 一个昼夜日），
+  NPC 看的是游戏钟（游戏钟设计页 `docs/10-active/cross-cutting/2026-11-13-world-clock-design.md`：现实 60 分钟 = 一个昼夜日，倍率 ×24；2026-11-15 前是 ×72、现实 20 分钟一日），
   不是 UTC；存进 Hindsight 的经历正文仍是 `At <UTC> (UTC), …`（Life 写入侧），这里不解析它，只用条目另存的毫秒时刻。
 
   - **Now** 栏：`It is <时段>, <HH:MM>.`，钟点取观察里 `world_time.minute_of_day`。时段按钟点的小时：

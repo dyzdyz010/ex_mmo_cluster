@@ -8,7 +8,9 @@ defmodule MmoContracts.WorldTime do
       game_us(t) = game0 + (t - epoch_us) * rate
 
   参数三元组取客户端现行冻结值（第一阶段不改协议，常量在客户端与服务端各一份，靠设计页 §3 的同一组手算值对账）：
-  `epoch_us = 1_792_972_800_000_000`（2026-10-26T00:00Z）、`game0` = 6 小时、`rate` = 72（现实 20 分钟 = 一个昼夜日）。
+  `epoch_us = 1_792_972_800_000_000`（2026-10-26T00:00Z）、`game0` = 6 小时、`rate` = 24（现实 60 分钟 = 一个昼夜日，现实 150 秒 = 游戏 1 小时）。
+  2026-11-15 由 72 改为 24：规划模型按游戏钟写的时限在 ×72 下现实里只有几十秒，太短（见设计页页首的更新说明）；
+  客户端常量需同步改成 24，对账用例的手算值已按 ×24 重算。
   客户端公式出处：Voxim `Source/Voxim/Weather/VoxelWeather.cpp` 的 `HourOfDay`，
   客户端对账用例 `Voxim.Weather.WorldClockReconcile`（Voxim main `93a9cb27`，与本模块测试断言同一组手算值）与
   `Source/VoximTestOnly/Tests/VoxelWeatherTests.cpp` 的 `Voxim.Weather.Clock`，设计 `Docs/Weather.md` 昼夜时钟一行与实际作者值。
@@ -19,7 +21,7 @@ defmodule MmoContracts.WorldTime do
   @minute_us 60_000_000
   @day_us 24 * 60 * @minute_us
 
-  @params %{epoch_us: 1_792_972_800_000_000, game0: 6 * 60 * @minute_us, rate: 72}
+  @params %{epoch_us: 1_792_972_800_000_000, game0: 6 * 60 * @minute_us, rate: 24}
 
   @doc "参数三元组 `%{epoch_us:, game0:, rate:}`（微秒、微秒、倍率）。"
   def params, do: @params
