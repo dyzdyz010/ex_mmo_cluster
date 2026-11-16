@@ -18,7 +18,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
   `kind:event` 经历同时触发反思，反思的写作请求一律给写作接口真实形状的失败（`await_plan_write/0`），不影响规划。
   保存失败的用例换用 `RefusingStore`（真实 NpcMemory 之上由测试控制的一次 `:write_denied`，同 `npc_life_test.exs` 的
-  `ControlledStore`）。
+  `ControlledStore`）；召回失败的用例由 `LifeFixtures.ReflectHindsight` 的同名 ETS 表让经历库的下一次召回返回 `:timeout`。
+  规划要求有过经历，所以 `planning/1` 起好 Life 后先经 `Life.activity/2` 接纳一条活动经历（出生不触发的用例不给）。
   不证明：真实模型写什么；Mind 的计划栏（T4）；墙钟驱动的游戏钟与 Runtime 的接线（`npc_runtime_world_time_test.exs`）；
   规划在途时 Life 重启（槽随进程没了的边界只写在 Life moduledoc 的“已知”清单里）。
   """
@@ -28,6 +29,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   import NpcServer.ReflectionFixtures, only: [rawobs: 1]
   alias NpcServer.{Life, NpcWorld, Selector}
   alias NpcServer.Life.DayPlan
+  alias NpcServer.LifeFixtures.ReflectHindsight
 
   defmodule RefusingStore do
     @moduledoc """
@@ -61,10 +63,16 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     :ok
   end
 
-  # 用例断言 Life 的 info 日志（`npc_plan … event=skipped`）；全局日志级别会被别的用例改成 :warning，这里只放开本模块。
+  # 用例断言 Life 与规划槽的 info 日志（`npc_plan … event=skipped|landed|end`）；全局日志级别会被别的用例改成 :warning，
+  # 这里只放开这两个模块。
   setup do
     Logger.put_module_level(Life, :info)
-    on_exit(fn -> Logger.delete_module_level(Life) end)
+    Logger.put_module_level(DayPlan.Round, :info)
+
+    on_exit(fn ->
+      Logger.delete_module_level(Life)
+      Logger.delete_module_level(DayPlan.Round)
+    end)
   end
 
   @tag timeout: 60_000
@@ -90,7 +98,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   @tag timeout: 60_000
-  test "首帧带游戏钟：触发 :day，写作收到 Prompt 的产物，真实应答落进持久行；mind/2 与 observe/1 的 plan；重启后还在" do
+  test "有过一条经历后首帧带游戏钟：触发 :day，写作收到 Prompt 的产物，真实应答落进持久行；mind/2 与 observe/1 的 plan；重启后还在" do
     %{cid: cid, life: life, profile: profile} = planning()
     sample = plan_sample("R3-r1")
     minute = sample["now_minute"]
@@ -172,8 +180,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert {:ok, %{plan: after_all}} = Life.observe(cid)
     assert after_all.row["intents"] == plan.row["intents"]
 
-    # 四项活动都照常成了经历（失败的那项也是）。
-    assert {:ok, %{pending_episodes: 4}} = Life.observe(cid)
+    # 四项活动都照常成了经历（失败的那项也是），加上起 Life 后的第一条经历（`planning/1`）。
+    assert {:ok, %{pending_episodes: 5}} = Life.observe(cid)
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == after_all.row
   end
 
@@ -293,8 +301,124 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
     plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
     assert Map.take(plan.row, ~w(day intents wants)) == Map.take(before, ~w(day intents wants))
+    # 写作失败与检查不过都发出了写作请求，各扣一次当日额度。
     assert plan.row["calls"] == %{"day" => @day + 1, "n" => 2}
     assert plan.error == :timeout
+  end
+
+  @tag timeout: 60_000
+  test "出生（真实首帧观察、还没有任何经历）不起规划、不计调用；接纳第一条活动经历之后的下一帧起 :day" do
+    %{cid: cid, life: life, profile: profile} = planning(experienced: false)
+
+    frame(life, @day, 600)
+    refute_plan_write(500)
+
+    assert {:ok, %{plan: %{running: false, row: row}, pending_episodes: 0, retained: 0}} =
+             Life.observe(cid)
+
+    assert row == DayPlan.new()
+    assert row["calls"]["n"] == 0 and Enum.all?(Map.values(row["counts"]), &(&1 == 0))
+
+    Life.activity(life, finished(profile, "guard_hut", :completed))
+    frame(life, @day, 601)
+    {worker, _user} = await_plan_write()
+    assert {:ok, %{plan: %{running: true, row: %{"calls" => calls}}}} = Life.observe(cid)
+    assert calls == %{"day" => @day, "n" => 1}
+
+    send(worker, {:reply, {:error, :timeout}})
+    plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+    assert %{"kind" => "day"} = plan.row["last"]
+  end
+
+  @tag timeout: 60_000
+  test "经历都已写进 Hindsight 的老 NPC（未写的经历为空、retained 大于 0）：重启后照样触发 :day" do
+    %{cid: cid, profile: profile} = planning()
+
+    # 产品路径把那条经历封存并写进 Hindsight（`flush/1` → retain），再重启：未写的经历为空。
+    assert {:ok, %{status: :started}} = Life.flush(cid)
+
+    NpcWorld.await(fn ->
+      match?(
+        {:ok, %{retained: 1, pending_episodes: 0, pending_fragments: 0, job: nil}},
+        Life.observe(cid)
+      )
+    end)
+
+    stop_supervised!({:life, cid})
+    life = start_life(cid, profile)
+    assert {:ok, %{retained: 1, pending_episodes: 0, pending_fragments: 0}} = Life.observe(cid)
+
+    frame(life, @day, 600)
+    {worker, _user} = await_plan_write()
+    send(worker, {:reply, {:error, :timeout}})
+    plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+    assert %{"kind" => "day"} = plan.row["last"]
+  end
+
+  @tag timeout: 60_000
+  test "召回失败（写作之前就失败）：照记失败，不扣当日额度，最小间隔照算；写作函数被调用之后的失败（连接被拒）照扣" do
+    :ets.new(ReflectHindsight, [:named_table, :public])
+    %{cid: cid, life: life, clock: clock} = planning()
+    started_at = now(clock)
+    :ets.insert(ReflectHindsight, {"npc-life-#{cid}", self()})
+
+    log =
+      capture_log(fn ->
+        frame(life, @day, 600)
+        assert_receive {:recall_refused, _bank}, 5_000
+        plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
+        send(self(), {:plan, plan})
+      end)
+
+    assert_received {:plan, plan}
+    refute_received {:write, _, _, _}
+    assert plan.row["calls"] == %{"day" => @day, "n" => 0}
+
+    assert %{
+             "at_ms" => ^started_at,
+             "kind" => "day",
+             "result" => "failed",
+             "reason" => ":timeout"
+           } =
+             plan.row["last"]
+
+    assert plan.row["last_at_ms"] == started_at
+    assert plan.error == :timeout
+    assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == plan.row
+
+    assert log =~
+             "npc_plan cid=#{cid} event=end kind=day day=#{@day} result=failed reason=:timeout wrote=false"
+
+    assert log =~
+             ~r/npc_plan cid=#{cid} event=landed kind=day day=#{@day} result=failed .*wrote=false/
+
+    # 最小间隔从起调用那一刻算：不足 3 分钟不起，过了再起。
+    frame(life, @day, 601)
+    refute_plan_write(300)
+    advance(clock, @gap_ms)
+    frame(life, @day, 602)
+    {worker, _user} = await_plan_write()
+    assert {:ok, %{plan: %{row: %{"calls" => calls}}}} = Life.observe(cid)
+    assert calls == %{"day" => @day, "n" => 1}
+
+    # 写作接口连接被拒（`Writer.write/3` 的真实形状，S1-R10 的 econnrefused）：写作函数已被调用，算发出了写作，照扣。
+    refused =
+      {:transport,
+       {:failed_connect, [{:to_address, {~c"127.0.0.1", 9}}, {:inet, [:inet], :econnrefused}]}}
+
+    log =
+      capture_log(fn ->
+        send(worker, {:reply, {:error, refused}})
+        plan = await_plan(cid, &(&1.row["counts"]["failed"] == 2 and not &1.running))
+        send(self(), {:plan, plan})
+      end)
+
+    assert_received {:plan, plan}
+    assert plan.row["calls"] == %{"day" => @day, "n" => 1}
+    assert plan.error == refused
+
+    assert log =~
+             ~r/npc_plan cid=#{cid} event=landed kind=day day=#{@day} result=failed .*wrote=true/
   end
 
   @tag timeout: 60_000
@@ -401,7 +525,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
   @tag timeout: 60_000
   test "有写日记接口但候选表为空（不规划的形态）：收到 kind:event 后持久行的 plan 仍是空的一份" do
-    %{fixture: fixture, cid: cid} = planning(activities: [])
+    %{fixture: fixture, cid: cid} = planning(activities: [], experienced: false)
     damage(fixture.world, cid, 1, {5, 64, 8})
 
     NpcWorld.await(fn -> match?({:ok, %{pending_episodes: n}} when n >= 1, Life.observe(cid)) end)
@@ -527,6 +651,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   # 起一个开着规划的 Life（`journaling: false` 时不带写日记接口）：真实 World 与 NpcMemory，Life 的时钟是测试拨动的 Agent。
   # `memory:` 换存储（保存失败的用例用 `RefusingStore`），`activities:` 换候选表（空表即不规划的形态）。
   # 同一用例里起第二个 Life 时用 `fixture:` 共用同一个世界（世界进程是具名的，一个用例只起一个）。
+  # 规划要求 NPC 有过至少一条经历，所以起好之后先接纳一条活动经历（还没有观察，不记账，“出生”的样子只差这一条）；
+  # `experienced: false` 时不给（出生不触发的用例、要数经历条数的用例）。
   defp planning(opts \\ []) do
     test = self()
     fixture = Keyword.get_lazy(opts, :fixture, &NpcWorld.start/0)
@@ -552,7 +678,14 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
         do: profile,
         else: Map.drop(profile, [:reflect, :write_journal])
 
-    %{fixture: fixture, cid: cid, clock: clock, profile: profile, life: start_life(cid, profile)}
+    life = start_life(cid, profile)
+
+    if Keyword.get(opts, :experienced, true) do
+      Life.activity(life, finished(profile, "visit_plaza", :completed))
+      assert {:ok, %{pending_episodes: 1}} = Life.observe(cid)
+    end
+
+    %{fixture: fixture, cid: cid, clock: clock, profile: profile, life: life}
   end
 
   # Life 起在测试的监督下（停的时候由监督者按父进程退出处理），等到行与认识都加载好。

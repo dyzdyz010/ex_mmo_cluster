@@ -690,6 +690,29 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       refute DayPlan.fail(plan, :day, :rejected, {:too_many_items, 6}, 1_000)["event_waiting"]
     end
 
+    test "refund：写作前失败的那次退回当日额度——n 减一，失败的记账（计数、last、last_at_ms、event_waiting）不动" do
+      {:ok, plan} = DayPlan.admit(DayPlan.new(), 4, 1_000)
+      {:ok, plan} = plan |> DayPlan.note_event() |> DayPlan.admit(4, 1_000 + @gap)
+      assert plan["calls"] == %{"day" => 4, "n" => 2}
+
+      failed = DayPlan.fail(plan, :event, :failed, :timeout, 1_000 + @gap)
+      refunded = DayPlan.refund(failed)
+
+      assert refunded["calls"] == %{"day" => 4, "n" => 1}
+      assert %{refunded | "calls" => failed["calls"]} == failed
+      assert json(refunded) == refunded
+
+      # 退回后额度按退回后的数算：S1-R10 那样一半调用没问到模型，当日照样还剩额度。
+      exhausted =
+        Enum.reduce(1..5, DayPlan.new(), fn n, plan ->
+          {:ok, plan} = DayPlan.admit(plan, 4, n)
+          if rem(n, 2) == 0, do: DayPlan.refund(plan), else: plan
+        end)
+
+      assert exhausted["calls"] == %{"day" => 4, "n" => 3}
+      assert {:ok, _} = DayPlan.admit(exhausted, 4, 6)
+    end
+
     test "skip：只给 counts.skipped 加一（当日额度用完），其余不动" do
       plan = DayPlan.new()
       skipped = DayPlan.skip(plan)

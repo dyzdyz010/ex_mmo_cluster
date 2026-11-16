@@ -10,7 +10,8 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
   真实应答（`fixtures/day_plan/s1r8-*.json`）或写作接口真实形状的失败（`Writer.write/3` 的 `:timeout`）。替身两处：Hindsight 适配器
   （召回回放真实条目，或返回适配器真实形状的失败）与写作函数（把系统提示词与用户消息交给测试进程）。
   证明：取材走“自己”一问的路径（两次召回、自己那条之前的日记、其它对象的日记）；提示词是 `Prompt` 的产物；只写一次、不重问；
-  检查的此刻是快照里的 `now_minute`；三种结局与 usage；日志不带计划原文。
+  检查的此刻是快照里的 `now_minute`；三种结局与 usage；`wrote`（写作函数被调用过为真，含写作失败与被拒；在它之前失败为假）
+  与 `end` 日志里的 `wrote=`；日志不带计划原文。
   不证明：Life 起槽、落栏与触发（`npc_life_day_plan_integration_test.exs`）；真实模型与真实 Hindsight。
   """
   use ExUnit.Case, async: true
@@ -55,7 +56,7 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
       log = capture_log(fn -> send(self(), {:result, Round.write(snapshot)}) end)
       assert_received {:result, result}
 
-      assert %{result: :ok, usage: ^usage, elapsed_ms: elapsed_ms} = result
+      assert %{result: :ok, usage: ^usage, elapsed_ms: elapsed_ms, wrote: true} = result
       assert is_integer(elapsed_ms) and elapsed_ms >= 0
       assert {:ok, result.checked} == DayPlan.check(sample["text"], names(), sample["now_minute"])
       assert length(result.checked.intents) == 2 and length(result.checked.wants) == 1
@@ -79,7 +80,7 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
       assert log =~ "npc_plan cid=#{snapshot.cid} event=start kind=day day=1346"
 
       assert log =~
-               ~r/npc_plan cid=#{snapshot.cid} event=end kind=day day=1346 result=written .*input_tokens=2 output_tokens=747/
+               ~r/npc_plan cid=#{snapshot.cid} event=end kind=day day=1346 result=written .*wrote=true .*input_tokens=2 output_tokens=747/
 
       for %{"why" => why} <- result.checked.intents, do: refute(log =~ why)
     end
@@ -113,16 +114,17 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
       assert %{
                result: {:rejected, {:too_many_items, 6}},
                checked: nil,
-               usage: %{"output_tokens" => 1}
+               usage: %{"output_tokens" => 1},
+               wrote: true
              } =
                result
 
       assert_received {:write, _, _}
       refute_received {:write, _, _}
-      assert log =~ "result=rejected reason={:too_many_items, 6}"
+      assert log =~ "result=rejected reason={:too_many_items, 6} wrote=true"
     end
 
-    test "写作失败：失败、usage 为 nil，不重问" do
+    test "写作失败（写作函数被调用之后才失败）：失败、usage 为 nil，算发出了写作（wrote 为真），不重问" do
       sample = plan_sample("R2-r1")
 
       log =
@@ -130,28 +132,34 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
           send(self(), {:result, Round.write(snapshot(sample, {:error, :timeout}))})
         end)
 
-      assert_received {:result, %{result: {:failed, :timeout}, checked: nil, usage: nil}}
+      assert_received {:result,
+                       %{result: {:failed, :timeout}, checked: nil, usage: nil, wrote: true}}
+
       assert_received {:write, _, _}
       refute_received {:write, _, _}
-      assert log =~ "result=failed reason=:timeout"
+      assert log =~ "result=failed reason=:timeout wrote=true"
     end
 
-    test "召回失败：失败，不发写作请求" do
+    test "召回失败：失败，不发写作请求（wrote 为假）" do
       sample = plan_sample("R2-r1")
       snapshot = put_in(snapshot(sample, {:error, :timeout}).config.replay, :fail)
 
-      capture_log(fn -> send(self(), {:result, Round.write(snapshot)}) end)
-      assert_received {:result, %{result: {:failed, {:http_status, 503}}, usage: nil}}
+      log = capture_log(fn -> send(self(), {:result, Round.write(snapshot)}) end)
+
+      assert_received {:result,
+                       %{result: {:failed, {:http_status, 503}}, usage: nil, wrote: false}}
+
       refute_received {:write, _, _}
+      assert log =~ "result=failed reason={:http_status, 503} wrote=false"
     end
 
-    test "身体状态还没收到：失败（:no_body_state），不召回、不写" do
+    test "身体状态还没收到：失败（:no_body_state），不召回、不写（wrote 为假）" do
       sample = plan_sample("R2-r1")
       snapshot = snapshot(sample, {:error, :timeout})
       snapshot = put_in(snapshot.observation.self.body_state, nil)
 
       capture_log(fn -> send(self(), {:result, Round.write(snapshot)}) end)
-      assert_received {:result, %{result: {:failed, :no_body_state}}}
+      assert_received {:result, %{result: {:failed, :no_body_state}, wrote: false}}
       refute_received {:recall, _}
       refute_received {:write, _, _}
     end

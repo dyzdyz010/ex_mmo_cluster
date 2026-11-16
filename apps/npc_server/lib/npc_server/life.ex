@@ -105,30 +105,40 @@ defmodule NpcServer.Life do
   （词表 = `profile.activities` 的名字与判据）；其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` 为 nil。
 
   - **持久行 `"plan"`**（形状见 `DayPlan.new/0`）与其它键同一次保存，重启后还在；日计划之前存下的行在加载边界补成空的一份。
-  - **触发只在每帧观察上查**（`maybe_plan/1`，便宜：不到点不写库、不打日志）：行已加载、规划的形态、规划槽空着、观察里有
-    游戏钟（`world_time`；日号与日内分钟都取它）与身体状态（`self.body_state`，与规划“此刻”一块同一条件，没到就起只会白耗
-    额度）、不在防抖期内，且 `DayPlan.due/3` 给出 `:day`（本游戏日还没有采用过计划）或 `:event`（接纳经历时有 `kind:event`，
-    在那次保存里 `DayPlan.note_event/1`）。到点后 `DayPlan.admit/3` 记一次调用、起调用的时刻（`last_at_ms`，最小间隔从它算）
-    并清 event 标记（这次的材料已含那条 event），保存成功才起槽；保存失败行不变，一秒之内不再试。槽在途、没有观察时不查，
+  - **触发只在每帧观察上查**（`maybe_plan/1`，便宜：不到点不写库、不打日志）：行已加载、规划的形态、规划槽空着、这个 NPC
+    有过至少一条经历（还没写进 Hindsight 的 `"pending"` / `"fragments"` 非空，或已写进的 `"retained"` 大于 0；刚出生、一条都没有时
+    规划无事可依，S1-R10 出生那一次就是 `:no_materials`）、观察里有游戏钟（`world_time`；日号与日内分钟都取它）与身体状态
+    （`self.body_state`，与规划“此刻”一块同一条件，没到就起只会白锁最小间隔）、不在防抖期内，且 `DayPlan.due/3` 给出 `:day`
+    （本游戏日还没有采用过计划）或 `:event`（接纳经历时有 `kind:event`，在那次保存里 `DayPlan.note_event/1`）。经历、身体状态、
+    游戏钟不满足时不起调用、不记失败、不记 `skipped`。到点后 `DayPlan.admit/3` 记一次调用、起调用的时刻（`last_at_ms`，最小间隔
+    从它算）并清 event 标记（这次的材料已含那条 event），保存成功才起槽；保存失败行不变，一秒之内不再试。槽在途、没有观察时不查，
     不计数。当日 5 次额度用完：每个游戏日只记一笔 `skipped` 与一行日志（那次保存成功之后才记下这一日；失败则一秒之内不再试）。
   - **规划槽**（第四个 worker 槽 `plan`，与 `poll` / `job` / `reflect` 并列，可与反思槽同时在途）：快照在起槽那一刻取齐，
     worker 不回头问 Life。结果落栏是一次保存：写成且检查通过 → `DayPlan.adopt/6`；写作失败、检查不过、worker 崩溃 →
-    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常；`:event` 失败把 event 标记恢复，留到下次）。调用在途时又来的 `kind:event`
+    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常；`:event` 失败把 event 标记恢复，留到下次）。**当日额度只扣发出了写作请求的
+    调用**（T7，用户 2026-11-16 定）：结果说写作没有发出（`wrote: false`——此刻一块失败、召回失败、没有材料）时在同一次保存里
+    `DayPlan.refund/1` 退回这一次；写作函数被调用过的（写作接口连接被拒、超时、检查不过也算）照扣；worker 崩溃不知道发没发出，
+    按发出算、不退（防额度被反复崩溃绕过）。退回不动 `last_at_ms`，最小间隔照算。调用在途时又来的 `kind:event`
     照常记标记，落栏不清它，过了最小间隔再重排。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
     日号落栏，下一帧观察因日号变了再触发 `:day`（过了最小间隔）。
   - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动按此刻观察里的游戏钟 `DayPlan.record_activity/4`；
     失败的不计（`done` 只由代码按活动结果增）。
   - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果；`observe/1` 的 `plan` 是
     `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`。
-  - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块）。
+  - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
+    `end` 与 `landed` 带 `wrote=true|false`）。
 
   已知的未设上限处与边界（只记事实）：
   - “当日额度用完只记一次 skipped”的标记只在内存：Life 在同一游戏日重启后，再到点会再记一次。
-  - 规划槽在途时 Life 重启：调用已在那次保存里记过（`calls` 与 `last_at_ms` 不退还，重启后照样隔最小间隔才再调用），
-    结果随进程丢掉，不记 `failed`；行里的意图沿用上一份。
-  - 落栏那次保存失败：调用已记、这一次的计划或失败都没有落进行里；`last_at_ms` 在起调用时已记，最小间隔照算。
+  - 规划槽在途时 Life 重启：调用已在那次保存里记过（`calls` 与 `last_at_ms` 不退还——不知道写作发出了没有，同 worker 崩溃
+    按发出算；重启后照样隔最小间隔才再调用），结果随进程丢掉，不记 `failed`；行里的意图沿用上一份。
+  - 落栏那次保存失败：调用已记、这一次的计划或失败都没有落进行里（写作之前就失败的那次也没退回）；`last_at_ms` 在起调用时
+    已记，最小间隔照算。
   - 上面两条路径都会丢掉触发那次 `:event` 的条件：起调用时已清掉 event 标记，而落栏（含 `:event` 失败时的恢复）没有发生，
     这条 event 不再触发重排（调用在途期间新来的 event 已在接纳它的那次保存里记下，不受影响）。
+  - 写作之前的失败不占当日额度，只受 3 分钟最小间隔约束：游戏钟 ×24 下一个游戏日是现实约 60 分钟，所以每游戏日至多约 20 次
+    这样的调用，每次 2 路 Hindsight 召回（Hindsight 停摆、或材料长期为空时就会这样）。这是用户 2026-11-16 定的额度规则
+    （只扣发出了写作请求的调用）的直接结果，现在不另设上限。
   - 每帧都调一次 Life 的时钟与 `DayPlan.due/3`（都是常数时间）。
   """
   use GenServer
@@ -869,7 +879,9 @@ defmodule NpcServer.Life do
 
   # 规划槽交回的结果（`DayPlan.Round.write/1`）：清槽，落栏是一次保存——采用（`DayPlan.adopt/6`，日号与分钟用起槽那一刻的，
   # 所以调用期间越过日界时计划按起槽时的日号落栏，下一帧观察因日号变了再触发 `:day`）或记一笔失败 / 被拒（`DayPlan.fail/5`，
-  # 意图不动）。时刻一律是起槽那一刻（`now_ms`），两次调用的最小间隔从它算。保存失败：行不变、错误经 `save/2` 可见。
+  # 意图不动）。时刻一律是起槽那一刻（`now_ms`），两次调用的最小间隔从它算。写作没有发出（`outcome.wrote` 为假：此刻一块、
+  # 召回失败、没有材料）的那次在同一次保存里退回当日额度（`DayPlan.refund/1`；槽在途时不查触发，`calls` 仍是起槽那次记下的）。
+  # 保存失败：行不变、错误经 `save/2` 可见。
   def handle_info({:result, :plan, outcome}, %{plan: slot} = s) do
     s = done(s, :plan)
     plan = s.row["plan"]
@@ -890,11 +902,13 @@ defmodule NpcServer.Life do
           {DayPlan.fail(plan, slot.kind, failure, reason, slot.now_ms), reason}
       end
 
+    landed = if outcome.wrote, do: landed, else: DayPlan.refund(landed)
+
     case save(s, %{s.row | "plan" => landed}) do
       {:ok, s} ->
         Logger.info(
           "npc_plan cid=#{s.context.cid} event=landed kind=#{slot.kind} day=#{slot.day} " <>
-            "result=#{landed["last"]["result"]} reason=#{inspect(plan_error)} " <>
+            "result=#{landed["last"]["result"]} reason=#{inspect(plan_error)} wrote=#{outcome.wrote} " <>
             "intents=#{length(landed["intents"])} wants=#{length(landed["wants"])} " <>
             "elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
         )
@@ -912,6 +926,7 @@ defmodule NpcServer.Life do
   end
 
   # 规划槽崩溃（写作函数退出、取材时抛错等）：清槽，当一次失败记（`DayPlan.fail/5`，原因带截断的退出原因）；Life 不受影响。
+  # 当日额度不退：不知道写作发出了没有，按发出算（否则反复崩溃就能绕过额度）。
   def handle_info({:DOWN, ref, :process, _, reason}, %{plan: %{ref: ref} = slot} = s) do
     detail = reason |> inspect(limit: 10, printable_limit: 200) |> String.slice(0, 400)
 
@@ -1386,13 +1401,15 @@ defmodule NpcServer.Life do
   defp planning?(%{journaling: %{activities: activities}}), do: activities != []
 
   # 每帧观察上的触发检查（观察每秒 20 帧，所以这里要便宜：不到点不写库、不打日志）。条件依次：行已加载、规划的形态、
-  # 规划槽空着、观察里有游戏钟与身体状态、不在保存失败后的防抖期内、`DayPlan.due/3` 给出 `:day` 或 `:event`。
-  # 身体状态与 `Reflection.Round.right_now/1` 同一条件：它为 nil 时此刻一块写不出，起了也只是白耗一次额度并锁住最小间隔。
+  # 规划槽空着、有过至少一条经历、观察里有游戏钟与身体状态、不在保存失败后的防抖期内、`DayPlan.due/3` 给出 `:day` 或 `:event`。
+  # 身体状态与 `Reflection.Round.right_now/1` 同一条件：它为 nil 时此刻一块写不出，起了也只是白锁住最小间隔。
+  # 经历同理（`experienced?/1`）：一条都没有时规划没有可依据的事（实跑 S1-R10 出生那一次就是 `:no_materials`）。
   defp maybe_plan(%{row: nil} = s), do: s
 
   defp maybe_plan(s) do
     with true <- planning?(s),
          nil <- s.plan,
+         true <- experienced?(s.row),
          %{world_time: %{day: day, minute_of_day: minute}, self: %{body_state: body_state}}
          when body_state != nil <- s.observation,
          now_ms = s.now.(),
@@ -1520,6 +1537,12 @@ defmodule NpcServer.Life do
       }
     end
   end
+
+  # 这个 NPC 有过至少一条经历（规划的触发条件之一）：还没写进 Hindsight 的（未封存的尾部、已封存待写的片段，即 `recent/1`
+  # 的来源），或已写进 Hindsight 的——持久行的 `"retained"` 是写成功的片段累计数，片段至少含一条经历，只增不减，所以
+  # 大于 0 即证明写进去过（重启后的老 NPC 未写的经历为空、靠它）。都是常数时间判断（逐帧调用）。
+  defp experienced?(row),
+    do: row["pending"] != [] or row["fragments"] != [] or row["retained"] > 0
 
   # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
   defp recent(row),

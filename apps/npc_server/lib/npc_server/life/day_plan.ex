@@ -20,7 +20,7 @@ defmodule NpcServer.Life.DayPlan do
   ## 调用流程
 
       观察 / 经历到来 → due/3（该不该规划）→ admit/3（今天还有额度吗）→（调用方起写作调用）→ check/3（应答合格吗）
-        → 合格：adopt/6；不合格或写作失败：fail/5；到点而当日额度用完：skip/1
+        → 合格：adopt/6；不合格或写作失败：fail/5；写作之前就失败：fail/5 再 refund/1；到点而当日额度用完：skip/1
       活动结束 → record_activity/4；经历是 event 类 → note_event/1；选择之前 → column/3（给 Mind 的栏）
 
   槽在途、没有观察时调用方根本不查 `due/3`，所以不计 `skipped`（触发是逐帧查的，那样记会随帧数增长）。
@@ -36,7 +36,8 @@ defmodule NpcServer.Life.DayPlan do
       "day"           当前意图属于哪个游戏日（nil 表示还没采用过）
       "intents"       [%{"id", "activity", "times", "by", "why", "done"}]，by 为日内分钟（0..1439），id 为 "<日号>:<序号>"
       "wants"         [%{"want", "why"}]
-      "calls"         %{"day", "n"}：本游戏日已发的规划调用数（起调用时就记，崩溃不重置，跨日清零）
+      "calls"         %{"day", "n"}：本游戏日发出了写作请求的规划调用数（起调用时 admit/3 先记；落栏时写作没有发出的
+                      由 refund/1 退回；崩溃不退、不重置；跨日清零）
       "event_waiting" 有一条 event 经历进来、等着触发重排（生命周期见上）
       "last_at_ms"    上一次规划调用的时钟（防连发的最小间隔用；起调用时 admit/3 就记，采用与失败再记一次）
       "last"          nil | %{"at_ms", "kind" => "day" | "event", "result" => "adopted" | "failed" | "rejected", "reason"}
@@ -44,7 +45,8 @@ defmodule NpcServer.Life.DayPlan do
 
   ## 原创取值（实跑后调）
 
-  每游戏日 5 次规划调用（`@day_calls`，决策稿：规划加重排共计）、两次调用至少隔 3 分钟（`@min_gap_ms`）、
+  每游戏日 5 次发出了写作请求的规划调用（`@day_calls`，决策稿：规划加重排共计；写作之前就失败的不算，见 `refund/1`）、
+  两次调用至少隔 3 分钟（`@min_gap_ms`，写作之前就失败的也算间隔）、
   条目总数上限 8（`@max_intents`，防计划无限增长；`check/3` 本身限一次至多 5 条，`@cap`）。这些数都是原创取值，没有外部依据，
   实跑后调。
 
@@ -239,7 +241,8 @@ defmodule NpcServer.Life.DayPlan do
 
   @doc """
   今天还能不能再起一次规划调用：当日 `calls.n < 5`（规划加重排共计）返回 `{:ok, 记了一次调用的 plan}`，跨日清零；
-  否则 `{:error, :day_budget_exhausted}`（行不变）。调用在**起调用时**就记，崩溃或失败都不退还。
+  否则 `{:error, :day_budget_exhausted}`（行不变）。调用在**起调用时**就记（这时还不知道写作会不会发出）；落栏时写作没有发出的
+  由调用方 `refund/1` 退回，写作发出了的（不论成败）、worker 崩溃的都不退（见 `refund/1`）。
 
   放行时还：记 `last_at_ms = now_ms`——起调用就记而不是落栏才记，这样规划在途时 Life 重启、落栏那次保存失败之后，
   也至少隔最小间隔才再调用；清 `event_waiting`——这次调用的材料在起调用那一刻取，已含那条 event。
@@ -362,6 +365,23 @@ defmodule NpcServer.Life.DayPlan do
         "counts" => bump(plan["counts"], Atom.to_string(outcome))
     }
   end
+
+  @doc """
+  把一次**没有发出写作请求**的规划调用从当日额度里退回：`calls.n` 减一。只动 `calls`：失败的记账（`fail/5` 记下的计数、`last`、
+  `last_at_ms`、`event_waiting`）照旧，最小间隔照样从起调用那一刻算。
+
+  不判日号、不设下限，因为调用方（Life 落栏）保证退回的就是 `calls` 里记着的那一次：规划槽在途时 Life 不查触发（要求槽空），
+  不会有 `admit/3` 或 `skip/1` 改 `calls`；调用在途时 Life 重启，槽随进程没了、不落栏、不退回。所以落栏时 `calls` 仍是起调用
+  那次 `admit/3` 记下的（日号就是起槽那天，`n ≥ 1`）。调用期间越过日界也一样：`calls` 还是起槽那天的，照常退回，下一帧观察的
+  `admit/3` 按新日清零重计。
+
+  额度管的是“问了模型几次”（T7，用户 2026-11-16 定）：实跑 S1-R10 里 8 次规划调用有 4 次在写作之前就失败（出生时没有材料、
+  Hindsight 召回超时），照样各扣一次，当日额度很快用完。所以调用方在一次调用落栏时，结果说明写作没有发出（`Round.write/1` 的
+  `wrote: false`）才调本函数；写作函数被调用过（不论成败）、worker 崩溃（不知道发没发出，按发出算，防额度被反复崩溃绕过）、
+  调用在途时 Life 重启（结果随进程丢了，同理）都不退。起调用时 `admit/3` 照旧先记一次，退回只在落栏时发生。
+  """
+  @spec refund(plan()) :: plan()
+  def refund(plan), do: update_in(plan, ["calls", "n"], &(&1 - 1))
 
   @doc """
   到点而当日额度用完（`admit/3` 拒绝）：只给 `counts.skipped` 加一，触发条件不清。槽在途、没有观察时调用方不查 `due/3`，

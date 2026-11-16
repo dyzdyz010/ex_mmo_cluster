@@ -17,6 +17,9 @@ defmodule NpcServer.LifeFixtures do
     那一次召回的真实条目（规范化后的形状，`NpcServer.ReflectionFixtures.recalled/1`）。
     `profile.life` 带 `archive_fails: true` 时，写进反思库返回适配器真实形状的超时失败（`Life.Hindsight` 的 `:timeout`）；
     带 `archive_crashes: true` 时，写进反思库直接抛错（反思槽在存档阶段崩溃）。
+    召回的一次失败由测试进程控制（同 `npc_life_day_plan_integration_test.exs` 的 `RefusingStore`）：测试进程在同名 ETS 表里放下
+    `{bank, 测试进程}` 之后，这个库的**下一次**召回返回适配器真实形状的超时失败（`Life.Hindsight` 的 `:timeout`，S1-R10 实跑里
+    规划召回的失败就是它），并把 `{:recall_refused, bank}` 交给测试进程；其余召回照常回放。
     """
     alias NpcServer.ReflectionFixtures
 
@@ -43,8 +46,16 @@ defmodule NpcServer.LifeFixtures do
 
     def recall(config, description, _now_ms) do
       send(config.owner, {:recall, config.bank, description})
-      kind = if description[:types] == ["observation"], do: "observation", else: "raw"
-      {:ok, %{results: ReflectionFixtures.recalled(kind), latency_ms: 1}}
+
+      case :ets.whereis(__MODULE__) != :undefined and :ets.take(__MODULE__, config.bank) do
+        [{bank, test}] ->
+          send(test, {:recall_refused, bank})
+          {:error, :timeout}
+
+        _ ->
+          kind = if description[:types] == ["observation"], do: "observation", else: "raw"
+          {:ok, %{results: ReflectionFixtures.recalled(kind), latency_ms: 1}}
+      end
     end
   end
 

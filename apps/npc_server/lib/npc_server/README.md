@@ -787,11 +787,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  T[触发<br/>每帧观察上查<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 5<br/>两次至少隔 3 分钟]
+  T[触发<br/>每帧观察上查 有过经历<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 5<br/>两次至少隔 3 分钟]
   Q -->|通过并保存调用数| W[单独的规划槽<br/>第四个 worker 槽<br/>写一次 不重问]
   W --> C[检查<br/>JSON 形状 活动在词表内<br/>by 晚于此刻 条数不超过 5]
   C -->|合格| A[(Life 持久行 plan<br/>采用 一次落栏 权威)]
   C -->|不合格或写作失败| F[记一笔计数与 last<br/>沿用上一份]
+  W -->|写作之前就失败| R[记一笔计数与 last<br/>退回这一次额度]
   X[活动完成<br/>Life.activity] --> B[活动记账<br/>同名 今天 未过时限的意图 done 加一<br/>与那条经历同一次保存]
   B --> A
   A -->|DayPlan.column| M[心智快照新栏<br/>Plans and promises]
@@ -800,20 +801,25 @@ flowchart LR
 - **谁有**：只有“规划的形态”：profile 带写作接口（同反思，`NPC_REFLECT_*`）且有候选表，现在只有统一形态（`"npc"`）；别的形态不触发、
   不记账，`Life.mind/2` 与 `Life.observe/1` 的 `plan` 为 nil。
 - **何时规划**：`DayPlan.due/3`——本游戏日还没有采用过计划（`:day`），或接纳经历时来了一条 `kind:event`（`:event`，重排）。日号与日内分钟取观察里的游戏钟
-  `world_time`，且要等身体状态到了。到点后 `DayPlan.admit/3` 记一次调用与起调用的时刻、清 event 标记，保存成功才起槽；当日额度用完记
+  `world_time`，且要等身体状态到了、这个 NPC 有过至少一条经历（还没写进 Hindsight 的经历，或持久行 `retained` 大于 0——已写进过；刚出生一条都没有时
+  不起调用、不记失败、不记 `skipped`，有了第一条经历的下一帧才起 `:day`）。到点后 `DayPlan.admit/3` 记一次调用与起调用的时刻、清 event 标记，保存成功才起槽；当日额度用完记
   `counts.skipped` 与一行日志（每个游戏日一次），触发条件不清；槽在途、没有观察时不查、不计数。规划在途时又来的 event 留着，落栏后过了最小间隔再重排。
+- **额度扣什么**：当日 5 次只算**发出了写作请求**的调用（写作函数被调用过，不论成功、失败还是检查不过；写作接口连接被拒也算）。在写作之前就失败的
+  （此刻一块、Hindsight 召回超时、没有材料）落栏时 `DayPlan.refund/1` 退回，照记 `counts.failed` 与 `last`，最小间隔照算；worker 崩溃、调用在途时 Life 重启
+  不知道写作发出了没有，按发出算、不退。依据：实跑 S1-R10 里 8 次规划调用有 4 次没问到模型却各扣一次（T7，用户 2026-11-16 定）。
 - **一次规划做什么**：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 系统提示词与用户消息（逐字照离线测量 S1-R8）→ 写一次 →
   `DayPlan.check/3`。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
 - **持久行 `"plan"`**（Life 是唯一 owner，字符串键、能原样过 JSON，形状见 [`life/day_plan.ex`](life/day_plan.ex) 的 `new/0`）：
   `day`（意图属于哪个游戏日）、`intents`（`id` / `activity` / `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
-  `calls`（当日已发调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
+  `calls`（当日发出了写作请求的调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
   意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
 - **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）；模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
   不挡选择，行里沿用上一份；同日重排保留已完成与已过时的旧意图、换掉未了的；计划不是今天的则栏里只剩 `wants`。
 - **原创取值（没有外部依据，实跑后调）**：每游戏日 5 次规划调用（规划加重排共计）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
   `by` 是日内分钟（0..1439）。
 - **观察与日志**：`Life.observe(cid).plan` 给出 `enabled`、`running`、持久行 `row`、此刻的栏数据 `column` 与最近一次规划失败的原因；日志一律
-  `npc_plan cid=<cid> event=…`：`start` / `end`（在规划槽里，`end` 带结局、耗时与 token 数）、`landed`（落栏）、`persist_failed`（落栏那次保存失败）、
+  `npc_plan cid=<cid> event=…`：`start` / `end`（在规划槽里，`end` 带结局、`wrote=true|false`（写作请求发出了没有）、耗时与 token 数）、
+  `landed`（落栏，同样带 `wrote`）、`persist_failed`（落栏那次保存失败）、
   `crashed`（worker 崩溃）、`skipped`（到点而当日额度用完）；计划正文不进日志。
 - **当前状态**（2026-11-15）：**已实现**，单元测试与 Life 集成测试通过；规划提示词与检查做过离线测量 S1-R8（探索性，在真实 S1-R7 材料上：意图形状成立，
   `cannot_yet` 多半是想说话而写不出的事），**还没有闭环实跑、没有验收**。已知局限：

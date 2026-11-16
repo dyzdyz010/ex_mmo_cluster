@@ -15,9 +15,11 @@ defmodule NpcServer.Life.DayPlan.Round do
 
   Life 起槽那一刻把需要的一切取齐成快照交进来（见 `write/1`），I/O 只经快照里的 Hindsight 适配器、写作函数与 World 路由。
   只写一次：写作失败或检查不过都是这一次的结局，交回 Life 记一笔（`DayPlan.fail/5`），不重问——当日调用有额度
-  （`DayPlan.admit/3`），重问只会把额度花在同一份材料上；下一次到点（跨日或新的 event）再规划。
+  （`DayPlan.admit/3`），重问只会把额度花在同一份材料上；下一次到点（跨日或新的 event）再规划。结果里带写作发出了没有
+  （`wrote`），Life 落栏时对写作之前就失败的那次退回额度（`DayPlan.refund/1`）。
 
-  日志每一步一行 `npc_plan cid=<cid> event=start|end …`；计划原文（意图的 `why`、`wants`）不进日志，从 Life 的 observe 读。
+  日志每一步一行 `npc_plan cid=<cid> event=start|end …`（`end` 带 `wrote=true|false`）；计划原文（意图的 `why`、`wants`）
+  不进日志，从 Life 的 observe 读。
   """
   require Logger
   alias NpcServer.Life.{DayPlan, Reflection}
@@ -42,13 +44,16 @@ defmodule NpcServer.Life.DayPlan.Round do
       today        今天已有的意图各行（`Mind.plan_intent_line/1`），没有为 []
       wants        旧 `wants` 各行（`want` 原文），没有为 []
 
-  返回交回 Life 落栏的结果 `%{result:, checked:, elapsed_ms:, usage:}`：
+  返回交回 Life 落栏的结果 `%{result:, checked:, elapsed_ms:, usage:, wrote:}`：
 
       result   :ok | {:failed, 原因} | {:rejected, 原因}
                failed：此刻一块失败（`:no_body_state`、现查 World 失败）、召回失败、没有材料（`:no_materials`）、写作失败；
                rejected：写成了但没过 `DayPlan.check/3`（原因同它）
       checked  `DayPlan.check/3` 的 `%{intents:, wants:}`（`by` 已换成分钟），不是 :ok 时为 nil
       usage    写作应答的 usage 原样（写成了才有，含被拒的；失败为 nil）
+      wrote    写作请求发出了没有：写作函数 `snapshot.write` 被调用过就为真，不论它返回成功、失败（含连接被拒、超时）
+               还是应答没过检查；在它之前失败的（此刻一块、召回、没有材料）为假。Life 落栏时据此决定这一次扣不扣当日额度
+               （`DayPlan.refund/1`）：额度管的是“问了模型几次”，写作函数一旦被调用就算问过了，哪怕请求没有到达模型。
   """
   def write(snapshot) do
     started = System.monotonic_time(:millisecond)
@@ -60,18 +65,19 @@ defmodule NpcServer.Life.DayPlan.Round do
         "today=#{length(snapshot.today)} wants=#{length(snapshot.wants)}"
     )
 
-    {result, checked, usage} = plan(snapshot)
+    {result, checked, usage, wrote} = plan(snapshot)
     elapsed_ms = System.monotonic_time(:millisecond) - started
 
     Logger.info(
-      "#{head} event=end #{which} #{outcome(result, checked)} elapsed_ms=#{elapsed_ms} " <>
+      "#{head} event=end #{which} #{outcome(result, checked)} wrote=#{wrote} elapsed_ms=#{elapsed_ms} " <>
         "input_tokens=#{tokens(usage, "input_tokens")} output_tokens=#{tokens(usage, "output_tokens")}"
     )
 
-    %{result: result, checked: checked, elapsed_ms: elapsed_ms, usage: usage}
+    %{result: result, checked: checked, elapsed_ms: elapsed_ms, usage: usage, wrote: wrote}
   end
 
-  # 取材 → 写一次 → 检查。返回 {结局, checked | nil, usage | nil}。
+  # 取材 → 写一次 → 检查。返回 {结局, checked | nil, usage | nil, 写作发出了没有}：走到写作函数那一步就为真，
+  # 在它之前的失败（`with` 的 else）为假。
   defp plan(snapshot) do
     with {:ok, right_now} <- ReflectionRound.right_now(snapshot),
          {:ok, materials} <-
@@ -85,15 +91,15 @@ defmodule NpcServer.Life.DayPlan.Round do
           names = Enum.map(snapshot.activities, & &1.name)
 
           case DayPlan.check(text, names, snapshot.now_minute) do
-            {:ok, checked} -> {:ok, checked, usage}
-            {:error, reason} -> {{:rejected, reason}, nil, usage}
+            {:ok, checked} -> {:ok, checked, usage, true}
+            {:error, reason} -> {{:rejected, reason}, nil, usage, true}
           end
 
         {:error, reason} ->
-          {{:failed, reason}, nil, nil}
+          {{:failed, reason}, nil, nil, true}
       end
     else
-      {:error, reason} -> {{:failed, reason}, nil, nil}
+      {:error, reason} -> {{:failed, reason}, nil, nil, false}
     end
   end
 
