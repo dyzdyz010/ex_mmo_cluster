@@ -81,6 +81,7 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **用户 2026-11-16 定**：跑实验 E1（本地假服务对比缺省 / 独立 profile，计划 `s1r10/recall/e1-plan.md` 运行前定稿）；下一次闭环实跑附带 CPU 采样，含全部容器的 `docker stats --no-stream`（只读）、WSL 按进程 top、Windows 总 CPU，每 5 秒。
 - 下一步：E1 读数 → 召回修复决策稿（核对一手来源）报用户 → 实现 → 补验收的闭环实跑（带 CPU 采样）。
 - **E1 已跑、已判定**（本地 `s1r10/recall/e1-results.md`；OTP 29.1.2，节点同一套）：缺省 profile 下快请求排进 `/slow` 那条正忙的 keep-alive 连接（`queue_length=2`），10,001 ms `{error,timeout}`，且**从未发出**（期望里“慢请求结束后照发”一句落空：调用方超时时 httpc 把它从队列取消）；独立 profile 7.7 ms 返回 200。报告 §5.1 的机制被实验支持。召回修复决策稿已交子会话起草（`2026-11-16-npc-hindsight-recall-isolation-decision.md`，一手来源逐条核对）。
+- **召回修复决策稿已写（`75e6d7c1`），用户 2026-11-16 四项都选建议项**：召回独立 httpc profile（参数缺省，应用起停）；retain 保持同步；选择每路只由 httpc 计时（去掉 Task kill）；重试暂不加退避。甲类 13 次由 D-1 消除；乙类 12 次（Hindsight 重排变慢）只能靠下次实跑的 CPU 采样查。下一步：实现 T8（任务书 `s1r10/impl/t8-brief.md`）→ 评审 → 提交 → 日计划层补验收 + 召回修复 + CPU 采样合并为一次闭环实跑（先写计划、告知用量）。
 
 ### 交接（2026-11-14，第十三个统筹会话 → 第十四个，因上下文超过 250k）——接手先读这一节，再按需读紧接着的“第十三个统筹会话的进展”；任务书 `.demo/observe/npc-slice1-20261112/handoff-14-brief.md`
 
