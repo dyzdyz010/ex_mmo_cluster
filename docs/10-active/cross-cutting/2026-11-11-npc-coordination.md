@@ -80,6 +80,7 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **召回超时调查已回报**（本地 `s1r10/recall-report.md`）：25 次超时里 13 次是**我方** httpc 缺省 profile 的连接内队头阻塞——召回排在同一条 keep-alive 连接上 11–49 秒的同步 retain 后面，retain 结束后 5–7 ms 才到 Hindsight（与 bank 无关）；另 12 次是 01:57–02:02 Hindsight 重排每候选耗时涨 6–8 倍，谁占的 CPU 无证据。“写库时召回被拖慢”的旧读法作废。报告列了 8 个修复方向（主方向：召回独立 httpc profile、retain 改异步），业界做法一节部分凭记忆，写决策稿前要逐条核对原文。
 - **用户 2026-11-16 定**：跑实验 E1（本地假服务对比缺省 / 独立 profile，计划 `s1r10/recall/e1-plan.md` 运行前定稿）；下一次闭环实跑附带 CPU 采样，含全部容器的 `docker stats --no-stream`（只读）、WSL 按进程 top、Windows 总 CPU，每 5 秒。
 - 下一步：E1 读数 → 召回修复决策稿（核对一手来源）报用户 → 实现 → 补验收的闭环实跑（带 CPU 采样）。
+- **E1 已跑、已判定**（本地 `s1r10/recall/e1-results.md`；OTP 29.1.2，节点同一套）：缺省 profile 下快请求排进 `/slow` 那条正忙的 keep-alive 连接（`queue_length=2`），10,001 ms `{error,timeout}`，且**从未发出**（期望里“慢请求结束后照发”一句落空：调用方超时时 httpc 把它从队列取消）；独立 profile 7.7 ms 返回 200。报告 §5.1 的机制被实验支持。召回修复决策稿已交子会话起草（`2026-11-16-npc-hindsight-recall-isolation-decision.md`，一手来源逐条核对）。
 
 ### 交接（2026-11-14，第十三个统筹会话 → 第十四个，因上下文超过 250k）——接手先读这一节，再按需读紧接着的“第十三个统筹会话的进展”；任务书 `.demo/observe/npc-slice1-20261112/handoff-14-brief.md`
 
