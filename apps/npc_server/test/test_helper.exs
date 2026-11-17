@@ -19,6 +19,7 @@ ExUnit.start(
 
 # 召回专用的 httpc profile 在正式运行时由 `NpcServer.Application.start/2` 在监督树之前起；测试跑 `--no-start`，
 # 所以在这里起同一份（幂等）。召回要走它，没起会让 `Hindsight.recall/3` 显式失败 `{:profile_not_started, _}`。
+{:ok, _} = Application.ensure_all_started(:inets)
 {:ok, _} = NpcServer.Life.Hindsight.start_recall_profile()
 
 Code.require_file("../../data_service/test/support/database.exs", __DIR__)
