@@ -91,7 +91,26 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
      两种修法都涉及产品口径：① 选择侧把"Life 还没就绪"当成"稍等"而不是"失败"；② Life 就绪前树不发问。
    - 同一处的次生问题：`Body.observe` 的 `select.activities` 因此可能出现 `trigger: "retry"` 而不是 `"start"`，
      `npc_registry_test` 的既有断言默认第一次就成功，属实现细节被写死（本次没有改它）。
-7. 下一步（未做，顺序即优先级）：push 让 CI 跑起来 → 补一次 deepseek 选择层的 live 冒烟 → 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
+7. **独立评审（2026-11-17，只看 `53daf995..HEAD` 的 diff）的结论与处理**：
+   - **阻断项 1（已改）**：`{:error, :world_timeout}` 原来谁都不重试——`Brain.Tree.transient/0` 不含它（那是驱动
+     `act retry:` 原样重发的集合，超时的写意图**可能已提交**，不能放进去），而文档却写"交给 Brain 的重试策略"。
+     处理：`Trees.settler` 的工地整体重来（重算缺额、不重发旧命令）把它算作瞬态；`Trees.npc` 让这次活动失败、下一轮
+     照常发问；`Body.session_call/4` 与 README 的措辞改成与实现一致（新增 §“崩溃域”那一节的理由也写在这里）。
+   - **阻断项 2（已改）**：`claim_session/2` 的 catch 原来收所有退出，与注释相反。收窄成只折"可重试的退出"
+     （`:timeout` / `:noproc` / `:shutdown`，含 `{原因, {GenServer, :call, …}}` 形状），其它照旧上抛。
+     同时补了这条崩溃域的用例：新增 `npc_body_crash_domain_test`（claim 超时 → 记 `npc_claim_failed`、1 秒后重试、
+     就位后照常工作；Body 是 `restart: :temporary`，所以"活着"是真钉住的），`npc_application_test` 另从监督树状态
+     直接断言 `BodySupervisor` 的 60 / 10 s。
+   - **应改项（已改）**：`Player.running?/1` 的 erpc 错误原来会逃出 `catch` 打死执行进程（现在包成"判不出活"）；
+     退避在抖动之后**再夹一次** 5 分钟上限（原来最长 375 s，与注释不符）；任务成功即清零连续失败（不再受落库失败
+     影响）；片段上限的告警加 `in_flight` 与累计丢弃，`observe` 增 `dropped_fragments` / `dropped_episodes`；
+     `npc_claim_failed` 的 `inspect` 截断（7×24 下每次一行、原来可能很长）；`NPC_JEV_API` 写了认不出的值改为明确拒绝
+     （原来静默退回 TypeSafe）；`:openai` 入口的 `max_tokens` 缺省 2048（带思考档位的模型会先花思考预算，512 会把正文
+     挤空）、选定 openai 时打一行 `npc_jev_endpoint`。
+   - **评审建议但本次不改**：召回 profile 与后台召回共用（见召回隔离决策稿“进度”的收口条，D-1b 升为硬前置）；
+     选择链路没有应用级 watchdog；`npc_registry_test` 的首问竞态（见上条）；D-3a 用例没有钉住"Task 不再设超时"
+     （只能靠 10 s 以上的慢路，代价太大）。
+8. 下一步（未做，顺序即优先级）：补一次 deepseek 选择层的 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 

@@ -299,3 +299,15 @@ flowchart LR
     另有用例覆盖 profile 起停、profile 缺失的显式失败；Life 侧加"一路失败仍等其余各路结束"的用例。
   - 未做（按稿）：D-1b 调参数（待 R4 证据）、D-2 retain 异步（不改）、D-3c 退避（多 NPC 前再定）、D-4 采样（下次实跑）。
     §7.2 的读数 R1–R8 与日计划层补验收合并为同一次闭环实跑，仍未跑。
+- 2026-11-17（独立评审后收口）：评审确认 D-1 的召回唯一性成立（`recall/3` 是唯一入口，其余请求全走缺省 profile），
+  但指出两处要改并已改：
+  - **§6 不变量 1 与实际有偏差**：反思与规划的召回（`Life.Reflection.Round`、`Life.DayPlan.Round`）也走这个召回 profile，
+    而它们的 `timeout_ms` 是适配器缺省 300 s。这不是"召回退回缺省 profile"，而是"后台召回与交互召回共用同一个池"
+    （每 host 2 条持久会话、每会话 ≤5 条排队）。决策稿 §5 已把"召回排在召回后面"记为 D-1b，**现在的生产者里多了一类
+    300 s 的后台召回**，所以 D-1b 的启用条件从"待 R4 证据"升级为"进多 NPC 前的硬前置"；本次不改代码，只记在这里。
+  - `profile_started?/1`（每次召回一次 `get_options` 预检）**已删除**：它是一次到 manager 的 infinity 调用，
+    manager 卡住时预检自己会挂住。改成在 `:httpc.request/5` 外 catch "profile 不在"的退出
+    （`{:noproc, …}` / `:shutdown` / `:normal`）→ `{:error, {:profile_not_started, 名}}`，其它退出照旧上抛。
+  - `stop_recall_profile/0` 的分支按实测收口（OTP 29.1.2 对不存在的 profile 回 `{:error, :not_found}`）。
+  - 仍然存在的残余（记录，不改）：选择链路唯一兜底是 httpc 的 10 s；`Task.async_stream(timeout: :infinity)` 之外没有
+    watchdog，inets manager 病态时该次选择会一直等（不崩）。多 NPC 之前再评估粗粒度 deadline。
