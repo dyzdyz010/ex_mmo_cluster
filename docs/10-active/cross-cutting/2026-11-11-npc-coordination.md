@@ -84,7 +84,14 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 4. **崩溃域**：`BodySupervisor` 显式 60 次 / 10 s；`claim` 超时不再打死 Body（折成失败走已有 1 秒重试）；世界调用超时且 Player 还活着时回 `{:error, :world_timeout}` 给 Brain，而不是让 Body 退出。
 5. **选择层 LLM**：`NpcServer.Jev` 增加 OpenAI 兼容入口（`endpoint.api: :openai`），由 `NPC_JEV_API=openai` + `NPC_JEV_URL/_KEY/_MODEL/_EFFORT` 选；本机 deepseek（`deepseek-flash`，显示名 "DeepSeek V4.1 Flash"，缺省强度 `medium`）就走这条。**只有选择位置用它**，中断与 harm 仍只支持 `:answers`。适配器形状已有单测（请求体、system 契约、宽容 JSON 解析、置信度夹取、`Selector` 的 `unknown_activity`）。
    **未验**：真实 deepseek 端点一次都没打过（本机没有可用的平台 API key；DSH 账号的设备凭证不能当 API key 用）——键进 `D:\hemifuture\ex_mmo_cluster\.env`（gitignored）后补一次 live 冒烟。**另外**：DSH 自带的 deepseek 模型目录把 reasoning 档位只映射 `high` / `max`，`medium` 是否会被告知/忽略要那次冒烟才知。
-6. 下一步（未做，顺序即优先级）：push 让 CI 跑起来 → 补一次 deepseek 选择层的 live 冒烟 → 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
+6. **本次顺带发现的既有问题（未改，等定）**：
+   - **第一次选择常常先于 Life 的缓存就绪**：树在 claim 后的第一帧就发 `choose_activity`，而 Life 的 `models` 槽还要一次 HTTP
+     往返；输掉竞态时这次选择以 `{:mind_unavailable, {:life_models_unavailable, nil}}` 失败，树等 10 秒再问。
+     本地单跑 `npc_registry_test.exs` 能稳定复现（全套一起跑时负载让 Life 抢先，因此 CI 上是绿的）。
+     两种修法都涉及产品口径：① 选择侧把"Life 还没就绪"当成"稍等"而不是"失败"；② Life 就绪前树不发问。
+   - 同一处的次生问题：`Body.observe` 的 `select.activities` 因此可能出现 `trigger: "retry"` 而不是 `"start"`，
+     `npc_registry_test` 的既有断言默认第一次就成功，属实现细节被写死（本次没有改它）。
+7. 下一步（未做，顺序即优先级）：push 让 CI 跑起来 → 补一次 deepseek 选择层的 live 冒烟 → 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 
