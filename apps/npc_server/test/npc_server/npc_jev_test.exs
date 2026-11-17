@@ -125,7 +125,7 @@ defmodule NpcServer.NpcJevTest do
       body = Jev.body(endpoint(), selection_profile(), "It is morning. I am at the square.")
 
       assert body.model == "deepseek-flash"
-      assert body.max_tokens == 512
+      assert body.max_tokens == 8192
       assert body.reasoning_effort == "medium"
       assert [%{role: "system"}, %{role: "user"}] = body.messages
       assert Enum.at(body.messages, 1).content == "It is morning. I am at the square."
@@ -178,6 +178,32 @@ defmodule NpcServer.NpcJevTest do
 
       assert {:ok, "build_hut", 0.0} ==
                Jev.top1(chat(~s({"choice": "build_hut", "confidence": -3})))
+    end
+
+    # DeepSeek 的 `max_tokens` 管"思考 + 正文"的总量：用尽时 `content` 可能是半截 JSON。
+    # 那要报"被截断"，与"模型没按契约答"分开——前者是预算问题，后者是提示词/解析问题。
+    test "a length-truncated answer is reported as truncated, not as a malformed answer" do
+      truncated = %{
+        "choices" => [
+          %{
+            "finish_reason" => "length",
+            "message" => %{"content" => ~s({"choice": "build_hut", "confid)}
+          }
+        ]
+      }
+
+      assert {:error, {:truncated, "length"}} == Jev.top1(truncated)
+
+      # 正常收尾照旧解析（不能把每份应答都当成截断）。
+      assert {:ok, "visit_plaza", 0.4} ==
+               Jev.top1(%{
+                 "choices" => [
+                   %{
+                     "finish_reason" => "stop",
+                     "message" => %{"content" => ~s({"choice": "visit_plaza", "confidence": 0.4})}
+                   }
+                 ]
+               })
     end
 
     test "the interruption policy treats a chat answer as doubt (continue), never as an interrupt" do
@@ -436,12 +462,20 @@ defmodule NpcServer.NpcJevTest do
     assert {:ok, response} = NpcServer.Http.request(endpoint, Jev.body(endpoint, profile, state))
     elapsed = System.monotonic_time(:millisecond) - started
 
-    assert {:ok, choice, confidence} = Jev.top1(response)
-    assert choice in ["build_hut", "visit_plaza"]
+    choice = response |> Map.get("choices", []) |> List.first() |> Kernel.||(%{})
 
+    assert {:ok, picked, confidence} = Jev.top1(response)
+    assert picked in ["build_hut", "visit_plaza"]
+
+    # 把只有真打才知道的几件事打出来：模型回显、finish_reason（"length" = max_tokens 用完、正文被截断）、
+    # 有没有思考内容（DeepSeek 思考模式默认开）、以及 usage（成本）。`NPC_JEV_EFFORT=medium` 时
+    # `model` 回显不变，但按官方映射表实际跑的是 high——这一行只报实际发出的 effort，映射由文档负责。
     IO.puts(
       "live_jev openai model=#{endpoint.model} effort=#{endpoint.reasoning_effort} " <>
-        "choice=#{choice} confidence=#{confidence} elapsed_ms=#{elapsed} usage=#{inspect(response["usage"])}"
+        "picked=#{picked} confidence=#{confidence} elapsed_ms=#{elapsed} " <>
+        "finish_reason=#{inspect(choice["finish_reason"])} " <>
+        "has_reasoning=#{Map.has_key?(Map.get(choice, "message", %{}), "reasoning_content")} " <>
+        "usage=#{inspect(response["usage"])}"
     )
   end
 end

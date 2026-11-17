@@ -435,11 +435,16 @@ flowchart LR
 - **问谁（两种入口形状）**：`NpcServer.Jev` 的 moduledoc 是正文。缺省是 TypeSafe System One（`:answers`）：
   一问一答的 JSON，选项与判据随 `questions` 发出，应答读 `answers.activity.{choice,confidence}`；中断策略与
   harm 护栏只支持这一种。写 `NPC_JEV_API=openai` 时改走 OpenAI 兼容的 chat completions（`:openai`，本机 deepseek
-  就是这条）：判据与输出契约写进 system、`state` 作 user，应答读 `choices[0].message.content` 里的
-  `{"choice", "confidence", "reason"}`（容忍代码块与前后解释，取第一个 `{` 到最后一个 `}`；选项名仍由
-  `Selector` 与候选表比对，不在候选里就 `unknown_activity`）。置信度只进日志（选择位置不设门槛）。
-  `endpoint.reasoning_effort`（`low`/`medium`/`high`）给了就随请求发。**只有选择位置能用 `:openai`**：
-  中断策略拿到 chat 应答一律当拿不准（继续），既不会误判成中断，也不会把没有 `noul` 的应答当成放行。
+  就是这条：`POST https://api.deepseek.com/chat/completions`、模型 id `deepseek-flash`、显示名
+  "DeepSeek-V4.1-Flash"）：判据与输出契约写进 system、`state` 作 user，应答读 `choices[0].message.content` 里的
+  `{"choice", "confidence", "reason"}`（容忍代码块与前后解释，取第一个 `{` 到最后一个 `}`；`finish_reason`
+  是 `"length"` 时报 `{:truncated, "length"}`，与"答得不成形"分开——DeepSeek 的 `max_tokens` 管"思考 + 正文"
+  的总量，缺省 8192，给小了会截断）。选项名仍由 `Selector` 与候选表比对，不在候选里就 `unknown_activity`。
+  置信度只进日志（选择位置不设门槛）。`endpoint.reasoning_effort` 给了就随请求发，缺省 `medium`——
+  **注意 DeepSeek 的官方映射是 `medium → high`，而思考模式默认档位本来就是 `high`**，所以 `medium` 合法但等于
+  不指定；要少想写 `low`，要多想写 `max`（依据：DeepSeek《思考模式》的 effort 映射表）。
+  **只有选择位置能用 `:openai`**：中断策略拿到 chat 应答一律当拿不准（继续），既不会误判成中断，
+  也不会把没有 `noul` 的应答当成放行。
 - **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏；最近一轮反思写成了“自己”时在记忆之后多一栏 `What I have come to think`，Life 里有今天的计划或想做而做不到的事时再多一栏 `Plans and promises`（最多九栏），次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
 
   | 栏 | 内容 | owner |

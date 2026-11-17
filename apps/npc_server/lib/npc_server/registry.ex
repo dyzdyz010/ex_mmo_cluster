@@ -402,11 +402,16 @@ defmodule NpcServer.Registry do
   #
   #   - 不写或写 `answers`：TypeSafe System One（`TYPESAFE_API_URL` / `_KEY` / `_MODEL`，必须），
   #     即中断策略与 harm 护栏唯一支持的形状。
-  #   - 写 `openai`：OpenAI 兼容 chat completions（`NPC_JEV_URL` 完整地址如
-  #     `https://api.deepseek.com/v1/chat/completions`、`NPC_JEV_KEY`、`NPC_JEV_MODEL` 如 `deepseek-flash`），
-  #     可选 `NPC_JEV_EFFORT`（`low` / `medium` / `high`，缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`（缺省 2048，
-  #     管的是"思考 + 正文"的总量：带思考档位的模型会先把预算花在思考上，512 会把正文挤空）。
-  #     本机 deepseek 就是这条：模型显示名 "DeepSeek V4.1 Flash"，id 是 `deepseek-flash`。
+  #   - 写 `openai`：OpenAI 兼容 chat completions（`NPC_JEV_URL` 完整地址，DeepSeek 官方是
+  #     `https://api.deepseek.com/chat/completions`；`NPC_JEV_KEY`；`NPC_JEV_MODEL`，DeepSeek 现在是
+  #     `deepseek-flash`，显示名 "DeepSeek-V4.1-Flash"）。可选 `NPC_JEV_EFFORT` 与 `NPC_JEV_MAX_TOKENS`
+  #     （缺省 8192——DeepSeek 的 `max_tokens` 管"思考 + 正文"的总量，思考模式下缺省 64K，给小了会把正文截断）。
+  #
+  #     **`NPC_JEV_EFFORT` 的取值与实际档位**（DeepSeek 官方《思考模式》的映射表）：可接受
+  #     `minimal` / `low` / `medium` / `high` / `xhigh` / `max`，实际映射 minimal→low、low→low、
+  #     **medium→high**、high→high、xhigh→high、max→max；思考模式默认打开、默认档位就是 `high`。
+  #     所以写 `medium` 是合法的，但它与不写完全一样（都是 high）；真想要"少想一点"要写 `low`。
+  #
   #     只有选择位置用它；中断策略拿到这种应答按“拿不准”继续（见 `NpcServer.Jev` 的 moduledoc）。
   #     写了未知值属于配置错误：明确拒绝并说清合法值，不静默退回 TypeSafe。
   defp jev_endpoint do
@@ -424,17 +429,23 @@ defmodule NpcServer.Registry do
           key: System.fetch_env!("NPC_JEV_KEY"),
           model: System.fetch_env!("NPC_JEV_MODEL"),
           reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
-          max_tokens:
-            case System.get_env("NPC_JEV_MAX_TOKENS") do
-              nil -> 2048
-              text -> String.to_integer(text) |> tap(&(true = &1 > 0))
-            end,
+          # 不写就不带这个键：缺省值只在 `NpcServer.Jev`（`@openai_max_tokens`）定义一次。
           timeout_ms: @jev_timeout_ms
         }
 
+        endpoint =
+          case System.get_env("NPC_JEV_MAX_TOKENS") do
+            nil ->
+              endpoint
+
+            text ->
+              Map.put(endpoint, :max_tokens, String.to_integer(text) |> tap(&(true = &1 > 0)))
+          end
+
         Logger.info(
           "npc_jev_endpoint api=openai model=#{endpoint.model} " <>
-            "effort=#{endpoint.reasoning_effort} max_tokens=#{endpoint.max_tokens}"
+            "effort=#{endpoint.reasoning_effort} " <>
+            "max_tokens=#{Map.get(endpoint, :max_tokens, "default")}"
         )
 
         endpoint

@@ -471,12 +471,21 @@ defmodule NpcServer.NpcRegistryTest do
                  url: "https://api.deepseek.com/v1/chat/completions",
                  key: "deepseek-test",
                  model: "deepseek-flash",
-                 # 缺省思考强度是 medium，缺省 max_tokens 2048（"思考 + 正文"的总量）；
-                 # Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
+                 # 缺省思考强度是 medium；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
                  reasoning_effort: "medium",
-                 max_tokens: 2048,
                  timeout_ms: 10_000
                } = profile.jev
+
+        # `max_tokens` 的缺省值只在 `NpcServer.Jev` 定义一次：没配环境变量时端点里没有这个键，
+        # 由 `Jev.body/4` 填 8192（`NPC_JEV_MAX_TOKENS` 才覆盖它）。
+        refute Map.has_key?(profile.jev, :max_tokens)
+
+        assert %{max_tokens: 8192} =
+                 NpcServer.Jev.body(
+                   profile.jev,
+                   %{instructions: "Decide.", activities: %{"a" => "b"}},
+                   "state"
+                 )
       end)
 
       # 写了 openai 但缺 URL / KEY / MODEL：登记时明确失败，不退回 TypeSafe 静默跑。
@@ -928,7 +937,7 @@ defmodule NpcServer.NpcRegistryTest do
 
         # 请求是 chat completions 形状：model / 顺序固定的 system 判据 / 心智快照作 user / 思考强度与输出上限。
         assert request["model"] == "deepseek-flash"
-        assert request["max_tokens"] == 2048
+        assert request["max_tokens"] == 8192
         assert request["reasoning_effort"] == "medium"
 
         assert [

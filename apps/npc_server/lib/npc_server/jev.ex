@@ -29,8 +29,10 @@ defmodule NpcServer.Jev do
   @behaviour NpcServer.Scheduler
   require Logger
 
-  # `:openai` 入口的 `max_tokens`：这一问只回一个短 JSON（选项名 + 置信度 + 一句理由）。
-  @openai_max_tokens 512
+  # `:openai` 入口的 `max_tokens` 缺省值：管"思考 + 正文"的总量。DeepSeek 思考模式下不写就是 64K，
+  # 这一问只回一个短 JSON，8192 足够且比正文大得多——给小了会以 `finish_reason: "length"` 截断正文
+  # （见 `top1/1` 的 `:truncated` 分支）。`NPC_JEV_MAX_TOKENS` 可以覆盖。
+  @openai_max_tokens 8192
 
   @doc """
   中断检查（`profile.interrupt_policy = {Jev, config}`）。config 为
@@ -202,13 +204,24 @@ defmodule NpcServer.Jev do
   # `:openai` 入口：`choices[0].message.content` 里应当是 `{"choice", "confidence", "reason"}`。
   # 模型偶尔会把 JSON 包在代码块里或前后各写一句解释，所以取第一个 `{` 到最后一个 `}` 再解析；
   # 选项名与候选表的比对在调用方（`Selector.ask/3` 的 `unknown_activity`）。
-  def top1(%{"choices" => [%{"message" => %{"content" => content}} | _]})
+  #
+  # 先看 `finish_reason`：`"length"` 表示 `max_tokens` 用完了。DeepSeek 的 `max_tokens` 管"思考 + 正文"的总量
+  # （思考模式下缺省就是 64K），用尽时 `content` 可能只剩半截 JSON——那种情况报 `{:truncated, "length"}`，
+  # 与"模型答了不成形的东西"分开，便于一眼看出是预算太小还是模型没按契约答。
+  # 依据：DeepSeek Chat Completions API 文档的 `finish_reason` / `max_tokens` 说明。
+  def top1(%{"choices" => [%{"message" => %{"content" => content}} = choice | _]})
       when is_binary(content) do
-    with {:ok, answer} <- decode_answer(content),
-         choice when is_binary(choice) and choice != "" <- answer["choice"] do
-      {:ok, choice, confidence_of(answer)}
-    else
-      _ -> {:error, :malformed_response}
+    case choice["finish_reason"] do
+      "length" ->
+        {:error, {:truncated, "length"}}
+
+      _ ->
+        with {:ok, answer} <- decode_answer(content),
+             choice when is_binary(choice) and choice != "" <- answer["choice"] do
+          {:ok, choice, confidence_of(answer)}
+        else
+          _ -> {:error, :malformed_response}
+        end
     end
   end
 
