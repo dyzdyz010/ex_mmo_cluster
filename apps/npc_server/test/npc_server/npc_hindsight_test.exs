@@ -347,12 +347,15 @@ defmodule NpcServer.NpcHindsightTest do
           {200, %{"operation_id" => "slow", "status" => "pending"}}
 
         :get, _, _ ->
-          Process.sleep(200)
+          # 服务端慢慢答（1 秒）；操作的截止时间是 10 ms，所以刷新必须**远早于**这个回答就带着
+          # `:operation_timeout` 返回。窗口取 900 ms：既明显小于服务端的 1 秒，又不像原来的 100 ms
+          # 那样在 CI 负载下会被调度延迟顶掉（原来这条在 CI 上偶发红：`Task.yield` 返回 nil）。
+          Process.sleep(1_000)
           {200, %{"operation_id" => "slow", "status" => "processing"}}
       end)
 
     task = Task.async(fn -> Hindsight.refresh(Map.put(cfg, :operation_timeout_ms, 10)) end)
-    assert {:ok, {:error, :operation_timeout}} = Task.yield(task, 100)
+    assert {:ok, {:error, :operation_timeout}} = Task.yield(task, 900)
   end
 
   test "ensure creates missing documents and observes their completion" do
