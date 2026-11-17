@@ -110,6 +110,15 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
    - **评审建议但本次不改**：召回 profile 与后台召回共用（见召回隔离决策稿“进度”的收口条，D-1b 升为硬前置）；
      选择链路没有应用级 watchdog；`npc_registry_test` 的首问竞态（见上条）；D-3a 用例没有钉住"Task 不再设超时"
      （只能靠 10 s 以上的慢路，代价太大）。
+   - **改前红已验**：① 召回隔离——把 `recall/3` 的 profile 换回 nil，T-1 立刻红（召回排在慢 retain 后面、250 ms 超时）；
+     ② claim 超时——把 `claim_session/2` 的 catch 换回"一律上抛"，`npc_body_crash_domain_test` 立刻红（Body 消失、
+     没有第二次 claim）。两者都在这次会话里实跑过红→绿。
+   - **CI 现状（这次 PR 的实测）**：`Test npc_server` 连续三次 **pass**（8m54s / 9m58s / 10m19s）、`Format` 与
+     `Compile` pass、其余 app pass；唯一红的是 **`Test voxel_region`**，与本次改动无关的既有 flake：
+     同一个用例 `MagicSemblanceWorldTest`「冷重启…」在 CI 上稳定红（两次都是它）、单跑该文件绿、本机跑整套时
+     红的是另一个用例（`WorldInteractionsTest` 的 DB 连接池耗尽）；而且它在 master 上的历史（2026-11-08…11-13
+     的 8 次 master CI 里 7 次红）本来就是红的。本分支对 `apps/voxel_region` 只动过 `interactions.ex` 的
+     `capture/5` 与 `settle/2`（NPC 事件描述与 `instance_removed`），**是否为诱因未证明**，留给 voxel 线查。
 8. 下一步（未做，顺序即优先级）：补一次 deepseek 选择层的 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
