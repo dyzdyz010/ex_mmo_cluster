@@ -230,15 +230,11 @@ defmodule NpcServer.Body do
 
   # 与玩家客户端断线重连同理：会话是 Body 自己维护的不变量。claim 失败（Scene 未就绪、正在重启）稍后再试，
   # 不靠退出让监督者重启——一次 Scene 重启会让所有 NPC 同时退出，超出监督者重启强度后整组永久消失。
+  # 会话占用是同步调用，而且 `WorldServer.Session` 在持锁期间还要 join Scene，所以 Scene 排队时它会**超时退出**；
+  # 这里的 `claim_session/2` 把那种退出也折成失败，走同一条 1 秒重试，不让异常打死 Body。
   defp claim(state) do
     with {:ok, route} <- state.router.route(state.scene_id),
-         {identity, {:ok, player}} <-
-           WorldServer.Session.claim(
-             state.claims,
-             state.scene,
-             Map.put(route, :scene_id, state.scene_id),
-             %{id: state.cid, spawn: state.spawn, kind: "npc", profile: state.faction}
-           ) do
+         {identity, {:ok, player}} <- claim_session(state, route) do
       # 只用于置 clock_ready；送帧不依赖本地时钟映射。
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
 
@@ -259,6 +255,18 @@ defmodule NpcServer.Body do
         Process.send_after(self(), :claim, @reclaim_ms)
         {:noreply, state}
     end
+  end
+
+  # 会话占用：把"超时退出"折成失败的返回值，交给上面的 1 秒重试；其它退出照常上抛（代码缺陷照样崩溃）。
+  defp claim_session(state, route) do
+    WorldServer.Session.claim(
+      state.claims,
+      state.scene,
+      Map.put(route, :scene_id, state.scene_id),
+      %{id: state.cid, spawn: state.spawn, kind: "npc", profile: state.faction}
+    )
+  catch
+    :exit, reason -> {:claim_exit, {:error, reason}}
   end
 
   # 会话没了：移动命令随会话作废（权威不再处理这些输入），在途世界调用保留、各自回结果；稍后重新 claim。
@@ -1169,9 +1177,17 @@ defmodule NpcServer.Body do
       # 施放：读目录 digest 填入请求，交给角色 owner 后不等（前摇由 Player 推进）；结果按 reply_to 直接回 Body。
       # 只有投递前会话已丢失时由这里回 session_lost（同下面的退出规则）。
       {:call, body, id, session, {:voxel_spell_intent, %{action: 1} = request}, ingress} ->
-        case session_call(session, :lost, fn -> World.magic_digest(session.world_ref) end) do
+        case session_call(
+               session,
+               :lost,
+               {:error, :world_timeout},
+               fn -> World.magic_digest(session.world_ref) end
+             ) do
           :lost ->
             send(body, {:npc_world_result, id, {:error, :session_lost}, nil})
+
+          {:error, :world_timeout} ->
+            send(body, {:npc_world_result, id, {:error, :world_timeout}, nil})
 
           digest ->
             reply_to = {body, {:npc_cast, id}}
@@ -1189,31 +1205,54 @@ defmodule NpcServer.Body do
 
       {:call, body, id, session, call, ingress} ->
         {result, balances} =
-          session_call(session, {{:error, :session_lost}, nil}, fn ->
-            execute(session, call, ingress)
-          end)
+          session_call(
+            session,
+            {{:error, :session_lost}, nil},
+            {{:error, :world_timeout}, nil},
+            fn -> execute(session, call, ingress) end
+          )
 
         send(body, {:npc_world_result, id, result, balances})
         world_calls()
 
       {:plan, body, id, session, plan} ->
         result =
-          session_call(session, {:error, :session_lost}, fn -> plan_path(session, plan) end)
+          session_call(
+            session,
+            {:error, :session_lost},
+            {:error, :world_timeout},
+            fn -> plan_path(session, plan) end
+          )
 
         send(body, {:npc_path, id, result})
         world_calls()
     end
   end
 
-  # 世界调用（Intent、读口、寻路取盒）的退出只判一件事：会话的 Player 已退出（Scene 重启、会话被关闭、重新 claim）
-  # → 回 lost，如实报会话丢失（写意图可能尚未进 World，也可能已提交：Brain 以 look / inspect 现算）；
-  # 否则照常退出，执行进程与 Body 同死，由监督者按 transient 重启。异常不捕获，代码缺陷照样崩溃。
+  # 世界调用（Intent、读口、寻路取盒）的退出只有三种去向：
+  #   ① 会话的 Player 已退出（Scene 重启、会话被关闭、重新 claim）→ 回 lost，如实报会话丢失
+  #      （写意图可能尚未进 World，也可能已提交：Brain 以 look / inspect 现算）；
+  #   ② 只是超时（World 卡住 / 排队，Player 还活着）→ 回可诊断的超时值，交给 Brain 的重试策略，
+  #      **不让 Body 一起退出**；
+  #   ③ 其它退出 → 照常退出，执行进程与 Body 同死，由监督者按 transient 重启。异常不捕获，代码缺陷照样崩溃。
+  # ② 与 ③ 分开的理由：World 或 Session 变慢会同时命中所有 NPC，若每个 Body 都退出就会击穿
+  # `NpcServer.BodySupervisor` 的重启强度，整组 NPC 永久消失（见 `NpcServer.Application` 的崩溃域说明）。
   # Scene 可在 peer 节点：判活用节点安全的 `Player.running?/1`（远端 pid 不能交给 Process.alive?/1）。
-  defp session_call(session, lost, fun) do
+  defp session_call(session, lost, timeout, fun) do
     fun.()
   catch
-    :exit, reason -> if Player.running?(session.player), do: exit(reason), else: lost
+    :exit, reason ->
+      cond do
+        not Player.running?(session.player) -> lost
+        call_timeout?(reason) -> timeout
+        true -> exit(reason)
+      end
   end
+
+  # `GenServer.call/3` 到点是退出 `{:timeout, {GenServer, :call, …}}`；:infinity 之外的其它形式也算超时。
+  defp call_timeout?(:timeout), do: true
+  defp call_timeout?({:timeout, {_module, :call, _args}}), do: true
+  defp call_timeout?(_), do: false
 
   defp plan_path(
          session,

@@ -91,6 +91,11 @@ flowchart LR
   （Player 已结束则 `session_lost` 拒绝，规则见下条“世界意图”）。没有会话时的身体与世界命令得到 `invalid_session`。
   同一 cid 被另一个 claim 顶替（关闭原因 2）时 Body 以 `{:shutdown, :replaced}` 正常结束；
   Body 的重启策略是 `transient`，只有崩溃才由监督者重启。
+- **崩溃域**：`BodySupervisor` 是**所有** NPC 的父监督者，所以它的重启强度显式放宽到 60 次 / 10 秒（缺省的
+  3 次 / 5 秒会让一次全节点抖动把整组 NPC 永久带走）。真正的防线是让"一起变慢"不升级成崩溃：
+  会话占用（`claim`）超时**不再打死 Body**，折成一次失败走已有的 1 秒重试；世界调用超时（Player 还活着）
+  回 `{:error, :world_timeout}` 给 Brain，由它的重试策略决定，只有真正的进程退出才让 Body 随监督者重启。
+  理由：World / Session 变慢会同时命中所有 NPC，若每个 Body 都退出，就正好击穿上面那个强度。
 - **世界意图（与玩家同一条裁决）**：工具、放置 / 液体 / 合成 / 进食、附件、prefab 命令经 `WorldRequest` →
   `Intent.run/3`：工具走 `ToolAction.run/5`（`authorize_tool`：死亡、施法中、重放、同 key 结果、人物目标 g5），
   其余走 `Player.tool_context/2`（施法中、死亡）再进 World。Body 自己只保留两道门：命令的类型守卫（不合法回
@@ -98,7 +103,8 @@ flowchart LR
   意图到达时刻（`received_us`，GCRA 按它判频）在 Body 受理命令时冻结，不在执行进程排到时才取。
   余额补发与玩家同一条规则（Intent 的返回值）：工具 action 1 / 2 且非人物目标、生产 / 附件 / prefab 经角色接纳后。
   执行进程对世界调用的退出：会话的 Player 已退出（`Player.running?/1`，Scene 在 peer 节点时同样适用）→ `session_lost`
-  （写意图可能已提交，以 look / inspect 现算）；否则照常退出，Body 随之由监督者重启。
+  （写意图可能已提交，以 look / inspect 现算）；Player 还活着、只是调用超时 → `{:error, :world_timeout}` 回给 Brain
+  （见上条“崩溃域”）；其它退出照常退出，Body 随之由监督者重启。
   每次进 Intent 的世界意图一行日志 `character_intent`（玩家同格式）；进 Intent 之前被 Body 拒绝的
   （`invalid_command`、位置未知的 `invalid_session`、编辑盒 `out_of_bounds`）各一行 `npc_intent_rejected cid= id= verb=|kind= reason=`。
   技能 `design_house` 的发布不经 Intent（见下条“技能”）；创世编辑 `genesis_edit` 也不经 Intent，直接写 World（见“创世”）。
@@ -190,6 +196,15 @@ flowchart LR
   survey 模型投影的 rows 为 `[ground_y, material, move_to_y]`，第三项可直接用于移动；`no_path` 的 data 保留同次寻路快照 seq、start、goal、goal_position，未指定脚层时后者为 nil。
   Life 人格除谨慎 `caution` 外包含亲和 `sociability`（初值0.5）：第三次起显著帮助+0.05、伤害-0.01，有界且以World seq溯源；感谢接近幅度乘 `(0.5 + sociability)`，不改变陌生人安全距离。
   旧心智在Life加载边界补初值并保存，日志 `npc_life_state_upgraded`，不回算旧事件。人格不随安静时间衰减；LLM也收到相同维度及含义。
+- **记忆任务槽的活性由自己维护**（写 Hindsight、刷认识、读认识这三个后台动作共用那一个槽）：失败不是终局。
+  失败按**指数退避**自己重试——30 秒起、每次翻倍、上限 5 分钟，再乘一个按 cid 稳定算出的 0.75–1.25 抖动
+  （同一 NPC 每次一样、可复现；不同 NPC 之间错开，多 NPC 时不会同一刻一起重试）。`job_error` 只用于
+  `Life.observe/1` 与告警，不再是"永不重试"的开关；`observe` 另给 `job_failures` 与 `job_retry_in_ms`。
+  失败日志 `npc_life_memory_error … failures= retry_in_ms= reason=`。原来一置上 `job_error` 就再也不会自动起槽，
+  一次 Hindsight 抖动就让这个 NPC 在本进程生命周期里**永久停止写记忆**且没有告警。
+  待写片段另有硬上限（8 个片段）：Hindsight 长时间不可用、retain 一直失败时，`save/2` 丢**最旧的还没写进的片段**
+  并记一行 `npc_memory_fragments_trimmed cid= dropped= episodes= kept=`——丢的是经历，所以吵，且持久行因此有界
+  （行越大每次整行重写越慢、越容易再失败，是正反馈）。同一原因，心智快照的 “What just happened” 只列最近 40 条经历。
 
 ## 接入方式
 
@@ -446,7 +461,7 @@ flowchart LR
   句子里的坐标是 Life 记下的锚点（记忆），不是现查的；建筑被整体挪动后坐标会与现状不符。“在 / 不在”只认 World。
   候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
 - **召回**：一次选择按处境分路召回（`Mind.recall_queries/2`，问句、tags 与 token 上限照离线重测 S1-Q 的原文），
-  各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路最多等 10 秒），各路都 `prefer_observations: true`、不按类型过滤（至多 4 路：R1 附近至多 2 人各一路，加 R2、R3）：
+  各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路 10 秒），各路都 `prefer_observations: true`、不按类型过滤（至多 4 路：R1 附近至多 2 人各一路，加 R2、R3）：
 
   | 路 | 问句 | 过滤 / `max_tokens` |
   |---|---|---|
@@ -458,6 +473,18 @@ flowchart LR
   取走的，按 id 去重。不按时间排：S1-Q 在真实导出上看到“路内新的在前”截掉了拆屋事实与“守屋 77 次，没人来”
   （`.demo/observe/npc-slice1-20261112/s1q/results.md`）。每路 4 条是原创取值，在那份导出上量过一次，实跑后调。
   任何一路失败或超时，整次心智读不到（见下文“失败”），不拿其余几路凑一张残缺的清单。
+  **每路的截止时间只有一个 owner**：适配器写进 httpc 的那个 10 秒（从调用起算、含排队）。发问 worker 不再给
+  `Task.async_stream` 设第二个超时、也不在第一路失败时停下：被 kill 的任务不经过 `cancel_request`，放弃的请求会照常
+  走完（排队的事后发出、已发出的照算到底），白算的还和别的召回抢 CPU。所以是等每一路各自结束后再按“全有全无”合成，
+  报第一条失败的那一路。依据见召回隔离决策稿 D-3a（S8 / S10）。
+- **召回走独立的 httpc profile**（决策稿 D-1）：`:httpc` 缺省 profile 会**把新请求排进正忙的 keep-alive 会话队列**
+  （OTP `httpc_manager:select_session/4`），而 retain / 刷新 / 状态这些后台请求一次要 11–49 秒、又没人在等；
+  两者共用时召回就排在它们后面——实测 25 次召回超时里 13 次是这么来的（E1 实验：缺省 profile 10,001 ms 超时且请求
+  从未发出，独立 profile 7.7 ms 返回）。现在只有 `POST /memories/recall`（含 CLI 的 `context/2`）走专用 profile
+  `:npc_hindsight_recall`（名字只在 `Hindsight` 里定义一次，参数全缺省），其余请求仍走缺省 profile。
+  profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停；运行期由 inets 的 `httpc_profile_sup` 监督，
+  重启后参数与重启前一致（都是缺省值）。起不来就让应用启动失败；某次召回发现 profile 不在时显式失败
+  `{:profile_not_started, 名}`，不退回缺省 profile 静默降级。测试跑 `--no-start` 时由 `test_helper` 起同一份。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧

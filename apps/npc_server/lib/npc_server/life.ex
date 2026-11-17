@@ -150,6 +150,16 @@ defmodule NpcServer.Life do
   # 起规划槽之前那次保存失败后，多久之内不再试（观察每秒 20 帧，不逐帧重试写库）：原创取值。
   @plan_retry_ms 1000
   @refresh_ms 600_000
+  # 记忆任务槽（写 Hindsight、刷认识、读认识）失败后的重试退避：起点 30 秒、每次翻倍、上限 5 分钟，
+  # 再乘一个按 cid 稳定的 0.75–1.25 抖动。原来 `job_error` 一置上就再也不会自动起槽——一次 Hindsight 抖动
+  # 会让这个 NPC 在本进程生命周期里永久停止写记忆，而且没有告警（见召回隔离决策稿 S11 的亚稳态与
+  # AGENTS.md §2.1 第 2 条：活性必须由 owner 自己维护）。退避状态只在内存，Life 重启即从头算。
+  @job_retry_ms 30_000
+  @job_retry_max_ms 300_000
+  # 待写片段的硬上限（见 `cap_fragments/2`）：超出时丢最旧的并告警。
+  @max_fragments 8
+  # 心智快照 "What just happened" 一栏最多列多少条经历（见 `recent/1`）。
+  @max_recent 40
   # 心智快照各路召回的单路上限（毫秒）：既是那一路 HTTP 请求的超时，也是并行时等那一路的墙钟上限。
   # 写入与认识刷新仍用适配器的长超时。
   @mind_recall_timeout_ms 10_000
@@ -222,8 +232,9 @@ defmodule NpcServer.Life do
   @doc """
   心智快照（`NpcServer.Mind`）用的只读视图，由选择位置的发问 worker 调用；读的是规则模式的状态。
   `queries` 是这次的各路召回描述（`NpcServer.Mind.recall_queries/2`，按优先级排好）：各路在调用者进程里并行
-  （`Task.async_stream`，同时至多 #{@recall_concurrency} 路，每路最多等 #{@mind_recall_timeout_ms} 毫秒：选择是秒级决策），
-  结果按 `NpcServer.Mind.merge_recalled/1` 合成一张清单。另给出还没写进 Hindsight 的经历。返回 `{:ok, 视图}`：
+  （`Task.async_stream`，同时至多 #{@recall_concurrency} 路），每路的截止时间是适配器写进 httpc 的那一个超时
+  （#{@mind_recall_timeout_ms} 毫秒，从调用起算；调用方不再另设 Task 超时，见 `recollect/3` 的注释），
+  等每一路各自结束后按 `NpcServer.Mind.merge_recalled/1` 合成一张清单。另给出还没写进 Hindsight 的经历。返回 `{:ok, 视图}`：
 
       now_ms         读视图那一刻 Life 的时钟（Unix 毫秒），Mind 用它算“多久以前”
       feelings       此刻仍活跃的情绪 `[%{emotion:, actor:, intensity:}]`（`Life.State.feelings/2`）
@@ -300,9 +311,13 @@ defmodule NpcServer.Life do
     do: %{name: building["name"], anchor: List.to_tuple(building["anchor"]), standing: standing}
 
   # 读一次 owner 快照，再在调用者进程里把各路召回并行做完（同时至多 @recall_concurrency 路），
-  # 返回 `%{routes: [每路的结果，按 queries 的次序], latency_ms: 墙钟}`。`timeout_ms` 是每路的上限（整数时也写进适配器的
-  # 单次请求超时；`:infinity` 时只由适配器自己的超时约束）。任何一路失败或超时就停下（其余在途的路随流结束被关掉），
-  # 整次失败。成败记回 owner 供 observe 查看。
+  # 返回 `%{routes: [每路的结果，按 queries 的次序], latency_ms: 墙钟}`。
+  #
+  # 每路的截止时间只有**一个** owner：适配器写进 httpc 的 `timeout`（`timeout_ms`，从调用起算、含排队时间）。
+  # 这里不再给 `Task.async_stream` 设第二个超时，也不在第一路失败时停下：被 kill 的任务不经过 httpc 的
+  # `cancel_request`，manager 也不 monitor 调用方，放弃的请求会照常走完（排队的事后发出、已发出的照算到底），
+  # 白算的那部分还会和别的召回抢 Hindsight 的 CPU。改成等每一路自己结束（成功、失败或 httpc 超时）再按
+  # 现行的“全有全无”规则合成，失败记第一条失败的那一路。依据见召回隔离决策稿 D-3a 与 S8/S10。
   defp recollect(cid, queries, timeout_ms) do
     with {:ok, snapshot} <- call(cid, :context) do
       config =
@@ -312,36 +327,34 @@ defmodule NpcServer.Life do
 
       started = System.monotonic_time(:millisecond)
 
-      result =
+      results =
         queries
         |> Task.async_stream(
           fn query -> {query, snapshot.adapter.recall(config, query, snapshot.now_ms)} end,
           max_concurrency: @recall_concurrency,
-          timeout: timeout_ms,
-          on_timeout: :kill_task,
+          timeout: :infinity,
           zip_input_on_exit: true
         )
-        |> Enum.reduce_while({:ok, []}, fn
-          {:ok, {_query, {:ok, recalled}}}, {:ok, routes} ->
-            {:cont, {:ok, [recalled.results | routes]}}
-
-          {:ok, {query, {:error, reason}}}, _ ->
-            {:halt, {:error, query, reason}}
-
-          {:exit, {query, :timeout}}, _ ->
-            {:halt, {:error, query, :recall_timeout}}
+        |> Enum.map(fn
+          {:ok, {_query, {:ok, recalled}}} -> {:ok, recalled.results}
+          {:ok, {query, {:error, reason}}} -> {:error, query, reason}
+          # 适配器自己以退出结束时（被外部 kill、`:timeout` 之类）：折成失败，不让未匹配的退出形状把调用方崩掉。
+          {:exit, {query, :timeout}} -> {:error, query, :recall_timeout}
+          {:exit, {query, reason}} -> {:error, query, {:recall_worker_failed, exit_kind(reason)}}
         end)
 
       latency_ms = System.monotonic_time(:millisecond) - started
 
-      case result do
-        {:ok, routes} ->
+      case Enum.find(results, &match?({:error, _, _}, &1)) do
+        nil ->
+          routes = for {:ok, recalled} <- results, do: recalled
+
           GenServer.cast(
             name(cid),
             {:recall, %{status: :done, routes: length(routes), latency_ms: latency_ms}}
           )
 
-          {:ok, snapshot, %{routes: Enum.reverse(routes), latency_ms: latency_ms}}
+          {:ok, snapshot, %{routes: routes, latency_ms: latency_ms}}
 
         {:error, query, reason} ->
           GenServer.cast(
@@ -428,6 +441,10 @@ defmodule NpcServer.Life do
        recall: nil,
        status: nil,
        job_error: nil,
+       # 记忆任务槽连续失败次数与"这一刻之前不再起槽"的退避截止（毫秒，内存里）：失败按指数退避重试，
+       # `job_error` 只用于 observe 与告警，不再是"永不重试"的开关。
+       job_failures: 0,
+       job_retry_at_ms: nil,
        speech_pending: [],
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
        activity: nil,
@@ -495,6 +512,9 @@ defmodule NpcServer.Life do
         refresh_at_ms: row && row["refresh_at_ms"],
         job: s.job && s.job.kind,
         error: s.error || s.job_error,
+        # 记忆任务槽的退避：连续失败次数与距下次自动重试的毫秒数（nil = 没在等）。
+        job_failures: s.job_failures,
+        job_retry_in_ms: if(s.job_retry_at_ms, do: max(0, s.job_retry_at_ms - s.now.())),
         hindsight: s.status,
         recall: s.recall,
         decision: s.decision,
@@ -754,8 +774,17 @@ defmodule NpcServer.Life do
             end
 
           case save(s, row) do
-            {:ok, s} -> automatic(%{s | status: result.status, job_error: nil})
-            {:error, s} -> s
+            {:ok, s} ->
+              automatic(%{
+                s
+                | status: result.status,
+                  job_error: nil,
+                  job_failures: 0,
+                  job_retry_at_ms: nil
+              })
+
+            {:error, s} ->
+              s
           end
 
         {:error, reason} ->
@@ -1545,12 +1574,13 @@ defmodule NpcServer.Life do
     do: row["pending"] != [] or row["fragments"] != [] or row["retained"] > 0
 
   # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部；正文不带时刻，“多久以前”由 Mind 按 at_ms 写。
-  defp recent(row),
-    do:
-      for(
-        episode <- sealed(row["fragments"]) ++ row["pending"],
+  # 只给最近 #{@max_recent} 条：Hindsight 长时间不可用时待写片段会积压，这一栏不能跟着无限长。
+  defp recent(row) do
+    episodes = sealed(row["fragments"]) ++ row["pending"]
+
+    for episode <- Enum.take(episodes, -@max_recent),
         do: %{at_ms: episode["at_ms"], text: episode["text"]}
-      )
+  end
 
   defp seal(row, force) do
     {fragments, tail} = fragments(row["pending"], force, [])
@@ -1582,6 +1612,8 @@ defmodule NpcServer.Life do
     do: take_fragment(rest, [e | acc], size + String.length(e["text"]))
 
   defp save(s, row) do
+    row = cap_fragments(s, row)
+
     if row == s.row do
       {:ok, %{s | error: nil}}
     else
@@ -1592,24 +1624,49 @@ defmodule NpcServer.Life do
     end
   end
 
+  # 待写片段的硬上限在这里守：所有持久化都走 `save/2`，所以即使 Hindsight 长时间不可用、retain 一直失败，
+  # 持久行也不会无限变大（行越大每次写越慢、越容易再失败，是正反馈）。丢的是最旧的、**还没写进 Hindsight 的
+  # 经历**，所以必须吵：一行 warning 带 cid、丢掉的片段数与经历条数，不静默。
+  defp cap_fragments(s, row) do
+    case length(row["fragments"]) - @max_fragments do
+      extra when extra > 0 ->
+        {dropped, kept} = Enum.split(row["fragments"], extra)
+        episodes = Enum.sum(Enum.map(dropped, &length(&1["episodes"])))
+
+        Logger.warning(
+          "npc_memory_fragments_trimmed cid=#{s.context.cid} dropped=#{length(dropped)} " <>
+            "episodes=#{episodes} kept=#{length(kept)}"
+        )
+
+        %{row | "fragments" => kept}
+
+      _ ->
+        row
+    end
+  end
+
   defp publish(s), do: send(s.owner, {:life_state, s.row["state"], s.row["thanked_seq"]})
   defp automatic(%{job: job} = s) when job != nil, do: s
-  defp automatic(%{job_error: reason} = s) when reason != nil, do: s
 
+  # 上一次失败后的退避还没到点：不起槽。到点之后照常按下面的条件重试——失败只推迟这次尝试，不再永久关闭。
   defp automatic(s) do
-    cond do
-      s.row["fragments"] != [] ->
-        start_job(s, :retain)
+    if s.job_retry_at_ms != nil and s.now.() < s.job_retry_at_ms do
+      s
+    else
+      cond do
+        s.row["fragments"] != [] ->
+          start_job(s, :retain)
 
-      s.row["cache"] == nil ->
-        start_job(s, :models)
+        s.row["cache"] == nil ->
+          start_job(s, :models)
 
-      s.row["dirty"] and
-          (s.row["refresh_at_ms"] == nil or s.now.() - s.row["refresh_at_ms"] >= @refresh_ms) ->
-        start_job(s, :refresh)
+        s.row["dirty"] and
+            (s.row["refresh_at_ms"] == nil or s.now.() - s.row["refresh_at_ms"] >= @refresh_ms) ->
+          start_job(s, :refresh)
 
-      true ->
-        s
+        true ->
+          s
+      end
     end
   end
 
@@ -1643,6 +1700,7 @@ defmodule NpcServer.Life do
     %{
       s
       | job_error: nil,
+        job_retry_at_ms: nil,
         job: Map.merge(s.job, %{kind: kind, ids: Enum.map(fragments, & &1["id"])}),
         row: if(kind == :refresh, do: Map.put(s.row, "refresh_at_ms", s.now.()), else: s.row)
     }
@@ -1679,8 +1737,24 @@ defmodule NpcServer.Life do
   end
 
   defp job_error(s, reason) do
-    Logger.warning("npc_life_memory_error cid=#{s.context.cid} reason=#{inspect(reason)}")
-    %{s | job_error: reason}
+    failures = s.job_failures + 1
+    retry_at_ms = s.now.() + job_backoff_ms(failures, s.context.cid)
+
+    Logger.warning(
+      "npc_life_memory_error cid=#{s.context.cid} failures=#{failures} " <>
+        "retry_in_ms=#{retry_at_ms - s.now.()} reason=#{inspect(reason)}"
+    )
+
+    %{s | job_error: reason, job_failures: failures, job_retry_at_ms: retry_at_ms}
+  end
+
+  # 退避时长：30 秒起、每次翻倍、上限 5 分钟，再乘按 cid 稳定算出的 0.75–1.25 抖动。
+  # 抖动按 cid 而不是随机数：同一个 NPC 每次算出来一样（可复现、可测），不同 NPC 之间错开
+  # ——多 NPC 实跑时不会所有 NPC 在同一刻重试（决策稿 D-3c 要的 jitter，只是不引入随机源）。
+  defp job_backoff_ms(failures, cid) do
+    base = min(@job_retry_ms * Integer.pow(2, min(failures - 1, 10)), @job_retry_max_ms)
+    permille = 75 + :erlang.phash2({:job_backoff, cid}, 51)
+    div(base * permille, 100)
   end
 
   defp exit_kind(reason) when is_atom(reason), do: reason

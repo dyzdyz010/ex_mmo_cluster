@@ -60,6 +60,29 @@ defmodule NpcServer.NpcLifeTest do
     def handle_event(_, state), do: {[], state}
   end
 
+  defmodule SlowFailingHindsight do
+    @moduledoc """
+    只测试：一路立刻失败、另一路慢（这是正常返回，不是超时）。用来证明 `recollect/3` 等每一路各自结束再合成，
+    不是第一路失败就停下；并且仍按“全有全无”把第一条失败报出去。
+    """
+    def ensure(_, _), do: {:ok, %{}}
+    def retain(_, documents), do: {:ok, %{retained: length(documents), facts: 1}}
+    def models(_), do: {:ok, %{models: %{"self" => "builder"}, metadata: %{}}}
+    def status(_), do: {:ok, %{stats: %{"memory_unit_count" => 1}, usage: %{}}}
+
+    def recall(config, %{query: query}, _now_ms) do
+      send(config.owner, {:recall_started, query})
+
+      if query == "slow" do
+        Process.sleep(300)
+        send(config.owner, {:recall_finished, query})
+        {:ok, %{results: [], latency_ms: 300, truth: "test"}}
+      else
+        {:error, :service_failed}
+      end
+    end
+  end
+
   defmodule RestoredHindsight do
     @moduledoc "只测试：旧模型只读；刷新替身被挂起，以观察 Life 的待刷新义务与持久缓存。"
     def ensure(_, _), do: {:ok, %{}}
@@ -261,6 +284,73 @@ defmodule NpcServer.NpcLifeTest do
     {fixture, body, cid}
   end
 
+  # 只测试：构造一份"有 count 个待写片段"的合法持久行（其余键与 `initial/3` 同形）。
+  defp row_with_fragments(cid, count) do
+    fragments =
+      for index <- 1..count do
+        %{
+          "id" => "e#{index}:fragment:f#{index}",
+          "at_ms" => index,
+          "episodes" => [
+            %{
+              "id" => "e#{index}",
+              "at_ms" => index,
+              "text" => "episode #{index}",
+              "tags" => ["kind:event"]
+            }
+          ]
+        }
+      end
+
+    %{
+      "state" => Life.State.new(cid, "w", 3, 0),
+      "pending" => [],
+      "fragments" => fragments,
+      "cache" => %{"models" => %{"self" => "builder"}, "at_ms" => 0},
+      "retained" => 0,
+      "dirty" => false,
+      "refresh_at_ms" => 0,
+      "thanked_seq" => 0
+    }
+  end
+
+  # 只测试：一份可直接驱动 Life 回调的状态（不经 GenServer），时钟由测试的 Agent 控制。
+  defp life_state(cid, clock, adapter) do
+    %{
+      row: nil,
+      poll: %{ref: make_ref()},
+      job: nil,
+      job_error: nil,
+      job_failures: 0,
+      job_retry_at_ms: nil,
+      error: nil,
+      memory: DataService.NpcMemory,
+      context: %{cid: cid},
+      owner: self(),
+      adapter: adapter,
+      config: %{owner: self()},
+      now: fn -> Agent.get(clock, & &1) end,
+      poll_ms: 600_000,
+      status: nil,
+      speech_pending: [],
+      appraise: false,
+      observation: nil,
+      experience_pending: [],
+      journaling: nil,
+      activity: nil,
+      sight: Life.Sight.new()
+    }
+  end
+
+  # 只测试：喂一次"世界事件读取完成"，什么事件都没有。`poll` 槽由上一次 `done/2` 清空，
+  # 这里补一个新的 ref（真实运行中下一次 `:poll` 消息会重新置位）。
+  defp poll(s, row) do
+    Life.handle_info(
+      {:result, :poll, {:ok, %{row: row, events: %{world_id: "w", cursor: 3, events: []}}}},
+      %{s | poll: %{ref: make_ref()}}
+    )
+  end
+
   @tag long_horizon: true
   test "thirty controlled days and owner restart preserve intention and authority personality without revived emotion" do
     clock = start_supervised!({Agent, fn -> System.system_time(:millisecond) end})
@@ -425,6 +515,8 @@ defmodule NpcServer.NpcLifeTest do
       poll: %{ref: make_ref()},
       job: nil,
       job_error: nil,
+      job_failures: 0,
+      job_retry_at_ms: nil,
       error: nil,
       memory: DataService.NpcMemory,
       context: %{cid: cid},
@@ -469,6 +561,133 @@ defmodule NpcServer.NpcLifeTest do
     assert saved["cache"]["models"] == %{"self" => "current model"}
     refute saved["dirty"]
     assert saved["refresh_at_ms"] == 1000
+  end
+
+  # 记忆任务槽失败后的重试：原来 `job_error` 一置上就再也不会自动起槽（一次 Hindsight 抖动 = 这个 NPC 永久停止写记忆）。
+  # 现在按指数退避自己重试。这一对用例直接驱动回调（不经 World / Body），把"什么时候重试"钉死。
+  test "记忆任务槽失败后按退避自己重试，不再永久停摆" do
+    cid = System.unique_integer([:positive]) + 300_000
+    {:ok, clock} = Agent.start_link(fn -> 1_000_000 end)
+
+    :ok = DataService.NpcMemory.put(cid, "life", "state", row_with_fragments(cid, 1))
+    {:ok, loaded} = NpcServer.Memory.life_load(DataService.NpcMemory, cid)
+
+    s = life_state(cid, clock, Hindsight)
+    {:noreply, s} = poll(s, loaded)
+    assert s.job.kind == :retain
+
+    # 第一次失败：记一笔失败并定下退避截止（还没到点）。
+    {:noreply, s} = Life.handle_info({:result, :job, {:error, :service_failed}}, s)
+    assert s.job == nil
+    assert s.job_failures == 1
+    assert s.job_error == :service_failed
+    assert s.job_retry_at_ms > Agent.get(clock, & &1)
+
+    # 退避没到点：再来一次观察也不起槽。
+    {:noreply, s} = poll(s, s.row)
+    assert s.job == nil
+
+    # 到点之后自己起来（不需要人用 CLI flush）。
+    Agent.update(clock, fn _ -> s.job_retry_at_ms end)
+    {:noreply, s} = poll(s, s.row)
+    assert s.job.kind == :retain
+  end
+
+  test "退避随连续失败翻倍、有上限，抖动按 cid 稳定" do
+    cid = 424_242
+    {:ok, clock} = Agent.start_link(fn -> 1_000_000 end)
+
+    for {failures, expected} <- [
+          {1, 30_000},
+          {2, 60_000},
+          {3, 120_000},
+          {4, 240_000},
+          {5, 300_000},
+          {9, 300_000}
+        ] do
+      # 起槽时 `job` 有 pid/ref；这里只喂"槽的结果"，所以给一个最小形状（`done/2` 只读 ref）。
+      s = %{
+        life_state(cid, clock, Hindsight)
+        | job: %{ref: make_ref(), kind: :retain, ids: []},
+          job_failures: failures - 1
+      }
+
+      {:noreply, failed} = Life.handle_info({:result, :job, {:error, :service_failed}}, s)
+      actual = failed.job_retry_at_ms - Agent.get(clock, & &1)
+
+      assert_in_delta actual,
+                      expected,
+                      expected * 0.25,
+                      "第 #{failures} 次失败应在 #{expected} ms 的 ±25% 抖动内，实际 #{actual}"
+
+      # 同一个 cid 算出来一样（抖动来自 cid 的稳定哈希，不是随机源）：换一次同样的失败，退避相同。
+      {:noreply, again} =
+        Life.handle_info(
+          {:result, :job, {:error, :service_failed}},
+          %{s | job_failures: failures - 1, job: %{ref: make_ref(), kind: :retain, ids: []}}
+        )
+
+      assert again.job_retry_at_ms == failed.job_retry_at_ms
+    end
+  end
+
+  test "待写片段超过上限时丢最旧的并告警，持久行保持有界" do
+    cid = System.unique_integer([:positive]) + 400_000
+    {:ok, clock} = Agent.start_link(fn -> 1_000_000 end)
+
+    row = row_with_fragments(cid, 9)
+    :ok = DataService.NpcMemory.put(cid, "life", "state", row)
+    {:ok, loaded} = NpcServer.Memory.life_load(DataService.NpcMemory, cid)
+
+    s = %{life_state(cid, clock, Hindsight) | row: loaded}
+
+    # 这一段经历触发一次封存与保存（尾部很短，不新增片段）；上限在 `save/2` 里守。
+    experience = %{text: "I built the hut.", place: nil, activity: "build_hut", completed: true}
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:noreply, trimmed} = Life.handle_cast({:activity, experience}, s)
+        assert length(trimmed.row["fragments"]) == 8
+        assert trimmed.row["fragments"] == Enum.drop(loaded["fragments"], 1)
+      end)
+
+    assert log =~ "npc_memory_fragments_trimmed"
+
+    stored = DataService.NpcMemory.get(cid, "life", "state")
+    assert length(stored["fragments"]) == 8
+    refute Enum.any?(stored["fragments"], &(&1["id"] == hd(loaded["fragments"])["id"]))
+  end
+
+  # 召回的截止时间只有一个 owner（适配器写进 httpc 的 timeout），所以一路失败时不会再 kill 其余各路：
+  # 等每一路各自结束再合成，仍按“全有全无”报第一条失败（决策稿 D-3a）。
+  test "一路失败时仍等其余各路结束再合成、报第一条失败，不 fail-fast" do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 500_000
+
+    profile = %{
+      owner: self(),
+      life: %{
+        hindsight: SlowFailingHindsight,
+        owner: self(),
+        poll_ms: 30,
+        url: "http://life.test.invalid"
+      }
+    }
+
+    NpcWorld.body(fixture, {Spy, profile}, cid: cid)
+    NpcWorld.await(fn -> match?({:ok, %{cache: %{}}}, Life.observe(cid)) end)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :service_failed} =
+             Life.mind(cid, [%{query: "fast"}, %{query: "slow"}])
+
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert elapsed >= 300, "第一路失败就返回了（fail-fast），没有等慢的那一路（#{elapsed} ms）"
+    assert_receive {:recall_started, "fast"}, 2_000
+    assert_receive {:recall_started, "slow"}, 2_000
+    assert_receive {:recall_finished, "slow"}, 2_000
   end
 
   @tag timeout: 120_000
