@@ -385,4 +385,58 @@ defmodule NpcServer.NpcJevTest do
       assert expected == verdict, "#{situation} -> #{inspect(answers)}"
     end
   end
+
+  # 真实 OpenAI 兼容端点（本机 deepseek）的一次冒烟。只在显式 `--include live_jev` **且**环境里写了
+  # `NPC_JEV_API=openai` 与 `NPC_JEV_URL/_KEY/_MODEL` 时跑（命令见 `.env.example`）。它回答两件只有真打才知道的事：
+  # ① 模型 id 与鉴权对不对；② `NPC_JEV_EFFORT` 会不会被上游拒——DSH 自带的 deepseek 目录把这条路由的思考档位
+  # 只映射 high / max，`medium` 是被忽略还是报错只能实测。
+  @tag :live_jev
+  @tag timeout: 120_000
+  test "the real OpenAI-compatible endpoint answers one selection with a valid choice" do
+    api = System.get_env("NPC_JEV_API")
+
+    if api not in ["openai", "openai-completions"] do
+      flunk("live_jev: 需要 NPC_JEV_API=openai 与 NPC_JEV_URL / _KEY / _MODEL（见 .env.example）")
+    end
+
+    endpoint = %{
+      api: :openai,
+      url: System.fetch_env!("NPC_JEV_URL"),
+      key: System.fetch_env!("NPC_JEV_KEY"),
+      model: System.fetch_env!("NPC_JEV_MODEL"),
+      reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
+      timeout_ms: 60_000
+    }
+
+    profile = %{
+      instructions: "Decide what this character does next.",
+      activities:
+        Jason.OrderedObject.new([
+          {"build_hut", "Build the small hut east of the square."},
+          {"visit_plaza", "Walk to the plaza and spend a while among the neighbours."}
+        ])
+    }
+
+    state = """
+    Now: It is morning, 08:10.
+    Character: Lin, a builder. Personality: quiet, thrifty, hard-working.
+    Feelings and relationships: Nothing notable.
+    What just happened: Nothing new.
+    What I remember: Nothing relevant.
+    Current situation: Standing at the square, alone. Inventory: empty.
+    Recent activities: Nothing yet.
+    """
+
+    started = System.monotonic_time(:millisecond)
+    assert {:ok, response} = NpcServer.Http.request(endpoint, Jev.body(endpoint, profile, state))
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert {:ok, choice, confidence} = Jev.top1(response)
+    assert choice in ["build_hut", "visit_plaza"]
+
+    IO.puts(
+      "live_jev openai model=#{endpoint.model} effort=#{endpoint.reasoning_effort} " <>
+        "choice=#{choice} confidence=#{confidence} elapsed_ms=#{elapsed} usage=#{inspect(response["usage"])}"
+    )
+  end
 end

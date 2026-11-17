@@ -444,6 +444,56 @@ defmodule NpcServer.NpcRegistryTest do
         )
       end)
     end
+
+    # 选择层的入口形状由运行环境选：不写 `NPC_JEV_API` 就是 TypeSafe（`api` 键不存在），
+    # 写 `openai` 就是 OpenAI 兼容的 chat completions（本机 deepseek 走这条）。
+    test "npc: NPC_JEV_API=openai builds the chat endpoint; without it the TypeSafe endpoint stays" do
+      with_env(@npc_env, fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        refute Map.has_key?(profile.jev, :api)
+        assert profile.jev.model == "jev-test"
+        assert profile.jev.timeout_ms == 10_000
+      end)
+
+      openai =
+        Map.merge(@npc_env, %{
+          "NPC_JEV_API" => "openai",
+          "NPC_JEV_URL" => "https://api.deepseek.com/v1/chat/completions",
+          "NPC_JEV_KEY" => "deepseek-test",
+          "NPC_JEV_MODEL" => "deepseek-flash"
+        })
+
+      with_env(openai, fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+
+        assert %{
+                 api: :openai,
+                 url: "https://api.deepseek.com/v1/chat/completions",
+                 key: "deepseek-test",
+                 model: "deepseek-flash",
+                 # 缺省思考强度是 medium，缺省 max_tokens 512；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
+                 reasoning_effort: "medium",
+                 max_tokens: 512,
+                 timeout_ms: 10_000
+               } = profile.jev
+      end)
+
+      # 两个可选项都能从环境覆盖。
+      tuned = Map.merge(openai, %{"NPC_JEV_EFFORT" => "high", "NPC_JEV_MAX_TOKENS" => "1024"})
+
+      with_env(tuned, fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        assert profile.jev.reasoning_effort == "high"
+        assert profile.jev.max_tokens == 1024
+      end)
+
+      # 写了 openai 但缺 URL / KEY / MODEL：登记时明确失败，不退回 TypeSafe 静默跑。
+      for key <- ["NPC_JEV_URL", "NPC_JEV_KEY", "NPC_JEV_MODEL"] do
+        with_env(Map.put(openai, key, nil), fn ->
+          assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, {:missing, key})
+        end)
+      end
+    end
   end
 
   describe "registry" do
