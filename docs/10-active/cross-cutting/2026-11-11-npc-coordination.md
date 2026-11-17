@@ -123,8 +123,13 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
      ② `npc_body_world_test` 的「cancelling a skill preserves an already committed World transaction」在 CI 上
      把 `{:DOWN, …, :shutdown}` 翻成 `:noproc`（技能 worker 在测试设 monitor 之前就已经退出）。已按语义收口：
      两种原因都接受（都表示"报终态时它已不在跑"），取消本身的语义仍由 `:cancelled` 与已提交事务断言。
-   - **最新一次 run 全绿**：`44157294404` 的 13 个 job 全部 pass（含 `voxel_region` 13m0s 与 `CI result`），
-     PR 仍在 draft（是否合并由用户定）。
+     ③ `npc_hindsight_test` 的「operation deadline bounds an in-flight poll request」在 CI 上偶发：`Task.yield(task, 100)`
+     返回 nil。替身原来 200 ms 答、窗口 100 ms，负载一高就顶掉；改成替身 1 s 答、窗口 900 ms，仍是"截止 10 ms
+     远早于服务端回答"，但不再赌调度延迟。
+   - **最终一次 run 全绿**：`44165163094` 的 13 个 job 全部 pass（`npc_server` 9m25s、`voxel_region` 15m9s、
+     `CI result` 绿）。此前 `44157294404` 也全绿过一次。PR 仍在 draft（是否合并由用户定）。
+   - **数到的 flake 与处理**：6 次 `npc_server` 作业里 4 次绿、2 次红，两次红分别是上面 ② 与 ③ 两个**既有**
+     用例的时序假设（都与本次改动无关），两个都已按语义收口——这是"20k 行测试第一次真正上 CI"必然要付的账。
 8. 下一步（未做，顺序即优先级）：补一次 deepseek 选择层的 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
