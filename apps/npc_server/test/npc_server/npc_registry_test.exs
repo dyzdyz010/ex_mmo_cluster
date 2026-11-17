@@ -838,6 +838,136 @@ defmodule NpcServer.NpcRegistryTest do
       )
     end
 
+    # 选择层换成本机 deepseek 时走的那条路：`NPC_JEV_API=openai` + 一个真实的 chat completions 端点。
+    # 这一条覆盖"配置 → Registry → 真实 Body → Jev 请求 → 解析 → 执行"的整条链，**只把对端换成能回
+    # OpenAI 形状的本机替身**（真实 deepseek 的那次冒烟见 `npc_jev_test` 的 `:live_jev` 用例）。
+    @tag timeout: 120_000
+    test "an npc row selects through an OpenAI-compatible chat endpoint when NPC_JEV_API=openai" do
+      test = self()
+
+      jev =
+        http_stub(fn :post, "/jev", body ->
+          send(test, {:jev_http, body})
+
+          %{
+            "choices" => [
+              %{
+                "message" => %{
+                  "content" =>
+                    ~s({"choice": "walk_east", "confidence": 0.7, "reason": "Steady work."})
+                }
+              }
+            ],
+            "usage" => %{"prompt_tokens" => 1234, "completion_tokens" => 12}
+          }
+        end) <> "/jev"
+
+      hindsight =
+        http_stub(fn
+          :put, "/v1/default/banks/npc-life-" <> _cid, _ ->
+            %{}
+
+          :patch, "/v1/default/banks/npc-life-" <> rest, _ ->
+            true = String.ends_with?(rest, "/config")
+            %{}
+
+          :get, "/v1/default/banks/npc-life-" <> rest, _ ->
+            cond do
+              rest =~ "/mental-models/" -> %{"content" => "Nothing recorded yet."}
+              rest =~ "/operations?" -> %{"operations" => [], "total" => 0}
+              rest =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
+              rest =~ "/stats" -> %{}
+            end
+
+          :post, "/v1/default/banks/npc-life-" <> rest, _body ->
+            true = String.ends_with?(rest, "/memories/recall")
+            %{"results" => []}
+        end)
+
+      name = "住民#{System.unique_integer([:positive])}"
+
+      params = %{
+        @npc
+        | "activities" => [
+            %{
+              "name" => "stay_here",
+              "criterion" => "Stay where you are.",
+              "place" => [4.0, 10.0],
+              "stay_ticks" => 60
+            },
+            %{
+              "name" => "walk_east",
+              "criterion" => "Walk to the east post.",
+              "place" => [8.0, 10.0],
+              "stay_ticks" => 60
+            }
+          ]
+      }
+
+      env =
+        @npc_env
+        |> Map.merge(%{
+          "NPC_JEV_API" => "openai",
+          "NPC_JEV_URL" => jev,
+          "NPC_JEV_KEY" => "deepseek-test",
+          "NPC_JEV_MODEL" => "deepseek-flash",
+          "NPC_JEV_EFFORT" => "medium",
+          "NPC_LIFE_HINDSIGHT_URL" => hindsight
+        })
+
+      with_env(env, fn ->
+        assert {:ok, %{cid: cid, pid: pid}} =
+                 NpcRegistry.put(name, %{
+                   scene_id: 1,
+                   spawn: {4.0, 66.0, 10.0},
+                   brain: "npc",
+                   params: params
+                 })
+
+        assert_receive {:jev_http, request}, 30_000
+
+        # 请求是 chat completions 形状：model / 顺序固定的 system 判据 / 心智快照作 user / 思考强度与输出上限。
+        assert request["model"] == "deepseek-flash"
+        assert request["max_tokens"] == 2048
+        assert request["reasoning_effort"] == "medium"
+
+        assert [
+                 %{"role" => "system", "content" => system},
+                 %{"role" => "user", "content" => state}
+               ] =
+                 request["messages"]
+
+        assert system =~ "- stay_here: Stay where you are."
+        assert system =~ "- walk_east: Walk to the east post."
+        assert :binary.match(system, "stay_here") < :binary.match(system, "walk_east")
+        assert system =~ ~s({"choice": )
+        assert state =~ "Character: Lin, a builder."
+
+        # 真实 Body 按 chat 应答里的 choice 执行活动：走到 (8, 10)。
+        travel =
+          NpcWorld.await(
+            fn ->
+              Enum.find(
+                Body.observe(pid).outcomes,
+                &match?(%{verb: :travel, status: :done}, &1)
+              )
+            end,
+            20_000
+          )
+
+        {x, _, z} = travel.data.position
+        assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
+
+        # `trigger` 不作断言：树在第一帧就发问，而 Life 的缓存要一次 HTTP 往返（见统筹页记的既有竞态），
+        # 输掉竞态时这次问会以 `:mind_unavailable` 失败、10 秒后重问，`trigger` 就是 `"retry"`。
+        # 这条用例要钉的是"chat 应答被解析成候选并被执行"，与那次竞态无关。
+        assert [%{activity: "walk_east", confidence: 0.7} | _] =
+                 Body.observe(pid).select.activities
+
+        assert :ok = NpcRegistry.remove(name)
+      end)
+    end
+
     # 走向一个角色（S1-F），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）：Jev 选中“去找我不信任的人”，
     # 附近没有人、Life 里也没有关系 → 不发 travel，活动以 failed (travel: nobody_distrusted) 结束，下一次发问的
     # “最近做过的事”与“刚发生的事”里都写着它。
