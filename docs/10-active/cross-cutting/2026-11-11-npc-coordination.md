@@ -130,7 +130,23 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
      `CI result` 绿）。此前 `44157294404` 也全绿过一次。PR 仍在 draft（是否合并由用户定）。
    - **数到的 flake 与处理**：6 次 `npc_server` 作业里 4 次绿、2 次红，两次红分别是上面 ② 与 ③ 两个**既有**
      用例的时序假设（都与本次改动无关），两个都已按语义收口——这是"20k 行测试第一次真正上 CI"必然要付的账。
-8. 下一步（未做，顺序即优先级）：补一次 deepseek 选择层的 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
+8. **deepseek 接入的当前状态（2026-11-17，第三轮）**：
+   - 代码/配置/测试都完成：`NpcServer.Jev` 的 `:openai` 入口、`Registry` 的 `NPC_JEV_*` 选择、单测（请求形状、
+     宽容解析、置信度夹取、截断与拒绝形状、`Selector.ask` 的 `unknown_activity`）、端到端用例（`NPC_JEV_API=openai`
+     + 真实 Body + 真实 HTTP 替身，走到东边哨位）。
+   - **口径已按 DeepSeek 官方文档校准**：端点 `POST https://api.deepseek.com/chat/completions`；模型 id
+     `deepseek-flash`（显示名 "DeepSeek-V4.1-Flash"）；`max_tokens` 是"思考 + 正文"的总量（思考模式缺省 64K），
+     我们用 8192 并在 `finish_reason: "length"` 时报 `{:truncated, "length"}`；**思考强度的官方映射是
+     `medium → high`，而默认档位就是 high**——所以用户要的 `medium` 合法但等于不指定，要更少思考得写 `low`
+     （依据：DeepSeek《思考模式》的 effort 映射表与 Chat Completions 参考）。
+   - **live 冒烟本身已验证**：`.demo/dev-env/jev_stub.exs`（最小 chat completions 端点）+ `run-live-smoke.sh`
+     跑通了一次，打印 `model=deepseek-flash effort=medium picked=build_hut finish_reason="stop" has_reasoning=true usage=…`。
+     所以剩下的只是"真实端点"这一件事，不是"冒烟脚本能不能跑"。
+   - **阻塞**：本机没有可用的 DeepSeek 平台 API key（`ex_mmo_cluster\.env` 里那个 `sk-` 是 magpie 路由 key，
+     打 api.deepseek.com 是 401；DSH 的账号设备凭证同样 401）。补法：把 `NPC_JEV_API=openai`、`NPC_JEV_URL`、
+     `NPC_JEV_MODEL=deepseek-flash`、`NPC_JEV_EFFORT=medium`、`NPC_JEV_KEY` 五行写进 `ex_mmo_cluster\.env`，
+     然后 `cd apps/npc_server && mix test --only live_jev_openai test/npc_server/npc_jev_test.exs`。
+9. 下一步（未做，顺序即优先级）：上面那次 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 

@@ -417,11 +417,14 @@ defmodule NpcServer.NpcJevTest do
     end
   end
 
-  # 真实 OpenAI 兼容端点（本机 deepseek）的一次冒烟。只在显式 `--include live_jev` **且**环境里写了
-  # `NPC_JEV_API=openai` 与 `NPC_JEV_URL/_KEY/_MODEL` 时跑（命令见 `.env.example`）。它回答两件只有真打才知道的事：
-  # ① 模型 id 与鉴权对不对；② `NPC_JEV_EFFORT` 会不会被上游拒——DSH 自带的 deepseek 目录把这条路由的思考档位
-  # 只映射 high / max，`medium` 是被忽略还是报错只能实测。
+  # 真实 OpenAI 兼容端点（本机 deepseek）的一次冒烟。只在显式 `--only live_jev_openai` **且**环境里写了
+  # `NPC_JEV_API=openai` 与 `NPC_JEV_URL/_KEY/_MODEL` 时跑（命令见 `.env.example`；`--only` 以免连带跑需要
+  # `TYPESAFE_*` 的那两条 live 用例）。它回答只有真打才知道的事：模型 id 与鉴权对不对、`finish_reason` 是不是
+  # `stop`（`length` = `max_tokens` 用尽、正文被截断）、有没有 `reasoning_content`（思考模式开没开）、以及 usage。
+  # 档位映射本身不需要实测：DeepSeek《思考模式》的官方表写着 `medium → high`（默认就是 high）。
+  # 这条冒烟**本身**用 `.demo/dev-env/jev_stub.exs` 验证过一遍（本机替身端点，回一份同形状的应答）。
   @tag :live_jev
+  @tag :live_jev_openai
   @tag timeout: 120_000
   test "the real OpenAI-compatible endpoint answers one selection with a valid choice" do
     api = System.get_env("NPC_JEV_API")
@@ -462,7 +465,7 @@ defmodule NpcServer.NpcJevTest do
     assert {:ok, response} = NpcServer.Http.request(endpoint, Jev.body(endpoint, profile, state))
     elapsed = System.monotonic_time(:millisecond) - started
 
-    choice = response |> Map.get("choices", []) |> List.first() |> Kernel.||(%{})
+    choice = response |> Map.get("choices", []) |> List.first() || %{}
 
     assert {:ok, picked, confidence} = Jev.top1(response)
     assert picked in ["build_hut", "visit_plaza"]
