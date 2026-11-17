@@ -15,10 +15,22 @@ defmodule NpcServer.Jev do
   的“现在做哪件事”）用 `top1/1` 直接取 top1，不设门槛。后者的 `activities` 可以是 `Jason.OrderedObject`，
   候选次序原样进请求体。
   endpoint: `%{url:, key:, model:, cacertfile: 可选}`。
+
+  ## 两种入口形状（`endpoint.api`）
+
+  - `:answers`（缺省，TypeSafe System One）：一问一答的 JSON，`questions` 里带选项与判据，应答是
+    `answers.activity.{choice,confidence}`。中断与 harm 护栏都只支持这一种。
+  - `:openai`（OpenAI 兼容 chat completions，例如本机的 deepseek）：判据与输出契约写进 system，`state` 作 user，
+    应答取 `choices[0].message.content` 里的 JSON `{"choice", "confidence", "reason"}`。**只有选择位置用它**
+    （`Selector.top1`）；中断策略遇到这种应答一律当拿不准（继续），因为它要的 `noul`/多问一答的语义这里没有。
+  - `endpoint.reasoning_effort`（`:low | :medium | :high`）给了就随请求发；没给就不发。
   """
   @confidence 0.85
   @behaviour NpcServer.Scheduler
   require Logger
+
+  # `:openai` 入口的 `max_tokens`：这一问只回一个短 JSON（选项名 + 置信度 + 一句理由）。
+  @openai_max_tokens 512
 
   @doc """
   中断检查（`profile.interrupt_policy = {Jev, config}`）。config 为
@@ -76,6 +88,17 @@ defmodule NpcServer.Jev do
 
   @doc "请求体。profile 与 situation 为英文；planned_action 是将做的破坏性动作，没有则不问 harm。"
   def body(endpoint, profile, situation, planned_action \\ nil) do
+    case api(endpoint) do
+      :openai -> openai_body(endpoint, profile, situation, planned_action)
+      _ -> answers_body(endpoint, profile, situation, planned_action)
+    end
+  end
+
+  defp api(%{api: :openai}), do: :openai
+  defp api(_endpoint), do: :answers
+
+  # TypeSafe System One 形状：一问（可选两问）的 JSON。
+  defp answers_body(endpoint, profile, situation, planned_action) do
     questions = %{
       activity: %{
         type: "choice",
@@ -104,13 +127,57 @@ defmodule NpcServer.Jev do
     %{model: endpoint.model, state: state, questions: questions}
   end
 
+  # OpenAI 兼容 chat completions：判据与输出契约进 system，state 作 user；要求和解析都只有一个 JSON 对象。
+  defp openai_body(endpoint, profile, situation, planned_action) do
+    state =
+      if planned_action, do: situation <> " Planned action: " <> planned_action, else: situation
+
+    body = %{
+      model: endpoint.model,
+      max_tokens: Map.get(endpoint, :max_tokens, @openai_max_tokens),
+      messages: [
+        %{role: "system", content: openai_system(profile)},
+        %{role: "user", content: state}
+      ]
+    }
+
+    case Map.get(endpoint, :reasoning_effort) do
+      nil -> body
+      effort -> Map.put(body, :reasoning_effort, to_string(effort))
+    end
+  end
+
+  @doc """
+  `:openai` 入口的 system 提示词：调用方给的问法 → 选项与判据（次序由调用方给）→ 输出契约。
+  选项名要求逐字照抄；置信度只写进日志（选择位置不设门槛），所以要模型给 0–1 的数。
+  """
+  def openai_system(profile) do
+    """
+    #{profile.instructions}
+
+    The options, in the order the caller gave them (option name: criterion):
+    #{option_lines(profile.activities)}
+
+    Reply with a single JSON object and nothing else, in this shape:
+    {"choice": "<exactly one option name from the list>", "confidence": <number from 0 to 1>, "reason": "<one short sentence>"}
+    """
+  end
+
+  defp option_lines(%Jason.OrderedObject{values: pairs}), do: option_lines(pairs)
+  defp option_lines(pairs) when is_list(pairs), do: Enum.map_join(pairs, "\n", &option_line/1)
+  defp option_lines(map) when is_map(map), do: Enum.map_join(map, "\n", &option_line/1)
+
+  defp option_line({name, criterion}), do: "- #{name}: #{criterion}"
+
   @doc """
   应答折成一个决定：
     * `{:blocked, :harms_others}`：可能拆到他人放置物，不做；
     * `{:act, activity}`：有把握且属于 profile 的字符串选项；
     * `{:escalate, :low_confidence | :unknown_activity}`：拿不准或选项不属于 profile，交回大脑。
   """
-  def verdict(%{"answers" => answers}, profile, confidence \\ @confidence) do
+  def verdict(response, profile, confidence \\ @confidence)
+
+  def verdict(%{"answers" => answers}, profile, confidence) do
     activity = answers["activity"]
     harm = answers["harm"]
 
@@ -123,12 +190,48 @@ defmodule NpcServer.Jev do
     end
   end
 
+  # 中断与 harm 护栏只支持 `:answers` 形状（见 moduledoc）。拿到别的形状（`:openai` 的 chat 应答）按“拿不准”
+  # 交回大脑：中断策略里那等于继续，既不会误判成中断，也不会把一份没有 `noul` 的应答当成放行。
+  def verdict(_response, _profile, _confidence), do: {:escalate, :unsupported_api}
+
   @doc "偏好类选择的读法：应答里 `activity` 问题的 top1 与它的置信度，不设门槛；应答不成形 → `{:error, :malformed_response}`。"
   def top1(%{"answers" => %{"activity" => %{"choice" => choice, "confidence" => confidence}}})
       when is_binary(choice) and is_number(confidence),
       do: {:ok, choice, confidence}
 
+  # `:openai` 入口：`choices[0].message.content` 里应当是 `{"choice", "confidence", "reason"}`。
+  # 模型偶尔会把 JSON 包在代码块里或前后各写一句解释，所以取第一个 `{` 到最后一个 `}` 再解析；
+  # 选项名与候选表的比对在调用方（`Selector.ask/3` 的 `unknown_activity`）。
+  def top1(%{"choices" => [%{"message" => %{"content" => content}} | _]})
+      when is_binary(content) do
+    with {:ok, answer} <- decode_answer(content),
+         choice when is_binary(choice) and choice != "" <- answer["choice"] do
+      {:ok, choice, confidence_of(answer)}
+    else
+      _ -> {:error, :malformed_response}
+    end
+  end
+
   def top1(_response), do: {:error, :malformed_response}
+
+  # 置信度只进日志（选择位置不设门槛）：不是 0..1 的整数或浮点就当 0.0，不因此拒掉整份应答。
+  defp confidence_of(%{"confidence" => value}) when is_number(value),
+    do: min(max(value * 1.0, 0.0), 1.0)
+
+  defp confidence_of(_answer), do: 0.0
+
+  # 取第一个 `{` 到最后一个 `}`：模型有时把 JSON 包进代码块，有时前后各写一句解释。
+  # 按字节偏移切（花括号都是 ASCII），切出来仍是合法 UTF-8。
+  defp decode_answer(text) do
+    with [{first, _} | _] <- :binary.matches(text, "{"),
+         [_ | _] = closes <- :binary.matches(text, "}"),
+         {last, _} <- List.last(closes),
+         true <- last > first do
+      text |> binary_part(first, last - first + 1) |> Jason.decode()
+    else
+      _ -> {:error, :no_json}
+    end
+  end
 
   @doc "问一次，返回 {:ok, verdict, response} 或 {:error, reason}；HTTP 与 LLM 共用发送函数。"
   def ask(

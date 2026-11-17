@@ -91,6 +91,148 @@ defmodule NpcServer.NpcJevTest do
              end)
   end
 
+  # 选择位置换成 OpenAI 兼容的 chat completions（本机 deepseek 就是这条）：判据与输出契约写进 system，
+  # 应答取 choices[0].message.content 里的 JSON。只覆盖选择位置；中断 / harm 仍只支持 :answers（下面有用例）。
+  describe "openai-compatible entry (selection position)" do
+    defp chat(content), do: %{"choices" => [%{"message" => %{"content" => content}}]}
+
+    defp endpoint(extra \\ %{}) do
+      Map.merge(
+        %{
+          api: :openai,
+          url: "http://127.0.0.1:9/v1/chat/completions",
+          key: "test-key",
+          model: "deepseek-flash",
+          reasoning_effort: "medium",
+          timeout_ms: 1_000
+        },
+        extra
+      )
+    end
+
+    defp selection_profile do
+      %{
+        instructions: "Decide what this character does next.",
+        activities:
+          Jason.OrderedObject.new([
+            {"build_hut", "Build the small hut east of the square."},
+            {"visit_plaza", "Walk to the plaza and spend a while among the neighbours."}
+          ])
+      }
+    end
+
+    test "request: system carries the criteria in order and the JSON contract; state is the user message" do
+      body = Jev.body(endpoint(), selection_profile(), "It is morning. I am at the square.")
+
+      assert body.model == "deepseek-flash"
+      assert body.max_tokens == 512
+      assert body.reasoning_effort == "medium"
+      assert [%{role: "system"}, %{role: "user"}] = body.messages
+      assert Enum.at(body.messages, 1).content == "It is morning. I am at the square."
+
+      system = Enum.at(body.messages, 0).content
+      assert system =~ "Decide what this character does next."
+      assert system =~ "- build_hut: Build the small hut east of the square."
+      assert system =~ "- visit_plaza: Walk to the plaza"
+      # 选项次序由调用方给：build_hut 必须在 visit_plaza 之前。
+      assert :binary.match(system, "build_hut") < :binary.match(system, "visit_plaza")
+      assert system =~ ~s({"choice": )
+      assert system =~ "confidence"
+    end
+
+    test "request: no reasoning_effort field when the endpoint does not configure one" do
+      body = Jev.body(endpoint(%{reasoning_effort: nil}), selection_profile(), "state")
+
+      refute Map.has_key?(body, :reasoning_effort)
+    end
+
+    test "top1 reads a plain JSON answer, a fenced one, and one wrapped in prose" do
+      assert {:ok, "build_hut", 0.8} ==
+               Jev.top1(
+                 chat(
+                   ~s({"choice": "build_hut", "confidence": 0.8, "reason": "It is steady work."})
+                 )
+               )
+
+      assert {:ok, "visit_plaza", 0.55} ==
+               Jev.top1(chat("```json\n{\"choice\": \"visit_plaza\", \"confidence\": 0.55}\n```"))
+
+      assert {:ok, "visit_plaza", 0.0} ==
+               Jev.top1(chat(~s(I would pick: {"choice": "visit_plaza"} — for company.)))
+    end
+
+    test "top1 rejects answers that are not a choice: no JSON, no choice key, empty choice" do
+      assert {:error, :malformed_response} == Jev.top1(chat("visit_plaza, because company"))
+      assert {:error, :malformed_response} == Jev.top1(chat(~s({"confidence": 0.9})))
+
+      assert {:error, :malformed_response} ==
+               Jev.top1(chat(~s({"choice": "", "confidence": 0.9})))
+
+      assert {:error, :malformed_response} == Jev.top1(%{"choices" => []})
+      assert {:error, :malformed_response} == Jev.top1(%{"answers" => %{"activity" => %{}}})
+    end
+
+    test "confidence is clamped into 0..1 and is only for logging" do
+      assert {:ok, "build_hut", 1.0} ==
+               Jev.top1(chat(~s({"choice": "build_hut", "confidence": 7})))
+
+      assert {:ok, "build_hut", 0.0} ==
+               Jev.top1(chat(~s({"choice": "build_hut", "confidence": -3})))
+    end
+
+    test "the interruption policy treats a chat answer as doubt (continue), never as an interrupt" do
+      context = %{
+        skill: "build",
+        heard: [],
+        observation: %{self: %{entity_id: 1}, entities: [], balances: nil, pending: []}
+      }
+
+      config = %{
+        scheduler: endpoint(),
+        activities: %{
+          instructions: "Decide whether to interrupt the current work.",
+          activities: %{"continue_building" => "Keep building.", "flee" => "Run away."}
+        },
+        continue_activity: "continue_building",
+        request: fn _endpoint, _body -> {:ok, chat(~s({"choice": "flee", "confidence": 1.0}))} end
+      }
+
+      assert Jev.decide(context, config) == :continue
+    end
+
+    # 选择位置的真实调用路径：`Selector.ask/3` 用注入的发送函数，不访问网络。
+    test "Selector.ask goes through the injected sender and validates the choice against the candidates" do
+      profile = %{
+        activities: [
+          %{
+            name: "build_hut",
+            criterion: "Build the small hut.",
+            run: {:place, [30.0, 36.0], 60}
+          },
+          %{name: "visit_plaza", criterion: "Visit the plaza.", run: {:place, [31.0, 37.0], 60}}
+        ],
+        jev: endpoint(),
+        request: fn _endpoint, body ->
+          send(self(), {:sent, body})
+          {:ok, chat(~s({"choice": "visit_plaza", "confidence": 0.62, "reason": "Company."}))}
+        end
+      }
+
+      question = %{state: "It is morning.", recall_queries: [], recall_ms: 3}
+
+      assert {:ok, %{activity: "visit_plaza", confidence: 0.62, trigger: "start"}} =
+               NpcServer.Selector.ask(profile, question, "start")
+
+      assert_receive {:sent, %{model: "deepseek-flash", messages: [_, _]}}
+
+      # 模型答了一个不在候选里的名字：显式失败，不猜。
+      profile = Map.put(profile, :request, fn _, _ -> {:ok, chat(~s({"choice": "dance"}))} end)
+
+      assert {:error, {:unknown_activity, "dance"}} =
+               NpcServer.Selector.ask(profile, question, "start")
+    end
+  end
+
   # 中断检查（interrupt_policy）：问法如实描述听到的话；只有有把握地选了非继续的选项才中断。
   describe "decide/2 as an interruption policy" do
     defp policy(owner, answer) do

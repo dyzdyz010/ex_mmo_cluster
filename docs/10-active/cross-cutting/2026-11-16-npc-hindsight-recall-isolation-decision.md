@@ -1,4 +1,4 @@
-# NPC 的 Hindsight 召回隔离（召回超时修复）决策稿（草案，待用户定；未实现）
+# NPC 的 Hindsight 召回隔离（召回超时修复）决策稿（用户已定 2026-11-16；D-1 / D-3a 已实现 2026-11-17）
 
 2026-11-16，第十五个统筹会话的子会话起草。只读代码与证据写成，没有跑 mix、没有起节点、没有发任何 Hindsight / Jev / 网关请求。
 上位与输入：S1-R10 判定 `.demo/observe/npc-slice1-20261112/s1r10/results.md`（用户决定第 3 条：“召回超时单独查根因，先调查、查证业界做法，再写决策稿”）；
@@ -287,3 +287,15 @@ flowchart LR
 
 - 2026-11-16：草案（子会话起草）。依据：调查报告、E1 判定、逐次分类、S1-R10 判定，以及 §2 的 15 条来源（本子会话逐条读原文）。未实现。下一步：用户定 §9 → 拆实现（适配器 + `recollect/3` + 应用起停 + T-1–T-3）→ 与日计划层补验收合并为一次闭环实跑（含 D-4 采样）。
 - 2026-11-16：用户定了 §9（见“用户的决定”）。下一步：拆实现（任务书 `.demo/observe/npc-slice1-20261112/s1r10/impl/t8-brief.md`）。
+- 2026-11-17：**D-1 与 D-3a 已实现**（提交 `0c64e154`，与另外两项结构修复同一提交）。落地细节：
+  - D-1：`NpcServer.Life.Hindsight` 里唯一一处定义 `:npc_hindsight_recall`，对外给 `start_recall_profile/0` 与
+    `stop_recall_profile/0`；`NpcServer.Application.start/2` 在监督树之前起、`stop/1` 停；`recall/3` 是唯一走它的请求。
+    参数全缺省（如稿中所述）。发现 profile 不在时**显式失败** `{:profile_not_started, 名}`，不退回缺省 profile。
+    测试跑 `--no-start`，由 `test_helper.exs` 起同一份。
+  - D-3a：`recollect/3` 去掉 `Task.async_stream` 的 `timeout` 与首败 `halt`，`timeout: :infinity`，等每一路结束再按
+    全有全无合成，失败报第一条；适配器自己以退出结束时折成 `{:recall_worker_failed, _}`。
+  - 验证：新增 `test/npc_server/npc_recall_isolation_test.exs`（`keep_alive_stub` 能保持连接、能并发应答）——
+    **T-1 改前红/改后绿**：不做隔离时召回排在慢 retain 后面、以 250 ms 预算超时；隔离后在另一条连接上亚秒级返回。
+    另有用例覆盖 profile 起停、profile 缺失的显式失败；Life 侧加"一路失败仍等其余各路结束"的用例。
+  - 未做（按稿）：D-1b 调参数（待 R4 证据）、D-2 retain 异步（不改）、D-3c 退避（多 NPC 前再定）、D-4 采样（下次实跑）。
+    §7.2 的读数 R1–R8 与日计划层补验收合并为同一次闭环实跑，仍未跑。

@@ -274,8 +274,9 @@ NpcServer.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, bra
 # 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE。
 NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
-# 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：每次解析取运行环境
-# TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）。必带 Life：Hindsight 地址取运行环境 NPC_LIFE_HINDSIGHT_URL
+# 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：缺省取运行环境
+# TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）；写 NPC_JEV_API=openai 时改取 NPC_JEV_URL
+# （完整 chat completions 地址）/ NPC_JEV_KEY / NPC_JEV_MODEL，可选 NPC_JEV_EFFORT（缺省 medium）。必带 Life：Hindsight 地址取运行环境 NPC_LIFE_HINDSIGHT_URL
 # （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。选择本身不用 LLM 接口；Life 的反思写日记要一个，
 # 同样不入库：每次解析取运行环境 NPC_REFLECT_URL（完整的 …/v1/messages 地址）/ NPC_REFLECT_KEY / NPC_REFLECT_MODEL（必须，
 # 缺一个登记即 raise；用途与请求形状见下文“反思”）。
@@ -429,6 +430,14 @@ flowchart LR
   把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
 - **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
   命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
+- **问谁（两种入口形状）**：`NpcServer.Jev` 的 moduledoc 是正文。缺省是 TypeSafe System One（`:answers`）：
+  一问一答的 JSON，选项与判据随 `questions` 发出，应答读 `answers.activity.{choice,confidence}`；中断策略与
+  harm 护栏只支持这一种。写 `NPC_JEV_API=openai` 时改走 OpenAI 兼容的 chat completions（`:openai`，本机 deepseek
+  就是这条）：判据与输出契约写进 system、`state` 作 user，应答读 `choices[0].message.content` 里的
+  `{"choice", "confidence", "reason"}`（容忍代码块与前后解释，取第一个 `{` 到最后一个 `}`；选项名仍由
+  `Selector` 与候选表比对，不在候选里就 `unknown_activity`）。置信度只进日志（选择位置不设门槛）。
+  `endpoint.reasoning_effort`（`low`/`medium`/`high`）给了就随请求发。**只有选择位置能用 `:openai`**：
+  中断策略拿到 chat 应答一律当拿不准（继续），既不会误判成中断，也不会把没有 `noul` 的应答当成放行。
 - **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。七栏；最近一轮反思写成了“自己”时在记忆之后多一栏 `What I have come to think`，Life 里有今天的计划或想做而做不到的事时再多一栏 `Plans and promises`（最多九栏），次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
 
   | 栏 | 内容 | owner |

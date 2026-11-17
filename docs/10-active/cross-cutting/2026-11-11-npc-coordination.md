@@ -74,6 +74,18 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 3. 统筹会话不再为单个现象开多轮调查；同一现象若不改变结构决定，记后期。
 4. 本节之前已记“后期”的条目（时限太短、守屋偏多、完成后重写同一意图、`cannot_yet` 为空、过时限才完成不计数、措辞类）照旧后期，不再测。
 
+### P0 结构修复与选择层换模型（2026-11-17，用户要求“把这个模块拉回正确轨道”）——四项与它们的状态以本节为准
+
+独立评审（架构 / LLM 集成 / 测试三份只读审查）的结论是：单 NPC 的设计纪律与可解释性已经很好，但从 1 个到 MMO 的三道门槛一道都还没过——基础设施缺陷只写了稿、集成层长期没上 CI、表达层被静态配置钉死。据此定 P0 四项，**都已实现**（提交 `0c64e154` 与本次）：
+
+1. **集成**：分支 rebase 到 master `29531ea4`（144 提交）；master 的 CI 占位修复随 rebase 回来，全套 `mix test --no-start` **586 通过 / 18 排除**（rebase 前同一份代码在本分支 6 失败）。本机 WSL 缺 OTP 29 且无 sudo，改为自建与 CI 同款工具链（OTP 29.1.2 + Elixir 1.20.5 + Rust；脚本在 `.demo/dev-env/`，不进仓库）+ 专用测试库容器 `npc-dev-pg-20261117`（55480）。
+2. **召回隔离 T8**（决策稿 D-1 + D-3a）：见 [`2026-11-16-npc-hindsight-recall-isolation-decision.md`](2026-11-16-npc-hindsight-recall-isolation-decision.md) 的“进度”一节。T-1 用例改前红（召回排在慢 retain 后面、250 ms 超时）/改后绿（另一条连接、亚秒返回）。
+3. **记忆闭环活性**：`job_error` 原来是单向闩锁——一次 Hindsight 抖动就让该 NPC 在本进程生命周期里永久停写记忆且无告警。改为有界指数退避（30 s 起、翻倍、5 min 上限、按 cid 稳定的 0.75–1.25 抖动），`observe` 增 `job_failures` / `job_retry_in_ms`；待写片段上限 8（丢最旧并记 `npc_memory_fragments_trimmed`），心智快照 “What just happened” 只列最近 40 条 —— 行不会在 Hindsight 长期不可用时无界变大。
+4. **崩溃域**：`BodySupervisor` 显式 60 次 / 10 s；`claim` 超时不再打死 Body（折成失败走已有 1 秒重试）；世界调用超时且 Player 还活着时回 `{:error, :world_timeout}` 给 Brain，而不是让 Body 退出。
+5. **选择层 LLM**：`NpcServer.Jev` 增加 OpenAI 兼容入口（`endpoint.api: :openai`），由 `NPC_JEV_API=openai` + `NPC_JEV_URL/_KEY/_MODEL/_EFFORT` 选；本机 deepseek（`deepseek-flash`，显示名 "DeepSeek V4.1 Flash"，缺省强度 `medium`）就走这条。**只有选择位置用它**，中断与 harm 仍只支持 `:answers`。适配器形状已有单测（请求体、system 契约、宽容 JSON 解析、置信度夹取、`Selector` 的 `unknown_activity`）。
+   **未验**：真实 deepseek 端点一次都没打过（本机没有可用的平台 API key；DSH 账号的设备凭证不能当 API key 用）——键进 `D:\hemifuture\ex_mmo_cluster\.env`（gitignored）后补一次 live 冒烟。**另外**：DSH 自带的 deepseek 模型目录把 reasoning 档位只映射 `high` / `max`，`medium` 是否会被告知/忽略要那次冒烟才知。
+6. 下一步（未做，顺序即优先级）：push 让 CI 跑起来 → 补一次 deepseek 选择层的 live 冒烟 → 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
+
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 
 - **日计划层第 1 步（S1-R8，离线，探索性，不是验收）已跑完、已判定**：计划 `.demo/observe/npc-slice1-20261112/s1r8/plan.md`（发问前写）、判定 `results.md`、脚本 `docs/10-active/cross-cutting/tools/jev/s1r8_plan.py`、执行任务书 `exec-brief.md`。R7 的 6 份真实反思材料 × 3 次 = 18 次规划调用（用量实测合计约 12 万 token，开跑前估约 8 万，偏低）。P1、P2、P4、P5 成立；P3 里占比与 A 类成立、**B 类 27% > 15% 落空**（R2 一份材料三次采样都写了“回来路过小屋看一眼”进 `cannot_yet`，读法有争议）。读法：D-1 的意图形状 `{activity, times, by, why}` + `cannot_yet` 站住，进拆实现；`cannot_yet` 里 64% 是“对某人说话”，印证它是下一层。B 类按发问前规则报用户，统筹会话建议记为词表内容问题、后期处理。

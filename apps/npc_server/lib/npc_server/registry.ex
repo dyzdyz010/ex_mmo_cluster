@@ -13,7 +13,7 @@ defmodule NpcServer.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：每次解析时取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须）；反思写日记的 endpoint（profile 的 `reflect`，`Life.Reflection.Writer`）同样不入库，取 `NPC_REFLECT_URL`（完整的 `/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须） |
+  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：缺省取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须）；写 `NPC_JEV_API=openai` 时改取 `NPC_JEV_URL`（完整 chat completions 地址，如 `https://api.deepseek.com/v1/chat/completions`）/ `NPC_JEV_KEY` / `NPC_JEV_MODEL`（如 `deepseek-flash`，显示名 "DeepSeek V4.1 Flash"），可选 `NPC_JEV_EFFORT`（缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`——这条只服务选择位置，中断策略仍用 `:answers` 形状。反思写日记的 endpoint（profile 的 `reflect`，`Life.Reflection.Writer`）同样不入库，取 `NPC_REFLECT_URL`（完整的 `/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须） |
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
@@ -182,12 +182,7 @@ defmodule NpcServer.Registry do
           %{run: {:place, _, _}} -> {:travel, %{}}
           %{run: {:person, _, _}} -> {:travel, %{}}
         end),
-      jev: %{
-        url: System.fetch_env!("TYPESAFE_API_URL"),
-        key: System.fetch_env!("TYPESAFE_API_KEY"),
-        model: System.fetch_env!("TYPESAFE_MODEL"),
-        timeout_ms: @jev_timeout_ms
-      },
+      jev: jev_endpoint(),
       # 反思写日记的接口（`NpcServer.Life.Reflection.Writer`，Anthropic Messages 形状）：同 Jev，不入库，每次解析时取运行环境。
       reflect: %{
         url: System.fetch_env!("NPC_REFLECT_URL"),
@@ -401,6 +396,42 @@ defmodule NpcServer.Registry do
       },
       Map.merge(optional, timeout)
     )
+  end
+
+  # 选择位置（Jev）的 endpoint：不入库，每次解析时取运行环境。两种入口形状由 `NPC_JEV_API` 选：
+  #
+  #   - 不写或写 `answers`：TypeSafe System One（`TYPESAFE_API_URL` / `_KEY` / `_MODEL`，必须），
+  #     即中断策略与 harm 护栏唯一支持的形状。
+  #   - 写 `openai`：OpenAI 兼容 chat completions（`NPC_JEV_URL` 完整地址如
+  #     `https://api.deepseek.com/v1/chat/completions`、`NPC_JEV_KEY`、`NPC_JEV_MODEL` 如 `deepseek-flash`），
+  #     可选 `NPC_JEV_EFFORT`（`low` / `medium` / `high`，缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`。
+  #     本机 deepseek 就是这条：模型显示名 "DeepSeek V4.1 Flash"，id 是 `deepseek-flash`。
+  #     只有选择位置用它；中断策略拿到这种应答按“拿不准”继续（见 `NpcServer.Jev` 的 moduledoc）。
+  defp jev_endpoint do
+    case System.get_env("NPC_JEV_API") do
+      api when api in ["openai", "openai-completions"] ->
+        %{
+          api: :openai,
+          url: System.fetch_env!("NPC_JEV_URL"),
+          key: System.fetch_env!("NPC_JEV_KEY"),
+          model: System.fetch_env!("NPC_JEV_MODEL"),
+          reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
+          max_tokens:
+            case System.get_env("NPC_JEV_MAX_TOKENS") do
+              nil -> 512
+              text -> String.to_integer(text) |> tap(&(true = &1 > 0))
+            end,
+          timeout_ms: @jev_timeout_ms
+        }
+
+      _ ->
+        %{
+          url: System.fetch_env!("TYPESAFE_API_URL"),
+          key: System.fetch_env!("TYPESAFE_API_KEY"),
+          model: System.fetch_env!("TYPESAFE_MODEL"),
+          timeout_ms: @jev_timeout_ms
+        }
+    end
   end
 
   # 组名只取本 profile 的条目里出现的组（如没授予创世就没有 :genesis）；nil = 全部组。
