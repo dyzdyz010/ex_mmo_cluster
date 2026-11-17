@@ -751,7 +751,12 @@ defmodule NpcServer.NpcBodyWorldTest do
     assert_receive {:build_committed, worker, {:ok, %{seq: birth}}}, 10_000
     monitor = Process.monitor(worker)
     Body.command(body, %{id: :cancel, verb: :cancel_skill, call: 1})
-    assert_receive {:DOWN, ^monitor, :process, ^worker, :shutdown}
+
+    # 技能 worker 在这一步之后可能已经自己退出（它只是把提交结果发出来）；那也要算"取消前就已经停了"，
+    # 所以 `:noproc` 与 `:shutdown` 都接受。CI 负载下这条会翻成 `:noproc`（本机跑绿、CI 偶尔红），
+    # 要钉的是"报终态时它已经不在跑"，下面那条 `:cancelled` 才是这次取消的语义。
+    assert_receive {:DOWN, ^monitor, :process, ^worker, reason}
+    assert reason in [:shutdown, :noproc]
     assert %{status: :done, data: %{call: 1}} = outcome(body, :cancel, 5_000)
 
     outcome =
