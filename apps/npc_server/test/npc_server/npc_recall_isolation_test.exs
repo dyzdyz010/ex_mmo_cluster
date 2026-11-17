@@ -113,8 +113,10 @@ defmodule NpcServer.NpcRecallIsolationTest do
     assert recall_conn != retain_conn,
            "召回必须走与后台写入不同的连接，否则会排在同一条队列后面"
 
-    assert elapsed < @recall_budget_ms,
-           "召回被后台写入挡住了（耗时 #{elapsed} ms）"
+    # 阈值只用来证明"没排在慢请求后面"：真被排队就是 ~#{@slow_ms} ms（或直接超时），
+    # 真隔离就是几毫秒——留一半的余量，避免冷连接/CI 负载把这条钉住的契约变成 flake。
+    assert elapsed < div(@slow_ms, 2),
+           "召回被后台写入挡住了（耗时 #{elapsed} ms，慢请求 #{@slow_ms} ms）"
 
     assert {:ok, %{retained: 1}} = Task.await(retain, 5_000)
   end

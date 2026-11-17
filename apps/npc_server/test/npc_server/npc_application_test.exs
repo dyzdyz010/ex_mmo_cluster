@@ -46,6 +46,13 @@ defmodule NpcServer.NpcApplicationTest do
     cid = character.id
     NpcWorld.await(fn -> match?([%{cid: ^cid, running: true}], NpcServer.Registry.list()) end)
     assert %{status: :running, enabled: 1, running: 1} = NpcServer.Bootstrap.status()
+
+    # 崩溃域：BodySupervisor 是所有 NPC 的父监督者，强度显式放宽（缺省 3 次 / 5 秒会让一次全节点抖动
+    # 把整组 NPC 永久带走）。这里从监督树状态直接读，不靠"杀多少次才炸"去猜。
+    supervisor = :sys.get_state(NpcServer.BodySupervisor)
+    assert supervisor.max_restarts == 60
+    assert supervisor.max_seconds == 10
+
     [{body, _}] = Registry.lookup(NpcServer.Names, cid)
     NpcWorld.await(fn -> NpcServer.Body.observe(body).tick > 0 end)
 

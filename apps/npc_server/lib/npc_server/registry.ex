@@ -404,13 +404,21 @@ defmodule NpcServer.Registry do
   #     即中断策略与 harm 护栏唯一支持的形状。
   #   - 写 `openai`：OpenAI 兼容 chat completions（`NPC_JEV_URL` 完整地址如
   #     `https://api.deepseek.com/v1/chat/completions`、`NPC_JEV_KEY`、`NPC_JEV_MODEL` 如 `deepseek-flash`），
-  #     可选 `NPC_JEV_EFFORT`（`low` / `medium` / `high`，缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`。
+  #     可选 `NPC_JEV_EFFORT`（`low` / `medium` / `high`，缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`（缺省 2048，
+  #     管的是"思考 + 正文"的总量：带思考档位的模型会先把预算花在思考上，512 会把正文挤空）。
   #     本机 deepseek 就是这条：模型显示名 "DeepSeek V4.1 Flash"，id 是 `deepseek-flash`。
   #     只有选择位置用它；中断策略拿到这种应答按“拿不准”继续（见 `NpcServer.Jev` 的 moduledoc）。
+  #     写了未知值属于配置错误：明确拒绝并说清合法值，不静默退回 TypeSafe。
   defp jev_endpoint do
     case System.get_env("NPC_JEV_API") do
+      nil ->
+        typesafe_endpoint()
+
+      api when api in ["answers", "typesafe"] ->
+        typesafe_endpoint()
+
       api when api in ["openai", "openai-completions"] ->
-        %{
+        endpoint = %{
           api: :openai,
           url: System.fetch_env!("NPC_JEV_URL"),
           key: System.fetch_env!("NPC_JEV_KEY"),
@@ -418,20 +426,32 @@ defmodule NpcServer.Registry do
           reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
           max_tokens:
             case System.get_env("NPC_JEV_MAX_TOKENS") do
-              nil -> 512
+              nil -> 2048
               text -> String.to_integer(text) |> tap(&(true = &1 > 0))
             end,
           timeout_ms: @jev_timeout_ms
         }
 
-      _ ->
-        %{
-          url: System.fetch_env!("TYPESAFE_API_URL"),
-          key: System.fetch_env!("TYPESAFE_API_KEY"),
-          model: System.fetch_env!("TYPESAFE_MODEL"),
-          timeout_ms: @jev_timeout_ms
-        }
+        Logger.info(
+          "npc_jev_endpoint api=openai model=#{endpoint.model} " <>
+            "effort=#{endpoint.reasoning_effort} max_tokens=#{endpoint.max_tokens}"
+        )
+
+        endpoint
+
+      other ->
+        raise ArgumentError,
+              "NPC_JEV_API 只接受 answers / openai，收到 #{inspect(other)}（不猜，也不退回 TypeSafe）"
     end
+  end
+
+  defp typesafe_endpoint do
+    %{
+      url: System.fetch_env!("TYPESAFE_API_URL"),
+      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      model: System.fetch_env!("TYPESAFE_MODEL"),
+      timeout_ms: @jev_timeout_ms
+    }
   end
 
   # 组名只取本 profile 的条目里出现的组（如没授予创世就没有 :genesis）；nil = 全部组。

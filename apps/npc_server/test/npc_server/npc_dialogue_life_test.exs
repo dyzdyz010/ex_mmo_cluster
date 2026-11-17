@@ -184,6 +184,8 @@ defmodule NpcServer.NpcDialogueLifeTest do
       # 记忆任务槽失败后的退避（与 `Life.init/1` 同形）。
       job_failures: 0,
       job_retry_at_ms: nil,
+      dropped_fragments: 0,
+      dropped_episodes: 0,
       error: nil,
       speech_pending: [],
       appraise: false,

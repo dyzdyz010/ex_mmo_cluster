@@ -471,11 +471,24 @@ defmodule NpcServer.NpcRegistryTest do
                  url: "https://api.deepseek.com/v1/chat/completions",
                  key: "deepseek-test",
                  model: "deepseek-flash",
-                 # 缺省思考强度是 medium，缺省 max_tokens 512；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
+                 # 缺省思考强度是 medium，缺省 max_tokens 2048（"思考 + 正文"的总量）；
+                 # Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
                  reasoning_effort: "medium",
-                 max_tokens: 512,
+                 max_tokens: 2048,
                  timeout_ms: 10_000
                } = profile.jev
+      end)
+
+      # 写了 openai 但缺 URL / KEY / MODEL：登记时明确失败，不退回 TypeSafe 静默跑。
+      for key <- ["NPC_JEV_URL", "NPC_JEV_KEY", "NPC_JEV_MODEL"] do
+        with_env(Map.put(openai, key, nil), fn ->
+          assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, {:missing, key})
+        end)
+      end
+
+      # `NPC_JEV_API` 写了认不出的值：明确拒绝（不猜、不静默退回 TypeSafe）。
+      with_env(Map.put(openai, "NPC_JEV_API", "openai "), fn ->
+        assert_raise ArgumentError, ~r/NPC_JEV_API/, fn -> NpcRegistry.brain("npc", @npc) end
       end)
 
       # 两个可选项都能从环境覆盖。
@@ -486,13 +499,6 @@ defmodule NpcServer.NpcRegistryTest do
         assert profile.jev.reasoning_effort == "high"
         assert profile.jev.max_tokens == 1024
       end)
-
-      # 写了 openai 但缺 URL / KEY / MODEL：登记时明确失败，不退回 TypeSafe 静默跑。
-      for key <- ["NPC_JEV_URL", "NPC_JEV_KEY", "NPC_JEV_MODEL"] do
-        with_env(Map.put(openai, key, nil), fn ->
-          assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, {:missing, key})
-        end)
-      end
     end
   end
 

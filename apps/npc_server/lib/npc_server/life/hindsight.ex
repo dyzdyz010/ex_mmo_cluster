@@ -97,8 +97,8 @@ defmodule NpcServer.Life.Hindsight do
   def stop_recall_profile do
     case :inets.stop(:httpc, @recall_profile) do
       :ok -> :ok
-      {:error, :not_started} -> :ok
-      {:error, {:not_started, _}} -> :ok
+      # 实测（OTP 29.1.2）：profile 不在时 `inets:stop/2` 回 `{:error, :not_found}`。
+      {:error, :not_found} -> :ok
       other -> other
     end
   end
@@ -514,42 +514,52 @@ defmodule NpcServer.Life.Hindsight do
 
     timeout = Map.get(config, :timeout_ms, 300_000)
 
-    if profile != nil and not profile_started?(profile) do
-      # 专用 profile 没起（部署漏了一步、或 manager 已被停）：显式失败并说清是哪一步，不退回缺省 profile
-      # 静默降级——那样召回又会被后台写入挡住，而且没人知道。
-      failure(config, {:profile_not_started, profile})
-    else
-      case :httpc.request(
-             method,
-             request,
-             [timeout: timeout, connect_timeout: timeout, ssl: ssl, autoredirect: false],
-             [body_format: :binary],
-             profile || :default
-           ) do
-        {:ok, {{_, status, _}, _, response}} when status in 200..299 ->
-          case Jason.decode(response) do
-            {:ok, map} when is_map(map) -> {:ok, map}
-            _ -> failure(config, :invalid_response)
-          end
-
-        {:ok, {{_, status, _}, _, _}} ->
-          failure(config, {:http_status, status})
-
-        {:error, :timeout} ->
-          failure(config, :timeout)
-
-        {:error, _} ->
-          failure(config, :transport_error)
+    result =
+      try do
+        :httpc.request(
+          method,
+          request,
+          [timeout: timeout, connect_timeout: timeout, ssl: ssl, autoredirect: false],
+          [body_format: :binary],
+          profile || :default
+        )
+      catch
+        # 专用 profile 不在（没起、被停、inets 停了）：httpc 在调它的 manager 时退出。只把这一类折成显式失败，
+        # 其它退出照旧上抛（代码缺陷不在这里吞）。不再先做一次 `get_options` 预检——那是一次到 manager 的
+        # infinity 调用，manager 卡住时预检自己会挂住，而且每次召回都多一个来回。
+        :exit, reason ->
+          if profile != nil and profile_absent?(reason),
+            do: {:error, {:profile_not_started, profile}},
+            else: exit(reason)
       end
+
+    case result do
+      {:ok, {{_, status, _}, _, response}} when status in 200..299 ->
+        case Jason.decode(response) do
+          {:ok, map} when is_map(map) -> {:ok, map}
+          _ -> failure(config, :invalid_response)
+        end
+
+      {:ok, {{_, status, _}, _, _}} ->
+        failure(config, {:http_status, status})
+
+      {:error, :timeout} ->
+        failure(config, :timeout)
+
+      {:error, {:profile_not_started, _} = reason} ->
+        failure(config, reason)
+
+      {:error, _} ->
+        failure(config, :transport_error)
     end
   end
 
-  # 专用 profile 起没起：`httpc:get_options/2` 读得到就是起来了（读不到会回错误元组或抛出）。
-  defp profile_started?(profile) do
-    match?({:ok, _}, :httpc.get_options(:all, profile))
-  catch
-    :exit, _ -> false
-  end
+  # `GenServer.call` 到点/对端不在时的退出形状；httpc 内部用的是 `:gen_server.call`。
+  defp profile_absent?(:noproc), do: true
+  defp profile_absent?(:shutdown), do: true
+  defp profile_absent?(:normal), do: true
+  defp profile_absent?({reason, _detail}), do: profile_absent?(reason)
+  defp profile_absent?(_), do: false
 
   # 失败一律经这里：打一行带 bank 的日志（经历库与反思库要分得清），返回 `{:error, reason}`。
   defp failure(config, reason) do

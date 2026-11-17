@@ -197,7 +197,12 @@ defmodule NpcServer.NpcJevTest do
         request: fn _endpoint, _body -> {:ok, chat(~s({"choice": "flee", "confidence": 1.0}))} end
       }
 
-      assert Jev.decide(context, config) == :continue
+      # 不只是"返回 :continue"：这条决定要能在日志里看见，否则一个永远不中断的策略没人会发现。
+      log =
+        ExUnit.CaptureLog.capture_log(fn -> assert Jev.decide(context, config) == :continue end)
+
+      assert log =~ "npc_interrupt_check"
+      assert log =~ "unsupported_api"
     end
 
     # 选择位置的真实调用路径：`Selector.ask/3` 用注入的发送函数，不访问网络。

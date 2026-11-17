@@ -103,8 +103,10 @@ flowchart LR
   意图到达时刻（`received_us`，GCRA 按它判频）在 Body 受理命令时冻结，不在执行进程排到时才取。
   余额补发与玩家同一条规则（Intent 的返回值）：工具 action 1 / 2 且非人物目标、生产 / 附件 / prefab 经角色接纳后。
   执行进程对世界调用的退出：会话的 Player 已退出（`Player.running?/1`，Scene 在 peer 节点时同样适用）→ `session_lost`
-  （写意图可能已提交，以 look / inspect 现算）；Player 还活着、只是调用超时 → `{:error, :world_timeout}` 回给 Brain
-  （见上条“崩溃域”）；其它退出照常退出，Body 随之由监督者重启。
+  （写意图可能已提交，以 look / inspect 现算）；Player 还活着、只是调用超时 → `{:error, :world_timeout}`
+  （见上条“崩溃域”），它只是**可诊断的失败、不是重发**：写意图可能已经提交，所以 `Brain.Tree.transient/0`
+  （驱动 `act retry:` 原样重发的那条）不含它；`Trees.settler` 把工地整体重来（重算缺额）算作瞬态，
+  `Trees.npc` 让这次活动失败、下一轮照常发问。其它退出照常退出，Body 随之由监督者重启。
   每次进 Intent 的世界意图一行日志 `character_intent`（玩家同格式）；进 Intent 之前被 Body 拒绝的
   （`invalid_command`、位置未知的 `invalid_session`、编辑盒 `out_of_bounds`）各一行 `npc_intent_rejected cid= id= verb=|kind= reason=`。
   技能 `design_house` 的发布不经 Intent（见下条“技能”）；创世编辑 `genesis_edit` 也不经 Intent，直接写 World（见“创世”）。

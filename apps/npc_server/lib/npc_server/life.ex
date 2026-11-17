@@ -445,6 +445,9 @@ defmodule NpcServer.Life do
        # `job_error` 只用于 observe 与告警，不再是"永不重试"的开关。
        job_failures: 0,
        job_retry_at_ms: nil,
+       # 因为超过片段上限而丢掉的（片段数, 经历条数），只累计在内存里（Life 重启即清零）：`observe/1` 读。
+       dropped_fragments: 0,
+       dropped_episodes: 0,
        speech_pending: [],
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
        activity: nil,
@@ -515,6 +518,9 @@ defmodule NpcServer.Life do
         # 记忆任务槽的退避：连续失败次数与距下次自动重试的毫秒数（nil = 没在等）。
         job_failures: s.job_failures,
         job_retry_in_ms: if(s.job_retry_at_ms, do: max(0, s.job_retry_at_ms - s.now.())),
+        # 因为超过片段上限而丢掉的经历（内存计数，Life 重启即清零）：见 `cap_fragments/2`。
+        dropped_fragments: s.dropped_fragments,
+        dropped_episodes: s.dropped_episodes,
         hindsight: s.status,
         recall: s.recall,
         decision: s.decision,
@@ -773,18 +779,12 @@ defmodule NpcServer.Life do
                 }
             end
 
-          case save(s, row) do
-            {:ok, s} ->
-              automatic(%{
-                s
-                | status: result.status,
-                  job_error: nil,
-                  job_failures: 0,
-                  job_retry_at_ms: nil
-              })
+          # 这一次任务成功了：连续失败清零（与"落库成功"无关——失败的是保存，不是这一次 retain / 刷新）。
+          s = %{s | status: result.status, job_error: nil, job_failures: 0, job_retry_at_ms: nil}
 
-            {:error, s} ->
-              s
+          case save(s, row) do
+            {:ok, s} -> automatic(s)
+            {:error, s} -> s
           end
 
         {:error, reason} ->
@@ -1612,7 +1612,7 @@ defmodule NpcServer.Life do
     do: take_fragment(rest, [e | acc], size + String.length(e["text"]))
 
   defp save(s, row) do
-    row = cap_fragments(s, row)
+    {row, s} = cap_fragments(s, row)
 
     if row == s.row do
       {:ok, %{s | error: nil}}
@@ -1626,22 +1626,32 @@ defmodule NpcServer.Life do
 
   # 待写片段的硬上限在这里守：所有持久化都走 `save/2`，所以即使 Hindsight 长时间不可用、retain 一直失败，
   # 持久行也不会无限变大（行越大每次写越慢、越容易再失败，是正反馈）。丢的是最旧的、**还没写进 Hindsight 的
-  # 经历**，所以必须吵：一行 warning 带 cid、丢掉的片段数与经历条数，不静默。
+  # 经历**，所以必须吵：一行 warning 带 cid、丢掉的片段数与经历条数、此刻有没有在途的 retain（`in_flight`
+  # 就是那一批的片段数——被丢的若在途，成功时仍按它与 `retained` 计数、失败时这批就永久没了），
+  # 累计丢弃另进内存计数，由 `observe/1` 的 `dropped_fragments` / `dropped_episodes` 读出。
   defp cap_fragments(s, row) do
     case length(row["fragments"]) - @max_fragments do
       extra when extra > 0 ->
         {dropped, kept} = Enum.split(row["fragments"], extra)
         episodes = Enum.sum(Enum.map(dropped, &length(&1["episodes"])))
+        in_flight = if s.job, do: length(Map.get(s.job, :ids, [])), else: 0
+        dropped_fragments = s.dropped_fragments + length(dropped)
 
         Logger.warning(
           "npc_memory_fragments_trimmed cid=#{s.context.cid} dropped=#{length(dropped)} " <>
-            "episodes=#{episodes} kept=#{length(kept)}"
+            "episodes=#{episodes} kept=#{length(kept)} in_flight=#{in_flight} " <>
+            "total_dropped=#{dropped_fragments}"
         )
 
-        %{row | "fragments" => kept}
+        {%{row | "fragments" => kept},
+         %{
+           s
+           | dropped_fragments: dropped_fragments,
+             dropped_episodes: s.dropped_episodes + episodes
+         }}
 
       _ ->
-        row
+        {row, s}
     end
   end
 
@@ -1748,13 +1758,15 @@ defmodule NpcServer.Life do
     %{s | job_error: reason, job_failures: failures, job_retry_at_ms: retry_at_ms}
   end
 
-  # 退避时长：30 秒起、每次翻倍、上限 5 分钟，再乘按 cid 稳定算出的 0.75–1.25 抖动。
+  # 退避时长：30 秒起、每次翻倍、上限 5 分钟，再乘按 cid 稳定算出的 0.75–1.25 抖动，最后**再夹一次上限**
+  # （抖动乘在上限之后会到 375 秒，与"上限 5 分钟"的说法不符）。
   # 抖动按 cid 而不是随机数：同一个 NPC 每次算出来一样（可复现、可测），不同 NPC 之间错开
   # ——多 NPC 实跑时不会所有 NPC 在同一刻重试（决策稿 D-3c 要的 jitter，只是不引入随机源）。
   defp job_backoff_ms(failures, cid) do
-    base = min(@job_retry_ms * Integer.pow(2, min(failures - 1, 10)), @job_retry_max_ms)
+    doublings = min(max(failures, 1) - 1, 10)
+    base = min(@job_retry_ms * Integer.pow(2, doublings), @job_retry_max_ms)
     permille = 75 + :erlang.phash2({:job_backoff, cid}, 51)
-    div(base * permille, 100)
+    min(div(base * permille, 100), @job_retry_max_ms)
   end
 
   defp exit_kind(reason) when is_atom(reason), do: reason

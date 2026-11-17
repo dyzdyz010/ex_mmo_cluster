@@ -249,7 +249,8 @@ defmodule NpcServer.Body do
     else
       failure ->
         Logger.warning(
-          "npc_claim_failed cid=#{state.cid} scene_id=#{state.scene_id} result=#{inspect(failure)}"
+          "npc_claim_failed cid=#{state.cid} scene_id=#{state.scene_id} " <>
+            "result=#{inspect(failure, limit: 10, printable_limit: 200)}"
         )
 
         Process.send_after(self(), :claim, @reclaim_ms)
@@ -257,7 +258,8 @@ defmodule NpcServer.Body do
     end
   end
 
-  # 会话占用：把"超时退出"折成失败的返回值，交给上面的 1 秒重试；其它退出照常上抛（代码缺陷照样崩溃）。
+  # 会话占用：只把"可以重试的退出"（调用超时、Session / Scene 不在或正在关机）折成失败的返回值，交给上面的 1 秒重试；
+  # 其它退出照常上抛——那是真的缺陷，不能在这里吞成一行 WARNING。
   defp claim_session(state, route) do
     WorldServer.Session.claim(
       state.claims,
@@ -266,8 +268,16 @@ defmodule NpcServer.Body do
       %{id: state.cid, spawn: state.spawn, kind: "npc", profile: state.faction}
     )
   catch
-    :exit, reason -> {:claim_exit, {:error, reason}}
+    :exit, reason ->
+      if claim_retryable?(reason), do: {:claim_exit, {:error, reason}}, else: exit(reason)
   end
+
+  # `GenServer.call` 的退出形状是 `{原因, {GenServer, :call, …}}`，少数情况是裸原因。
+  defp claim_retryable?(:timeout), do: true
+  defp claim_retryable?(:noproc), do: true
+  defp claim_retryable?(:shutdown), do: true
+  defp claim_retryable?({reason, _detail}), do: claim_retryable?(reason)
+  defp claim_retryable?(_), do: false
 
   # 会话没了：移动命令随会话作废（权威不再处理这些输入），在途世界调用保留、各自回结果；稍后重新 claim。
   # Body 与 Brain / Runtime 不重启，记忆、在途技能与 Outcome 历史都还在。
@@ -1232,8 +1242,10 @@ defmodule NpcServer.Body do
   # 世界调用（Intent、读口、寻路取盒）的退出只有三种去向：
   #   ① 会话的 Player 已退出（Scene 重启、会话被关闭、重新 claim）→ 回 lost，如实报会话丢失
   #      （写意图可能尚未进 World，也可能已提交：Brain 以 look / inspect 现算）；
-  #   ② 只是超时（World 卡住 / 排队，Player 还活着）→ 回可诊断的超时值，交给 Brain 的重试策略，
-  #      **不让 Body 一起退出**；
+  #   ② 只是超时（World 卡住 / 排队，Player 还活着）→ 回 `{:error, :world_timeout}`，
+  #      **不让 Body 一起退出**。注意它只是"可诊断的失败"，不是"重发"：写意图可能已经提交，所以
+  #      `Brain.Tree.transient/0`（驱动 `act retry:` 原样重发的那条）不含它；只有 `Trees.settler` 把工地
+  #      整体重来（重算缺额、不重发旧命令）算作瞬态，`Trees.npc` 则让这次活动失败、下一轮照常发问。
   #   ③ 其它退出 → 照常退出，执行进程与 Body 同死，由监督者按 transient 重启。异常不捕获，代码缺陷照样崩溃。
   # ② 与 ③ 分开的理由：World 或 Session 变慢会同时命中所有 NPC，若每个 Body 都退出就会击穿
   # `NpcServer.BodySupervisor` 的重启强度，整组 NPC 永久消失（见 `NpcServer.Application` 的崩溃域说明）。
@@ -1243,10 +1255,20 @@ defmodule NpcServer.Body do
   catch
     :exit, reason ->
       cond do
-        not Player.running?(session.player) -> lost
+        not player_running?(session.player) -> lost
         call_timeout?(reason) -> timeout
         true -> exit(reason)
       end
+  end
+
+  # `Player.running?/1` 对远端 pid 走 erpc，erpc 的错误（含超时）按它的契约照常抛出。这里把"判不出活"当成"还活着"：
+  # 保守的一侧是不说 `session_lost`（那会声称写意图没提交），超时的调用照常以 timeout 值返回。
+  defp player_running?(player) do
+    Player.running?(player)
+  rescue
+    _ -> true
+  catch
+    :exit, _ -> true
   end
 
   # `GenServer.call/3` 到点是退出 `{:timeout, {GenServer, :call, …}}`；:infinity 之外的其它形式也算超时。
