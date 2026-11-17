@@ -163,7 +163,9 @@ defmodule NpcServer.Trees do
 
   # 上一项活动怎样结束：还没有选中过任何活动 → 都是 null；发问失败后重问时黑板没变，报的是同一份（选择器不重复记账）。
   defp ended_args(%{choice: nil}), do: %{"ended" => nil, "act" => nil, "reason" => nil}
-  defp ended_args(%{ended: :success}), do: %{"ended" => "completed", "act" => nil, "reason" => nil}
+
+  defp ended_args(%{ended: :success}),
+    do: %{"ended" => "completed", "act" => nil, "reason" => nil}
 
   defp ended_args(%{ended: :failure, last_failure: %{act: act, reason: reason}}),
     do: %{"ended" => "failed", "act" => act, "reason" => reason_text(reason)}

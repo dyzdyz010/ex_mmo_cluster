@@ -518,7 +518,8 @@ defmodule NpcServer.NpcExpandTest do
     NpcWorld.await(fn -> match?(%{verb: :move_to}, Body.observe(follower).move) end)
     :ok = DynamicSupervisor.terminate_child(sup, target)
 
-    assert %{verb: :travel, status: :rejected, reason: :stale_target} = outcome(follower, 1, 120_000)
+    assert %{verb: :travel, status: :rejected, reason: :stale_target} =
+             outcome(follower, 1, 120_000)
   end
 
   @tag timeout: 600_000

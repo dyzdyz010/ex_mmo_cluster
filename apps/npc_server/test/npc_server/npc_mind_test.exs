@@ -39,19 +39,29 @@ defmodule NpcServer.NpcMindTest do
   # 游戏钟 21:25（日内第 1285 分钟）；形状同 Runtime 写进观察的 `MmoContracts.WorldTime.at/1`。
   defp observation do
     %{
-      self: %{entity_id: 7, position: {1.0, 2.0, 3.0}, tick: 1, grounded: true, body_state: %{life: 80}},
+      self: %{
+        entity_id: 7,
+        position: {1.0, 2.0, 3.0},
+        tick: 1,
+        grounded: true,
+        body_state: %{life: 80}
+      },
       pending: [],
       entities: [
         %{entity_id: 7, kind: 1, name: "self", position: {1.0, 2.0, 3.0}},
         %{entity_id: 21, kind: 0, name: "Mara", position: {4.0, 2.0, 7.0}},
         %{entity_id: 22, kind: 1, name: "", position: {1.0, 14.0, 8.0}}
       ],
-      balances: [%{material: 11, balance: 512, cost: 512, seq: 3}, %{material: 4, balance: 0, cost: 512, seq: 3}],
+      balances: [
+        %{material: 11, balance: 512, cost: 512, seq: 3},
+        %{material: 4, balance: 0, cost: 512, seq: 3}
+      ],
       world_time: %{day: 1299, minute_of_day: 1285, weekday: 4}
     }
   end
 
-  defp alone, do: %{observation() | entities: [], balances: nil} |> put_in([:self, :body_state], nil)
+  defp alone,
+    do: %{observation() | entities: [], balances: nil} |> put_in([:self, :body_state], nil)
 
   # 读视图那一刻 Life 的时钟（Unix 毫秒）；近期经历与召回条目的时刻都相对它给出。
   @now_ms 1_794_550_000_000
@@ -89,10 +99,20 @@ defmodule NpcServer.NpcMindTest do
           %{emotion: "gratitude", actor: 30, intensity: 0.15}
         ],
         # −0.7 → Deeply distrusts；0.1 接近中立，不写；0.25 → Trusts。
-        relationships: [%{actor: 21, trust: -0.7}, %{actor: 22, trust: 0.1}, %{actor: 30, trust: 0.25}],
+        relationships: [
+          %{actor: 21, trust: -0.7},
+          %{actor: 22, trust: 0.1},
+          %{actor: 30, trust: 0.25}
+        ],
         # 375 秒前：× 24 = 9000 游戏秒 = 2.5 游戏小时；30 秒前：720 游戏秒 = 0.2 游戏小时，不足 0.25 → Just now。
-        recent: [%{at_ms: @now_ms - 375_000, text: @damage}, %{at_ms: @now_ms - 30_000, text: @built}],
-        models: [{"self", "I am a careful builder."}, {"relationships", "Mara has helped me before."}],
+        recent: [
+          %{at_ms: @now_ms - 375_000, text: @damage},
+          %{at_ms: @now_ms - 30_000, text: @built}
+        ],
+        models: [
+          {"self", "I am a careful builder."},
+          {"relationships", "Mara has helped me before."}
+        ],
         # 第一条 150 秒前（× 24 = 3600 游戏秒 = 1 游戏小时），带抽取器的后缀；第二条没有事件时刻，不写多久以前。
         memories: [
           %{
@@ -102,7 +122,13 @@ defmodule NpcServer.NpcMindTest do
             "at_ms" => @now_ms - 150_000,
             "tags" => ["actor:21"]
           },
-          %{"id" => "fact-2", "text" => "Brann destroyed my wall.", "type" => "observation", "at_ms" => nil, "tags" => []}
+          %{
+            "id" => "fact-2",
+            "text" => "Brann destroyed my wall.",
+            "type" => "observation",
+            "at_ms" => nil,
+            "tags" => []
+          }
         ],
         recall_ms: 12,
         # 我的建筑（Life.mind 现查 World 的结果）：每座一句，放在背包之前；坐标是锚点宏格，负坐标原样写。
@@ -141,7 +167,8 @@ defmodule NpcServer.NpcMindTest do
                   "Nearby: Mara (player, actor 21, 5.0 m away); someone unnamed (NPC, actor 22, 13.0 m away). " <>
                   ~s|My building "small hut" at (25, 518, 37) is gone. My building "shed" at (-3, 64, -12) is standing. | <>
                   "Inventory: material 11: 512 units."},
-               {"Recent activities", "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
+               {"Recent activities",
+                "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
              ] == Mind.snapshot(profile(), observation(), history, life)
     end
 
@@ -153,7 +180,8 @@ defmodule NpcServer.NpcMindTest do
                "What I remember: Nothing relevant.\n" <>
                "Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. " <>
                "Inventory: not checked yet.\n" <>
-               "Recent activities: None yet." == Mind.text(Mind.snapshot(profile(), alone(), [], @empty))
+               "Recent activities: None yet." ==
+               Mind.text(Mind.snapshot(profile(), alone(), [], @empty))
     end
 
     # 输入：S1-Z 第 5 轮“自己”那条的收尾句与时刻（夹具 `s1z/20261114T031005.159Z-round5-reflection.json`）。
@@ -297,9 +325,17 @@ defmodule NpcServer.NpcMindTest do
       feelings = fn life -> section(life, 2) end
 
       # 强度：≥ 0.4 strong，≥ 0.2 moderate，其余 faint。
-      for {intensity, word} <- [{0.4, "strong"}, {0.39, "moderate"}, {0.2, "moderate"}, {0.19, "faint"}] do
+      for {intensity, word} <- [
+            {0.4, "strong"},
+            {0.39, "moderate"},
+            {0.2, "moderate"},
+            {0.19, "faint"}
+          ] do
         assert "Feels #{word} anger toward actor 5, who is not nearby." ==
-                 feelings.(%{@empty | feelings: [%{emotion: "anger", actor: 5, intensity: intensity}]})
+                 feelings.(%{
+                   @empty
+                   | feelings: [%{emotion: "anger", actor: 5, intensity: intensity}]
+                 })
       end
 
       # 信任：≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 各一档，其间不写。
@@ -319,13 +355,24 @@ defmodule NpcServer.NpcMindTest do
     test "only models, or only recalled memories, still make the memory section" do
       memory = fn life -> section(life, 4) end
 
-      header = "My own memories and beliefs; they may be out of date and are not current world facts."
-      assert header <> "\n- Belief (world): The quarry is north." == memory.(%{@empty | models: [{"world", "The quarry is north."}]})
+      header =
+        "My own memories and beliefs; they may be out of date and are not current world facts."
+
+      assert header <> "\n- Belief (world): The quarry is north." ==
+               memory.(%{@empty | models: [{"world", "The quarry is north."}]})
 
       assert header <> "\n- Recalled: I built a hut." ==
                memory.(%{
                  @empty
-                 | memories: [%{"id" => "a", "text" => "I built a hut.", "type" => "world", "at_ms" => nil, "tags" => []}]
+                 | memories: [
+                     %{
+                       "id" => "a",
+                       "text" => "I built a hut.",
+                       "type" => "world",
+                       "at_ms" => nil,
+                       "tags" => []
+                     }
+                   ]
                })
     end
 
@@ -357,7 +404,12 @@ defmodule NpcServer.NpcMindTest do
                    | now_ms: now_ms,
                      memories: [
                        real,
-                       %{real | "id" => "x", "text" => "I guarded the hut | the gate stayed shut.", "at_ms" => nil},
+                       %{
+                         real
+                         | "id" => "x",
+                           "text" => "I guarded the hut | the gate stayed shut.",
+                           "at_ms" => nil
+                       },
                        %{
                          real
                          | "id" => "y",
@@ -381,14 +433,18 @@ defmodule NpcServer.NpcMindTest do
                %{material: 2, balance: 512, cost: 512, seq: 3}
              ]) =~ ~r/ Inventory: material 11: 6660096 units, material 2: 512 units\.\z/
 
-      assert situation.([%{material: 4, balance: 0, cost: 512, seq: 3}]) =~ ~r/ Inventory: empty\.\z/
+      assert situation.([%{material: 4, balance: 0, cost: 512, seq: 3}]) =~
+               ~r/ Inventory: empty\.\z/
+
       assert situation.([]) =~ ~r/ Inventory: empty\.\z/
       assert situation.(nil) =~ ~r/ Inventory: not checked yet\.\z/
     end
   end
 
   describe "game time" do
-    defp now_section(minute), do: section(@empty, 0, %{alone() | world_time: %{day: 0, minute_of_day: minute, weekday: 0}})
+    defp now_section(minute),
+      do:
+        section(@empty, 0, %{alone() | world_time: %{day: 0, minute_of_day: minute, weekday: 0}})
 
     test "the Now section: the period of the day by the hour, with the clock as HH:MM" do
       # 时段：05–11 morning、12–16 afternoon、17–20 evening、其余 night（S1-K 的 period）。每个边界两侧各一分钟。
@@ -445,8 +501,10 @@ defmodule NpcServer.NpcMindTest do
       social_end = ms.(~U[2026-11-13 01:07:04.875Z])
 
       for {asked, now_line, wrecked_words, social_words} <- [
-            {~U[2026-11-13 01:12:50.994Z], "It is morning, 11:08.", "About 4.5 hours ago, ", "About 2.5 hours ago, "},
-            {~U[2026-11-13 01:13:53.298Z], "It is morning, 11:33.", "About 5 hours ago, ", "About 2.5 hours ago, "}
+            {~U[2026-11-13 01:12:50.994Z], "It is morning, 11:08.", "About 4.5 hours ago, ",
+             "About 2.5 hours ago, "},
+            {~U[2026-11-13 01:13:53.298Z], "It is morning, 11:33.", "About 5 hours ago, ",
+             "About 2.5 hours ago, "}
           ] do
         now_ms = ms.(asked)
         observation = %{alone() | world_time: MmoContracts.WorldTime.at(now_ms * 1000)}
@@ -454,12 +512,16 @@ defmodule NpcServer.NpcMindTest do
         life = %{
           @empty
           | now_ms: now_ms,
-            recent: [%{at_ms: wrecked, text: "Hut removed."}, %{at_ms: social_end, text: "Left the plaza."}]
+            recent: [
+              %{at_ms: wrecked, text: "Hut removed."},
+              %{at_ms: social_end, text: "Left the plaza."}
+            ]
         }
 
         assert now_line == section(life, 0, observation)
 
-        assert "Oldest first. " <> wrecked_words <> "Hut removed. " <> social_words <> "Left the plaza." ==
+        assert "Oldest first. " <>
+                 wrecked_words <> "Hut removed. " <> social_words <> "Left the plaza." ==
                  section(life, 3, observation)
       end
     end
@@ -474,7 +536,8 @@ defmodule NpcServer.NpcMindTest do
 
     defp person_route(cid, name) do
       %{
-        query: "What has happened between me and #{name} (actor #{cid})? Did they help, harm, or promise me anything?",
+        query:
+          "What has happened between me and #{name} (actor #{cid})? Did they help, harm, or promise me anything?",
         tags: ["actor:#{cid}"],
         tags_match: "any_strict",
         prefer_observations: true,
@@ -503,30 +566,52 @@ defmodule NpcServer.NpcMindTest do
     end
 
     test "one person nearby and buildings: that person, the most recently placed building, then open concerns" do
-      one = %{alone() | entities: [hd(observation().entities), Enum.at(observation().entities, 1)]}
-      assert [person_route(21, "Mara"), building_route("shed"), @r3] == Mind.recall_queries(one, @buildings)
+      one = %{
+        alone()
+        | entities: [hd(observation().entities), Enum.at(observation().entities, 1)]
+      }
+
+      assert [person_route(21, "Mara"), building_route("shed"), @r3] ==
+               Mind.recall_queries(one, @buildings)
     end
 
     test "three people nearby: the two nearest, nearer first; an unnamed person is written as in the situation" do
       # Mara 5 米、无名者 13 米（observation/0），再加 Corvin 在 (1, 2, 5) → 2 米：取 Corvin、Mara，无名者没有这一路。
       corvin = %{entity_id: 30, kind: 0, name: "Corvin", position: {1.0, 2.0, 5.0}}
       three = %{observation() | entities: observation().entities ++ [corvin]}
-      assert [person_route(30, "Corvin"), person_route(21, "Mara"), @r3] == Mind.recall_queries(three, [])
+
+      assert [person_route(30, "Corvin"), person_route(21, "Mara"), @r3] ==
+               Mind.recall_queries(three, [])
 
       # Tobin 在 (1, 2, 8) → 5 米，与 Mara 同距离：id 小的（9）在前。
       tobin = %{entity_id: 9, kind: 1, name: "Tobin", position: {1.0, 2.0, 8.0}}
       tie = %{observation() | entities: Enum.take(observation().entities, 2) ++ [tobin]}
-      assert [person_route(9, "Tobin"), person_route(21, "Mara"), @r3] == Mind.recall_queries(tie, [])
+
+      assert [person_route(9, "Tobin"), person_route(21, "Mara"), @r3] ==
+               Mind.recall_queries(tie, [])
 
       # 只有无名者在附近：名字写法同处境栏（someone unnamed）。
-      unnamed = %{alone() | entities: [hd(observation().entities), Enum.at(observation().entities, 2)]}
-      assert [person_route(22, "someone unnamed"), building_route("shed"), @r3] == Mind.recall_queries(unnamed, @buildings)
+      unnamed = %{
+        alone()
+        | entities: [hd(observation().entities), Enum.at(observation().entities, 2)]
+      }
+
+      assert [person_route(22, "someone unnamed"), building_route("shed"), @r3] ==
+               Mind.recall_queries(unnamed, @buildings)
     end
   end
 
   describe "merge_recalled" do
     # 适配器规范化后的形状；merge 只看 id，其余键原样留在清单里。
-    defp row(id), do: %{"id" => id, "text" => "fact #{id}", "type" => "observation", "at_ms" => nil, "tags" => []}
+    defp row(id),
+      do: %{
+        "id" => id,
+        "text" => "fact #{id}",
+        "type" => "observation",
+        "at_ms" => nil,
+        "tags" => []
+      }
+
     defp rows(ids), do: Enum.map(ids, &row/1)
     defp ids(merged), do: Enum.map(merged, & &1["id"])
 
@@ -593,7 +678,9 @@ defmodule NpcServer.NpcMindTest do
     # 9 的信任 −0.90 最低，但不在观察里（不在附近）。
     defp people(trust, entities) do
       relationships =
-        Map.new(trust, fn {actor, value} -> {to_string(actor), %{"trust" => value, "source_seq" => 1}} end)
+        Map.new(trust, fn {actor, value} ->
+          {to_string(actor), %{"trust" => value, "source_seq" => 1}}
+        end)
 
       state = put_in(State.new(7, "w1", 0, 0), ["relationships"], relationships)
 
@@ -606,12 +693,15 @@ defmodule NpcServer.NpcMindTest do
 
     defp at(id, x, z), do: %{entity_id: id, entity_epoch: id + 10, position: {x, 64.0, z}}
 
-    defp everyone, do: [at(7, 0.0, 0.0), at(2, 3.0, 4.0), at(3, 0.0, 9.0), at(4, 1.0, 0.0), at(5, 2.0, 0.0)]
+    defp everyone,
+      do: [at(7, 0.0, 0.0), at(2, 3.0, 4.0), at(3, 0.0, 9.0), at(4, 1.0, 0.0), at(5, 2.0, 0.0)]
+
     defp trust, do: %{2 => -0.35, 3 => -0.70, 4 => 0.25, 9 => -0.90}
 
     test "the least trusted person in sight, at −0.2 or below; nearer on a tie, then the smaller id" do
       # 3（−0.70）比 2（−0.35）更不信任；9 更低但不在观察里。
-      assert {:ok, %{entity_id: 3, entity_epoch: 13}} == Mind.person(:distrusted, people(trust(), everyone()))
+      assert {:ok, %{entity_id: 3, entity_epoch: 13}} ==
+               Mind.person(:distrusted, people(trust(), everyone()))
 
       # 3 不在观察里 → 2。
       assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
@@ -623,17 +713,25 @@ defmodule NpcServer.NpcMindTest do
 
       # 同信任、同距离（6 在 (−3, 0, −4) 也是 5 米）：id 小的 2，与列出的次序无关。
       assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
-               Mind.person(:distrusted, people(%{2 => -0.35, 6 => -0.35}, [at(6, -3.0, -4.0), at(2, 3.0, 4.0)]))
+               Mind.person(
+                 :distrusted,
+                 people(%{2 => -0.35, 6 => -0.35}, [at(6, -3.0, -4.0), at(2, 3.0, 4.0)])
+               )
 
       # 界限 −0.2 本身入选（与快照写 Distrusts 同一界限）。
-      assert {:ok, %{entity_id: 2, entity_epoch: 12}} == Mind.person(:distrusted, people(%{2 => -0.2}, everyone()))
+      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
+               Mind.person(:distrusted, people(%{2 => -0.2}, everyone()))
     end
 
     test "nobody distrusted in sight, or no Life state yet: an explicit reason" do
       # 只有 −0.10（接近中立）与正的信任。
-      assert {:error, :nobody_distrusted} == Mind.person(:distrusted, people(%{2 => -0.10, 4 => 0.25}, everyone()))
+      assert {:error, :nobody_distrusted} ==
+               Mind.person(:distrusted, people(%{2 => -0.10, 4 => 0.25}, everyone()))
+
       # 只有自己。
-      assert {:error, :nobody_distrusted} == Mind.person(:distrusted, people(%{7 => -1.0}, [at(7, 0.0, 0.0)]))
+      assert {:error, :nobody_distrusted} ==
+               Mind.person(:distrusted, people(%{7 => -1.0}, [at(7, 0.0, 0.0)]))
+
       # Runtime 还没收到 Life 的规范状态：观察里没有 life。
       assert {:error, :life_not_ready} ==
                Mind.person(:distrusted, Map.delete(people(trust(), everyone()), :life))
@@ -643,7 +741,16 @@ defmodule NpcServer.NpcMindTest do
   describe "Life.State projections for the snapshot" do
     # 一条手写的 World 事件：角色 21 在 t0 破坏了角色 7 放下的一格。
     defp damaged(t0) do
-      event = %{seq: 5, kind: :damage, actor: 21, placed_by: 7, cell: {4, 64, 8}, material: 11, at_ms: t0}
+      event = %{
+        seq: 5,
+        kind: :damage,
+        actor: 21,
+        placed_by: 7,
+        cell: {4, 64, 8},
+        material: 11,
+        at_ms: t0
+      }
+
       {state, [_episode]} = State.advance(State.new(7, "w1", 0, t0), [event], 5, t0)
       state
     end
@@ -657,7 +764,9 @@ defmodule NpcServer.NpcMindTest do
       assert_in_delta 0.6, at_event, 1.0e-9
 
       # 一个半衰期后：0.3。
-      assert [%{emotion: "anger", actor: 21, intensity: halved}] = State.feelings(state, t0 + 120_000)
+      assert [%{emotion: "anger", actor: 21, intensity: halved}] =
+               State.feelings(state, t0 + 120_000)
+
       assert_in_delta 0.3, halved, 1.0e-9
 
       # 三个半衰期后 0.075 ≤ 0.1：不再给出。
@@ -673,7 +782,10 @@ defmodule NpcServer.NpcMindTest do
     test "relationships are listed by actor id" do
       state =
         State.new(7, "w1", 0, 0)
-        |> put_in(["relationships"], %{"30" => %{"trust" => 0.25, "source_seq" => 2}, "4" => %{"trust" => -1.0, "source_seq" => 9}})
+        |> put_in(["relationships"], %{
+          "30" => %{"trust" => 0.25, "source_seq" => 2},
+          "4" => %{"trust" => -1.0, "source_seq" => 9}
+        })
 
       assert [%{actor: 4, trust: -1.0}, %{actor: 30, trust: 0.25}] == State.relationships(state)
     end
@@ -710,8 +822,15 @@ defmodule NpcServer.NpcMindTest do
 
     {:ok, card} =
       Persona.new(%{
-        "traits" => %{"hardworking" => 8, "responsible" => 8, "thorough" => 7, "bold" => 7, "practical" => 7},
-        "personal" => "Takes pride in the things he builds. Likes his days to follow the usual routine."
+        "traits" => %{
+          "hardworking" => 8,
+          "responsible" => 8,
+          "thorough" => 7,
+          "bold" => 7,
+          "practical" => 7
+        },
+        "personal" =>
+          "Takes pride in the things he builds. Likes his days to follow the usual routine."
       })
 
     profile = %{
@@ -719,27 +838,46 @@ defmodule NpcServer.NpcMindTest do
       persona: card,
       jev: jev,
       activities: [
-        %{name: "build_hut",
-          criterion: "Build the small hut on the plot by the square; repair or rebuild it if it has been damaged."},
-        %{name: "gather_stone", criterion: "Cut stone at the quarry for the village store. Ordinary, steady work."},
-        %{name: "work_far_field",
-          criterion: "Walk out to the far field beyond the village and work there alone, away from the square."}
+        %{
+          name: "build_hut",
+          criterion:
+            "Build the small hut on the plot by the square; repair or rebuild it if it has been damaged."
+        },
+        %{
+          name: "gather_stone",
+          criterion: "Cut stone at the quarry for the village store. Ordinary, steady work."
+        },
+        %{
+          name: "work_far_field",
+          criterion:
+            "Walk out to the far field beyond the village and work there alone, away from the square."
+        }
       ]
     }
 
     # Brann 在 (26.1, 520, 39.3)，差 (3.6, 0, 4.8) → 6.0 米。
     observation = %{
-      self: %{entity_id: 7, position: {22.5, 520.0, 34.5}, tick: 1, grounded: true, body_state: %{life: 100}},
+      self: %{
+        entity_id: 7,
+        position: {22.5, 520.0, 34.5},
+        tick: 1,
+        grounded: true,
+        body_state: %{life: 100}
+      },
       pending: [],
       entities: [
         %{entity_id: 7, kind: 1, name: "Garen", position: {22.5, 520.0, 34.5}},
         %{entity_id: 21, kind: 0, name: "Brann", position: {26.1, 520.0, 39.3}}
       ],
       balances: [%{material: 11, balance: 4096, cost: 512, seq: 3}],
-      world_time: MmoContracts.WorldTime.at(DateTime.to_unix(~U[2026-11-12 03:10:30.000Z], :microsecond))
+      world_time:
+        MmoContracts.WorldTime.at(DateTime.to_unix(~U[2026-11-12 03:10:30.000Z], :microsecond))
     }
 
-    history = [%{activity: "build_hut", result: :completed}, %{activity: "gather_stone", result: :completed}]
+    history = [
+      %{activity: "build_hut", result: :completed},
+      %{activity: "gather_stone", result: :completed}
+    ]
 
     # 发问时刻与各条经历的时刻（2026-11-13 T3 起近期经历由 Mind 按游戏时间写“多久以前”，不再写 UTC）。
     at = &DateTime.to_unix(&1, :millisecond)
@@ -767,7 +905,10 @@ defmodule NpcServer.NpcMindTest do
           ~s|Ordinary, steady work.). Result: completed.|
     }
 
-    recalled = fn text -> %{"id" => text, "text" => text, "type" => "experience", "at_ms" => nil, "tags" => []} end
+    recalled = fn text ->
+      %{"id" => text, "text" => text, "type" => "experience", "at_ms" => nil, "tags" => []}
+    end
+
     empty = %{@empty | now_ms: now_ms}
 
     snapshots = [
@@ -807,6 +948,8 @@ defmodule NpcServer.NpcMindTest do
       end
 
     assert 6 == length(results)
-    assert Enum.all?(results, fn {_label, expected, chosen} -> expected == chosen end), inspect(results)
+
+    assert Enum.all?(results, fn {_label, expected, chosen} -> expected == chosen end),
+           inspect(results)
   end
 end

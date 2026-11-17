@@ -64,11 +64,17 @@ defmodule NpcServer.NpcLifeStateTest do
 
   # 2026-11-12（S1-D2）起旧持久行还缺“我的建筑”表：升级补成空表，不从旧事件补记。
   test "旧合法心智仅补亲和初值与空的建筑表，不追算历史，不修改已有认识或证据" do
-    old = new() |> update_in(["traits"], &Map.delete(&1, "sociability")) |> Map.delete("buildings")
+    old =
+      new() |> update_in(["traits"], &Map.delete(&1, "sociability")) |> Map.delete("buildings")
+
     migrated = State.upgrade(old)
     assert migrated["traits"]["sociability"] == 0.5
     assert migrated["buildings"] == []
-    assert migrated |> update_in(["traits"], &Map.delete(&1, "sociability")) |> Map.delete("buildings") == old
+
+    assert migrated
+           |> update_in(["traits"], &Map.delete(&1, "sociability"))
+           |> Map.delete("buildings") == old
+
     assert State.upgrade(migrated) == migrated
   end
 
@@ -102,10 +108,20 @@ defmodule NpcServer.NpcLifeStateTest do
     refute help["text"] =~ "2026-10-11"
 
     assert Map.take(damage, ["id", "seq", "at_ms", "tags"]) ==
-             %{"id" => "world-a:6", "seq" => 6, "at_ms" => 1_791_698_780_067, "tags" => ["kind:event", "actor:11"]}
+             %{
+               "id" => "world-a:6",
+               "seq" => 6,
+               "at_ms" => 1_791_698_780_067,
+               "tags" => ["kind:event", "actor:11"]
+             }
 
     assert Map.take(help, ["id", "seq", "at_ms", "tags"]) ==
-             %{"id" => "world-a:22", "seq" => 22, "at_ms" => 1_791_699_081_234, "tags" => ["kind:event", "actor:12"]}
+             %{
+               "id" => "world-a:22",
+               "seq" => 22,
+               "at_ms" => 1_791_699_081_234,
+               "tags" => ["kind:event", "actor:12"]
+             }
   end
 
   # 名字取自 Life 此刻的观察，由调用方作为 %{cid => 名字} 传入：有名写 `名字 (actor <cid>)`，空名写 `someone unnamed (actor <cid>)`，
@@ -116,10 +132,16 @@ defmodule NpcServer.NpcLifeStateTest do
     events = [
       event(4711, :damage, 21, hut ++ [building: "small hut"]),
       event(4712, :build, 22, hut ++ [placed_by: nil]),
-      event(4713, :damage, 23, cell: {4, 64, 8}, material: 11, at_ms: 1_794_452_980_000, building: nil)
+      event(4713, :damage, 23,
+        cell: {4, 64, 8},
+        material: 11,
+        at_ms: 1_794_452_980_000,
+        building: nil
+      )
     ]
 
-    {_, [damage, help, loose]} = State.advance(new(), events, 4713, 0, :rules, %{21 => "Brann", 22 => "", 99 => "Mara"})
+    {_, [damage, help, loose]} =
+      State.advance(new(), events, 4713, 0, :rules, %{21 => "Brann", 22 => "", 99 => "Mara"})
 
     assert damage["text"] ==
              "Brann (actor 21) damaged part of the building \"small hut\" that I built, " <>
@@ -143,16 +165,23 @@ defmodule NpcServer.NpcLifeStateTest do
   # 活动期间的最近距离账与期间事实一句。自己（cid 7）在原点；半径 6 米；<N> = 最小距离向上取整（最小 1）。
   describe "activity facts during an activity" do
     defp at(id, name, x), do: %{entity_id: id, name: name, position: {x, 0.0, 0.0}}
-    defp seen(entities), do: %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
+
+    defp seen(entities),
+      do: %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
 
     defp track(frames),
-      do: Enum.reduce(frames, %{}, fn entities, closest -> State.approach(closest, seen(entities)) end)
+      do:
+        Enum.reduce(frames, %{}, fn entities, closest ->
+          State.approach(closest, seen(entities))
+        end)
 
     test "nobody came within 6 m (only people further away, and myself): nobody came near" do
       closest = track([[at(7, "Lin", 0.0), at(21, "Brann", 9.0)], [at(21, "Brann", 6.5)]])
       assert %{21 => %{metres: 6.5, name: "Brann"}} == closest
       refute Map.has_key?(closest, 7)
-      assert {"During it: nobody came near.", []} == State.during(closest, seen([at(21, "Brann", 6.5)]))
+
+      assert {"During it: nobody came near.", []} ==
+               State.during(closest, seen([at(21, "Brann", 6.5)]))
     end
 
     test "someone came close and then moved away (or left the observation)" do
@@ -176,14 +205,21 @@ defmodule NpcServer.NpcLifeStateTest do
     test "several people: nearest first, at most three in one sentence, every one of them tagged" do
       closest =
         track([
-          [at(24, "Dara", 5.5), at(22, "", 3.0), at(23, "Cole", 1.2), at(21, "Brann", 4.0), at(25, "Eve", 12.0)],
+          [
+            at(24, "Dara", 5.5),
+            at(22, "", 3.0),
+            at(23, "Cole", 1.2),
+            at(21, "Brann", 4.0),
+            at(25, "Eve", 12.0)
+          ],
           [at(24, "Dara", 5.5), at(21, "Brann", 4.0)]
         ])
 
       assert {"During it: Cole (actor 23) came within 2 m and then moved away; " <>
                 "someone unnamed (actor 22) came within 3 m and then moved away; " <>
                 "Brann (actor 21) came within 4 m and was still there at the end.",
-              [23, 22, 21, 24]} == State.during(closest, seen([at(24, "Dara", 5.5), at(21, "Brann", 4.0)]))
+              [23, 22, 21, 24]} ==
+               State.during(closest, seen([at(24, "Dara", 5.5), at(21, "Brann", 4.0)]))
     end
   end
 
@@ -196,7 +232,12 @@ defmodule NpcServer.NpcLifeStateTest do
       event(4711, :damage, 21, hut ++ [at_ms: 1_794_452_980_000, building: "small hut"]),
       event(4712, :build, 22, hut ++ [at_ms: 1_794_453_120_000, placed_by: nil]),
       # 我放的一格散格（没有所属建筑；prefab 没有名字时 Life 给的 building 同样是 nil）。
-      event(4713, :damage, 21, cell: {4, 64, 8}, material: 11, at_ms: 1_794_453_120_000, building: nil)
+      event(4713, :damage, 21,
+        cell: {4, 64, 8},
+        material: 11,
+        at_ms: 1_794_453_120_000,
+        building: nil
+      )
     ]
 
     {state, [damage, help, loose]} = State.advance(new(), events, 4713, 1_794_453_120_000)
@@ -217,7 +258,12 @@ defmodule NpcServer.NpcLifeStateTest do
                "I feel angry toward this actor; my trust changed."
 
     assert state["concerns"] == %{
-             "25,518,37" => %{"cell" => [25, 518, 37], "material" => 11, "building" => "small hut", "damaged" => false},
+             "25,518,37" => %{
+               "cell" => [25, 518, 37],
+               "material" => 11,
+               "building" => "small hut",
+               "damaged" => false
+             },
              "4,64,8" => %{"cell" => [4, 64, 8], "material" => 11, "damaged" => true}
            }
 
@@ -234,7 +280,14 @@ defmodule NpcServer.NpcLifeStateTest do
   # 时刻 2026-11-12T03:09:40Z = 1_794_452_980_000 ms。小屋是我（cid 7）放下的根实例 {40, 0}，锚点宏格 (25, 518, 37)；
   # c1 = (25, 518, 36)、c2 = (26, 518, 36) 是它的两格。building 是 Life 查好写进事件的发布名，修上去的那一格是散格。
   @t 1_794_452_980_000
-  @hut [material: 11, at_ms: @t, building: "small hut", instance: {40, 0}, anchor: {25, 518, 37}, instance_removed: false]
+  @hut [
+    material: 11,
+    at_ms: @t,
+    building: "small hut",
+    instance: {40, 0},
+    anchor: {25, 518, 37},
+    instance_removed: false
+  ]
 
   test "标准描述表：打了没毁、毁掉一部分、修好、先受损后整座移除，各写各的句子；整座移除那条不再评价情绪" do
     loose = [building: nil, instance: nil, anchor: nil, instance_removed: false]
@@ -243,7 +296,12 @@ defmodule NpcServer.NpcLifeStateTest do
       event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]),
       event(41, :damage, 21, @hut ++ [cell: {25, 518, 36}]),
       event(42, :destroy, 21, @hut ++ [cell: {26, 518, 36}]),
-      event(43, :build, 22, loose ++ [cell: {26, 518, 36}, material: 11, at_ms: @t, placed_by: nil]),
+      event(
+        43,
+        :build,
+        22,
+        loose ++ [cell: {26, 518, 36}, material: 11, at_ms: @t, placed_by: nil]
+      ),
       # 同一格 c1 已在 41 评价过；这次整座被移除。
       event(44, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])
     ]
@@ -270,7 +328,11 @@ defmodule NpcServer.NpcLifeStateTest do
              "actor 21 removed the entire building \"small hut\" that I built, " <>
                "at (25, 518, 36), material 11, in world world-a (transaction 44); the building no longer exists."
 
-    assert Map.take(removed, ["id", "seq", "actor"]) == %{"id" => "world-a:44", "seq" => 44, "actor" => 21}
+    assert Map.take(removed, ["id", "seq", "actor"]) == %{
+             "id" => "world-a:44",
+             "seq" => 44,
+             "actor" => 21
+           }
 
     # 数值规则不变：21 只评价了 41、42 两次（−0.35 × 2），22 的帮助一次；44 没有再计。
     assert state["evidence"]["damage_count"] == 2
@@ -279,7 +341,9 @@ defmodule NpcServer.NpcLifeStateTest do
     assert state["relationships"]["21"]["source_seq"] == 42
 
     # 我放下的有名字的建筑记在 "buildings"。
-    assert state["buildings"] == [%{"name" => "small hut", "instance" => [40, 0], "anchor" => [25, 518, 37]}]
+    assert state["buildings"] == [
+             %{"name" => "small hut", "instance" => [40, 0], "anchor" => [25, 518, 37]}
+           ]
   end
 
   test "整座移除是这一格的第一次破坏时照常评价并带情绪句（S1-C 实跑的情形）；模型评价模式只换句尾" do
@@ -306,20 +370,48 @@ defmodule NpcServer.NpcLifeStateTest do
   end
 
   test "整座被移除后那一格的关心结束：之后别人在那里放同材料不是修好那座建筑，不写经历、感激与信任不变" do
-    later = [building: nil, instance: nil, anchor: nil, instance_removed: false, material: 11, at_ms: @t, placed_by: nil]
+    later = [
+      building: nil,
+      instance: nil,
+      anchor: nil,
+      instance_removed: false,
+      material: 11,
+      at_ms: @t,
+      placed_by: nil
+    ]
 
     # 两条写“整座被移除”的路径：先受损后整座移除（41 已评价过），与整座移除是第一次破坏。
     for removal <- [
-          [event(41, :damage, 21, @hut ++ [cell: {25, 518, 36}]),
-           event(42, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])],
-          [event(42, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])]
+          [
+            event(41, :damage, 21, @hut ++ [cell: {25, 518, 36}]),
+            event(
+              42,
+              :destroy,
+              21,
+              Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}]
+            )
+          ],
+          [
+            event(
+              42,
+              :destroy,
+              21,
+              Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}]
+            )
+          ]
         ] do
       {before, episodes} =
-        State.advance(new(), [event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]) | removal], 42, @t)
+        State.advance(
+          new(),
+          [event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]) | removal],
+          42,
+          @t
+        )
 
       assert List.last(episodes)["text"] =~ "the building no longer exists."
 
-      {state, after_removal} = State.advance(before, [event(43, :build, 22, later ++ [cell: {25, 518, 36}])], 43, @t)
+      {state, after_removal} =
+        State.advance(before, [event(43, :build, 22, later ++ [cell: {25, 518, 36}])], 43, @t)
 
       assert after_removal == []
       assert state["concerns"] == %{}
@@ -331,17 +423,41 @@ defmodule NpcServer.NpcLifeStateTest do
   end
 
   test "我的建筑按放下的次序记，同一锚点重建时新的一座取代旧的；别人放下的与没有名字的不记" do
-    shed = [material: 11, at_ms: @t, building: "shed", instance: {41, 0}, anchor: {-3, 64, -12}, instance_removed: false]
+    shed = [
+      material: 11,
+      at_ms: @t,
+      building: "shed",
+      instance: {41, 0},
+      anchor: {-3, 64, -12},
+      instance_removed: false
+    ]
 
     events = [
       event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]),
       event(41, :build, 7, shed ++ [cell: {-3, 64, -12}, placed_by: nil]),
       # 别人放下的。
-      event(42, :build, 22, Keyword.merge(shed, instance: {42, 0}, anchor: {9, 64, 9}) ++ [cell: {9, 64, 9}, placed_by: nil]),
+      event(
+        42,
+        :build,
+        22,
+        Keyword.merge(shed, instance: {42, 0}, anchor: {9, 64, 9}) ++
+          [cell: {9, 64, 9}, placed_by: nil]
+      ),
       # 没有名字的。
-      event(43, :build, 7, Keyword.merge(shed, building: nil, instance: {43, 0}, anchor: {5, 64, 5}) ++ [cell: {5, 64, 5}, placed_by: nil]),
+      event(
+        43,
+        :build,
+        7,
+        Keyword.merge(shed, building: nil, instance: {43, 0}, anchor: {5, 64, 5}) ++
+          [cell: {5, 64, 5}, placed_by: nil]
+      ),
       # 小屋没了之后在同一锚点重建：新的实例 {44, 0}。
-      event(44, :build, 7, Keyword.put(@hut, :instance, {44, 0}) ++ [cell: {25, 518, 36}, placed_by: nil])
+      event(
+        44,
+        :build,
+        7,
+        Keyword.put(@hut, :instance, {44, 0}) ++ [cell: {25, 518, 36}, placed_by: nil]
+      )
     ]
 
     {state, []} = State.advance(new(), events, 44, @t)

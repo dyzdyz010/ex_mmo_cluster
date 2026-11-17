@@ -48,16 +48,29 @@ defmodule NpcServer.NpcRegistryTest do
            })
   @npc %{
     "who" => "Lin, a builder",
-    "persona" => %{"traits" => %{"thrifty" => 8, "extraverted" => 3}, "personal" => "Dislikes crowds."},
+    "persona" => %{
+      "traits" => %{"thrifty" => 8, "extraverted" => 3},
+      "personal" => "Dislikes crowds."
+    },
     "tools" => %{"1" => "镐"},
     "activities" => [
       %{
         "name" => "gather_stone",
         "criterion" => "Cut stone at the quarry.",
         "skill" => "gather",
-        "args" => %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}
+        "args" => %{
+          "box" => [[10, 64, 4], [13, 64, 6]],
+          "material" => 11,
+          "units" => 512,
+          "tool_id" => 1
+        }
       },
-      %{"name" => "rest_at_home", "criterion" => "Go home and rest.", "place" => [2, -3.5], "stay_ticks" => 600}
+      %{
+        "name" => "rest_at_home",
+        "criterion" => "Go home and rest.",
+        "place" => [2, -3.5],
+        "stay_ticks" => 600
+      }
     ]
   }
 
@@ -133,30 +146,55 @@ defmodule NpcServer.NpcRegistryTest do
                   tree: &Trees.npc/1,
                   who: "Lin, a builder",
                   # 特质按词表次序（extraverted 在 thrifty 前），不是 JSON 键的次序。
-                  persona: %{traits: [{"extraverted", 3}, {"thrifty", 8}], personal: "Dislikes crowds."},
+                  persona: %{
+                    traits: [{"extraverted", 3}, {"thrifty", 8}],
+                    personal: "Dislikes crowds."
+                  },
                   activities: [
                     %{
                       name: "gather_stone",
                       criterion: "Cut stone at the quarry.",
                       run:
                         {:skill, "gather",
-                         %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}},
+                         %{
+                           "box" => [[10, 64, 4], [13, 64, 6]],
+                           "material" => 11,
+                           "units" => 512,
+                           "tool_id" => 1
+                         }},
                       place_name: nil
                     },
-                    %{name: "rest_at_home", criterion: "Go home and rest.", run: {:place, [2, -3.5], 600}, place_name: nil}
+                    %{
+                      name: "rest_at_home",
+                      criterion: "Go home and rest.",
+                      run: {:place, [2, -3.5], 600},
+                      place_name: nil
+                    }
                   ],
                   tools: %{1 => "镐"},
                   skills: %{gather: %{}, travel: %{}},
-                  jev: %{url: "http://127.0.0.1:9/jev", key: "test-key", model: "jev-test", timeout_ms: 10_000},
+                  jev: %{
+                    url: "http://127.0.0.1:9/jev",
+                    key: "test-key",
+                    model: "jev-test",
+                    timeout_ms: 10_000
+                  },
                   # 反思写日记的接口取运行环境（R3 起）。
-                  reflect: %{url: "http://127.0.0.1:9/v1/messages", key: "test-key", model: "reflect-test"},
+                  reflect: %{
+                    url: "http://127.0.0.1:9/v1/messages",
+                    key: "test-key",
+                    model: "reflect-test"
+                  },
                   # 必带 Life：行里没写 life，地址取运行环境。大脑仍是 Tree，不套 Social。
                   life: %{url: "http://life.test.invalid"}
                 }} == NpcRegistry.brain("npc", @npc)
 
         # 行里显式给地址。
         assert {Brain.Tree, %{life: %{url: "http://hindsight.example:8888"}}} =
-                 NpcRegistry.brain("npc", Map.put(@npc, "life", %{"url" => "http://hindsight.example:8888"}))
+                 NpcRegistry.brain(
+                   "npc",
+                   Map.put(@npc, "life", %{"url" => "http://hindsight.example:8888"})
+                 )
 
         # 只有技能候选：技能表里没有 travel。
         assert {Brain.Tree, %{skills: %{gather: %{}}}} =
@@ -165,12 +203,22 @@ defmodule NpcServer.NpcRegistryTest do
         [gather, rest] = @npc["activities"]
 
         # 走向一个角色（S1-F）：选择器 "distrusted" + 停留；由 travel 承担移动，技能表推出 travel。
-        confront = %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+        confront = %{
+          "name" => "confront",
+          "criterion" => "Face the person I distrust.",
+          "person" => "distrusted",
+          "stay_ticks" => 60
+        }
 
         assert {Brain.Tree,
                 %{
                   activities: [
-                    %{name: "confront", criterion: "Face the person I distrust.", run: {:person, :distrusted, 60}, place_name: nil}
+                    %{
+                      name: "confront",
+                      criterion: "Face the person I distrust.",
+                      run: {:person, :distrusted, 60},
+                      place_name: nil
+                    }
                   ],
                   skills: %{travel: %{}}
                 }} = NpcRegistry.brain("npc", %{@npc | "activities" => [confront]})
@@ -181,7 +229,11 @@ defmodule NpcServer.NpcRegistryTest do
                   activities: [
                     %{name: "gather_stone", place_name: "the quarry", run: {:skill, "gather", _}},
                     %{name: "rest_at_home", place_name: "home", run: {:place, [2, -3.5], 600}},
-                    %{name: "confront", place_name: "wherever they are", run: {:person, :distrusted, 60}}
+                    %{
+                      name: "confront",
+                      place_name: "wherever they are",
+                      run: {:person, :distrusted, 60}
+                    }
                   ]
                 }} =
                  NpcRegistry.brain("npc", %{
@@ -215,7 +267,12 @@ defmodule NpcServer.NpcRegistryTest do
               %{@npc | "activities" => [Map.put(rest, "place_name", "")]},
               %{@npc | "activities" => [Map.put(rest, "place_name", 7)]},
               %{@npc | "activities" => [Map.put(rest, "place_name", nil)]},
-              %{@npc | "activities" => [rest |> Map.delete("stay_ticks") |> Map.put("place_name", "home")]},
+              %{
+                @npc
+                | "activities" => [
+                    rest |> Map.delete("stay_ticks") |> Map.put("place_name", "home")
+                  ]
+              },
               Map.delete(@npc, "who"),
               Map.delete(@npc, "tools"),
               # 统一形态不能关掉 Life；地址不是 http(s) URL。
@@ -233,12 +290,16 @@ defmodule NpcServer.NpcRegistryTest do
 
       # 运行环境没有反思写日记的接口：登记不了。
       with_env(%{@npc_env | "NPC_REFLECT_URL" => nil}, fn ->
-        assert_raise System.EnvError, ~r/NPC_REFLECT_URL/, fn -> NpcRegistry.brain("npc", @npc) end
+        assert_raise System.EnvError, ~r/NPC_REFLECT_URL/, fn ->
+          NpcRegistry.brain("npc", @npc)
+        end
       end)
 
       # 运行环境没有 Hindsight 地址、行里也没给：登记不了。
       with_env(%{@npc_env | "NPC_LIFE_HINDSIGHT_URL" => nil}, fn ->
-        assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn -> NpcRegistry.brain("npc", @npc) end
+        assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn ->
+          NpcRegistry.brain("npc", @npc)
+        end
       end)
     end
 
@@ -500,39 +561,39 @@ defmodule NpcServer.NpcRegistryTest do
       name = "坏参数#{System.unique_integer([:positive])}"
 
       with_env(@npc_env, fn ->
-      for {brain, params} <- [
-            {"settler",
-             %{"definition" => "zz", "sites" => [], "revisit_ticks" => 1, "tools" => %{}}},
-            {"patrol", %{"route" => [[4.0, 10.0]]}},
-            # 元组不是 JSON：参数先按 JSON 规范化，存的和解析的是同一份。
-            {"patrol", %{"route" => [{4.0, 10.0}, {8.0, 10.0}]}},
-            # 统一形态：坏人格卡、空候选表、重名候选（运行环境里有 Jev 接口与 Hindsight 地址，被拒只因参数）。
-            {"npc", %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}},
-            {"npc", %{@npc | "activities" => []}},
-            {"npc", %{@npc | "activities" => List.duplicate(hd(@npc["activities"]), 2)}},
-            {"dancer", %{}}
-          ] do
+        for {brain, params} <- [
+              {"settler",
+               %{"definition" => "zz", "sites" => [], "revisit_ticks" => 1, "tools" => %{}}},
+              {"patrol", %{"route" => [[4.0, 10.0]]}},
+              # 元组不是 JSON：参数先按 JSON 规范化，存的和解析的是同一份。
+              {"patrol", %{"route" => [{4.0, 10.0}, {8.0, 10.0}]}},
+              # 统一形态：坏人格卡、空候选表、重名候选（运行环境里有 Jev 接口与 Hindsight 地址，被拒只因参数）。
+              {"npc", %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}},
+              {"npc", %{@npc | "activities" => []}},
+              {"npc", %{@npc | "activities" => List.duplicate(hd(@npc["activities"]), 2)}},
+              {"dancer", %{}}
+            ] do
+          assert {:error, {:invalid_params, message}} =
+                   NpcRegistry.put(name, %{
+                     scene_id: 1,
+                     spawn: {4.0, 66.0, 10.0},
+                     brain: brain,
+                     params: params
+                   })
+
+          assert is_binary(message)
+        end
+
+        # 说明里带原因：坏人格卡指出是哪个键。
         assert {:error, {:invalid_params, message}} =
                  NpcRegistry.put(name, %{
                    scene_id: 1,
                    spawn: {4.0, 66.0, 10.0},
-                   brain: brain,
-                   params: params
+                   brain: "npc",
+                   params: %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}
                  })
 
-        assert is_binary(message)
-      end
-
-      # 说明里带原因：坏人格卡指出是哪个键。
-      assert {:error, {:invalid_params, message}} =
-               NpcRegistry.put(name, %{
-                 scene_id: 1,
-                 spawn: {4.0, 66.0, 10.0},
-                 brain: "npc",
-                 params: %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}
-               })
-
-      assert message =~ "persona" and message =~ ~s({:unknown_trait, "brave"})
+        assert message =~ "persona" and message =~ ~s({:unknown_trait, "brave"})
       end)
 
       assert [] == rows(name)
@@ -546,7 +607,12 @@ defmodule NpcServer.NpcRegistryTest do
     # 不证明真实 Jev 的选择与真实 Hindsight 的内容（那是 :live_jev 用例与服务端实跑）。
     @tag timeout: 120_000
     test "an npc row reads its mind through Life, asks Jev from the real Body and runs the chosen activity" do
-      answer = %{"answers" => %{"activity" => %{"type" => "choice", "choice" => "walk_east", "confidence" => 0.4}}}
+      answer = %{
+        "answers" => %{
+          "activity" => %{"type" => "choice", "choice" => "walk_east", "confidence" => 0.4}
+        }
+      }
+
       test = self()
 
       jev =
@@ -566,17 +632,35 @@ defmodule NpcServer.NpcRegistryTest do
 
           :get, "/v1/default/banks/npc-life-" <> rest, _ ->
             cond do
-              rest =~ "/mental-models/self?" -> %{"content" => "I keep to myself and save what I can."}
-              rest =~ "/mental-models/" -> %{"content" => "Nothing recorded yet."}
-              rest =~ "/operations?" -> %{"operations" => [], "total" => 0}
-              rest =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
-              rest =~ "/stats" -> %{}
+              rest =~ "/mental-models/self?" ->
+                %{"content" => "I keep to myself and save what I can."}
+
+              rest =~ "/mental-models/" ->
+                %{"content" => "Nothing recorded yet."}
+
+              rest =~ "/operations?" ->
+                %{"operations" => [], "total" => 0}
+
+              rest =~ "/llm-requests?" ->
+                %{"items" => [], "total" => 0}
+
+              rest =~ "/stats" ->
+                %{}
             end
 
           :post, "/v1/default/banks/npc-life-" <> rest, body ->
             true = String.ends_with?(rest, "/memories/recall")
             send(test, {:hindsight_recall, body})
-            %{"results" => [%{"id" => "fact-1", "text" => "The east post is quiet in the morning.", "type" => "world"}]}
+
+            %{
+              "results" => [
+                %{
+                  "id" => "fact-1",
+                  "text" => "The east post is quiet in the morning.",
+                  "type" => "world"
+                }
+              ]
+            }
         end)
 
       name = "住民#{System.unique_integer([:positive])}"
@@ -584,76 +668,118 @@ defmodule NpcServer.NpcRegistryTest do
       params = %{
         @npc
         | "activities" => [
-            %{"name" => "stay_here", "criterion" => "Stay where you are.", "place" => [4.0, 10.0], "stay_ticks" => 60},
-            %{"name" => "walk_east", "criterion" => "Walk to the east post.", "place" => [8.0, 10.0], "stay_ticks" => 60}
+            %{
+              "name" => "stay_here",
+              "criterion" => "Stay where you are.",
+              "place" => [4.0, 10.0],
+              "stay_ticks" => 60
+            },
+            %{
+              "name" => "walk_east",
+              "criterion" => "Walk to the east post.",
+              "place" => [8.0, 10.0],
+              "stay_ticks" => 60
+            }
           ]
       }
 
-      with_env(%{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight}, fn ->
-        assert {:ok, %{cid: cid, pid: pid}} =
-                 NpcRegistry.put(name, %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "npc", params: params})
+      with_env(
+        %{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight},
+        fn ->
+          assert {:ok, %{cid: cid, pid: pid}} =
+                   NpcRegistry.put(name, %{
+                     scene_id: 1,
+                     spawn: {4.0, 66.0, 10.0},
+                     brain: "npc",
+                     params: params
+                   })
 
-        assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] = rows(name)
+          assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] =
+                   rows(name)
 
-        # 附近没人、没有我的建筑：一次选择只有“未了与感受”一路召回（`Mind.recall_queries/2`），线上的请求体按适配器的契约。
-        # 这个形态也规划（`Life.DayPlan`，首帧到点）：规划槽的“自己”一问另有两路召回，与选择的那一路先后不定，按问句认出选择的那一路。
-        assert_receive {:hindsight_recall,
-                        %{"query" => "What am I looking forward to, worried about, or have promised to do?"} =
-                          recall},
-                       30_000
+          # 附近没人、没有我的建筑：一次选择只有“未了与感受”一路召回（`Mind.recall_queries/2`），线上的请求体按适配器的契约。
+          # 这个形态也规划（`Life.DayPlan`，首帧到点）：规划槽的“自己”一问另有两路召回，与选择的那一路先后不定，按问句认出选择的那一路。
+          assert_receive {:hindsight_recall,
+                          %{
+                            "query" =>
+                              "What am I looking forward to, worried about, or have promised to do?"
+                          } =
+                            recall},
+                         30_000
 
-        assert Map.delete(recall, "query_timestamp") == %{
-                 "query" => "What am I looking forward to, worried about, or have promised to do?",
-                 "budget" => "mid",
-                 "prefer_observations" => true,
-                 "max_tokens" => 600
-               }
-
-        # 发问来自真实观察与真实读回的心智：人格描述、认识（四份，按建立次序）、召回、位置都在请求里。
-        assert_receive {:jev_http, request}, 20_000
-        assert request["model"] == "jev-test"
-        assert request["state"] =~ "Character: Lin, a builder. Personality: introverted, very thrifty."
-        assert request["state"] =~ "\nFeelings and relationships: Nothing notable.\nWhat just happened: Nothing new.\n"
-
-        assert request["state"] =~
-                 "What I remember: My own memories and beliefs; they may be out of date and are not current " <>
-                   "world facts.\n- Belief (self): I keep to myself and save what I can.\n" <>
-                   "- Belief (relationships): Nothing recorded yet.\n- Belief (world): Nothing recorded yet.\n" <>
-                   "- Belief (commitments): Nothing recorded yet.\n" <>
-                   "- Recalled: The east post is quiet in the morning.\n"
-
-        assert request["state"] =~ "Current situation: Standing at x=4.0, z=10.0"
-
-        # 被选中的是登记在后的 walk_east：走到 (8, 10)。
-        travel =
-          NpcWorld.await(
-            fn -> Enum.find(Body.observe(pid).outcomes, &match?(%{verb: :travel, status: :done}, &1)) end,
-            20_000
-          )
-
-        {x, _, z} = travel.data.position
-        assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
-
-        # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历（真实 Body 的观察里没有别人：nobody came near）。
-        assert_receive {:jev_http, %{"state" => again}}, 20_000
-        assert again =~ "Recent activities: Oldest first. walk_east: completed."
-        # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
-        assert again =~ ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\. During it: nobody came near\.\n/
-
-        # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与各路召回的描述。
-        assert %{
-                 select: %{
-                   activities: [%{activity: "walk_east", trigger: "start", confidence: 0.4, recall_ms: recall_ms} | _],
-                   asked: %{state: asked, recall_queries: [%{query: query}]}
+          assert Map.delete(recall, "query_timestamp") == %{
+                   "query" =>
+                     "What am I looking forward to, worried about, or have promised to do?",
+                   "budget" => "mid",
+                   "prefer_observations" => true,
+                   "max_tokens" => 600
                  }
-               } = Body.observe(pid)
 
-        assert is_integer(recall_ms) and recall_ms >= 0
-        assert asked =~ "Character: Lin, a builder."
-        assert query == recall["query"]
+          # 发问来自真实观察与真实读回的心智：人格描述、认识（四份，按建立次序）、召回、位置都在请求里。
+          assert_receive {:jev_http, request}, 20_000
+          assert request["model"] == "jev-test"
 
-        assert :ok = NpcRegistry.remove(name)
-      end)
+          assert request["state"] =~
+                   "Character: Lin, a builder. Personality: introverted, very thrifty."
+
+          assert request["state"] =~
+                   "\nFeelings and relationships: Nothing notable.\nWhat just happened: Nothing new.\n"
+
+          assert request["state"] =~
+                   "What I remember: My own memories and beliefs; they may be out of date and are not current " <>
+                     "world facts.\n- Belief (self): I keep to myself and save what I can.\n" <>
+                     "- Belief (relationships): Nothing recorded yet.\n- Belief (world): Nothing recorded yet.\n" <>
+                     "- Belief (commitments): Nothing recorded yet.\n" <>
+                     "- Recalled: The east post is quiet in the morning.\n"
+
+          assert request["state"] =~ "Current situation: Standing at x=4.0, z=10.0"
+
+          # 被选中的是登记在后的 walk_east：走到 (8, 10)。
+          travel =
+            NpcWorld.await(
+              fn ->
+                Enum.find(
+                  Body.observe(pid).outcomes,
+                  &match?(%{verb: :travel, status: :done}, &1)
+                )
+              end,
+              20_000
+            )
+
+          {x, _, z} = travel.data.position
+          assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
+
+          # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历（真实 Body 的观察里没有别人：nobody came near）。
+          assert_receive {:jev_http, %{"state" => again}}, 20_000
+          assert again =~ "Recent activities: Oldest first. walk_east: completed."
+
+          # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
+          assert again =~
+                   ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\. During it: nobody came near\.\n/
+
+          # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与各路召回的描述。
+          assert %{
+                   select: %{
+                     activities: [
+                       %{
+                         activity: "walk_east",
+                         trigger: "start",
+                         confidence: 0.4,
+                         recall_ms: recall_ms
+                       }
+                       | _
+                     ],
+                     asked: %{state: asked, recall_queries: [%{query: query}]}
+                   }
+                 } = Body.observe(pid)
+
+          assert is_integer(recall_ms) and recall_ms >= 0
+          assert asked =~ "Character: Lin, a builder."
+          assert query == recall["query"]
+
+          assert :ok = NpcRegistry.remove(name)
+        end
+      )
     end
 
     # 走向一个角色（S1-F），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）：Jev 选中“去找我不信任的人”，
@@ -661,7 +787,12 @@ defmodule NpcServer.NpcRegistryTest do
     # “最近做过的事”与“刚发生的事”里都写着它。
     @tag timeout: 120_000
     test "an npc row choosing to face a distrusted person with nobody distrusted nearby reports nobody_distrusted" do
-      answer = %{"answers" => %{"activity" => %{"type" => "choice", "choice" => "confront", "confidence" => 0.6}}}
+      answer = %{
+        "answers" => %{
+          "activity" => %{"type" => "choice", "choice" => "confront", "confidence" => 0.6}
+        }
+      }
+
       test = self()
 
       jev =
@@ -697,29 +828,44 @@ defmodule NpcServer.NpcRegistryTest do
       params = %{
         @npc
         | "activities" => [
-            %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+            %{
+              "name" => "confront",
+              "criterion" => "Face the person I distrust.",
+              "person" => "distrusted",
+              "stay_ticks" => 60
+            }
           ]
       }
 
-      with_env(%{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight}, fn ->
-        assert {:ok, %{pid: pid}} =
-                 NpcRegistry.put(name, %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "npc", params: params})
+      with_env(
+        %{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight},
+        fn ->
+          assert {:ok, %{pid: pid}} =
+                   NpcRegistry.put(name, %{
+                     scene_id: 1,
+                     spawn: {4.0, 66.0, 10.0},
+                     brain: "npc",
+                     params: params
+                   })
 
-        assert_receive {:jev_http, first}, 30_000
-        assert first["state"] =~ "Recent activities: None yet."
+          assert_receive {:jev_http, first}, 30_000
+          assert first["state"] =~ "Recent activities: None yet."
 
-        assert_receive {:jev_http, %{"state" => again}}, 20_000
-        assert again =~ "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
+          assert_receive {:jev_http, %{"state" => again}}, 20_000
 
-        # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
-        assert again =~
-                 ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
+          assert again =~
+                   "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
 
-        # 没有发出过 travel：身体没有任何 travel 的终态。
-        refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))
+          # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
+          assert again =~
+                   ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
 
-        assert :ok = NpcRegistry.remove(name)
-      end)
+          # 没有发出过 travel：身体没有任何 travel 的终态。
+          refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))
+
+          assert :ok = NpcRegistry.remove(name)
+        end
+      )
     end
 
     # M2 授予（决策稿 §3）：唯一来源是注册表行。llm 行 genesis: true → Body 受理 genesis_edit 并经 World 写格；
@@ -811,7 +957,10 @@ defmodule NpcServer.NpcRegistryTest do
         Jason.decode!(bytes)
       end
 
-    answer = Jason.encode!(handler.(%{"PATCH" => :patch, GET: :get, PUT: :put, POST: :post}[method], path, body))
+    answer =
+      Jason.encode!(
+        handler.(%{"PATCH" => :patch, GET: :get, PUT: :put, POST: :post}[method], path, body)
+      )
 
     :ok =
       :gen_tcp.send(socket, [
@@ -826,9 +975,14 @@ defmodule NpcServer.NpcRegistryTest do
 
   defp http_headers(socket, length) do
     case :gen_tcp.recv(socket, 0) do
-      {:ok, {:http_header, _, :"Content-Length", _, value}} -> http_headers(socket, String.to_integer(value))
-      {:ok, :http_eoh} -> length
-      {:ok, _} -> http_headers(socket, length)
+      {:ok, {:http_header, _, :"Content-Length", _, value}} ->
+        http_headers(socket, String.to_integer(value))
+
+      {:ok, :http_eoh} ->
+        length
+
+      {:ok, _} ->
+        http_headers(socket, length)
     end
   end
 

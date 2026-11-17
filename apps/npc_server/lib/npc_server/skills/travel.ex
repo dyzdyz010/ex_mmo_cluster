@@ -90,7 +90,9 @@ defmodule NpcServer.Skills.Travel do
       half_height: context.movement_profile.half_height
     }
 
-  defp reply({:ok, state, legs}), do: {:ok, %{position: state.position, legs: legs, metrics: @metrics}}
+  defp reply({:ok, state, legs}),
+    do: {:ok, %{position: state.position, legs: legs, metrics: @metrics}}
+
   defp reply({:error, reason, _state}), do: {:error, reason, @metrics}
 
   @doc """

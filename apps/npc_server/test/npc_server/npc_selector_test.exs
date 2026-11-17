@@ -34,12 +34,26 @@ defmodule NpcServer.NpcSelectorTest do
     "persona" => %{"traits" => %{"bold" => 8}, "personal" => "Keeps promises."},
     "tools" => %{},
     "activities" => [
-      %{"name" => "zeta_build_north", "criterion" => "Build the hut on the north plot.", "skill" => "build",
-        "args" => @north},
-      %{"name" => "alpha_build_south", "criterion" => "Build the hut on the south plot.", "skill" => "build",
-        "args" => @south, "place_name" => "the south plot"},
-      %{"name" => "rest_at_home", "criterion" => "Go home and rest.", "place" => [3.0, -4.0], "stay_ticks" => 120,
-        "place_name" => "home"}
+      %{
+        "name" => "zeta_build_north",
+        "criterion" => "Build the hut on the north plot.",
+        "skill" => "build",
+        "args" => @north
+      },
+      %{
+        "name" => "alpha_build_south",
+        "criterion" => "Build the hut on the south plot.",
+        "skill" => "build",
+        "args" => @south,
+        "place_name" => "the south plot"
+      },
+      %{
+        "name" => "rest_at_home",
+        "criterion" => "Go home and rest.",
+        "place" => [3.0, -4.0],
+        "stay_ticks" => 120,
+        "place_name" => "home"
+      }
     ]
   }
 
@@ -71,7 +85,8 @@ defmodule NpcServer.NpcSelectorTest do
   # 各路召回的描述（`Mind.recall_queries/2` 的原文，S1-Q 的 R 部分）：期望值手写，不调被测函数。
   defp person_route(cid, name),
     do: %{
-      query: "What has happened between me and #{name} (actor #{cid})? Did they help, harm, or promise me anything?",
+      query:
+        "What has happened between me and #{name} (actor #{cid})? Did they help, harm, or promise me anything?",
       tags: ["actor:#{cid}"],
       tags_match: "any_strict",
       prefer_observations: true,
@@ -109,7 +124,13 @@ defmodule NpcServer.NpcSelectorTest do
     def init(opts) do
       # Runtime 起 Life 要用的会话身份：永久 cid、Scene 与路由（真实 Body 在 claim 后给出同一形状）。
       context = %{cid: opts.cid, scene_id: 1, router: NpcServer.NpcWorld.Route}
-      {:ok, Map.put(opts, :brain, NpcServer.Runtime.init({NpcServer.Brain.Tree, opts.profile}, context))}
+
+      {:ok,
+       Map.put(
+         opts,
+         :brain,
+         NpcServer.Runtime.init({NpcServer.Brain.Tree, opts.profile}, context)
+       )}
     end
 
     def handle_call(:brain, _, s), do: {:reply, s.brain, s}
@@ -169,7 +190,13 @@ defmodule NpcServer.NpcSelectorTest do
 
   defp observation(tick \\ 1, cid \\ 7),
     do: %{
-      self: %{entity_id: cid, position: {1.0, 2.0, 3.0}, tick: tick, grounded: true, body_state: nil},
+      self: %{
+        entity_id: cid,
+        position: {1.0, 2.0, 3.0},
+        tick: tick,
+        grounded: true,
+        body_state: nil
+      },
       pending: [],
       entities: [],
       balances: nil
@@ -179,10 +206,16 @@ defmodule NpcServer.NpcSelectorTest do
   defp answer(choice, confidence),
     do:
       {:ok,
-       %{"answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => confidence}}}}
+       %{
+         "answers" => %{
+           "activity" => %{"type" => "choice", "choice" => choice, "confidence" => confidence}
+         }
+       }}
 
   describe "request body" do
-    test "candidates keep the registration order; the state is passed through as given", %{profile: profile} do
+    test "candidates keep the registration order; the state is passed through as given", %{
+      profile: profile
+    } do
       body = Selector.body(profile, "Character: Lin, a builder.")
 
       assert "jev-test" == body.model
@@ -208,9 +241,10 @@ defmodule NpcServer.NpcSelectorTest do
   end
 
   describe "registration" do
-    test "an npc row always carries Life: the address from the environment or the row, never switched off", %{
-      profile: profile
-    } do
+    test "an npc row always carries Life: the address from the environment or the row, never switched off",
+         %{
+           profile: profile
+         } do
       # 省略 life：地址取运行环境。
       assert %{url: "http://life.test.invalid"} == profile.life
 
@@ -219,7 +253,9 @@ defmodule NpcServer.NpcSelectorTest do
                stub_profile(Map.put(@params, "life", %{"url" => "http://hindsight.example:8888"}))
 
       # 统一形态必带 Life，不能关掉。
-      assert_raise ArgumentError, ~r/life=false/, fn -> stub_profile(Map.put(@params, "life", false)) end
+      assert_raise ArgumentError, ~r/life=false/, fn ->
+        stub_profile(Map.put(@params, "life", false))
+      end
 
       # 运行环境没有 Hindsight 地址、参数里也没给：登记不了（stub_profile 结束时已还原环境，这里的环境里没有它）。
       assert nil == System.get_env("NPC_LIFE_HINDSIGHT_URL")
@@ -235,7 +271,9 @@ defmodule NpcServer.NpcSelectorTest do
       })
 
       try do
-        assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn -> NpcServer.Registry.brain("npc", @params) end
+        assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn ->
+          NpcServer.Registry.brain("npc", @params)
+        end
       after
         for key <-
               ~w(TYPESAFE_API_URL TYPESAFE_API_KEY TYPESAFE_MODEL NPC_REFLECT_URL NPC_REFLECT_KEY NPC_REFLECT_MODEL),
@@ -284,7 +322,14 @@ defmodule NpcServer.NpcSelectorTest do
       profile: profile
     } do
       selection = fn name, trigger ->
-        %{activity: name, confidence: 0.6, latency_ms: 12, recall_ms: 3, trigger: trigger, model: "m"}
+        %{
+          activity: name,
+          confidence: 0.6,
+          latency_ms: 12,
+          recall_ms: 3,
+          trigger: trigger,
+          model: "m"
+        }
       end
 
       state = Selector.new()
@@ -349,7 +394,14 @@ defmodule NpcServer.NpcSelectorTest do
 
           Selector.chose(
             state,
-            %{activity: "a#{n}", confidence: 0.5, latency_ms: 1, recall_ms: 1, trigger: "completed", model: "m"},
+            %{
+              activity: "a#{n}",
+              confidence: 0.5,
+              latency_ms: 1,
+              recall_ms: 1,
+              trigger: "completed",
+              model: "m"
+            },
             profile,
             7
           )
@@ -376,7 +428,9 @@ defmodule NpcServer.NpcSelectorTest do
       end)
     end
 
-    test "ask, run the chosen branch to its end, report how it ended, ask again", %{profile: profile} do
+    test "ask, run the chosen branch to its end, report how it ended, ask again", %{
+      profile: profile
+    } do
       build_north = %{verb: :skill, skill: :build, args: @north}
 
       Tree.init(profile)
@@ -395,16 +449,18 @@ defmodule NpcServer.NpcSelectorTest do
         # 活动结束后的下一个事件：再次发问，报告上一项已完成。
         {obs(122), [%{id: 3, verb: :choose_activity, ended: :completed}]},
         # 选中技能候选：执行登记的那次技能调用。
-        {done(3, :choose_activity, %{activity: "zeta_build_north"}), [Map.put(build_north, :id, 4)]},
+        {done(3, :choose_activity, %{activity: "zeta_build_north"}),
+         [Map.put(build_north, :id, 4)]},
         # 活动失败不终止树：下一次发问带失败的动作与原因。
         {rejected(4, :build, :occupied), []},
         {obs(123), [%{id: 5, verb: :choose_activity, ended: {:failed, "build", "occupied"}}]}
       ])
     end
 
-    test "a failed selection runs nothing, waits 600 ticks and asks again with the same report", %{
-      profile: profile
-    } do
+    test "a failed selection runs nothing, waits 600 ticks and asks again with the same report",
+         %{
+           profile: profile
+         } do
       state =
         Tree.init(profile)
         |> script([
@@ -425,7 +481,13 @@ defmodule NpcServer.NpcSelectorTest do
 
     # 走向一个角色（S1-F）：选人发生在分支开始的那一刻，读树手里最新的观察与其中的 Life 规范状态。
     defp confront_profile do
-      confront = %{"name" => "confront", "criterion" => "Face the person I distrust.", "person" => "distrusted", "stay_ticks" => 60}
+      confront = %{
+        "name" => "confront",
+        "criterion" => "Face the person I distrust.",
+        "person" => "distrusted",
+        "stay_ticks" => 60
+      }
+
       stub_profile(%{@params | "activities" => [confront]})
     end
 
@@ -435,7 +497,9 @@ defmodule NpcServer.NpcSelectorTest do
         put_in(
           NpcServer.Life.State.new(7, "w1", 0, 0),
           ["relationships"],
-          Map.new(trust, fn {actor, value} -> {to_string(actor), %{"trust" => value, "source_seq" => 1}} end)
+          Map.new(trust, fn {actor, value} ->
+            {to_string(actor), %{"trust" => value, "source_seq" => 1}}
+          end)
         )
 
       {:observation,
@@ -469,7 +533,8 @@ defmodule NpcServer.NpcSelectorTest do
         # 2 的信任 −0.10：不算不信任。
         {seen(0, %{2 => -0.10}), [%{id: 1, verb: :choose_activity, ended: nil}]},
         {done(1, :choose_activity, %{activity: "confront"}), []},
-        {seen(1, %{2 => -0.10}), [%{id: 2, verb: :choose_activity, ended: {:failed, "travel", "nobody_distrusted"}}]}
+        {seen(1, %{2 => -0.10}),
+         [%{id: 2, verb: :choose_activity, ended: {:failed, "travel", "nobody_distrusted"}}]}
       ])
     end
   end
@@ -478,6 +543,7 @@ defmodule NpcServer.NpcSelectorTest do
     setup do
       MmoTest.Database.start!()
       fixture = NpcWorld.start()
+
       # 永久 cid：每个用例一个新角色（Life 的持久行按 cid，世界身份随夹具变）。
       %{fixture: fixture, cid: System.unique_integer([:positive]) + 100_000}
     end
@@ -500,7 +566,10 @@ defmodule NpcServer.NpcSelectorTest do
       profile =
         profile
         |> Map.put(:request, request)
-        |> Map.update!(:life, &Map.merge(&1, %{hindsight: Hindsight, owner: test, recall: recall, poll_ms: 30}))
+        |> Map.update!(
+          :life,
+          &Map.merge(&1, %{hindsight: Hindsight, owner: test, recall: recall, poll_ms: 30})
+        )
 
       body = start_supervised!({Body, %{owner: self(), profile: profile, cid: cid}})
 
@@ -522,7 +591,14 @@ defmodule NpcServer.NpcSelectorTest do
     defp skill_step(body, call, status, reason) do
       event(
         body,
-        {:outcome, %{id: {:skill, call, 1}, verb: :prefab_place, status: status, reason: reason, data: %{seq: 1}}}
+        {:outcome,
+         %{
+           id: {:skill, call, 1},
+           verb: :prefab_place,
+           status: status,
+           reason: reason,
+           data: %{seq: 1}
+         }}
       )
     end
 
@@ -588,7 +664,10 @@ defmodule NpcServer.NpcSelectorTest do
           # —— 第 1 次：首个观察触发发问；应答到达前不发任何命令。
           event(body, {:observation, observation(1, cid)})
           assert_receive {:jev_request, worker, request}
-          assert request.state =~ "Character: Lin, a builder. Personality: very bold. Personal: Keeps promises."
+
+          assert request.state =~
+                   "Character: Lin, a builder. Personality: very bold. Personal: Keeps promises."
+
           assert request.state =~ "Recent activities: None yet."
 
           event(body, {:observation, observation(2, cid)})
@@ -599,11 +678,21 @@ defmodule NpcServer.NpcSelectorTest do
           send(worker, {:jev_reply, answer("alpha_build_south", 0.21)})
 
           assert_receive {:runtime_outcome,
-                          %{id: 1, verb: :choose_activity, status: :done, data: %{activity: "alpha_build_south"}}}
+                          %{
+                            id: 1,
+                            verb: :choose_activity,
+                            status: :done,
+                            data: %{activity: "alpha_build_south"}
+                          }}
 
-          assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
+          assert_receive {:command,
+                          %{id: {:skill, 2, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
 
-          assert %{select: %{activities: [%{activity: "alpha_build_south", result: nil, confidence: 0.21}]}} =
+          assert %{
+                   select: %{
+                     activities: [%{activity: "alpha_build_south", result: nil, confidence: 0.21}]
+                   }
+                 } =
                    settled(body, runtime)
 
           # —— 第 2 次：活动成功结束 → 下一个事件再次发问，state 里有它的结局。
@@ -617,7 +706,10 @@ defmodule NpcServer.NpcSelectorTest do
 
           # —— 第 3 次：活动失败 → 失败原因写进 state；这次应答的选项不在候选里 → 显式失败，不执行任何活动。
           skill_step(body, 4, :rejected, :occupied)
-          assert_receive {:runtime_outcome, %{id: 4, verb: :build, status: :rejected, reason: :occupied}}
+
+          assert_receive {:runtime_outcome,
+                          %{id: 4, verb: :build, status: :rejected, reason: :occupied}}
+
           event(body, {:observation, observation(4, cid)})
           assert_receive {:jev_request, worker, request}
 
@@ -627,9 +719,16 @@ defmodule NpcServer.NpcSelectorTest do
           send(worker, {:jev_reply, answer("dance", 0.99)})
 
           assert_receive {:runtime_outcome,
-                          %{id: 5, verb: :choose_activity, status: :rejected, reason: {:unknown_activity, "dance"}}}
+                          %{
+                            id: 5,
+                            verb: :choose_activity,
+                            status: :rejected,
+                            reason: {:unknown_activity, "dance"}
+                          }}
 
-          assert %{select: %{failure: {:unknown_activity, "dance"}} = select} = settled(body, runtime)
+          assert %{select: %{failure: {:unknown_activity, "dance"}} = select} =
+                   settled(body, runtime)
+
           assert nil == Selector.current(select)
           refute_received {:command, _}
 
@@ -641,7 +740,12 @@ defmodule NpcServer.NpcSelectorTest do
           send(worker, {:jev_reply, {:error, {503, "busy"}}})
 
           assert_receive {:runtime_outcome,
-                          %{id: 6, verb: :choose_activity, status: :rejected, reason: {503, "busy"}}}
+                          %{
+                            id: 6,
+                            verb: :choose_activity,
+                            status: :rejected,
+                            reason: {503, "busy"}
+                          }}
 
           # —— 第 5 次：再等 600 tick，照常再问并执行被选中的分支。
           event(body, {:observation, observation(1205, cid)})
@@ -653,7 +757,9 @@ defmodule NpcServer.NpcSelectorTest do
                      "zeta_build_north: failed (build: occupied)."
 
           send(worker, {:jev_reply, answer("alpha_build_south", 0.55)})
-          assert_receive {:command, %{id: {:skill, 8, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
+
+          assert_receive {:command,
+                          %{id: {:skill, 8, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
 
           assert %{select: %{failure: nil} = select} = settled(body, runtime)
           assert "alpha_build_south" == Selector.current(select)
@@ -662,9 +768,16 @@ defmodule NpcServer.NpcSelectorTest do
 
       # 召回耗时是 Life 量的并行墙钟（替身立即返回，数值随运行而变）。
       candidates = "candidates=zeta_build_north,alpha_build_south,rest_at_home"
-      assert log =~ ~r/npc_select cid=#{cid} trigger=start #{candidates} chosen=alpha_build_south confidence=0.21 latency_ms=\d+ recall_ms=\d+ model=jev-test/
-      assert log =~ ~r/npc_select cid=#{cid} trigger=completed #{candidates} chosen=zeta_build_north confidence=0.9 latency_ms=\d+ recall_ms=\d+ model=jev-test/
-      assert log =~ ~r/npc_select cid=#{cid} trigger=retry #{candidates} chosen=alpha_build_south confidence=0.55 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=start #{candidates} chosen=alpha_build_south confidence=0.21 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=completed #{candidates} chosen=zeta_build_north confidence=0.9 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=retry #{candidates} chosen=alpha_build_south confidence=0.55 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
       assert log =~ ~s(npc_select_failed cid=#{cid} reason={:unknown_activity, "dance"})
       assert log =~ ~s(npc_select_failed cid=#{cid} reason={503, "busy"})
       # 三次成功、两次失败，各一行。
@@ -672,7 +785,10 @@ defmodule NpcServer.NpcSelectorTest do
       assert 2 == length(Regex.scan(~r/npc_select_failed cid=/, log))
     end
 
-    test "a selection worker that dies without an answer is an explicit failure", %{profile: profile, cid: cid} do
+    test "a selection worker that dies without an answer is an explicit failure", %{
+      profile: profile,
+      cid: cid
+    } do
       {body, runtime, _recall} = start(profile, cid)
 
       capture_log(fn ->
@@ -742,7 +858,11 @@ defmodule NpcServer.NpcSelectorTest do
                    "Recent activities: None yet." == rest
 
           # observe 读得到这次问的全文、各路召回的描述与并行耗时。
-          assert %{select: %{asked: %{state: asked, recall_queries: ^queries, recall_ms: recall_ms}}} =
+          assert %{
+                   select: %{
+                     asked: %{state: asked, recall_queries: ^queries, recall_ms: recall_ms}
+                   }
+                 } =
                    settled(body, runtime)
 
           assert asked == request.state
@@ -797,7 +917,9 @@ defmodule NpcServer.NpcSelectorTest do
           assert request.state =~
                    "- Belief (self): I am a careful builder.\n- Recalled: Brann once carried stone for me.\nCurrent situation: "
 
-          assert request.state =~ "\nRecent activities: Oldest first. alpha_build_south: completed."
+          assert request.state =~
+                   "\nRecent activities: Oldest first. alpha_build_south: completed."
+
           second = request.state
           send(worker, {:jev_reply, answer("zeta_build_north", 0.8)})
           assert_receive {:command, %{id: {:skill, 4, 1}, verb: :prefab_place}}
@@ -821,13 +943,19 @@ defmodule NpcServer.NpcSelectorTest do
           refute_received {:command, _}
 
           # 没有发问：observe 里留的仍是上一次问的全文。
-          assert %{select: %{failure: {:mind_unavailable, :transport_error}, asked: %{state: ^second}}} =
+          assert %{
+                   select: %{
+                     failure: {:mind_unavailable, :transport_error},
+                     asked: %{state: ^second}
+                   }
+                 } =
                    settled(body, runtime)
 
           assert {:ok, %{recall: %{status: :failed, error: :transport_error}}} = Life.observe(cid)
 
           # —— 第 4 次：600 tick 后照常再问（从 tick 4 起，604 到期）；记忆读得到了，照常问 Jev。
           Agent.update(recall, fn _ -> {:ok, %{results: [], latency_ms: 4}} end)
+
           # 上一次失败时可能有一路还没发出就停下了：先清掉它留下的消息，再看这一次的两路。
           flush_recalls()
           event(body, {:observation, near.(604)})
@@ -841,12 +969,15 @@ defmodule NpcServer.NpcSelectorTest do
 
           refute request.state =~ "choose_activity"
           send(worker, {:jev_reply, answer("alpha_build_south", 0.6)})
+
           # 命令号逐个递增：1 选、2 建、3 选、4 建、5 选（失败）、6 重选 → 这次的技能调用是 7。
-          assert_receive {:command, %{id: {:skill, 7, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
+          assert_receive {:command,
+                          %{id: {:skill, 7, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
         end)
 
       # Life 手里的经历恰好三条：一次破坏、两项活动。
-      assert {:ok, %{pending_episodes: 3, pending_fragments: 0, unsaved_experiences: 0, error: nil}} =
+      assert {:ok,
+              %{pending_episodes: 3, pending_fragments: 0, unsaved_experiences: 0, error: nil}} =
                Life.observe(cid)
 
       # 三条经历的 tags：登记的地名（只有 alpha_build_south 登记了）与期间靠近过的 Brann 都进了活动经历——
@@ -855,11 +986,16 @@ defmodule NpcServer.NpcSelectorTest do
                ["kind:event", "actor:#{brann}"],
                ["kind:activity", "actor:#{brann}", "place:the south plot"],
                ["kind:activity", "actor:#{brann}"]
-             ] == Enum.map(DataService.NpcMemory.get(cid, "life", "state")["pending"], & &1["tags"])
+             ] ==
+               Enum.map(DataService.NpcMemory.get(cid, "life", "state")["pending"], & &1["tags"])
 
-      assert log =~ ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
       assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}"
-      assert log =~ ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=\d+ model=jev-test/
     end
 
     defp flush_recalls do
@@ -881,18 +1017,30 @@ defmodule NpcServer.NpcSelectorTest do
       [brann, mara, tobin] = [cid + 10, cid + 11, cid + 12]
 
       hut =
-        VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 11}], children: [], attachments: []})
+        VoxelRegion.Prefab.encode(%{
+          cells: [],
+          macro_cells: [{{0, 0, 0}, 11}],
+          children: [],
+          attachments: []
+        })
 
-      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, id} =
+        World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+
       {:ok, _} = World.material_supply(world, cid, "selector-routes-supply", %{11 => 1024})
 
       {:ok, _} =
-        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
-          definition_id: id,
-          anchor: {32, 512, 64},
-          orientation: 0,
-          client_intent_seq: 1
-        })
+        World.prefab_intent(
+          world,
+          NpcWorld.actor(cid, {4.5, 65.5, 8.5}),
+          :voxel_prefab_place_v1,
+          %{
+            definition_id: id,
+            anchor: {32, 512, 64},
+            orientation: 0,
+            client_intent_seq: 1
+          }
+        )
 
       NpcWorld.await(fn ->
         match?({:ok, %{state: %{"buildings" => [%{"name" => "small hut"}]}}}, Life.observe(cid))
@@ -937,16 +1085,34 @@ defmodule NpcServer.NpcSelectorTest do
 
         # 建筑一路失败，其余成功 → 整次失败。
         for {pid, description} <- [{fourth_pid, fourth} | first], pid != brann_pid do
-          send(pid, {:recall_reply, if(description == building_route("small hut"), do: {:error, :service_failed}, else: ok)})
+          send(
+            pid,
+            {:recall_reply,
+             if(description == building_route("small hut"),
+               do: {:error, :service_failed},
+               else: ok
+             )}
+          )
         end
 
         assert_receive {:runtime_outcome,
-                        %{verb: :choose_activity, status: :rejected, reason: {:mind_unavailable, :service_failed}}},
+                        %{
+                          verb: :choose_activity,
+                          status: :rejected,
+                          reason: {:mind_unavailable, :service_failed}
+                        }},
                        5000
 
         refute_received {:jev_request, _, _}
 
-        assert {:ok, %{recall: %{status: :failed, error: :service_failed, query: ~s|What has happened at my building "small hut"?|}}} =
+        assert {:ok,
+                %{
+                  recall: %{
+                    status: :failed,
+                    error: :service_failed,
+                    query: ~s|What has happened at my building "small hut"?|
+                  }
+                }} =
                  Life.observe(cid)
 
         # 600 tick 后重问；四路都成功：照常问 Jev，observe 里是按优先级排好的四路描述。
@@ -978,16 +1144,23 @@ defmodule NpcServer.NpcSelectorTest do
           attachments: []
         })
 
-      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, id} =
+        World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+
       {:ok, _} = World.material_supply(world, cid, "selector-hut-supply", %{11 => 1024})
 
       {:ok, _} =
-        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
-          definition_id: id,
-          anchor: {32, 512, 64},
-          orientation: 0,
-          client_intent_seq: 1
-        })
+        World.prefab_intent(
+          world,
+          NpcWorld.actor(cid, {4.5, 65.5, 8.5}),
+          :voxel_prefab_place_v1,
+          %{
+            definition_id: id,
+            anchor: {32, 512, 64},
+            orientation: 0,
+            client_intent_seq: 1
+          }
+        )
 
       # 第 1 次发问：还没有事发生。
       event(body, {:observation, observation(1, cid)})
@@ -1006,7 +1179,12 @@ What just happened: Nothing new.
       end)
 
       # 关心格记下了建筑的名字。
-      assert {:ok, %{state: %{"concerns" => %{"4,64,8" => %{"building" => "small hut", "damaged" => true}}}}} =
+      assert {:ok,
+              %{
+                state: %{
+                  "concerns" => %{"4,64,8" => %{"building" => "small hut", "damaged" => true}}
+                }
+              }} =
                Life.observe(cid)
 
       # 第 2 次发问：近期经历一栏。多久以前、世界身份、事务号是运行时的值，换成占位后整栏与手写的句子逐字相同。
@@ -1026,7 +1204,10 @@ What just happened: Nothing new.
                "During it: nobody came near." ==
                happened
                |> String.replace(~r/#{@ago}, /, "<ago>, ")
-               |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
+               |> String.replace(
+                 ~r/in world \S+ \(transaction \d+\)/,
+                 "in world <w> (transaction <n>)"
+               )
     end
 
     # 我放下一座有名字的建筑 → 发问的处境说它还在 → 另一角色经正常入口（镐的拆卸）把它整座拆掉 → 下一次发问的经历写
@@ -1040,23 +1221,42 @@ What just happened: Nothing new.
       world = fixture.world
 
       hut =
-        VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 11}], children: [], attachments: []})
+        VoxelRegion.Prefab.encode(%{
+          cells: [],
+          macro_cells: [{{0, 0, 0}, 11}],
+          children: [],
+          attachments: []
+        })
 
-      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, id} =
+        World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+
       {:ok, _} = World.material_supply(world, cid, "selector-hut-supply", %{11 => 1024})
 
       {:ok, placed} =
-        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
-          definition_id: id,
-          anchor: {32, 512, 64},
-          orientation: 0,
-          client_intent_seq: 1
-        })
+        World.prefab_intent(
+          world,
+          NpcWorld.actor(cid, {4.5, 65.5, 8.5}),
+          :voxel_prefab_place_v1,
+          %{
+            definition_id: id,
+            anchor: {32, 512, 64},
+            orientation: 0,
+            client_intent_seq: 1
+          }
+        )
 
       # Life 从自己放下的那条 World 事件记下这座建筑（记忆，不是现状）。
       NpcWorld.await(fn ->
         match?(
-          {:ok, %{state: %{"buildings" => [%{"name" => "small hut", "instance" => [^placed, 0], "anchor" => [4, 64, 8]}]}}},
+          {:ok,
+           %{
+             state: %{
+               "buildings" => [
+                 %{"name" => "small hut", "instance" => [^placed, 0], "anchor" => [4, 64, 8]}
+               ]
+             }
+           }},
           Life.observe(cid)
         )
       end)
@@ -1065,8 +1265,10 @@ What just happened: Nothing new.
       event(body, {:observation, observation(1, cid)})
       assert_receive {:jev_request, worker, request}
 
-      assert [~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
-                ~s|My building "small hut" at (4, 64, 8) is standing. Inventory: not checked yet.|] ==
+      assert [
+               ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
+                 ~s|My building "small hut" at (4, 64, 8) is standing. Inventory: not checked yet.|
+             ] ==
                Regex.run(~r/^Current situation: .*$/m, request.state)
 
       send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
@@ -1097,10 +1299,14 @@ What just happened: Nothing new.
                "During it: nobody came near." ==
                happened
                |> String.replace(~r/#{@ago}, /, "<ago>, ")
-               |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
+               |> String.replace(
+                 ~r/in world \S+ \(transaction \d+\)/,
+                 "in world <w> (transaction <n>)"
+               )
 
       assert ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
-               ~s|My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.| == situation
+               ~s|My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.| ==
+               situation
     end
 
     test "without cached models the mind is unreadable: the selection fails explicitly and Jev is not asked",
@@ -1126,7 +1332,8 @@ What just happened: Nothing new.
                         %{
                           verb: :choose_activity,
                           status: :rejected,
-                          reason: {:mind_unavailable, {:life_models_unavailable, :transport_error}}
+                          reason:
+                            {:mind_unavailable, {:life_models_unavailable, :transport_error}}
                         }}
 
         refute_received {:jev_request, _, _}
@@ -1152,23 +1359,45 @@ What just happened: Nothing new.
     }
 
     activities = [
-      %{name: "gather_stone",
-        criterion: "Go to the quarry face and cut stone for the building store. Hard, dusty labour, done alone."},
-      %{name: "visit_plaza",
-        criterion: "Walk to the village plaza and spend a while among the neighbours, chatting with whoever is there."},
-      %{name: "rest_at_home", criterion: "Go home and rest quietly indoors for a while. No effort, no company."}
+      %{
+        name: "gather_stone",
+        criterion:
+          "Go to the quarry face and cut stone for the building store. Hard, dusty labour, done alone."
+      },
+      %{
+        name: "visit_plaza",
+        criterion:
+          "Walk to the village plaza and spend a while among the neighbours, chatting with whoever is there."
+      },
+      %{
+        name: "rest_at_home",
+        criterion: "Go home and rest quietly indoors for a while. No effort, no company."
+      }
     ]
 
     cards = [
       {"Sella, a weaver",
        %{
-         "traits" => %{"friendly" => 9, "extraverted" => 8, "talkative" => 8, "kind" => 8, "generous" => 8,
-           "altruistic" => 8},
-         "personal" => "Loves gossip and hates being alone. Will drop her own work to help a friend."
+         "traits" => %{
+           "friendly" => 9,
+           "extraverted" => 8,
+           "talkative" => 8,
+           "kind" => 8,
+           "generous" => 8,
+           "altruistic" => 8
+         },
+         "personal" =>
+           "Loves gossip and hates being alone. Will drop her own work to help a friend."
        }, "visit_plaza"},
       {"Hask, a farmhand",
        %{
-         "traits" => %{"hardworking" => 2, "active" => 2, "adventurous and daring" => 3, "anxious" => 3, "tense" => 3},
+         "traits" => %{
+           "hardworking" => 2,
+           "active" => 2,
+           "adventurous and daring" => 3,
+           "anxious" => 3,
+           "tense" => 3
+         },
          "personal" => "Does the least that lets him get by."
        }, "rest_at_home"}
     ]
@@ -1195,6 +1424,7 @@ What just happened: Nothing new.
           thought: nil,
           plan: nil
         }
+
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))
         {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "start")
 

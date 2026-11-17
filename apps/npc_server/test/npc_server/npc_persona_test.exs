@@ -14,22 +14,57 @@ defmodule NpcServer.NpcPersonaTest do
 
   # big5.py 的 PAIRS（EXT、AGR、CON、NEU、OPE），冻结。
   @big5_pairs [
-    ["unfriendly", "friendly"], ["introverted", "extraverted"], ["silent", "talkative"], ["timid", "bold"],
-    ["unassertive", "assertive"], ["inactive", "active"], ["unenergetic", "energetic"],
-    ["unadventurous", "adventurous and daring"], ["gloomy", "cheerful"], ["distrustful", "trustful"],
-    ["immoral", "moral"], ["dishonest", "honest"], ["unkind", "kind"], ["stingy", "generous"],
-    ["unaltruistic", "altruistic"], ["uncooperative", "cooperative"], ["self-important", "humble"],
-    ["unsympathetic", "sympathetic"], ["selfish", "unselfish"], ["disagreeable", "agreeable"],
-    ["unsure", "self-efficacious"], ["messy", "orderly"], ["irresponsible", "responsible"], ["lazy", "hardworking"],
-    ["undisciplined", "self-disciplined"], ["impractical", "practical"], ["extravagant", "thrifty"],
-    ["disorganized", "organized"], ["negligent", "conscientious"], ["careless", "thorough"], ["relaxed", "tense"],
-    ["at ease", "nervous"], ["easygoing", "anxious"], ["calm", "angry"], ["patient", "irritable"],
-    ["happy", "depressed"], ["unselfconscious", "self-conscious"], ["level-headed", "impulsive"],
-    ["contented", "discontented"], ["emotionally stable", "emotionally unstable"], ["unimaginative", "imaginative"],
-    ["uncreative", "creative"], ["artistically unappreciative", "artistically appreciative"],
-    ["unaesthetic", "aesthetic"], ["unreflective", "reflective"], ["emotionally closed", "emotionally aware"],
-    ["uninquisitive", "curious"], ["predictable", "spontaneous"], ["unintelligent", "intelligent"],
-    ["unanalytical", "analytical"], ["unsophisticated", "sophisticated"],
+    ["unfriendly", "friendly"],
+    ["introverted", "extraverted"],
+    ["silent", "talkative"],
+    ["timid", "bold"],
+    ["unassertive", "assertive"],
+    ["inactive", "active"],
+    ["unenergetic", "energetic"],
+    ["unadventurous", "adventurous and daring"],
+    ["gloomy", "cheerful"],
+    ["distrustful", "trustful"],
+    ["immoral", "moral"],
+    ["dishonest", "honest"],
+    ["unkind", "kind"],
+    ["stingy", "generous"],
+    ["unaltruistic", "altruistic"],
+    ["uncooperative", "cooperative"],
+    ["self-important", "humble"],
+    ["unsympathetic", "sympathetic"],
+    ["selfish", "unselfish"],
+    ["disagreeable", "agreeable"],
+    ["unsure", "self-efficacious"],
+    ["messy", "orderly"],
+    ["irresponsible", "responsible"],
+    ["lazy", "hardworking"],
+    ["undisciplined", "self-disciplined"],
+    ["impractical", "practical"],
+    ["extravagant", "thrifty"],
+    ["disorganized", "organized"],
+    ["negligent", "conscientious"],
+    ["careless", "thorough"],
+    ["relaxed", "tense"],
+    ["at ease", "nervous"],
+    ["easygoing", "anxious"],
+    ["calm", "angry"],
+    ["patient", "irritable"],
+    ["happy", "depressed"],
+    ["unselfconscious", "self-conscious"],
+    ["level-headed", "impulsive"],
+    ["contented", "discontented"],
+    ["emotionally stable", "emotionally unstable"],
+    ["unimaginative", "imaginative"],
+    ["uncreative", "creative"],
+    ["artistically unappreciative", "artistically appreciative"],
+    ["unaesthetic", "aesthetic"],
+    ["unreflective", "reflective"],
+    ["emotionally closed", "emotionally aware"],
+    ["uninquisitive", "curious"],
+    ["predictable", "spontaneous"],
+    ["unintelligent", "intelligent"],
+    ["unanalytical", "analytical"],
+    ["unsophisticated", "sophisticated"],
     ["socially conservative", "socially progressive"]
   ]
 
@@ -58,10 +93,15 @@ defmodule NpcServer.NpcPersonaTest do
 
   test "a JSON card becomes a valid card whose traits follow the table order, not the JSON key order" do
     # JSON 对象的键没有次序；卡里的次序取词表：friendly（EXT 第 1）、bold（EXT 第 4）、tense（NEU 第 1）。
-    json = %{"traits" => %{"tense" => 2, "bold" => 8, "friendly" => 5}, "personal" => "Keeps promises."}
+    json = %{
+      "traits" => %{"tense" => 2, "bold" => 8, "friendly" => 5},
+      "personal" => "Keeps promises."
+    }
 
     assert {:ok, card} = Persona.new(json)
-    assert %{traits: [{"friendly", 5}, {"bold", 8}, {"tense", 2}], personal: "Keeps promises."} == card
+
+    assert %{traits: [{"friendly", 5}, {"bold", 8}, {"tense", 2}], personal: "Keeps promises."} ==
+             card
 
     assert "Tam, a guard. Personality: neither unfriendly nor friendly, very bold, very relaxed. " <>
              "Personal: Keeps promises." == Persona.describe("Tam, a guard", card)
@@ -75,23 +115,42 @@ defmodule NpcServer.NpcPersonaTest do
   # big5.py describe() 的冻结输出。
   for {who, traits, personal, expected} <- [
         {"Lin, a builder",
-         %{"impulsive" => 2, "thrifty" => 8, "organized" => 8, "thorough" => 8, "responsible" => 9,
-           "extraverted" => 3, "talkative" => 3}, "Dislikes crowds and noise. Always keeps the promises she makes.",
+         %{
+           "impulsive" => 2,
+           "thrifty" => 8,
+           "organized" => 8,
+           "thorough" => 8,
+           "responsible" => 9,
+           "extraverted" => 3,
+           "talkative" => 3
+         }, "Dislikes crowds and noise. Always keeps the promises she makes.",
          "Lin, a builder. Personality: introverted, silent, extremely responsible, very thrifty, very organized, " <>
            "very thorough, very level-headed. Personal: Dislikes crowds and noise. Always keeps the promises she makes."},
         {"Garrick, a hunter",
-         %{"bold" => 8, "adventurous and daring" => 9, "impulsive" => 8, "energetic" => 8, "thrifty" => 3},
-         "Loves meat, strong drink and a good fight. Gets bored by routine.",
+         %{
+           "bold" => 8,
+           "adventurous and daring" => 9,
+           "impulsive" => 8,
+           "energetic" => 8,
+           "thrifty" => 3
+         }, "Loves meat, strong drink and a good fight. Gets bored by routine.",
          "Garrick, a hunter. Personality: very bold, very energetic, extremely adventurous and daring, extravagant, " <>
            "very impulsive. Personal: Loves meat, strong drink and a good fight. Gets bored by routine."},
         {"Hask, a farmhand",
-         %{"hardworking" => 2, "active" => 2, "adventurous and daring" => 3, "anxious" => 3, "tense" => 3},
-         "Does the least that lets him get by.",
+         %{
+           "hardworking" => 2,
+           "active" => 2,
+           "adventurous and daring" => 3,
+           "anxious" => 3,
+           "tense" => 3
+         }, "Does the least that lets him get by.",
          "Hask, a farmhand. Personality: very inactive, unadventurous, very lazy, relaxed, easygoing. " <>
            "Personal: Does the least that lets him get by."}
       ] do
     test "frozen big5.py description: #{who}" do
-      {:ok, card} = Persona.new(%{"traits" => unquote(Macro.escape(traits)), "personal" => unquote(personal)})
+      {:ok, card} =
+        Persona.new(%{"traits" => unquote(Macro.escape(traits)), "personal" => unquote(personal)})
+
       assert unquote(expected) == Persona.describe(unquote(who), card)
     end
   end
@@ -109,8 +168,11 @@ defmodule NpcServer.NpcPersonaTest do
     assert {:error, {:invalid_level, "bold", 8.0}} == Persona.new(card.(%{"bold" => 8.0}))
     assert {:error, {:invalid_level, "bold", "8"}} == Persona.new(card.(%{"bold" => "8"}))
 
-    assert {:error, :personal_not_text} == Persona.new(%{"traits" => %{"bold" => 8}, "personal" => nil})
-    assert {:error, :personal_not_text} == Persona.new(%{"traits" => %{"bold" => 8}, "personal" => 3})
+    assert {:error, :personal_not_text} ==
+             Persona.new(%{"traits" => %{"bold" => 8}, "personal" => nil})
+
+    assert {:error, :personal_not_text} ==
+             Persona.new(%{"traits" => %{"bold" => 8}, "personal" => 3})
 
     # 不是恰好两段的对象。
     assert {:error, :invalid_card} == Persona.new(%{"traits" => %{"bold" => 8}})
