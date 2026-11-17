@@ -62,8 +62,8 @@ def select(paths):
         elif name.startswith(("rel/", "deploy/")) or name in {"Dockerfile", ".dockerignore"}:
             # release 打包与部署：由 docker-publish.yml 构建镜像，CI 测试作业不执行它们。
             continue
-        elif name.startswith(("tools/", "scripts/", "docs/", ".demo/")) or name in {".gitignore", ".gitattributes"}:
-            # 只测试的运维/联调脚本与文档：CI 没有能真实执行它们的作业（WS 双端 smoke 随旧客户端删除）。
+        elif name.startswith(("tools/", "scripts/", "docs/", ".demo/")) or name in {".gitignore", ".gitattributes", ".env.example"}:
+            # 只测试的运维/联调脚本、文档与根级环境变量模板：CI 没有能真实执行它们的作业（WS 双端 smoke 随旧客户端删除）。
             continue
         else:
             raise ValueError("变更未分类，请补映射：" + name)
