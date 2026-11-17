@@ -113,12 +113,18 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
    - **改前红已验**：① 召回隔离——把 `recall/3` 的 profile 换回 nil，T-1 立刻红（召回排在慢 retain 后面、250 ms 超时）；
      ② claim 超时——把 `claim_session/2` 的 catch 换回"一律上抛"，`npc_body_crash_domain_test` 立刻红（Body 消失、
      没有第二次 claim）。两者都在这次会话里实跑过红→绿。
-   - **CI 现状（这次 PR 的实测）**：`Test npc_server` 连续三次 **pass**（8m54s / 9m58s / 10m19s）、`Format` 与
-     `Compile` pass、其余 app pass；唯一红的是 **`Test voxel_region`**，与本次改动无关的既有 flake：
-     同一个用例 `MagicSemblanceWorldTest`「冷重启…」在 CI 上稳定红（两次都是它）、单跑该文件绿、本机跑整套时
-     红的是另一个用例（`WorldInteractionsTest` 的 DB 连接池耗尽）；而且它在 master 上的历史（2026-11-08…11-13
-     的 8 次 master CI 里 7 次红）本来就是红的。本分支对 `apps/voxel_region` 只动过 `interactions.ex` 的
-     `capture/5` 与 `settle/2`（NPC 事件描述与 `instance_removed`），**是否为诱因未证明**，留给 voxel 线查。
+   - **CI 现状（这次 PR 的实测）**：`Test npc_server` 连续四次 **pass**（8m54s / 9m58s / 10m19s / 9m16s）、
+     `Format` 与 `Compile` pass、其余 app pass。两个既有 flake 各归位：
+     ① `Test voxel_region` 的 `MagicSemblanceWorldTest`「冷重启…」在 CI 上两次红、单跑该文件绿、本机跑整套时
+     红的是另一个用例（`WorldInteractionsTest` 的 DB 连接池耗尽）；且该作业在 master 历史上（2026-11-08…11-13
+     的 8 次里 7 次红）本来就是红的。本分支对 `apps/voxel_region` 只动过 `interactions.ex` 的 `capture/5` 与
+     `settle/2`（NPC 事件描述与 `instance_removed`），**是否为诱因未证明**，留给 voxel 线查；它最后一次
+     run 自己通过了（13m0s），所以这是 flake 而不是本分支的破坏。
+     ② `npc_body_world_test` 的「cancelling a skill preserves an already committed World transaction」在 CI 上
+     把 `{:DOWN, …, :shutdown}` 翻成 `:noproc`（技能 worker 在测试设 monitor 之前就已经退出）。已按语义收口：
+     两种原因都接受（都表示"报终态时它已不在跑"），取消本身的语义仍由 `:cancelled` 与已提交事务断言。
+   - **最新一次 run 全绿**：`44157294404` 的 13 个 job 全部 pass（含 `voxel_region` 13m0s 与 `CI result`），
+     PR 仍在 draft（是否合并由用户定）。
 8. 下一步（未做，顺序即优先级）：补一次 deepseek 选择层的 live 冒烟（缺 key）→ 说话层（先做“候选生成缝：操作 × 眼下可行对象”，说话是第一个实例；**不要**再加一条手写 activity）→ 打断 → 多 NPC 之前的规模治理（World 抽样共享、全链 jitter、成本记账、召回分档）。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
