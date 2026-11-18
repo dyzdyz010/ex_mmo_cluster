@@ -269,7 +269,9 @@ defmodule NpcServer.NpcLifeTest do
     assert_receive {:life_observation, %{self: %{entity_id: ^cid}}}, 10_000
 
     builder = NpcWorld.actor(cid + 10, {4.5, 65.5, 10.5})
-    assert {:ok, _} = World.material_supply(fixture.world, builder.cid, "sight-reconnect", %{11 => 1024})
+
+    assert {:ok, _} =
+             World.material_supply(fixture.world, builder.cid, "sight-reconnect", %{11 => 1024})
 
     place = fn sequence, cell ->
       assert {:ok, seq} =
@@ -283,10 +285,13 @@ defmodule NpcServer.NpcLifeTest do
                  tool_id: 1
                })
 
-      NpcWorld.await(fn ->
-        {:ok, %{state: %{"cursor" => cursor}}} = Life.observe(cid)
-        cursor >= seq
-      end, 3000)
+      NpcWorld.await(
+        fn ->
+          {:ok, %{state: %{"cursor" => cursor}}} = Life.observe(cid)
+          cursor >= seq
+        end,
+        3000
+      )
 
       seq
     end
@@ -315,7 +320,10 @@ defmodule NpcServer.NpcLifeTest do
       NpcWorld.await(fn ->
         entries = DataService.NpcMemory.get(cid, "life", "state")["pending"]
 
-        case Enum.filter(entries, &("actor:#{builder.cid}" in &1["tags"] and "kind:sight" in &1["tags"])) do
+        case Enum.filter(
+               entries,
+               &("actor:#{builder.cid}" in &1["tags"] and "kind:sight" in &1["tags"])
+             ) do
           [] -> nil
           matches -> matches
         end
@@ -709,16 +717,31 @@ defmodule NpcServer.NpcLifeTest do
     :ok = DataService.NpcMemory.put(cid, "life", "state", row)
     {:ok, loaded} = NpcServer.Memory.life_load(DataService.NpcMemory, cid)
 
-    s = %{life_state(cid, clock, Hindsight) | row: loaded}
+    :ets.new(ControlledStore, [:named_table, :public])
+    :ets.insert(ControlledStore, {cid, self()})
+    s = %{life_state(cid, clock, Hindsight) | row: loaded, memory: ControlledStore}
 
     # 这一段经历触发一次封存与保存（尾部很短，不新增片段）；上限在 `save/2` 里守。
     experience = %{text: "I built the hut.", place: nil, activity: "build_hut", completed: true}
+
+    failed_log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:reply, {:error, {:memory_unavailable, :write_denied}}, failed} =
+                 Life.handle_call({:activity, experience}, nil, s)
+
+        assert failed.row == loaded
+        assert failed.dropped_fragments == 0
+        assert failed.dropped_episodes == 0
+      end)
+
+    refute failed_log =~ "npc_memory_fragments_trimmed"
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
         {:reply, :ok, trimmed} = Life.handle_call({:activity, experience}, nil, s)
         assert length(trimmed.row["fragments"]) == 8
         assert trimmed.row["fragments"] == Enum.drop(loaded["fragments"], 1)
+        assert trimmed.dropped_fragments == 1
       end)
 
     assert log =~ "npc_memory_fragments_trimmed"

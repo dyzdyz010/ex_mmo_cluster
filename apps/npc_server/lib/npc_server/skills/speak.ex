@@ -1,6 +1,6 @@
 defmodule NpcServer.Skills.Speak do
   @moduledoc """
-  全局系统功能：走近选择时确定的角色，写一句新话题的开场白，再交 Scene 接纳。
+  全局系统功能：写一句定向台词，经 Scene 接纳。新话题走近本轮选中的角色；步间回应沿用原会话。
 
   寻路复用 `Travel`，写作读取该次选择的心智快照。Scene 裁决目标身份、位置及发言条件，
   Skill 的成功结果来自它的应答。写作或发言结果失败均结束本次活动。
@@ -55,14 +55,8 @@ defmodule NpcServer.Skills.Speak do
     target = %{"entity_id" => id, "entity_epoch" => epoch}
 
     with {:ok, _} <- Travel.run(context, target, %{}) do
-      user = Jason.encode!(%{addressee: name, character_state: snapshot})
-
-      case Writer.write(context.profile.reflect, @system, user) do
-        {:ok, %{text: text, usage: usage}} ->
-          say(context, id, epoch, text, writer_metrics(usage))
-
-        {:error, reason} ->
-          {:error, {:speech_write_failed, reason}, writer_metrics(nil)}
+      with {:ok, text, metrics} <- draft(context.profile, snapshot, name) do
+        say(context, command(id, epoch, 0, text), metrics)
       end
     else
       {:error, reason, _} -> {:error, reason, @metrics}
@@ -71,11 +65,35 @@ defmodule NpcServer.Skills.Speak do
 
   def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
-  defp say(context, id, epoch, text, metrics) do
+  @doc "给权威来话撰写同一会话的回复，返回由 Runtime 定号提交的 Body 命令与写作用量。"
+  def reply(profile, snapshot, speech) do
+    with {:ok, text, metrics} <- draft(profile, snapshot, speech.speaker_name) do
+      {:ok, command(speech.speaker_id, speech.speaker_epoch, speech.conversation_id, text),
+       metrics}
+    end
+  end
+
+  defp draft(profile, snapshot, name) do
+    user = Jason.encode!(%{addressee: name, character_state: snapshot})
+
+    case Writer.write(profile.reflect, @system, user) do
+      {:ok, %{text: text, usage: usage}} -> {:ok, text, writer_metrics(usage)}
+      {:error, reason} -> {:error, {:speech_write_failed, reason}, writer_metrics(nil)}
+    end
+  end
+
+  defp command(id, epoch, conversation, text),
+    do: %{
+      verb: :say,
+      target_id: id,
+      target_epoch: epoch,
+      conversation_id: conversation,
+      text: text
+    }
+
+  defp say(context, request, metrics) do
     # Travel 使用数字步号；发言使用同一调用下自己的步号空间。
     step = %{body: context.body, call: context.call_id, step: 0, space: :say}
-
-    request = %{verb: :say, target_id: id, target_epoch: epoch, conversation_id: 0, text: text}
 
     case Skill.call(step, request) do
       {:ok, speech, _} -> {:ok, Map.put(speech, :metrics, metrics)}

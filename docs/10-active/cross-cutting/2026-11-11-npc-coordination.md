@@ -178,6 +178,17 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 可观测证据串起 Scene 的来话 `conversation_id/turn`、技能调用号、已结算步号、回复终态及恢复后的下一步号。先用受控来话与匹配／不匹配的 Outcome 钉住顺序，再经实际采集和玩家发言核对事务与材料余额。样本使用有限、可归因的同一场景。本节为下阶段设计准备。
 
+**首个实现的契约。** 统一居民的顶层 `gather` 将它本来逐个等待的原子步骤交给 Runtime 准入。Runtime 在同一邮箱登记 Scene 已投递的玩家直呼，且只接纳当前调用和当前步号的 Body 终态。已有一步结束之后，Gather 下一次投步时暂缓准入。只有一条待处理来话；未开始新一步前不会累积后续来话。旁听、其他 NPC 的发言和自身回声仍进入原有记忆路径。Jev 复用活动选择的心智和封闭候选，再用现有写作端点撰写短回复。Runtime 在 Scene 权威发言返回后才放行下一步，Gather 保留原 worker、初始余额与活动号。端点失败、超时、选择继续、会话拒绝发言分别记录可诊断结果；失败的回复不会自动重发。已执行的原子动作继续由 Body 结算；取消和会话丢失清理本轮回复。使用步骤的请求与终态相关联，Erlang 的发送顺序只对同一发送者与接收者成立，因此不依赖 Scene、Body 和模型 worker 三者之间的消息顺序。
+
+- `Body.observe` 的 `skill_boundary` 投影当前步号、最近结算步号、暂扣步号和来话身份。结构化 `npc_skill_boundary` 日志串起等待结算、暂停、回复、恢复的同一调用，继续使用 Scene 的权威消息编号和 World 的事务编号。
+- 最小回归经真实 Registry、Scene/Player、World、Body、Gather 与 Life，独占测试数据和两块由作者入口安装的石料，HTTP 服务用回环替身。真实玩家角色走正常 claim、Ready 与 Scene.say，在第一格余额到账之后发起直呼。用受控模型回执验证下一步暂停、原会话只回复一次、第二格到账、原调用结束。用同步的 Runtime 入出事件验证只推进匹配的步骤；此测试不启动 QUIC 和 Voxim。
+- Linux 命令 `cd apps/npc_server && mix test --no-start test/npc_server/npc_registry_test.exs`。真实客户端场景另用正式 release，按同一命令号、会话身份、角色和事务对账。记录 commit、运行器、日志及退出码。
+
+#### 统一 NPC 的首问与未落盘输入
+
+- 首问由发问 worker 等 Life 初次可读的一份持久心智，召回查询与快照从同一行构造。冷启动最多等一次有截止的应答；World、存储或模型初次读取失败显式结束等待。用受控认识读取卡在首次观察之前，断言启动中没有拒绝，并在释放后触发原选择。CLI 继续能直接观察当前加载错误。参照 [OTP GenServer 的延迟回复](https://www.erlang.org/doc/system/gen_server_concepts.html)。
+- 发言与情绪评价两路未落盘输入各保留最近 40 条，按收到次序处理。长时间落库失败时记录淘汰量与最近一次错误；恢复后仍按原顺序落下保留的输入。40 与当前短期心智最多给出的经历条数一致，给每条路径一个固定内存预算。范围是 Life 收到并尚未保存的输入。思路参考 [Akka 有界邮箱的显式溢出](https://doc.akka.io/api/akka-core/2.10.15/akka/dispatch/NonBlockingBoundedMailbox.html)。用存储替身拒写一段有界输入，再恢复并核对保留下来的权威消息与评价来源。
+
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 
 - **日计划层第 1 步（S1-R8，离线，探索性，不是验收）已跑完、已判定**：计划 `.demo/observe/npc-slice1-20261112/s1r8/plan.md`（发问前写）、判定 `results.md`、脚本 `docs/10-active/cross-cutting/tools/jev/s1r8_plan.py`、执行任务书 `exec-brief.md`。R7 的 6 份真实反思材料 × 3 次 = 18 次规划调用（用量实测合计约 12 万 token，开跑前估约 8 万，偏低）。P1、P2、P4、P5 成立；P3 里占比与 A 类成立、**B 类 27% > 15% 落空**（R2 一份材料三次采样都写了“回来路过小屋看一眼”进 `cannot_yet`，读法有争议）。读法：D-1 的意图形状 `{activity, times, by, why}` + `cannot_yet` 站住，进拆实现；`cannot_yet` 里 64% 是“对某人说话”，印证它是下一层。B 类按发问前规则报用户，统筹会话建议记为词表内容问题、后期处理。

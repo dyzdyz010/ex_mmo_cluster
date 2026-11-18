@@ -106,6 +106,53 @@ defmodule NpcServer.NpcDialogueLifeTest do
     assert [%{"id" => "speech:81:1"}] = stored["pending"]
   end
 
+  test "持续拒写时只保留有界的发言与情绪输入，恢复后按原顺序写入" do
+    s = %{state() | appraise: true}
+    s = Map.merge(s, %{adapter: Retainer, config: %{owner: self()}})
+    s = update_in(s.row["state"], &Life.Appraisal.enable/1)
+    :ok = Memory.life_save(Store, 7, s.row)
+    Store.fail(true)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        queued =
+          Enum.reduce(1..42, s, fn turn, acc ->
+            {:noreply, acc} = Life.handle_cast({:speech, speech(turn)}, acc)
+
+            outcome = %{id: turn, verb: :wait, status: :done, data: %{}, reason: nil}
+            {:noreply, acc} = Life.handle_cast({:experience, outcome}, acc)
+            acc
+          end)
+
+        send(self(), {:queued, queued})
+      end)
+
+    assert_receive {:queued, queued}
+    assert Enum.map(queued.speech_pending, & &1.turn) == Enum.to_list(3..42)
+    assert length(queued.experience_pending) == 40
+    assert queued.dropped_inputs == %{speech_pending: 2, experience_pending: 2}
+    assert log =~ "npc_life_input_trimmed cid=7"
+    assert queued.row == s.row
+
+    Store.fail(false)
+
+    {:noreply, recovered} =
+      Life.handle_info(
+        {:result, :poll,
+         {:ok, %{row: s.row, events: %{world_id: "world", cursor: 6, events: []}}}},
+        queued
+      )
+
+    assert recovered.speech_pending == []
+    assert recovered.experience_pending == []
+    {:ok, stored} = Memory.life_load(Store, 7)
+
+    episodes = Enum.flat_map(stored["fragments"], & &1["episodes"]) ++ stored["pending"]
+    assert Enum.map(episodes, & &1["id"]) == Enum.map(3..42, &"speech:81:#{&1}")
+    pending = stored["state"]["affect"]["pending"]
+    assert Enum.count(pending, &(&1["kind"] == "outcome")) == 40
+  end
+
   test "模型情绪持久化失败不消费来源，World旧快照不会覆盖已提交情绪" do
     s = %{state() | appraise: true}
     s = put_in(s.row["state"], Life.Appraisal.enable(s.row["state"]))
@@ -186,6 +233,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
       job_retry_at_ms: nil,
       dropped_fragments: 0,
       dropped_episodes: 0,
+      dropped_inputs: %{},
       error: nil,
       speech_pending: [],
       appraise: false,

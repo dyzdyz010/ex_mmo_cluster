@@ -39,8 +39,9 @@ defmodule NpcServer.Skills do
   @doc """
   启动受监视的技能进程；父进程接收 skill_finished 与普通 DOWN。observes = 技能是否逐帧读观察。
   说话使用选择时的 `mind_snapshot`，该快照不进入命令参数或技能经历。
+  `step_owner` 管理本调用的步骤准入，由需要该边界的技能传给 `NpcServer.Skill.call/2`。
   """
-  def start(body, command, profile, observation, mind_snapshot \\ nil) do
+  def start(body, command, profile, observation, mind_snapshot \\ nil, step_owner \\ nil) do
     parent = self()
 
     observes =
@@ -61,6 +62,7 @@ defmodule NpcServer.Skills do
                   profile: profile,
                   observation: observation,
                   mind_snapshot: mind_snapshot,
+                  step_owner: step_owner,
                   request: Map.get(profile, :request, &NpcServer.Http.request/2)
                 })
 

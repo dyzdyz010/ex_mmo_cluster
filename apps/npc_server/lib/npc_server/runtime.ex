@@ -6,6 +6,8 @@ defmodule NpcServer.Runtime do
   移动停稳且该技能已投递的世界调用全部有了结果，终态之后不再有这次调用引起的世界变化。
   取消期间到达的技能内部结果原样放进终态的 `settled`，已提交的事务不撤销、也不隐瞒。
   中断策略只来自 `profile.interrupt_policy`；策略失败只记一笔，不中断正在进行的技能。
+  统一居民采集时，Runtime 准入每个 Gather 步骤。玩家定向来话可在原步骤结算后暂停一次，回复仍交 Scene。
+  对话处理结束放行原 worker 的下一步，保持原调用与采集状态。
   活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
   （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
   发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
@@ -16,6 +18,7 @@ defmodule NpcServer.Runtime do
   """
   require Logger
   alias NpcServer.{Body, Dialogue, Memory, Selector, Skills, Scheduler}
+  alias NpcServer.Skills.Speak
 
   # 中断检查间隔；对话尾部不属于技能生命周期。
   @check_ms 10_000
@@ -110,28 +113,13 @@ defmodule NpcServer.Runtime do
 
         :observation_lost ->
           if state.life, do: NpcServer.Life.observation_lost(state.life)
-          state
+          lose_gather_reply(state)
 
         {:life_state, canonical, thanks} ->
           %{state | life_state: canonical, life_thanks: thanks}
 
         {:outcome, %{id: {:skill, id, step}} = outcome} ->
-          case state.skill do
-            %{command: %{id: ^id}, cancelling: nil} = active ->
-              send(active.pid, {:outcome, %{outcome | id: step}})
-              state
-
-            %{command: %{id: ^id}} when step == :stop ->
-              settle_skill(state, outcome)
-
-            # 取消已请求、终态未发：结果仍是这次调用造成的，记进终态。
-            %{command: %{id: ^id}} = active ->
-              settled = active.settled ++ [Map.delete(outcome, :id)]
-              %{state | skill: %{active | settled: settled}}
-
-            _ ->
-              state
-          end
+          skill_outcome(state, id, step, outcome)
 
         {:outcome, outcome} ->
           deliver(state, {:outcome, outcome})
@@ -143,8 +131,9 @@ defmodule NpcServer.Runtime do
           cid = state.observation && state.observation.self.entity_id
 
           if kind == :heard and Dialogue.direct?(message, cid) do
-            if state.skill, do: send(self(), {:skill_check, state.skill.command.id})
-            deliver(state, {:heard, message})
+            state
+            |> request_gather_reply(message)
+            |> deliver({:heard, message})
           else
             state
           end
@@ -153,6 +142,7 @@ defmodule NpcServer.Runtime do
           GenServer.reply(from, %{
             heard: state.heard,
             skill: state.skill && state.skill.command,
+            skill_boundary: observe_boundary(state.skill),
             select: state.select
           })
 
@@ -163,6 +153,7 @@ defmodule NpcServer.Runtime do
             from,
             snapshot
             |> Map.put(:dialogue, state.heard)
+            |> Map.put(:skill_boundary, observe_boundary(state.skill))
             |> Map.put(:select, state.select)
           )
 
@@ -170,6 +161,15 @@ defmodule NpcServer.Runtime do
 
         {:"$gen_cast", {:command, command}} ->
           execute(state, command)
+
+        {:skill_step, worker, command} ->
+          gather_step(state, worker, command)
+
+        {:gather_reply, worker, result} ->
+          finish_reply_choice(state, worker, result)
+
+        {:gather_reply_timeout, worker} ->
+          finish_reply_choice(state, worker, {:error, :timeout})
 
         {:skill_finished, id, result} ->
           case state.skill do
@@ -222,6 +222,13 @@ defmodule NpcServer.Runtime do
                 :policy_exited,
                 exit_kind(reason)
               })
+
+            %{boundary: %{pause: {:deciding, _, _, %{ref: ^ref, pid: worker}}}} ->
+              finish_reply_choice(
+                state,
+                worker,
+                {:error, {:reply_worker_failed, exit_kind(reason)}}
+              )
 
             _ ->
               state
@@ -408,12 +415,23 @@ defmodule NpcServer.Runtime do
 
   defp start_skill(%{skill: nil} = state, command) do
     mind_snapshot = if command.skill == :speak, do: get_in(state.select, [:asked, :state])
-    active = Skills.start(state.body, command, state.profile, state.observation, mind_snapshot)
+    step_owner = gather_step_owner(state, command)
+
+    active =
+      Skills.start(
+        state.body,
+        command,
+        state.profile,
+        state.observation,
+        mind_snapshot,
+        step_owner
+      )
 
     %{
       state
       | skill:
           Map.merge(active, %{
+            boundary: if(step_owner, do: %{issued: nil, settled: nil, pause: nil}),
             timer: schedule(state, command.id),
             cancelling: nil,
             settled: [],
@@ -435,6 +453,225 @@ defmodule NpcServer.Runtime do
         reason: :skill_busy,
         data: nil
       })
+
+  defp gather_step_owner(
+         %{
+           backend: NpcServer.Brain.Tree,
+           profile: %{activities: _, skills: %{speak: _}},
+           life: life
+         },
+         %{skill: :gather}
+       )
+       when is_pid(life),
+       do: self()
+
+  defp gather_step_owner(_, _), do: nil
+
+  defp skill_outcome(state, id, step, outcome) do
+    case state.skill do
+      %{command: %{id: ^id}, cancelling: nil, boundary: nil} = active ->
+        send(active.pid, {:outcome, %{outcome | id: step}})
+        state
+
+      %{command: %{id: ^id}, cancelling: nil, boundary: %{issued: ^step} = boundary} = active ->
+        send(active.pid, {:outcome, %{outcome | id: step}})
+        %{state | skill: %{active | boundary: %{boundary | issued: nil, settled: step}}}
+
+      %{
+        command: %{id: ^id},
+        cancelling: nil,
+        boundary: %{
+          pause: {:speaking, %{conversation_id: conversation, turn: turn} = speech, held}
+        }
+      } = active
+      when step == {:reply, conversation, turn} ->
+        resume_gather(state, active, speech, held, {outcome.status, outcome.reason})
+
+      %{command: %{id: ^id}, cancelling: reason} when reason != nil and step == :stop ->
+        settle_skill(state, outcome)
+
+      # 取消已请求、终态未发，先把这次调用已提交的结果留在结束凭证。
+      %{command: %{id: ^id}, cancelling: reason} = active when reason != nil ->
+        settled = active.settled ++ [Map.delete(outcome, :id)]
+        %{state | skill: %{active | settled: settled}}
+
+      _ ->
+        state
+    end
+  end
+
+  defp request_gather_reply(
+         %{skill: %{cancelling: nil, boundary: %{pause: nil} = boundary} = active} = state,
+         %{speaker_kind: 0} = speech
+       ) do
+    log_boundary(state, active, speech, :received, step: boundary.issued)
+    %{state | skill: %{active | boundary: %{boundary | pause: {:requested, speech}}}}
+  end
+
+  defp request_gather_reply(%{skill: %{command: %{id: id}, boundary: nil}} = state, _) do
+    send(self(), {:skill_check, id})
+    state
+  end
+
+  defp request_gather_reply(state, _), do: state
+
+  defp gather_step(state, worker, %{id: {:skill, id, _}} = command) do
+    case state.skill do
+      %{pid: ^worker, command: %{id: ^id}, cancelling: nil, boundary: %{issued: nil, pause: nil}} =
+          active ->
+        dispatch_gather_step(state, active, command)
+
+      %{
+        pid: ^worker,
+        command: %{id: ^id},
+        cancelling: nil,
+        boundary: %{issued: nil, pause: {:requested, speech}}
+      } = active ->
+        start_reply_choice(state, active, speech, command)
+
+      _ ->
+        state
+    end
+  end
+
+  defp dispatch_gather_step(state, active, %{id: {:skill, _, step}} = command) do
+    Body.command(state.body, command)
+    %{state | skill: %{active | boundary: %{active.boundary | issued: step, pause: nil}}}
+  end
+
+  defp start_reply_choice(state, active, speech, %{id: {:skill, _, step}} = held) do
+    parent = self()
+    %{profile: profile, observation: observation} = state
+    history = Selector.history(state.select)
+
+    {pid, ref} =
+      :erlang.spawn_opt(
+        fn ->
+          send(
+            parent,
+            {:gather_reply, self(), choose_reply(profile, observation, history, speech)}
+          )
+        end,
+        [:link, :monitor]
+      )
+
+    # 对话空闲到期前只给决策和写作一个有界窗口，已发给 Scene 的请求继续等 Body 返回。
+    timer =
+      Process.send_after(
+        self(),
+        {:gather_reply_timeout, pid},
+        SceneServer.Dialogue.limits().idle_ms
+      )
+
+    log_boundary(state, active, speech, :paused, held_step: step)
+
+    pause = {:deciding, speech, held, %{pid: pid, ref: ref, timer: timer}}
+    %{state | skill: %{active | boundary: %{active.boundary | pause: pause}}}
+  end
+
+  defp choose_reply(profile, observation, history, speech) do
+    with {:ok, question} <- Selector.gather_reply_question(profile, observation, history, speech),
+         {:ok, choice} <- Selector.ask(profile, question, "gather_reply") do
+      case choice.activity do
+        "continue" -> :continue
+        "reply" -> Speak.reply(profile, question.state, speech)
+      end
+    end
+  end
+
+  defp finish_reply_choice(
+         %{
+           skill:
+             %{
+               cancelling: nil,
+               boundary: %{pause: {:deciding, speech, held, %{pid: worker} = task}}
+             } = active
+         } = state,
+         worker,
+         result
+       ) do
+    stop_reply_worker(task)
+
+    case result do
+      {:ok, command, metrics} ->
+        id = {:skill, active.command.id, {:reply, speech.conversation_id, speech.turn}}
+        log_boundary(state, active, speech, :reply, metrics: metrics)
+        Body.command(state.body, Map.put(command, :id, id))
+
+        %{
+          state
+          | skill: %{active | boundary: %{active.boundary | pause: {:speaking, speech, held}}}
+        }
+
+      {:error, reason, metrics} ->
+        resume_gather(state, active, speech, held, {reason, metrics})
+
+      other ->
+        resume_gather(state, active, speech, held, other)
+    end
+  end
+
+  defp finish_reply_choice(state, _, _), do: state
+
+  defp resume_gather(state, active, speech, %{id: {:skill, _, step}} = held, result) do
+    log_boundary(state, active, speech, :resumed, step: step, result: result)
+    dispatch_gather_step(state, active, held)
+  end
+
+  defp lose_gather_reply(%{skill: %{cancelling: nil, boundary: %{pause: pause}}} = state)
+       when pause != nil,
+       do: interrupt_skill(state, :session_lost)
+
+  defp lose_gather_reply(state), do: state
+
+  defp stop_reply_worker(%{pid: pid, ref: ref, timer: timer}) do
+    cancel_timer(timer)
+    Process.demonitor(ref, [:flush])
+    Process.exit(pid, :shutdown)
+  end
+
+  defp cancel_gather_reply(%{boundary: %{pause: {:deciding, _, _, task}}}),
+    do: stop_reply_worker(task)
+
+  defp cancel_gather_reply(_), do: :ok
+
+  defp observe_boundary(%{
+         command: %{id: id},
+         boundary: %{issued: issued, settled: settled, pause: pause}
+       }) do
+    view = %{call: id, issued_step: issued, settled_step: settled}
+
+    case pause do
+      nil -> Map.put(view, :phase, :working)
+      {:requested, speech} -> Map.merge(view, pause_view(:requested, speech, nil))
+      {:deciding, speech, held, _} -> Map.merge(view, pause_view(:deciding, speech, held))
+      {:speaking, speech, held} -> Map.merge(view, pause_view(:speaking, speech, held))
+    end
+  end
+
+  defp observe_boundary(_), do: nil
+
+  defp pause_view(phase, speech, held) do
+    %{
+      phase: phase,
+      held_step: if(held, do: elem(held.id, 2)),
+      conversation_id: speech.conversation_id,
+      turn: speech.turn,
+      speaker_id: speech.speaker_id,
+      speaker_epoch: speech.speaker_epoch
+    }
+  end
+
+  defp log_boundary(state, active, speech, event, details) do
+    fields = Enum.map_join(details, " ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
+
+    Logger.info(
+      "npc_skill_boundary cid=#{state.observation.self.entity_id} call=#{inspect(active.command.id)} " <>
+        "event=#{event} conversation_id=#{speech.conversation_id} turn=#{speech.turn} " <>
+        "speaker_id=#{speech.speaker_id} speaker_epoch=#{speech.speaker_epoch} " <>
+        "settled_step=#{inspect(active.boundary.settled)} #{fields}"
+    )
+  end
 
   defp check_skill(%{policy: nil} = state, _), do: state
 
@@ -503,12 +740,24 @@ defmodule NpcServer.Runtime do
 
   defp interrupt_skill(%{skill: active} = state, reason) do
     cancel_timer(active.timer)
+    cancel_gather_reply(active)
     if active.policy_pid, do: Process.exit(active.policy_pid, :shutdown)
     if active.policy_ref, do: Process.demonitor(active.policy_ref, [:flush])
     Process.exit(active.pid, :shutdown)
 
     # DOWN 后才发 settle 停止；它不能撤销已提交的世界事务，只有权威 done 才确认停止。
-    %{state | skill: %{active | cancelling: reason, policy_ref: nil, policy_pid: nil}}
+    boundary = if active.boundary, do: %{active.boundary | pause: nil}
+
+    %{
+      state
+      | skill: %{
+          active
+          | boundary: boundary,
+            cancelling: reason,
+            policy_ref: nil,
+            policy_pid: nil
+        }
+    }
   end
 
   defp settle_skill(%{skill: active} = state, stop) do
@@ -522,6 +771,7 @@ defmodule NpcServer.Runtime do
 
   defp finish_skill(%{skill: active} = state, result) do
     cancel_timer(active.timer)
+    cancel_gather_reply(active)
     Process.demonitor(active.ref, [:flush])
     if active.policy_pid, do: Process.exit(active.policy_pid, :shutdown)
     if active.policy_ref, do: Process.demonitor(active.policy_ref, [:flush])

@@ -159,13 +159,14 @@ defmodule NpcServer.Life do
   # AGENTS.md §2.1 第 2 条：活性必须由 owner 自己维护）。退避状态只在内存，Life 重启即从头算。
   @job_retry_ms 30_000
   @job_retry_max_ms 300_000
-  # 待写片段的硬上限（见 `cap_fragments/2`）：超出时丢最旧的并告警。
+  # 待写片段的硬上限（见 `cap_fragments/1`）：写盘后报告实际淘汰的最旧片段。
   @max_fragments 8
   # 心智快照 "What just happened" 一栏最多列多少条经历（见 `recent/1`）。
   @max_recent 40
   # 心智快照各路召回的单路上限（毫秒）：既是那一路 HTTP 请求的超时，也是并行时等那一路的墙钟上限。
   # 写入与认识刷新仍用适配器的长超时。
   @mind_recall_timeout_ms 10_000
+  @initial_mind_wait_ms 10_000
   # 同时在途的召回路数上限（内容规范 §4：请求并发 ≤ 3）；`Mind.recall_queries/2` 至多给四路。
   @recall_concurrency 3
 
@@ -263,7 +264,24 @@ defmodule NpcServer.Life do
   """
   def mind(cid, queries) do
     with {:ok, snapshot, recalled} <- recollect(cid, queries, @mind_recall_timeout_ms),
-         {:ok, buildings} <- standing(snapshot.mind["buildings"], snapshot.context) do
+         do: mind_view(snapshot, recalled)
+  end
+
+  @doc """
+  读取选择所用的规范心智，首次加载可等待一次。调用方用同一份快照中的建筑记忆生成召回问句。
+  """
+  def selection_mind(cid, query_builder) when is_function(query_builder, 1) do
+    with {:ok, snapshot} <-
+           call_server(name(cid), :selection_context, @initial_mind_wait_ms + 1_000),
+         queries = query_builder.(snapshot.mind["buildings"]),
+         {:ok, _, recalled} <- recollect(cid, snapshot, queries, @mind_recall_timeout_ms),
+         {:ok, view} <- mind_view(snapshot, recalled) do
+      {:ok, view, queries}
+    end
+  end
+
+  defp mind_view(snapshot, recalled) do
+    with {:ok, buildings} <- standing(snapshot.mind["buildings"], snapshot.context) do
       {:ok,
        %{
          now_ms: snapshot.now_ms,
@@ -323,51 +341,54 @@ defmodule NpcServer.Life do
   # 白算的那部分还会和别的召回抢 Hindsight 的 CPU。改成等每一路自己结束（成功、失败或 httpc 超时）再按
   # 现行的“全有全无”规则合成，失败记第一条失败的那一路。依据见召回隔离决策稿 D-3a 与 S8/S10。
   defp recollect(cid, queries, timeout_ms) do
-    with {:ok, snapshot} <- call(cid, :context) do
-      config =
-        if timeout_ms == :infinity,
-          do: snapshot.config,
-          else: Map.put(snapshot.config, :timeout_ms, timeout_ms)
+    with {:ok, snapshot} <- call(cid, :context),
+         do: recollect(cid, snapshot, queries, timeout_ms)
+  end
 
-      started = System.monotonic_time(:millisecond)
+  defp recollect(cid, snapshot, queries, timeout_ms) do
+    config =
+      if timeout_ms == :infinity,
+        do: snapshot.config,
+        else: Map.put(snapshot.config, :timeout_ms, timeout_ms)
 
-      results =
-        queries
-        |> Task.async_stream(
-          fn query -> {query, snapshot.adapter.recall(config, query, snapshot.now_ms)} end,
-          max_concurrency: @recall_concurrency,
-          timeout: :infinity,
-          zip_input_on_exit: true
+    started = System.monotonic_time(:millisecond)
+
+    results =
+      queries
+      |> Task.async_stream(
+        fn query -> {query, snapshot.adapter.recall(config, query, snapshot.now_ms)} end,
+        max_concurrency: @recall_concurrency,
+        timeout: :infinity,
+        zip_input_on_exit: true
+      )
+      |> Enum.map(fn
+        {:ok, {_query, {:ok, recalled}}} -> {:ok, recalled.results}
+        {:ok, {query, {:error, reason}}} -> {:error, query, reason}
+        # 适配器自己以退出结束时（被外部 kill、`:timeout` 之类）：折成失败，不让未匹配的退出形状把调用方崩掉。
+        {:exit, {query, :timeout}} -> {:error, query, :recall_timeout}
+        {:exit, {query, reason}} -> {:error, query, {:recall_worker_failed, exit_kind(reason)}}
+      end)
+
+    latency_ms = System.monotonic_time(:millisecond) - started
+
+    case Enum.find(results, &match?({:error, _, _}, &1)) do
+      nil ->
+        routes = for {:ok, recalled} <- results, do: recalled
+
+        GenServer.cast(
+          name(cid),
+          {:recall, %{status: :done, routes: length(routes), latency_ms: latency_ms}}
         )
-        |> Enum.map(fn
-          {:ok, {_query, {:ok, recalled}}} -> {:ok, recalled.results}
-          {:ok, {query, {:error, reason}}} -> {:error, query, reason}
-          # 适配器自己以退出结束时（被外部 kill、`:timeout` 之类）：折成失败，不让未匹配的退出形状把调用方崩掉。
-          {:exit, {query, :timeout}} -> {:error, query, :recall_timeout}
-          {:exit, {query, reason}} -> {:error, query, {:recall_worker_failed, exit_kind(reason)}}
-        end)
 
-      latency_ms = System.monotonic_time(:millisecond) - started
+        {:ok, snapshot, %{routes: routes, latency_ms: latency_ms}}
 
-      case Enum.find(results, &match?({:error, _, _}, &1)) do
-        nil ->
-          routes = for {:ok, recalled} <- results, do: recalled
+      {:error, query, reason} ->
+        GenServer.cast(
+          name(cid),
+          {:recall, %{status: :failed, error: reason, query: query.query}}
+        )
 
-          GenServer.cast(
-            name(cid),
-            {:recall, %{status: :done, routes: length(routes), latency_ms: latency_ms}}
-          )
-
-          {:ok, snapshot, %{routes: routes, latency_ms: latency_ms}}
-
-        {:error, query, reason} ->
-          GenServer.cast(
-            name(cid),
-            {:recall, %{status: :failed, error: reason, query: query.query}}
-          )
-
-          {:error, reason}
-      end
+        {:error, reason}
     end
   end
 
@@ -411,9 +432,9 @@ defmodule NpcServer.Life do
 
   defp call(cid, request), do: call_server(name(cid), request)
 
-  defp call_server(server, request) do
+  defp call_server(server, request, timeout \\ 5_000) do
     try do
-      GenServer.call(server, request)
+      GenServer.call(server, request, timeout)
     catch
       :exit, {:noproc, _} -> {:error, :life_not_running}
       :exit, _ -> {:error, :life_unavailable}
@@ -443,6 +464,7 @@ defmodule NpcServer.Life do
        now: Map.get(options, :clock, fn -> System.system_time(:millisecond) end),
        poll_ms: Map.get(options, :poll_ms, 1000),
        row: nil,
+       selection_waiter: nil,
        poll: nil,
        job: nil,
        error: nil,
@@ -460,6 +482,7 @@ defmodule NpcServer.Life do
        # 因为超过片段上限而丢掉的（片段数, 经历条数），只累计在内存里（Life 重启即清零）：`observe/1` 读。
        dropped_fragments: 0,
        dropped_episodes: 0,
+       dropped_inputs: %{},
        speech_pending: [],
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
        activity: nil,
@@ -532,9 +555,10 @@ defmodule NpcServer.Life do
         # 记忆任务槽的退避：连续失败次数与距下次自动重试的毫秒数（nil = 没在等）。
         job_failures: s.job_failures,
         job_retry_in_ms: if(s.job_retry_at_ms, do: max(0, s.job_retry_at_ms - s.now.())),
-        # 因为超过片段上限而丢掉的经历（内存计数，Life 重启即清零）：见 `cap_fragments/2`。
+        # 因为超过片段上限而丢掉的经历（内存计数，Life 重启即清零）：见 `record_fragment_trim/2`。
         dropped_fragments: s.dropped_fragments,
         dropped_episodes: s.dropped_episodes,
+        dropped_inputs: s.dropped_inputs,
         hindsight: s.status,
         recall: s.recall,
         decision: s.decision,
@@ -548,29 +572,23 @@ defmodule NpcServer.Life do
       }}, s}
   end
 
-  def handle_call(:context, _, %{row: nil} = s), do: {:reply, {:error, :life_not_ready}, s}
+  def handle_call(:context, _, s), do: {:reply, context_response(s), s}
 
-  def handle_call(:context, _, %{activity_pending: pending} = s) when pending != nil,
-    do: {:reply, {:error, :activity_pending}, s}
+  def handle_call(:selection_context, from, s) do
+    case selection_response(s) do
+      :loading when s.selection_waiter == nil ->
+        token = make_ref()
 
-  def handle_call(:context, _, s) do
-    if s.row["cache"] do
-      {:reply,
-       {:ok,
-        %{
-          adapter: s.adapter,
-          config: s.config,
-          now_ms: s.now.(),
-          mind: State.view(s.row["state"], s.now.()),
-          cache: s.row["cache"],
-          # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
-          context: s.context,
-          recent: recent(s.row),
-          thought: thought(s),
-          plan: plan_column(s)
-        }}, s}
-    else
-      {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
+        timer =
+          Process.send_after(self(), {:selection_context_timeout, token}, @initial_mind_wait_ms)
+
+        {:noreply, %{s | selection_waiter: %{from: from, token: token, timer: timer}}}
+
+      :loading ->
+        {:reply, {:error, :life_initializing}, s}
+
+      answer ->
+        {:reply, answer, s}
     end
   end
 
@@ -711,8 +729,7 @@ defmodule NpcServer.Life do
     do: {:noreply, %{s | activity: %{observed: false, closest: %{}}}}
 
   def handle_cast({:speech, message}, s) do
-    s = %{s | speech_pending: s.speech_pending ++ [message]}
-    {:noreply, save_speech(s)}
+    {:noreply, s |> buffer_input(:speech_pending, message) |> save_speech()}
   end
 
   # 只在活动结束时冻结期间事实与记账时刻。重试只接纳同一条经历。
@@ -793,8 +810,13 @@ defmodule NpcServer.Life do
       end
 
     Process.send_after(self(), :poll, s.poll_ms)
-    {:noreply, s}
+    {:noreply, finish_selection_wait(s)}
   end
+
+  def handle_info({:selection_context_timeout, token}, %{selection_waiter: %{token: token}} = s),
+    do: {:noreply, reply_selection(s, {:error, :life_initialization_timeout})}
+
+  def handle_info({:selection_context_timeout, _}, s), do: {:noreply, s}
 
   def handle_info({:result, :job, result}, s) do
     job = s.job
@@ -835,7 +857,7 @@ defmodule NpcServer.Life do
           job_error(s, reason)
       end
 
-    {:noreply, s}
+    {:noreply, finish_selection_wait(s)}
   end
 
   # 反思槽交回的写作结果（槽还在途：接着存档）。落栏是一次保存：写成的各问进 "latest"、"round" 小结、各计数；
@@ -993,7 +1015,7 @@ defmodule NpcServer.Life do
           else: job_error(s, {:life_worker_failed, exit_kind(reason)})
 
       if slot == :poll, do: Process.send_after(self(), :poll, s.poll_ms)
-      {:noreply, s}
+      {:noreply, finish_selection_wait(s)}
     else
       {:noreply, s}
     end
@@ -1005,6 +1027,57 @@ defmodule NpcServer.Life do
   end
 
   def handle_info({:EXIT, _, _}, s), do: {:noreply, s}
+
+  defp context_response(%{row: nil}), do: {:error, :life_not_ready}
+
+  defp context_response(%{activity_pending: pending}) when pending != nil,
+    do: {:error, :activity_pending}
+
+  defp context_response(s) do
+    if s.row["cache"] do
+      now_ms = s.now.()
+
+      {:ok,
+       %{
+         adapter: s.adapter,
+         config: s.config,
+         now_ms: now_ms,
+         mind: State.view(s.row["state"], now_ms),
+         cache: s.row["cache"],
+         # 现查 World 用，查询由调用者进程执行。
+         context: s.context,
+         recent: recent(s.row),
+         thought: thought(s),
+         plan: plan_column(s)
+       }}
+    else
+      {:error, {:life_models_unavailable, s.job_error || s.error}}
+    end
+  end
+
+  defp selection_response(s) do
+    case context_response(s) do
+      {:error, :life_not_ready} when s.error == nil -> :loading
+      {:error, :life_not_ready} -> {:error, {:life_not_ready, s.error}}
+      {:error, {:life_models_unavailable, nil}} -> :loading
+      answer -> answer
+    end
+  end
+
+  defp finish_selection_wait(%{selection_waiter: %{}} = s) do
+    case selection_response(s) do
+      :loading -> s
+      answer -> reply_selection(s, answer)
+    end
+  end
+
+  defp finish_selection_wait(s), do: s
+
+  defp reply_selection(%{selection_waiter: waiter} = s, answer) do
+    Process.cancel_timer(waiter.timer)
+    GenServer.reply(waiter.from, answer)
+    %{s | selection_waiter: nil}
+  end
 
   defp world_interactions(world, nil), do: VoxelRegion.World.interactions_since(world, nil)
 
@@ -1211,7 +1284,24 @@ defmodule NpcServer.Life do
 
   defp enqueue_experience(s, kind, data) do
     source = {kind, json(NpcServer.Context.plain(data)), targets(s), s.now.()}
-    save_experiences(%{s | experience_pending: s.experience_pending ++ [source]})
+    s |> buffer_input(:experience_pending, source) |> save_experiences()
+  end
+
+  # 未落盘输入保留最近的短期心智跨度。有存储错误时仍维持这个上限，丢弃有累计计数。
+  defp buffer_input(s, key, input) do
+    pending = Map.fetch!(s, key) ++ [input]
+
+    if length(pending) > @max_recent do
+      dropped = Map.update(s.dropped_inputs, key, 1, &(&1 + 1))
+
+      Logger.warning(
+        "npc_life_input_trimmed cid=#{s.context.cid} queue=#{key} total_dropped=#{dropped[key]}"
+      )
+
+      Map.put(%{s | dropped_inputs: dropped}, key, tl(pending))
+    else
+      Map.put(s, key, pending)
+    end
   end
 
   defp save_experiences(%{row: nil} = s), do: s
@@ -1692,13 +1782,13 @@ defmodule NpcServer.Life do
     do: take_fragment(rest, [e | acc], size + String.length(e["text"]))
 
   defp save(s, row) do
-    {row, s} = cap_fragments(s, row)
+    {row, dropped} = cap_fragments(row)
 
     if row == s.row do
       {:ok, %{s | error: nil}}
     else
       case Memory.life_save(s.memory, s.context.cid, row) do
-        :ok -> {:ok, %{s | row: row, error: nil}}
+        :ok -> {:ok, record_fragment_trim(%{s | row: row, error: nil}, dropped)}
         {:error, reason} -> {:error, error(s, reason)}
       end
     end
@@ -1709,30 +1799,33 @@ defmodule NpcServer.Life do
   # 经历**，所以必须吵：一行 warning 带 cid、丢掉的片段数与经历条数、此刻有没有在途的 retain（`in_flight`
   # 就是那一批的片段数——被丢的若在途，成功时仍按它与 `retained` 计数、失败时这批就永久没了），
   # 累计丢弃另进内存计数，由 `observe/1` 的 `dropped_fragments` / `dropped_episodes` 读出。
-  defp cap_fragments(s, row) do
+  defp cap_fragments(row) do
     case length(row["fragments"]) - @max_fragments do
       extra when extra > 0 ->
         {dropped, kept} = Enum.split(row["fragments"], extra)
-        episodes = Enum.sum(Enum.map(dropped, &length(&1["episodes"])))
-        in_flight = if s.job, do: length(Map.get(s.job, :ids, [])), else: 0
-        dropped_fragments = s.dropped_fragments + length(dropped)
-
-        Logger.warning(
-          "npc_memory_fragments_trimmed cid=#{s.context.cid} dropped=#{length(dropped)} " <>
-            "episodes=#{episodes} kept=#{length(kept)} in_flight=#{in_flight} " <>
-            "total_dropped=#{dropped_fragments}"
-        )
-
-        {%{row | "fragments" => kept},
-         %{
-           s
-           | dropped_fragments: dropped_fragments,
-             dropped_episodes: s.dropped_episodes + episodes
-         }}
+        {%{row | "fragments" => kept}, dropped}
 
       _ ->
-        {row, s}
+        {row, []}
     end
+  end
+
+  defp record_fragment_trim(s, []), do: s
+
+  # 只有写盘成功才会真正淘汰片段。拒写后的重试不能重复累计丢弃。
+  defp record_fragment_trim(s, dropped) do
+    count = length(dropped)
+    episodes = Enum.sum(Enum.map(dropped, &length(&1["episodes"])))
+    in_flight = if s.job, do: length(Map.get(s.job, :ids, [])), else: 0
+    dropped_fragments = s.dropped_fragments + count
+
+    Logger.warning(
+      "npc_memory_fragments_trimmed cid=#{s.context.cid} dropped=#{count} " <>
+        "episodes=#{episodes} kept=#{length(s.row["fragments"])} in_flight=#{in_flight} " <>
+        "total_dropped=#{dropped_fragments}"
+    )
+
+    %{s | dropped_fragments: dropped_fragments, dropped_episodes: s.dropped_episodes + episodes}
   end
 
   defp publish(s), do: send(s.owner, {:life_state, s.row["state"], s.row["thanked_seq"]})

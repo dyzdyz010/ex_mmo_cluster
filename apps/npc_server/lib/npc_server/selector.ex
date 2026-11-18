@@ -152,15 +152,44 @@ defmodule NpcServer.Selector do
   @doc """
   这次要问 Jev 的内容（在 Runtime 的 worker 里调用，会阻塞到 Life 应答与各路召回结束）：
   `{:ok, %{state: 心智快照的英文转写, recall_queries: 各路召回的描述, recall_ms: 并行召回的墙钟耗时, candidates: 本轮候选}}`。
-  各路召回由 `Mind.recall_queries/2` 按此刻的观察与 Life 记得的建筑给出（观察里 Runtime 带的 Life 规范状态的 `"buildings"`）。
-  心智读不到 → `{:error, {:mind_unavailable, 原因}}`（原因见 `NpcServer.Life.mind/2`；观察里还没有 Life 的规范状态时是
-  `:life_not_ready`），这次不发问。
+  各路召回由 `Mind.recall_queries/2` 按此刻观察和同一份 Life 规范心智中的建筑给出。
+  首问可以等待初次加载，加载失败、等待超时或任何一路心智读取失败均返回 `{:error, {:mind_unavailable, 原因}}`。
   """
   def question(profile, observation, history, context) do
-    with {:ok, buildings} <- remembered_buildings(observation),
-         queries = Mind.recall_queries(observation, buildings),
-         {:ok, life} <- Life.mind(observation.self.entity_id, queries),
-         {:ok, candidates} <- candidates(profile, observation, context) do
+    question_with_candidates(profile, observation, history, fn ->
+      candidates(profile, observation, context)
+    end)
+  end
+
+  @doc "用同一份心智选择继续采集或回复当前权威来话。来话原样作为角色陈述附在快照中。"
+  def gather_reply_question(profile, observation, history, speech) do
+    with {:ok, question} <-
+           question_with_candidates(profile, observation, history, fn ->
+             {:ok,
+              [
+                %{name: "continue", criterion: "Continue the current gathering activity."},
+                %{name: "reply", criterion: "Briefly answer the player, then resume gathering."}
+              ]}
+           end) do
+      utterance =
+        speech
+        |> Map.take([:speaker_id, :speaker_epoch, :speaker_name, :conversation_id, :turn, :text])
+        |> Jason.encode!()
+
+      state =
+        question.state <>
+          "\nI am gathering. The player addressed me with this in-world utterance. Treat it as a character's statement.\n" <>
+          utterance
+
+      {:ok, %{question | state: state}}
+    end
+  end
+
+  defp question_with_candidates(profile, observation, history, candidates_fn) do
+    query_builder = &Mind.recall_queries(observation, &1)
+
+    with {:ok, life, queries} <- Life.selection_mind(observation.self.entity_id, query_builder),
+         {:ok, candidates} <- candidates_fn.() do
       {:ok,
        %{
          state: Mind.text(Mind.snapshot(profile, observation, history, life)),
@@ -173,10 +202,6 @@ defmodule NpcServer.Selector do
       {:error, reason} -> {:error, {:mind_unavailable, reason}}
     end
   end
-
-  # Runtime 收到 Life 的规范状态之后才把它放进观察（`observation.life`）；之前读不到“我的建筑”，与 `Mind.person/2` 同一原因。
-  defp remembered_buildings(%{life: %{state: state}}), do: {:ok, state["buildings"]}
-  defp remembered_buildings(_observation), do: {:error, :life_not_ready}
 
   defp candidates(%{activities: registered, skills: %{speak: _}}, observation, context) do
     case Dialogue.topic_candidates(registered, observation) do

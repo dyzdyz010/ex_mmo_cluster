@@ -82,6 +82,20 @@ defmodule NpcServer.NpcSelectorTest do
     end
   end
 
+  defmodule ColdHindsight do
+    def ensure(config, name) do
+      send(config.owner, {:initial_models_held, self()})
+
+      receive do
+        :release_models -> Hindsight.ensure(config, name)
+      end
+    end
+
+    defdelegate models(config), to: Hindsight
+    defdelegate status(config), to: Hindsight
+    defdelegate recall(config, query, now_ms), to: Hindsight
+  end
+
   # 各路召回的描述（`Mind.recall_queries/2` 的原文，S1-Q 的 R 部分）：期望值手写，不调被测函数。
   defp person_route(cid, name),
     do: %{
@@ -114,6 +128,27 @@ defmodule NpcServer.NpcSelectorTest do
   # 只测试：连不上的 Hindsight——建 bank 这一步就失败，认识读不出来。
   defmodule NoModels do
     def ensure(_, _), do: {:error, :transport_error}
+  end
+
+  defmodule TwoStepGather do
+    @moduledoc "只测试：沿正式 Skill.call 入口执行两步，命令结果由受控 Body 替身提供。"
+    @behaviour NpcServer.Skill
+
+    def definition(_) do
+      %{
+        description: "采集的两步边界。",
+        parameters: %{type: "object", properties: %{}, required: [], additionalProperties: false}
+      }
+    end
+
+    def run(context, _args, _config) do
+      state = %{body: context.body, call: context.call_id, step: 0, step_owner: context.step_owner}
+
+      with {:ok, _, state} <- NpcServer.Skill.call(state, %{verb: :query_balances}),
+           {:ok, _, _} <- NpcServer.Skill.call(state, %{verb: :query_balances}) do
+        {:ok, %{metrics: %{request_count: 0, jev_request_count: 0}}}
+      end
+    end
   end
 
   # 只测试：Body 替身。命令转给测试进程；事件由测试手排后经真实 Runtime 入口投递。
@@ -586,6 +621,78 @@ defmodule NpcServer.NpcSelectorTest do
       state = Runtime.observe(runtime)
       GenServer.call(body, :brain)
       state
+    end
+
+    @tag :gather_step_matching
+    test "only the admitted step outcome can open a gather reply, and an invalid choice releases the next step",
+         %{profile: profile, cid: cid} do
+      gather = %{
+        name: "gather_stone",
+        criterion: "Gather stone.",
+        run: {:skill, "gather", %{}},
+        place_name: nil
+      }
+
+      profile =
+        %{profile | activities: [gather]}
+        |> put_in([:skills, :gather], %{module: TwoStepGather})
+
+      {body, runtime, _} = start(profile, cid)
+      event(body, {:observation, observation(1, cid)})
+      assert_receive {:jev_request, selector, _}
+      send(selector, {:jev_reply, answer("gather_stone", 0.9)})
+      assert_receive {:command, %{id: {:skill, call, 1}, verb: :query_balances}}
+
+      speech = %{
+        speaker_id: cid + 1,
+        speaker_epoch: 5,
+        speaker_kind: 0,
+        speaker_name: "Visitor",
+        target_id: cid,
+        conversation_id: 12,
+        turn: 1,
+        at_ms: System.system_time(:millisecond),
+        text: "What are you gathering?"
+      }
+
+      event(body, {:heard, %{speech | target_id: 0}})
+      event(body, {:heard, %{speech | speaker_kind: 1}})
+
+      assert %{skill_boundary: %{phase: :working, issued_step: 1}} = settled(body, runtime)
+
+      event(body, {:heard, speech})
+
+      skill_result = fn id, step ->
+        event(body, {:outcome, %{
+          id: {:skill, id, step},
+          verb: :query_balances,
+          status: :done,
+          reason: nil,
+          data: %{}
+        }})
+      end
+
+      skill_result.(call, 2)
+      skill_result.(call - 1, 1)
+
+      assert %{skill_boundary: %{phase: :requested, issued_step: 1, settled_step: nil}} =
+               settled(body, runtime)
+
+      refute_received {:command, _}
+      refute_received {:jev_request, _, _}
+
+      skill_result.(call, 1)
+
+      assert_receive {:jev_request, selector, request}
+      assert request.state =~ speech.text
+
+      assert %{skill_boundary: %{phase: :deciding, issued_step: nil, held_step: 2, settled_step: 1}} =
+               settled(body, runtime)
+
+      send(selector, {:jev_reply, answer("unknown_option", 0.9)})
+      assert_receive {:command, %{id: {:skill, ^call, 2}, verb: :query_balances}}
+      skill_result.(call, 2)
+      assert_receive {:runtime_outcome, %{id: ^call, status: :done, verb: :gather}}
     end
 
     defp skill_step(body, call, status, reason) do
@@ -1307,6 +1414,34 @@ What just happened: Nothing new.
       assert ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
                ~s|My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.| ==
                situation
+    end
+
+    test "the first observation waits for the initial models and selects immediately after readiness",
+         %{profile: profile, cid: cid} do
+      test = self()
+      recall = start_supervised!({Agent, fn -> {:ok, %{results: [], latency_ms: 0}} end})
+
+      profile =
+        profile
+        |> Map.put(:request, fn _, body ->
+          send(test, {:jev_request, self(), body})
+          answer("rest_at_home", 0.9)
+        end)
+        |> Map.update!(
+          :life,
+          &Map.merge(&1, %{hindsight: ColdHindsight, owner: test, recall: recall, poll_ms: 30})
+        )
+
+      body = start_supervised!({Body, %{owner: test, profile: profile, cid: cid}})
+      assert_receive {:initial_models_held, worker}, 5_000
+      event(body, {:observation, observation(1, cid)})
+      refute_receive {:runtime_outcome, %{verb: :choose_activity, status: :rejected}}, 200
+
+      send(worker, :release_models)
+
+      assert_receive {:jev_request, _, request}, 2_000
+      assert request.state =~ "I am a careful builder."
+      assert_receive {:runtime_outcome, %{verb: :choose_activity, status: :done}}, 2_000
     end
 
     test "without cached models the mind is unreadable: the selection fails explicitly and Jev is not asked",

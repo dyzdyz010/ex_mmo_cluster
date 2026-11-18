@@ -87,6 +87,7 @@ defmodule NpcServer.Skills.Gather do
       body: context.body,
       call: context.call_id,
       step: 0,
+      step_owner: Map.get(context, :step_owner),
       # 被别的技能组合时（expand）的步号命名空间，见 `Skill.call/2`；单独调用时为 nil。
       space: Map.get(context, :step_space),
       box: {{min(x0, x1), min(y0, y1), min(z0, z1)}, {max(x0, x1), max(y0, y1), max(z0, z1)}},
