@@ -29,7 +29,8 @@ defmodule NpcServer.Life.Hindsight do
   交互召回和 CLI 的 `context/2` 走交互 profile，反思及日计划的取材走后台召回 profile（D-1b）。
   建库、写入、刷新、状态查询走缺省 profile。请求体和各调用方的超时预算沿用原值。
   两个召回 profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停。采用缺省参数，
-  由 inets 的监督保证 manager 重启后仍使用相同参数（决策稿 S4、S5）。
+  由 inets 的监督保证 manager 重启后仍使用相同参数（决策稿 S4、S5）；起停与"profile 不在"的判法在
+  `NpcServer.Http`（活动选择的独立 profile 用同一套）。
   """
   require Logger
 
@@ -114,23 +115,12 @@ defmodule NpcServer.Life.Hindsight do
   以缺省参数启动指定类别的召回池。已经启动返回 `{:ok, :already_started}`，
   其它错误回传给应用启动边界。
   """
-  def start_recall_profile(kind \\ :interactive) do
-    case :inets.start(:httpc, profile: recall_profile(kind)) do
-      {:ok, _pid} -> {:ok, :started}
-      {:error, {:already_started, _pid}} -> {:ok, :already_started}
-      other -> other
-    end
-  end
+  def start_recall_profile(kind \\ :interactive),
+    do: NpcServer.Http.start_profile(recall_profile(kind))
 
   @doc "停指定类别的召回池。池缺失视同已停止。"
-  def stop_recall_profile(kind \\ :interactive) do
-    case :inets.stop(:httpc, recall_profile(kind)) do
-      :ok -> :ok
-      # 实测（OTP 29.1.2）：profile 不在时 `inets:stop/2` 回 `{:error, :not_found}`。
-      {:error, :not_found} -> :ok
-      other -> other
-    end
-  end
+  def stop_recall_profile(kind \\ :interactive),
+    do: NpcServer.Http.stop_profile(recall_profile(kind))
 
   @doc """
   只确保 bank 存在：`PUT` bank（`name` 与 bank 自身的 mission），幂等；返回 `{:ok, %{bank: config.bank}}`。
@@ -557,7 +547,7 @@ defmodule NpcServer.Life.Hindsight do
         # 其它退出照旧上抛（代码缺陷不在这里吞）。不再先做一次 `get_options` 预检——那是一次到 manager 的
         # infinity 调用，manager 卡住时预检自己会挂住，而且每次召回都多一个来回。
         :exit, reason ->
-          if profile != nil and profile_absent?(reason),
+          if profile != nil and NpcServer.Http.profile_absent?(reason),
             do: {:error, {:profile_not_started, profile}},
             else: exit(reason)
       end
@@ -582,13 +572,6 @@ defmodule NpcServer.Life.Hindsight do
         failure(config, :transport_error)
     end
   end
-
-  # `GenServer.call` 到点/对端不在时的退出形状；httpc 内部用的是 `:gen_server.call`。
-  defp profile_absent?(:noproc), do: true
-  defp profile_absent?(:shutdown), do: true
-  defp profile_absent?(:normal), do: true
-  defp profile_absent?({reason, _detail}), do: profile_absent?(reason)
-  defp profile_absent?(_), do: false
 
   # 失败一律经这里：打一行带 bank 的日志（经历库与反思库要分得清），返回 `{:error, reason}`。
   defp failure(config, reason) do

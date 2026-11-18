@@ -505,7 +505,12 @@ flowchart LR
   retain、刷新、状态查询和其它写入仍走缺省池。两池各自复用连接和队列，Hindsight 的服务端算力仍共享。
   `NpcServer.Application` 在监督树之前起两池、应用停止时停。运行期由 inets 监督，
   manager 重启后保留缺省参数。应用启动时两池都必须可用，运行时召回池缺失返回
-  `{:profile_not_started, 名}`。测试跑 `--no-start` 时由 `test_helper` 复用同一起池入口。
+  `{:profile_not_started, 名}`。测试跑 `--no-start` 时由 `test_helper` 复用同一起池入口（`Application.start_http_profiles/0`）。
+- **活动选择也走自己的 httpc profile**（`Jev.selection_profile/0` = `:npc_selection`，D-1 的延伸，2026-11-18）。
+  选择与写作同在一个模型主机（生产是 `api.deepseek.com`），写作约 10 s、retain 5–14 s 的慢请求占着缺省池的会话时，
+  选择会排进去、10 s 超时时从未发出（薄片四第二轮实跑：发 38 次、上游收 36 次）。`Registry` 给 Jev endpoint 带
+  `profile`，`Http.request/2` 按它选池（不在时 `{:profile_not_started, 名}`）；写作 endpoint 不带，留在缺省池。
+  选择池与两个召回池一起由 `Application` 起停；起停与缺失判法只在 `NpcServer.Http`。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧

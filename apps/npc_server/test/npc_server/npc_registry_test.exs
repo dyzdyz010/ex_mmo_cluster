@@ -225,7 +225,8 @@ defmodule NpcServer.NpcRegistryTest do
                     url: "http://127.0.0.1:9/jev",
                     key: "test-key",
                     model: "jev-test",
-                    timeout_ms: 10_000
+                    timeout_ms: 10_000,
+                    profile: :npc_selection
                   },
                   # 反思写日记的接口取运行环境（R3 起）。
                   reflect: %{
@@ -559,7 +560,9 @@ defmodule NpcServer.NpcRegistryTest do
                  model: "deepseek-flash",
                  # 缺省思考强度是 medium；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
                  reasoning_effort: "medium",
-                 timeout_ms: 10_000
+                 timeout_ms: 10_000,
+                 # 两种形状都走选择专用的 httpc profile。
+                 profile: :npc_selection
                } = profile.jev
 
         # `max_tokens` 的缺省值只在 `NpcServer.Jev` 定义一次：没配环境变量时端点里没有这个键，

@@ -338,3 +338,21 @@ flowchart LR
   - `stop_recall_profile/0` 的分支按实测收口（OTP 29.1.2 对不存在的 profile 回 `{:error, :not_found}`）。
   - 仍然存在的残余（记录，不改）：选择链路唯一兜底是 httpc 的 10 s；`Task.async_stream(timeout: :infinity)` 之外没有
     watchdog，inets manager 病态时该次选择会一直等（不崩）。多 NPC 之前再评估粗粒度 deadline。
+- 2026-11-18：**D-1 延伸到活动选择**。证据：NPC 协调稿“薄片四第二轮”（`slice4-02`）——选择关思考后上游最长 7.8 s，产品仍有
+  5 次选择 10 s 超时；产品发起 38 次、上游只收到 36 次，超时都落在同一主机有写作（约 10 s）或 Hindsight retain（5–14 s）在途的时段。
+  选择、写作、retain 全走 httpc 缺省 profile，与 E1 同一机制（选择排进已占用的 keep-alive 会话、超时时从队列取消而从未发出）；
+  生产上选择与写作同在 `api.deepseek.com`，不只是测试代理的问题。照 D-1b 的先例改（结构最小）：
+  - `NpcServer.Http.request/2` 按 endpoint 的可选 `profile` 选 httpc profile，不在时 `{:error, {:profile_not_started, 名}}`；
+    命名 profile 的起停（`start_profile/1`、`stop_profile/1`，缺省参数、幂等）与“profile 不在”的判法（`profile_absent?/1`）
+    从 Hindsight 挪到 Http，只此一处，Hindsight 的召回池起停调用它们。
+  - 选择池 `:npc_selection` 由 `NpcServer.Jev.selection_profile/0` 持有；`NpcServer.Registry` 的 Jev endpoint（TypeSafe 与
+    OpenAI 兼容两支）带它，对话回合的选择同一个 endpoint。写作 endpoint 不带（后台写作留在缺省池）；中断策略的 scheduler 不在范围。
+  - `NpcServer.Application.start_http_profiles/0` 在监督树之前起两个召回池与选择池，选择池起失败回滚本次新起的召回池，
+    监督树起失败只停本次新起的；`test_helper` 复用同一入口。
+  - 验证：`test/npc_server/npc_selection_profile_test.exs`——缺省池先预热、再占一条 700 ms 慢请求，`Registry` 构造的 endpoint 经
+    `Selector.ask/4` 发选择。**改前红**（选择走上同一条连接、697 ms 才回，`.demo/dev-env/logs/test-20261118T125548Z-selection-profile-red.log`），
+    改后绿（另一条连接、远短于慢请求）；另有 profile 不在时显式失败的用例，召回隔离的回滚用例加了选择池。直接相关 7 个文件
+    79 项通过、5 项排除（`test-20261118T125850Z-selection-profile-green.log`）；npc_server 全套 `--seed 0` 630 项通过、
+    20 项排除（`test-20261118T130034Z-selection-profile-full.log`）。
+  - 残余：两池之间只隔离连接队列，模型主机的并发限额与算力仍共享；选择池用缺省参数（每 host 2 条持久会话），
+    多 NPC 同时选择时选择之间仍可能排队，等实跑读数再定是否调参。

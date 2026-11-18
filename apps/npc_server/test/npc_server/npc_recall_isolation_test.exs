@@ -63,12 +63,14 @@ defmodule NpcServer.NpcRecallIsolationTest do
           {Supervisor, :start_link, [[], [strategy: :one_for_one, name: NpcServer.Supervisor]]}
       })
 
-    on_exit(fn -> Hindsight.start_recall_profiles() end)
+    on_exit(fn -> NpcServer.Application.start_http_profiles() end)
     assert :ok = Hindsight.stop_recall_profile(:background)
+    assert :ok = NpcServer.Http.stop_profile(NpcServer.Jev.selection_profile())
 
     assert {:error, {:already_started, ^supervisor}} = NpcServer.Application.start(:normal, [])
     assert {:ok, _} = :httpc.get_options(:all, Hindsight.recall_profile())
     assert {:error, _} = :httpc.get_options(:all, Hindsight.recall_profile(:background))
+    assert {:error, _} = :httpc.get_options(:all, NpcServer.Jev.selection_profile())
   end
 
   test "专用 profile 没起来时召回显式失败，不退回缺省 profile" do

@@ -242,6 +242,19 @@ release `ea49bd38`（`/home/dyz/npc-slice4-20261118/voxim_server`），四人同
 - **用户 2026-11-18 定：选择位置关思考**（写作位置不变）。产品新增可选 `NPC_JEV_THINKING`（`disabled` 发 `"thinking": {"type": "disabled"}`、不发 effort；
   认不出的值登记即拒绝），主检出 `.env` 已写 `disabled`。真实冒烟 3 次：无思考内容，输出 35–49 token，冷连接约 2 s
   （`.demo/dev-env/logs/test-20261118T123934Z-live-jev-nothinking.log`）。下一轮薄片四在新 release 上复跑，驱动同时修 Q4 判定与代理排队计时。
+- 驱动修正（Test-only）：Q4 只数 `mind_unavailable.*recall`，选择超时另记；代理分记排队 `wait_ms`，对外在途上限 3 → 8；停服前排空在途模型请求（≤ 30 s）。
+  新判定器离线复判 slice4-01：Q4 成立（召回失败 0），原判文件不改（复判存 `runs/slice4-01/recheck-q4-fixed.json`）。
+
+#### 薄片四第二轮：选择关思考（`slice4-02`，2026-11-18，release `6c1bde6d`）
+
+- Q1、Q2、Q5 成立（四人各 5–9 次选择；首选仍四人各不相同；独处卡 8/9 `sit_quietly_apart`、外向卡 7/9 `wait_at_the_walkway`；`speak_to` 被选 3 次）。
+- 关思考有效：上游选择中位 2.8 s、p90 5.0 s、最长 7.8 s，输出 42–68 token，代理排队 0。Jev 36 次合计 3.9 万入 / 0.19 万出。
+- **结构发现：选择请求排在同一主机的慢请求后面**。产品仍有 5 次选择 10 s 超时，而上游没有一次超过 8 s；产品发起 38 次、代理只收到 36 次。
+  5 次超时的时刻都落在同一主机有慢请求在途的时段（三路日计划写作 04:47:56–04:48:08、反思写作 04:48:21–04:48:33、Hindsight 同步写入 5–14 s）。
+  模型请求全走 httpc 缺省 profile：测试里选择、写作、Hindsight 都经同一代理端口，生产上选择与写作同在 `api.deepseek.com`，选择请求排进已占用的
+  keep-alive 会话、超时时从队列取消而从未发出——与 E1 证实的机制相同（召回隔离 D-1 只把召回移出了缺省 profile）。修法：选择请求独立 profile（同 D-1b）。
+- Q3 不成立：1 次未配对，是排空判到 0 之后、停服之前那半秒里新发的选择（驱动竞态）。Q4 不成立：窗口内四人都还没有完成过 retain（前提未达，提前结束过早），
+  召回失败 0。资源：UDP 85 → 88 → 88，4266 未变，release 0.59 s 停，私有库已删。
 
 #### 三 NPC 同场与交互／后台召回
 
