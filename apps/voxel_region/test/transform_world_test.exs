@@ -304,9 +304,9 @@ defmodule VoxelRegion.TransformWorldTest do
     end
     refute Map.has_key?(rest.thermal, :transform_units)
 
-    # 正式作者编辑入口把中心石换成煤（无温度记录 = 区温，未达燃点 673.15 K）。
-    {:ok, _} = World.apply_edits(w, [{center, @coal}])
-    from = observe(w).seq
+    # 正式作者编辑入口把中心石换成煤（无温度记录 = 区温，未达燃点 673.15 K）。起点取放煤这笔自己的序号：
+    # 热模拟活跃时 World 有自己的实时热步，放煤之后、下一次读序号之前就可能先提交，起点若事后再读会漏掉转化事务。
+    {:ok, from} = World.apply_edits(w, [{center, @coal}])
     Enum.each(1..3, fn _ -> send(w, :thermal_commit) end)
     converted = observe(w)
 

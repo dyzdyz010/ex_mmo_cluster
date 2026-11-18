@@ -36,7 +36,9 @@ defmodule NpcServer.NpcSkillDesignLiveTest do
 
   test "one real model designs, repairs, publishes and pays for the selected house" do
     MmoTest.Database.start!()
+    previous_level = Logger.level()
     Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
     selected = System.get_env("DESIGN_LIVE_CASE", "cottage")
     goal = Map.fetch!(@goals, selected)
     voxim = Path.expand("../../../../../Voxim", __DIR__)

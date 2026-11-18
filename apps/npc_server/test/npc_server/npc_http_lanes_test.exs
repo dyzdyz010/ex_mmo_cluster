@@ -17,6 +17,13 @@ defmodule NpcServer.NpcHttpLanesTest do
 
   alias NpcServer.{Http, KeepAliveStub, ModelUsage, Secret}
 
+  # T-2 / T-5 要读 `ModelUsage` 的 info 级 `npc_model_request`。全局 Logger 级别不归本文件所有（别的测试会改），
+  # 所以只给 `ModelUsage` 设模块级别、测试结束删掉：既不依赖、也不改全局级别。
+  setup do
+    Logger.put_module_level(ModelUsage, :info)
+    on_exit(fn -> Logger.delete_module_level(ModelUsage) end)
+  end
+
   # 交互车道取连接的上限（决策稿 D-4 的原创初值）；断言留出调度余量。
   @interactive_pool_timeout_ms 2_000
   # HTTP/1 池每条车道对一个主机的连接上限（同上）。

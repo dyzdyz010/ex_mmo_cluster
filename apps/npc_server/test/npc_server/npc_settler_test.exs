@@ -77,8 +77,9 @@ defmodule NpcServer.NpcSettlerTest do
   end
 
   defp info(fun) do
+    previous_level = Logger.level()
     Logger.configure(level: :info)
-    on_exit(fn -> Logger.configure(level: :warning) end)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
     capture_log(fun)
   end
 

@@ -208,8 +208,9 @@ defmodule NpcServer.NpcTreeTest do
   end
 
   test "succeed logs a failing child with the last failure and its context, then carries on; fail forces failure" do
+    previous_level = Logger.level()
     Logger.configure(level: :info)
-    on_exit(fn -> Logger.configure(level: :warning) end)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
 
     log =
       capture_log(fn ->

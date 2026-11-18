@@ -2810,8 +2810,9 @@ defmodule NpcServer.NpcBodyWorldTest do
     22 = length(walls)
 
     # 长跑要看得见：放开 info 级日志，模型的每次决策（npc_llm_decision）都进测试输出。
+    previous_level = Logger.level()
     Logger.configure(level: :info)
-    on_exit(fn -> Logger.configure(level: :warning) end)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
 
     materials = fn cells ->
       Enum.map(World.material_snapshot(world, [@npc], cells).probe_occupancy, & &1.material)
@@ -2853,8 +2854,9 @@ defmodule NpcServer.NpcBodyWorldTest do
   @tag timeout: 1_500_000
   test "real planner and real scheduler: a cottage with roof, door and windows from one goal, in a handful of model requests",
        %{world: world} do
+    previous_level = Logger.level()
     Logger.configure(level: :info)
-    on_exit(fn -> Logger.configure(level: :warning) end)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
     box = for x <- 6..15, y <- 64..69, z <- 12..20, do: {x, y, z}
 
     snapshot = fn ->
