@@ -1,6 +1,7 @@
 defmodule NpcServer.Skills.Speak do
   @moduledoc """
-  全局系统功能：写一句定向台词，经 Scene 接纳。新话题走近本轮选中的角色；步间回应沿用原会话。
+  全局系统功能：写一句定向台词，经 Scene 接纳。新话题走近本轮选中的角色（`conversation_id` 0）；
+  对话回合里停下去谈的那次带来话的会话号，回复沿用原会话；回合不停下时的回复由 `reply/4` 只写台词，发言由 Runtime 定号。
 
   寻路复用 `Travel`，写作读取该次选择的心智快照。Scene 裁决目标身份、位置及发言条件，
   Skill 的成功结果来自它的应答。写作或发言结果失败均结束本次活动。
@@ -27,19 +28,20 @@ defmodule NpcServer.Skills.Speak do
     usage_complete: true
   }
 
-  @doc "描述本技能接受的目标身份和称呼。"
+  @doc "描述本技能接受的目标身份、称呼与会话号（0 = 新话题，缺省；回复时抄来话的会话号）。"
   @impl true
   def definition(_profile) do
     %{
-      description: "走近选定的角色，为其写一句开场白并交给 Scene 裁决。",
+      description: "走近选定的角色，为其写一句话并交给 Scene 裁决；conversation_id 为 0 是新话题，否则在该会话里回复。",
       parameters: %{
         type: "object",
         properties: %{
           entity_id: %{type: "integer", minimum: 1},
           entity_epoch: %{type: "integer", minimum: 0},
-          name: %{type: "string"}
+          name: %{type: "string"},
+          conversation_id: %{type: "integer", minimum: 0}
         },
-        required: ["entity_id", "entity_epoch", "name"],
+        required: ["entity_id", "entity_epoch", "name", "conversation_id"],
         additionalProperties: false
       }
     }
@@ -47,19 +49,28 @@ defmodule NpcServer.Skills.Speak do
 
   @doc "用 `context.mind_snapshot` 写作一次，返回权威 Speech 及本次用量，或失败原因。"
   @impl true
+  def run(context, %{"entity_id" => _} = args, config)
+      when not is_map_key(args, "conversation_id"),
+      do: run(context, Map.put(args, "conversation_id", 0), config)
+
   def run(
         %{mind_snapshot: snapshot} = context,
-        %{"entity_id" => id, "entity_epoch" => epoch, "name" => name},
+        %{
+          "entity_id" => id,
+          "entity_epoch" => epoch,
+          "name" => name,
+          "conversation_id" => conversation
+        },
         _config
       )
       when is_integer(id) and id > 0 and is_integer(epoch) and epoch >= 0 and is_binary(name) and
-             is_binary(snapshot) do
+             is_integer(conversation) and conversation >= 0 and is_binary(snapshot) do
     target = %{"entity_id" => id, "entity_epoch" => epoch}
     scope = %{cid: context.actor.cid, operation: :speak}
 
     with {:ok, _} <- Travel.run(context, target, %{}) do
       with {:ok, text, metrics} <- draft(context.profile, snapshot, name, scope) do
-        say(context, command(id, epoch, 0, text), metrics)
+        say(context, command(id, epoch, conversation, text), metrics)
       end
     else
       {:error, reason, _} -> {:error, reason, @metrics}
@@ -68,9 +79,9 @@ defmodule NpcServer.Skills.Speak do
 
   def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
-  @doc "给权威来话撰写同一会话的回复，返回由 Runtime 定号提交的 Body 命令与写作用量。"
+  @doc "给权威来话撰写同一会话的回复，返回由 Runtime 定号提交的 Body 命令与写作用量（用量 operation `dialogue_reply_write`）。"
   def reply(profile, snapshot, speech, cid \\ nil) do
-    scope = %{cid: cid, operation: :gather_reply_write}
+    scope = %{cid: cid, operation: :dialogue_reply_write}
 
     with {:ok, text, metrics} <- draft(profile, snapshot, speech.speaker_name, scope) do
       {:ok, command(speech.speaker_id, speech.speaker_epoch, speech.conversation_id, text),

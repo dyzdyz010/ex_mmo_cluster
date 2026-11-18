@@ -130,25 +130,19 @@ defmodule NpcServer.NpcSelectorTest do
     def ensure(_, _), do: {:error, :transport_error}
   end
 
-  defmodule TwoStepGather do
-    @moduledoc "只测试：沿正式 Skill.call 入口执行两步，命令结果由受控 Body 替身提供。"
+  defmodule InstantTravel do
+    @moduledoc "只测试：立刻到达的 travel 替身，让去处型活动直接进入原地等待（`{:wait, ticks}`）。"
     @behaviour NpcServer.Skill
 
     def definition(_) do
       %{
-        description: "采集的两步边界。",
+        description: "立刻到达。",
         parameters: %{type: "object", properties: %{}, required: [], additionalProperties: false}
       }
     end
 
-    def run(context, _args, _config) do
-      state = %{body: context.body, call: context.call_id, step: 0, step_owner: context.step_owner}
-
-      with {:ok, _, state} <- NpcServer.Skill.call(state, %{verb: :query_balances}),
-           {:ok, _, _} <- NpcServer.Skill.call(state, %{verb: :query_balances}) do
-        {:ok, %{metrics: %{request_count: 0, jev_request_count: 0}}}
-      end
-    end
+    def run(_context, _args, _config),
+      do: {:ok, %{metrics: %{request_count: 0, jev_request_count: 0}}}
   end
 
   # 只测试：Body 替身。命令转给测试进程；事件由测试手排后经真实 Runtime 入口投递。
@@ -623,76 +617,212 @@ defmodule NpcServer.NpcSelectorTest do
       state
     end
 
-    @tag :gather_step_matching
-    test "only the admitted step outcome can open a gather reply, and an invalid choice releases the next step",
-         %{profile: profile, cid: cid} do
-      gather = %{
-        name: "gather_stone",
-        criterion: "Gather stone.",
-        run: {:skill, "gather", %{}},
-        place_name: nil
-      }
-
-      profile =
-        %{profile | activities: [gather]}
-        |> put_in([:skills, :gather], %{module: TwoStepGather})
-
-      {body, runtime, _} = start(profile, cid)
-      event(body, {:observation, observation(1, cid)})
-      assert_receive {:jev_request, selector, _}
-      send(selector, {:jev_reply, answer("gather_stone", 0.9)})
-      assert_receive {:command, %{id: {:skill, call, 1}, verb: :query_balances}}
-
-      speech = %{
+    # 只测试：玩家定向来话（权威 Speech 的形状，`NpcServer.Brain` 的 speech）。
+    defp address(cid, turn \\ 1, text \\ "What are you doing?") do
+      %{
         speaker_id: cid + 1,
         speaker_epoch: 5,
         speaker_kind: 0,
         speaker_name: "Visitor",
         target_id: cid,
         conversation_id: 12,
-        turn: 1,
+        turn: turn,
         at_ms: System.system_time(:millisecond),
-        text: "What are you gathering?"
+        text: text
       }
+    end
 
-      event(body, {:heard, %{speech | target_id: 0}})
-      event(body, {:heard, %{speech | speaker_kind: 1}})
+    # 只测试：Runtime 的 info 日志（`npc_dialogue_turn`）在这个用例里可见（`npc_select` 由 setup 打开）。
+    defp with_runtime_log(fun) do
+      Logger.put_module_level(Runtime, :info)
 
-      assert %{skill_boundary: %{phase: :working, issued_step: 1}} = settled(body, runtime)
-
-      event(body, {:heard, speech})
-
-      skill_result = fn id, step ->
-        event(body, {:outcome, %{
-          id: {:skill, id, step},
-          verb: :query_balances,
-          status: :done,
-          reason: nil,
-          data: %{}
-        }})
+      try do
+        capture_log([level: :info], fun)
+      after
+        Logger.delete_module_level(Runtime)
       end
+    end
 
-      skill_result.(call, 2)
-      skill_result.(call - 1, 1)
+    # Life 持久行里（未封存尾部与已封存片段）有没有满足条件的经历。
+    defp life_episode?(cid, predicate) do
+      row = DataService.NpcMemory.get(cid, "life", "state")
+      episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
+      Enum.any?(episodes, predicate)
+    end
 
-      assert %{skill_boundary: %{phase: :requested, issued_step: 1, settled_step: nil}} =
-               settled(body, runtime)
+    # 决策稿 2026-11-18-npc-dialogue-lane-decision.md §7 T3 / T4：旁听与 NPC 的发言不起回合；回合在途时技能没有任何命令被扣住；
+    # 回合在途时第二条定向来话只记 dropped（仍进 heard 与 Life）；选“继续不答”只记 silent，不写台词、不发 say，活动不受影响。
+    @tag :dialogue_turn
+    test "a direct address starts one dialogue turn; a second one is dropped; keep_working_silently leaves the activity alone",
+         %{profile: profile, cid: cid} do
+      {body, runtime, _} = start(profile, cid)
 
-      refute_received {:command, _}
-      refute_received {:jev_request, _, _}
+      log =
+        with_runtime_log(fn ->
+          event(body, {:observation, observation(1, cid)})
+          assert_receive {:jev_request, selector, _}
+          send(selector, {:jev_reply, answer("alpha_build_south", 0.9)})
+          assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
 
-      skill_result.(call, 1)
+          speech = address(cid)
+          # 旁听（target 0）与 NPC 的直呼（speaker_kind 1）不起回合。
+          event(body, {:heard, %{speech | target_id: 0}})
+          event(body, {:heard, %{speech | speaker_kind: 1}})
+          assert %{dialogue_turn: nil} = settled(body, runtime)
+          refute_received {:jev_request, _, _}
 
-      assert_receive {:jev_request, selector, request}
-      assert request.state =~ speech.text
+          event(body, {:heard, speech})
+          assert_receive {:jev_request, turn, request}
 
-      assert %{skill_boundary: %{phase: :deciding, issued_step: nil, held_step: 2, settled_step: 1}} =
-               settled(body, runtime)
+          # 请求体里的候选（有序）：两个继续项、登记项、来话者的 speak_to。
+          visitor_option = "speak_to:#{cid + 1}"
 
-      send(selector, {:jev_reply, answer("unknown_option", 0.9)})
-      assert_receive {:command, %{id: {:skill, ^call, 2}, verb: :query_balances}}
-      skill_result.(call, 2)
-      assert_receive {:runtime_outcome, %{id: ^call, status: :done, verb: :gather}}
+          assert [
+                   {"keep_working_and_answer",
+                    "Keep doing alpha_build_south and answer Visitor briefly while working."},
+                   {"keep_working_silently", "Keep doing alpha_build_south and do not answer."},
+                   {"zeta_build_north", _},
+                   {"alpha_build_south", _},
+                   {"rest_at_home", _},
+                   {^visitor_option,
+                    "Stop what I am doing, go over to Visitor and talk with them."}
+                 ] = request.questions.activity.criteria.values
+
+          assert request.state =~ ~s|I am doing "alpha_build_south". Visitor addressed me|
+          assert request.state =~ speech.text
+
+          # 问过什么记在 asked（含候选的目标：来话者带本次会话号）。
+          assert %{
+                   dialogue_turn: %{phase: :deciding, conversation_id: 12, turn: 1, speaker_id: _},
+                   select: %{asked: %{state: asked, candidates: candidates}}
+                 } = settled(body, runtime)
+
+          assert asked == request.state
+
+          assert %{
+                   name: ^visitor_option,
+                   target: %{"entity_id" => _, "entity_epoch" => 5, "conversation_id" => 12}
+                 } = List.last(candidates)
+
+          # 回合在途：第二条定向来话不起第二个 worker，只记 dropped；它仍进 heard 与 Life。
+          event(body, {:heard, address(cid, 2, "Hello? Are you listening?")})
+          assert %{heard: heard} = settled(body, runtime)
+          assert Enum.map(heard, & &1.turn) == [1, 1, 1, 2]
+          refute_received {:jev_request, _, _}
+          NpcWorld.await(fn -> life_episode?(cid, &match?(%{"speech" => %{"turn" => 2}}, &1)) end)
+
+          send(turn, {:jev_reply, answer("keep_working_silently", 0.8)})
+          NpcWorld.await(fn -> settled(body, runtime).dialogue_turn == nil end)
+
+          # 活动不受影响：没有任何命令（没有 say、没有 cancel、没有 stop），正在做的还是它。
+          refute_received {:command, _}
+          assert %{select: select} = settled(body, runtime)
+          assert "alpha_build_south" == Selector.current(select)
+          assert [%{activity: "alpha_build_south", result: nil}] = select.activities
+        end)
+
+      header =
+        "npc_dialogue_turn cid=#{cid} conversation_id=12 turn=1 speaker_id=#{cid + 1} speaker_epoch=5"
+
+      assert log =~ "#{header} event=received activity=\"alpha_build_south\""
+
+      assert log =~
+               ~r/#{Regex.escape(header)} event=decided chosen="keep_working_silently" confidence=0.8 latency_ms=\d+ recall_ms=\d+/
+
+      assert log =~ "#{header} event=silent"
+
+      assert log =~
+               "npc_dialogue_turn cid=#{cid} conversation_id=12 turn=2 speaker_id=#{cid + 1} speaker_epoch=5 event=dropped"
+
+      refute log =~ "dialogue_reply_write"
+      refute log =~ "event=stopped"
+    end
+
+    # 决策稿 §7 T5：去处型活动在 `{:wait}` 里被来话打断、Jev 选别的活动 → 树 halt 后从根重来，预选生效、不问 Jev、
+    # 没有 skill_busy；被中断的活动记为 interrupted，经历进 Life。
+    @tag :dialogue_turn
+    test "a place activity interrupted during its wait restarts the tree and the preselection answers without Jev",
+         %{profile: profile, cid: cid} do
+      profile = put_in(profile, [:skills, :travel], %{module: InstantTravel})
+      {body, runtime, _} = start(profile, cid)
+
+      log =
+        with_runtime_log(fn ->
+          event(body, {:observation, observation(1, cid)})
+          assert_receive {:jev_request, selector, _}
+          send(selector, {:jev_reply, answer("rest_at_home", 0.9)})
+          assert_receive {:runtime_outcome, %{id: 2, verb: :travel, status: :done}}
+          event(body, {:observation, observation(2, cid)})
+          assert %{skill: nil, select: select} = settled(body, runtime)
+          assert "rest_at_home" == Selector.current(select)
+
+          event(body, {:heard, address(cid)})
+          assert_receive {:jev_request, turn, request}
+
+          assert [{"keep_working_and_answer", "Keep doing rest_at_home and " <> _} | _] =
+                   request.questions.activity.criteria.values
+
+          send(turn, {:jev_reply, answer("alpha_build_south", 0.7)})
+
+          # 停下：等待中没有在途叶子，halt 不发命令；正在做的活动已记为 interrupted，回合结束。
+          NpcWorld.await(fn -> settled(body, runtime).dialogue_turn == nil end)
+
+          assert %{
+                   select: %{
+                     activities: [
+                       %{activity: "rest_at_home", result: {:interrupted, "to talk with Visitor"}}
+                     ]
+                   }
+                 } = settled(body, runtime)
+
+          refute_received {:command, _}
+          refute_received {:jev_request, _, _}
+
+          # 下一个事件：树从根重来，choose_activity 由预选应答（不问 Jev），被选中的分支照常执行。
+          event(body, {:observation, observation(3, cid)})
+
+          assert_receive {:runtime_outcome,
+                          %{
+                            verb: :choose_activity,
+                            status: :done,
+                            data: %{activity: "alpha_build_south"}
+                          }}
+
+          assert_receive {:command,
+                          %{id: {:skill, _, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
+
+          refute_received {:jev_request, _, _}
+          refute_received {:runtime_outcome, %{status: :rejected, reason: :skill_busy}}
+
+          assert %{
+                   select: %{
+                     activities: [
+                       %{activity: "rest_at_home", result: {:interrupted, _}},
+                       %{
+                         activity: "alpha_build_south",
+                         trigger: "addressed",
+                         confidence: 0.7,
+                         result: nil
+                       }
+                     ]
+                   }
+                 } = settled(body, runtime)
+
+          NpcWorld.await(fn ->
+            life_episode?(cid, fn episode ->
+              String.contains?(
+                episode["text"] || "",
+                ~s|I did "rest_at_home" (Go home and rest.). Result: interrupted (to talk with Visitor).|
+              )
+            end)
+          end)
+        end)
+
+      assert log =~
+               "npc_dialogue_turn cid=#{cid} conversation_id=12 turn=1 speaker_id=#{cid + 1} speaker_epoch=5 event=stopped activity=\"rest_at_home\" next=\"alpha_build_south\""
+
+      assert log =~
+               ~r/npc_select cid=#{cid} trigger=addressed candidates=keep_working_and_answer,keep_working_silently,zeta_build_north,alpha_build_south,rest_at_home,speak_to:#{cid + 1} chosen=alpha_build_south confidence=0.7/
     end
 
     defp skill_step(body, call, status, reason) do
@@ -1436,7 +1566,12 @@ What just happened: Nothing new.
       send(worker, {:jev_reply, answer("guard_hut", 0.9)})
 
       assert_receive {:runtime_outcome,
-                      %{verb: :choose_activity, status: :rejected, reason: {:unknown_activity, "guard_hut"}}}
+                      %{
+                        verb: :choose_activity,
+                        status: :rejected,
+                        reason: {:unknown_activity, "guard_hut"}
+                      }}
+
       refute_received {:command, _}
     end
 

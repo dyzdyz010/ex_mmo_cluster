@@ -211,6 +211,18 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 `causal-writer-03` 在独占的新双端会话中用受控选择发起同一类追问，随后调用一次真实 Writer，保留生产请求的 `max_tokens`。台词准确询问为什么拆自己的小屋，并以记录的拆除事实为依据。A、B、NPC 自己收到同一权威发言 `695208712436984313:1`，Hindsight 回读同一记忆，两张 HUD 已逐张核对。正式日志记录 3736 输入和 182 输出 token，同供应商回执对账通过。该轮 UDP 87 → 94 → 85，4266 记录号未变，所有本轮资源已回收。前一份 `causal-writer-02` 在固定端口暂占时于准备阶段停止，验证端口可绑定后换新目录补跑。证据见 `runs/causal-writer-03/{verdict,speech-memory-proof,visual-review,semantic-review,cleanup}.json`。合计真实 Jev 3 次、真实 Writer 3 次，写作语义与独立双端写作场景通过，自主选择追问的行为仍未达标。
 
+#### 对话通道异步化（2026-11-18，取代上面“步骤边界暂停”的做法）
+
+用户 2026-11-18 定：聊天与当前活动异步，“边聊边干，除非聊的时候决定停下”；停不停由 Jev 在封闭候选里先定，写作模型只写台词。
+决策稿 [`2026-11-18-npc-dialogue-lane-decision.md`](2026-11-18-npc-dialogue-lane-decision.md)。已实现：Runtime 的对话回合与技能正交，
+候选为 `keep_working_and_answer` / `keep_working_silently` / 本轮可行活动（含来话者的 `speak_to:`，带同一会话号）；
+选活动项即预选 + 当前活动记 `interrupted` + `Tree.halt/1`，树从根重来时由预选应答。`step_owner` 步骤准入线整条删除。
+全套 623 / 19 排除，T1 改前红、改后绿（日志见决策稿 §8）。双端实机复验并入薄片四之后的场景。
+
+同日用户定模型统一用 DeepSeek（`deepseek-flash` = DeepSeek-V4.1-Flash-1017）：主检出 `.env` 已写 `NPC_JEV_*` 与 `NPC_REFLECT_*`
+（同一端点、同一把 key）；Hindsight 容器以同镜像、同卷重建为 `npc-s1g-hindsight-20261118`（`openai` provider → DeepSeek），旧容器只停未删。
+写作位置的 `NPC_REFLECT_API=openai` 入口尚待实现。薄片四（四张人格卡、真实模型）计划与驱动在本地 `.demo/observe/npc-slice4-20261118/`，用量已由用户确认。
+
 #### 三 NPC 同场与交互／后台召回
 
 D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次创建的池。回环 keep-alive 改前的 250ms 超时以及启动冲突误停已有池都已红绿，4 个相关文件共 38 项绿，见 `.demo/dev-env/logs/test-20261118T040844Z.log`。

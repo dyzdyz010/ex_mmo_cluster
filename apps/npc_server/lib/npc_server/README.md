@@ -254,8 +254,9 @@ brain: {NpcServer.Brain.Routine, %{
   `Body.observe(body).outcomes`
   含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
   `activity`、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；`result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
-  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
-  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。日计划的日志是 `npc_plan cid=<cid> event=…`（`start` / `end` / `landed` / `persist_failed` / `crashed` / `skipped`，见下文“日计划”）。
+  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟）；
+  `dialogue_turn` 是在途的对话回合（nil 或 `%{phase: :deciding | :speaking, conversation_id:, turn:, speaker_id:, speaker_epoch:, started_ms:}`，见下文“统一形态”的“对话通道”）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
+  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）、`npc_dialogue_turn`（对话回合）。日计划的日志是 `npc_plan cid=<cid> event=…`（`start` / `end` / `landed` / `persist_failed` / `crashed` / `skipped`，见下文“日计划”）。
 
 ### 注册表（`Registry`，放置阶段 M1）
 
@@ -396,7 +397,7 @@ brain: {NpcServer.Brain.Tree, %{
 
 ### 统一形态（`Trees.npc/1`、`Selector`、`Mind` 与 Life，薄片一 S1-A / S1-B）
 
-注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。说话、活动进行中的打断是后续薄片；选择不调用任何 LLM
+注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。主动说话与玩家来话的对话通道见本节末尾；选择不调用任何 LLM
 （Hindsight 服务的后台巩固用它自己的模型）；选择本身之外的模型调用只有 Life 的两处写作：反思写日记（见下文“反思”）与日计划的规划（见下文“日计划”），
 两者共用同一个写作接口，都不在选择的发问里；日计划的结果经 `Plans and promises` 一栏进入选择的 state。
 
@@ -436,7 +437,7 @@ flowchart LR
   `settler` + `life`（Social）的行为不变。Life 状态里的 `traits`（`caution` / `sociability`）统一形态不读——人格只来自人格卡，
   把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
 - **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
-  命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
+  命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选；活动进行中唯一的打断来自对话通道（玩家来话、Jev 决定停下，见下）。
 - **问谁（两种入口形状）**：`NpcServer.Jev` 的 moduledoc 是正文。缺省是 TypeSafe System One（`:answers`）：
   一问一答的 JSON，选项与判据随 `questions` 发出，应答读 `answers.activity.{choice,confidence}`；中断策略与
   harm 护栏只支持这一种。写 `NPC_JEV_API=openai` 时改走 OpenAI 兼容的 chat completions（`:openai`，本机 deepseek
@@ -597,9 +598,26 @@ flowchart LR
   `Life.observe(cid)` 照旧给出情绪原值与衰减值、`pending_episodes`、`pending_fragments`、`retained`、认识缓存、最近一次召回的成败与耗时。
 - **日志**：每次选择一行
   `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`；trigger 为 `start`（首次）、`completed` / `failed`
-  （上一项活动的结局）、`retry`（上次发问失败后重问）；`latency_ms` 是 Jev 请求，`recall_ms` 是各路记忆召回并行的墙钟。state 全文不进日志。
+  （上一项活动的结局）、`retry`（上次发问失败后重问）、`addressed`（对话回合决定停下后由预选应答的那次，见下）；`latency_ms` 是 Jev 请求，`recall_ms` 是各路记忆召回并行的墙钟。state 全文不进日志。
   技能候选另有既有的 `npc_skill_outcome`；Life 与 Hindsight 的既有日志（`npc_life_error`、`npc_life_memory_error`、`npc_hindsight_failed`）照旧。
 - **模型**：取运行环境 `TYPESAFE_MODEL`，随每行 `npc_select` 记录。模型名就是 `jev-latest`（Jev 不分版本）。
+- **对话通道**（决策稿 [`2026-11-18-npc-dialogue-lane-decision.md`](../../../../docs/10-active/cross-cutting/2026-11-18-npc-dialogue-lane-decision.md)）：
+  边聊边干，除非聊的时候决定停下。玩家定向来话（`Dialogue.direct?/2`、`speaker_kind` 0）且正有活动在做时，Runtime 起一个
+  **对话回合** worker（与技能生命周期正交：技能步骤照常投给 Body，技能结束或取消不影响回合）：读同一份心智、附来话原文，
+  在封闭候选里问 Jev（`Selector.turn_question/6`，trigger `addressed`，用量 operation `dialogue_turn_selection`）——
+  `keep_working_and_answer`（继续做并边做边答：同一 worker 接着经写作端点写一句，`Speak.reply/4`，operation `dialogue_reply_write`，
+  以 `{:dialogue, 会话号, 来话 turn}` 为号发 Body `say`、沿原会话）、`keep_working_silently`（只记日志），其后是本轮正常可行的
+  活动候选，其中来话者本人的 `speak_to:<cid>` 一定在列（目标带本次会话号，不经新话题冷却，`Dialogue.reply_candidate/2`）。
+  Jev 选了任一活动项即**停下**：正在做的活动记为 `{:interrupted, "to talk with <名字>"}`（经历照常进 Life，`Mind.result/1` 写
+  `interrupted (…)`），对树调 `Brain.Tree.halt/1`（在途技能取消、移动停下、世界事务不撤销），树从根重来的那次 `choose_activity`
+  不问 Jev、直接以预选应答（`npc_select … trigger=addressed`）；预选的 `speak_to:` 由 `speak` 技能执行，带来话的 `conversation_id`。
+  一次只有一个回合在途，再来的定向来话只记 `dropped`（它照旧进 heard 与 Life）；没有活动在做时不起回合（来话已在心智里）。
+  整个回合受 `SceneServer.Dialogue.limits().idle_ms` 一个窗口约束，超时、写作失败、Scene 拒绝只记 `failed`，不重发；会话丢失取消在途的决定。
+  观察：`Body.observe(pid).dialogue_turn`（在途回合：`phase`、`conversation_id`、`turn`、`speaker_id`、`speaker_epoch`、`started_ms`），
+  `select.activities` 里被中断的活动 `result: {:interrupted, …}`。日志
+  `npc_dialogue_turn cid= conversation_id= turn= speaker_id= speaker_epoch= event=<received|decided|said|silent|stopped|failed|dropped>`
+  （`decided` 带 `chosen= confidence= latency_ms= recall_ms=`，`said` 带 Scene 的权威编号，`stopped` 带 `activity=`（被中断的）与 `next=`，`failed` 带 `reason=`）。
+  不做：多条来话排队、NPC 之间直呼、`Brain.Llm` 形态。
 
 ### 持续扩张（`expand` 技能与 Settler 的 `expansion`，放置阶段 §7）
 
@@ -792,7 +810,8 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 ### 统一居民的模型用量
 
 release 的 `npc_model_request` JSON 事件记录六种直接调用，用 `operation` 区分 `activity_selection`、
-`gather_reply_selection`、`reflection`、`day_plan`、`speak` 和 `gather_reply_write`。按单次节点启动内的
+`dialogue_turn_selection`（对话回合问 Jev，trigger `addressed`）、`reflection`、`day_plan`、`speak` 和
+`dialogue_reply_write`（回合里边做边答的那句）。按单次节点启动内的
 `node` 与 `request_id` 配对 `started`／`finished`，再按 `cid`、操作和模型归类。下面的命令会提取这些 JSON 事件。
 
 ```sh

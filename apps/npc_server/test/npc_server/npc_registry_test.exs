@@ -1058,10 +1058,12 @@ defmodule NpcServer.NpcRegistryTest do
       assert %{"api" => "messages", "status" => "response"} = model_request(requests, "speak")
     end
 
-    @tag :gather_reply
+    # 对话通道（决策稿 2026-11-18-npc-dialogue-lane-decision.md §7 T1）：玩家定向来话时身体不停，回合 worker 问 Jev；
+    # 选“继续并答话”时写作模型写一句、沿原会话发出。Jev 替身扣着应答，期间采集照常采完第二格。
+    @tag :dialogue_turn
     @tag :model_usage
-    @tag timeout: 60_000
-    test "a registered gatherer replies to a player between steps and resumes the original gather",
+    @tag timeout: 90_000
+    test "a gatherer keeps gathering while a dialogue turn decides, then answers once in the same conversation",
          fixture do
       cells = [{21, 64, 6}, {22, 64, 6}]
       assert {:ok, _} = World.apply_edits(fixture.world, Enum.map(cells, &{&1, 11}))
@@ -1073,108 +1075,53 @@ defmodule NpcServer.NpcRegistryTest do
       line = "Stone for the house. I still need another piece."
 
       endpoint =
-        http_stub(fn
-          :post,
-          "/jev",
-          %{"questions" => %{"activity" => %{"criteria" => %{"reply" => _}}}} =
-              request ->
-            send(owner, {:reply_choice, self(), request})
+        dialogue_stub(owner, line, fn request ->
+          send(owner, {:turn_choice, self(), request})
 
-            receive do
-              :choose_reply ->
-                jev_choice("reply")
-                |> Map.put("model", "jev-1.14.0")
-                |> Map.put("usage", %{"input_tokens" => 1976, "output_tokens" => 102})
-            after
-              5_000 -> jev_choice("continue")
-            end
-
-          :post, "/jev", request ->
-            options = request["questions"]["activity"]["criteria"]
-
-            choice =
-              if Map.has_key?(options, "gather_stone"), do: "gather_stone", else: "rest_at_home"
-
-            jev_choice(choice)
-
-          :post, "/v1/messages", %{"system" => "Write one short line" <> _} = request ->
-            send(owner, {:reply_written, request})
-
-            %{
-              "stop_reason" => "end_turn",
-              "content" => [%{"type" => "text", "text" => line}],
-              "usage" => %{}
-            }
-
-          :get, path, _ ->
-            cond do
-              path =~ "/mental-models/" -> %{"content" => "I keep a steady pace at the quarry."}
-              path =~ "/operations?" -> %{"operations" => [], "total" => 0}
-              path =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
-              true -> %{}
-            end
-
-          :post, path, _ ->
-            if String.ends_with?(path, "/memories/recall"), do: %{"results" => []}, else: %{}
-
-          _, _, _ ->
-            %{}
+          receive do
+            :answer ->
+              jev_choice("keep_working_and_answer")
+              |> Map.put("model", "jev-1.14.0")
+              |> Map.put("usage", %{"input_tokens" => 1976, "output_tokens" => 102})
+          after
+            40_000 -> jev_choice("keep_working_silently")
+          end
         end)
 
-      env = %{
-        @npc_env
-        | "TYPESAFE_API_URL" => endpoint <> "/jev",
-          "NPC_REFLECT_URL" => endpoint <> "/v1/messages",
-          "NPC_LIFE_HINDSIGHT_URL" => endpoint
-      }
-
       run = fn ->
-        name = "采石居民#{speaker}"
-        [gather, rest] = @npc["activities"]
-        valid_args = %{gather["args"] | "box" => [[21, 64, 6], [22, 64, 6]], "units" => 1024}
-        params = %{@npc | "activities" => [%{gather | "args" => valid_args}, rest]}
+        {cid, body, conversation} = address_gatherer(fixture, speaker, identity, greeting)
 
-        assert {:ok, %{cid: cid, pid: body}} =
-                 NpcRegistry.put(name, %{
-                   scene_id: 1,
-                   spawn: {15.5, 66.0, 6.5},
-                   brain: "npc",
-                   params: params
-                 })
+        assert_receive {:turn_choice, turn_worker, request}, 5_000
+        criteria = request["questions"]["activity"]["criteria"]
 
-        NpcWorld.await(fn -> NpcWorld.balance(fixture.world, cid) == 512 end, 25_000)
+        assert %{
+                 "keep_working_and_answer" => "Keep doing gather_stone and answer 访客" <> _,
+                 "keep_working_silently" => "Keep doing gather_stone and do not answer.",
+                 "gather_stone" => _,
+                 "rest_at_home" => _
+               } = criteria
 
-        assert {:ok, %{conversation_id: conversation, turn: 1}} =
-                 Scene.say(fixture.scene, identity, %{
-                   request_id: 1,
-                   target_id: cid,
-                   conversation_id: 0,
-                   text: greeting
-                 })
-
-        assert_receive {:reply_choice, selector, request}, 3_000
-
-        assert MapSet.new(Map.keys(request["questions"]["activity"]["criteria"])) ==
-                 MapSet.new(["continue", "reply"])
-
+        assert criteria["speak_to:#{speaker}"] =~ "Stop what I am doing, go over to 访客"
         assert request["state"] =~ greeting
         assert request["state"] =~ "Lin, a builder"
 
+        # 回合还没决定（替身扣着应答），采集照常采完第二格：采集终态在回复之前。
+        assert %{verb: :gather, status: :done, data: %{mined: 2, gained: 1024}} =
+                 NpcWorld.await(fn -> gather_outcome(body) end, 25_000)
+
+        assert 1024 == NpcWorld.balance(fixture.world, cid)
+
         assert %{
-                 call: call,
                  phase: :deciding,
-                 settled_step: settled_step,
-                 held_step: held_step,
                  conversation_id: ^conversation,
-                 turn: 1
-               } = Body.observe(body).skill_boundary
+                 turn: 1,
+                 speaker_id: ^speaker,
+                 speaker_epoch: _,
+                 started_ms: _
+               } = Body.observe(body).dialogue_turn
 
-        assert is_integer(settled_step) and held_step == settled_step + 1
-        assert 512 == NpcWorld.balance(fixture.world, cid)
-        refute Enum.any?(Body.observe(body).outcomes, &(&1.id == {:skill, call, held_step}))
-
-        send(selector, :choose_reply)
-        assert_receive {:reply_written, %{"messages" => [%{"content" => user}]}}, 3_000
+        send(turn_worker, :answer)
+        assert_receive {:line_written, %{"messages" => [%{"content" => user}]}}, 5_000
         assert Jason.decode!(user)["character_state"] == request["state"]
 
         assert_receive {:mmo_reliable, ^identity, 1,
@@ -1185,48 +1132,125 @@ defmodule NpcServer.NpcRegistryTest do
                           target_id: ^speaker,
                           text: ^line
                         }},
-                       4_000
+                       5_000
 
-        assert %{
-                 verb: :gather,
-                 status: :done,
-                 data: %{mined: 2, gained: 1024}
-               } = outcome(body, call)
+        refute_receive {:mmo_reliable, ^identity, 1, %WireSession.Speech{speaker_id: ^cid}}, 500
 
+        # say 以回合为号回到 Runtime，在采集终态之后（Outcome 新在前）；回合随之结束。
+        assert %{status: :done} = outcome(body, {:dialogue, conversation, 1})
         outcomes = Body.observe(body).outcomes
-        ids = Enum.reverse(Enum.map(outcomes, & &1.id))
-        reply_id = {:skill, call, {:reply, conversation, 1}}
-        reply_index = Enum.find_index(ids, &(&1 == reply_id))
-        resumed_index = Enum.find_index(ids, &(&1 == {:skill, call, held_step}))
-        assert is_integer(reply_index) and is_integer(resumed_index)
-        assert reply_index < resumed_index
-        assert 1024 == NpcWorld.balance(fixture.world, cid)
+        reply_index = Enum.find_index(outcomes, &(&1.id == {:dialogue, conversation, 1}))
+        gather_index = Enum.find_index(outcomes, &(&1.verb == :gather))
+        assert reply_index < gather_index
+        NpcWorld.await(fn -> Body.observe(body).dialogue_turn == nil end)
 
-        NpcWorld.await(fn ->
-          row = DataService.NpcMemory.get(cid, "life", "state")
-          episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
+        NpcWorld.await(fn -> life_episode?(cid, &match?(%{"speech" => %{"turn" => 2}}, &1)) end)
 
-          Enum.any?(
-            episodes,
-            &match?(%{"speech" => %{"conversation_id" => ^conversation, "turn" => 2}}, &1)
-          )
-        end)
-
-        assert :ok = NpcRegistry.remove(name)
+        assert :ok = NpcRegistry.remove("采石居民#{speaker}")
         cid
       end
 
-      requests = with_model_usage(Map.put(env, "NPC_JEV_API", nil), run)
+      requests = with_model_usage(dialogue_env(endpoint), run)
 
       assert %{
                "api" => "answers",
-               "trigger" => "gather_reply",
+               "trigger" => "addressed",
                "response_model" => "jev-1.14.0",
                "usage" => %{"input_tokens" => 1976, "output_tokens" => 102}
-             } = model_request(requests, "gather_reply_selection")
+             } = model_request(requests, "dialogue_turn_selection")
 
       assert %{"api" => "messages", "status" => "response", "usage" => nil} =
-               model_request(requests, "gather_reply_write")
+               model_request(requests, "dialogue_reply_write")
+    end
+
+    # 决策稿 §7 T2：回合选了来话者的 `speak_to:` → 采集被取消（cancelled）、下一个 choose_activity 不问 Jev 而以预选应答、
+    # `speak` 在同一会话回复、被中断的采集作为 interrupted 经历进 Life。
+    @tag :dialogue_turn
+    @tag :model_usage
+    @tag timeout: 120_000
+    test "a gatherer stops to talk when the turn picks the addresser: cancel, preselect, speak in the same conversation",
+         fixture do
+      cells = [{21, 64, 6}, {22, 64, 6}]
+      assert {:ok, _} = World.apply_edits(fixture.world, Enum.map(cells, &{&1, 11}))
+
+      speaker = System.unique_integer([:positive]) + 300_000
+      identity = join_dialogue_player(fixture, speaker)
+      owner = self()
+      greeting = "Could you come over here for a moment?"
+      line = "Coming. What do you need?"
+
+      endpoint =
+        dialogue_stub(owner, line, fn request ->
+          send(owner, {:turn_choice, self(), request})
+          jev_choice("speak_to:#{speaker}")
+        end)
+
+      run = fn ->
+        {cid, body, conversation} = address_gatherer(fixture, speaker, identity, greeting)
+
+        assert_receive {:turn_choice, _, request}, 5_000
+        assert request["questions"]["activity"]["criteria"]["speak_to:#{speaker}"] =~ "访客"
+
+        # 停下：采集以 cancelled 结束；下一个 choose_activity 由预选应答，目标带来话的会话号。
+        assert %{verb: :gather, status: :rejected, reason: :cancelled} =
+                 NpcWorld.await(fn -> gather_outcome(body) end, 20_000)
+
+        option = "speak_to:#{speaker}"
+
+        assert %{data: %{speech: %{"entity_id" => ^speaker, "conversation_id" => ^conversation}}} =
+                 NpcWorld.await(fn ->
+                   Enum.find(
+                     Body.observe(body).outcomes,
+                     &match?(%{verb: :choose_activity, data: %{activity: ^option}}, &1)
+                   )
+                 end)
+
+        # 写作用的是回合那次的心智快照（含来话）；回复在同一会话。
+        assert_receive {:line_written, %{"messages" => [%{"content" => user}]}}, 20_000
+        assert Jason.decode!(user)["character_state"] == request["state"]
+
+        assert_receive {:mmo_reliable, ^identity, 1,
+                        %WireSession.Speech{
+                          conversation_id: ^conversation,
+                          turn: 2,
+                          speaker_id: ^cid,
+                          target_id: ^speaker,
+                          text: ^line
+                        }},
+                       20_000
+
+        assert %{
+                 activities: [
+                   %{activity: "gather_stone", result: {:interrupted, "to talk with 访客"}},
+                   %{activity: ^option, trigger: "addressed", result: nil} | _
+                 ]
+               } =
+                 NpcWorld.await(fn ->
+                   select = Body.observe(body).select
+                   if Enum.any?(select.activities, &(&1.activity == option)), do: select
+                 end)
+
+        NpcWorld.await(fn ->
+          life_episode?(cid, fn episode ->
+            String.contains?(episode["text"] || "", ~s|I did "gather_stone"|) and
+              String.contains?(episode["text"], "Result: interrupted (to talk with 访客)")
+          end)
+        end)
+
+        assert :ok = NpcRegistry.remove("采石居民#{speaker}")
+        cid
+      end
+
+      requests = with_model_usage(dialogue_env(endpoint), run)
+
+      # 回合的发问与说话的写作之间没有活动选择的 Jev 请求（预选应答不问 Jev）。
+      assert %{"request_id" => turn_id} = model_request(requests, "dialogue_turn_selection")
+      assert %{"request_id" => speak_id} = model_request(requests, "speak")
+
+      refute Enum.any?(
+               requests,
+               &(&1["operation"] == "activity_selection" and &1["request_id"] in turn_id..speak_id)
+             )
     end
 
     # 选择层换成本机 deepseek 时走的那条路：`NPC_JEV_API=openai` + 一个真实的 chat completions 端点。
@@ -1535,6 +1559,93 @@ defmodule NpcServer.NpcRegistryTest do
     do: %{
       "answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.9}}
     }
+
+  # 只测试：对话通道用例共用的 HTTP 替身。对话回合的 Jev 请求（候选里有 `keep_working_and_answer`）交给 `turn`；
+  # 活动选择首次选采石、之后选回家（避免采完再采）；写作端点回 `line`；Hindsight 回空结果。
+  defp dialogue_stub(owner, line, turn) do
+    http_stub(fn
+      :post,
+      "/jev",
+      %{"questions" => %{"activity" => %{"criteria" => %{"keep_working_and_answer" => _}}}} =
+          request ->
+        turn.(request)
+
+      :post, "/jev", request ->
+        if request["state"] =~ "Recent activities: None yet.",
+          do: jev_choice("gather_stone"),
+          else: jev_choice("rest_at_home")
+
+      :post, "/v1/messages", %{"system" => "Write one short line" <> _} = request ->
+        send(owner, {:line_written, request})
+
+        %{
+          "stop_reason" => "end_turn",
+          "content" => [%{"type" => "text", "text" => line}],
+          "usage" => %{}
+        }
+
+      :get, path, _ ->
+        cond do
+          path =~ "/mental-models/" -> %{"content" => "I keep a steady pace at the quarry."}
+          path =~ "/operations?" -> %{"operations" => [], "total" => 0}
+          path =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
+          true -> %{}
+        end
+
+      :post, path, _ ->
+        if String.ends_with?(path, "/memories/recall"), do: %{"results" => []}, else: %{}
+
+      _, _, _ ->
+        %{}
+    end)
+  end
+
+  defp dialogue_env(endpoint) do
+    %{
+      @npc_env
+      | "TYPESAFE_API_URL" => endpoint <> "/jev",
+        "NPC_REFLECT_URL" => endpoint <> "/v1/messages",
+        "NPC_LIFE_HINDSIGHT_URL" => endpoint
+    }
+    |> Map.put("NPC_JEV_API", nil)
+  end
+
+  # 只测试：登记一个采两格石料的居民，等第一格到账后由玩家定向来话；返回 `{cid, body, 会话号}`。
+  defp address_gatherer(fixture, speaker, identity, greeting) do
+    [gather, rest] = @npc["activities"]
+    valid_args = %{gather["args"] | "box" => [[21, 64, 6], [22, 64, 6]], "units" => 1024}
+    params = %{@npc | "activities" => [%{gather | "args" => valid_args}, rest]}
+
+    assert {:ok, %{cid: cid, pid: body}} =
+             NpcRegistry.put("采石居民#{speaker}", %{
+               scene_id: 1,
+               spawn: {15.5, 66.0, 6.5},
+               brain: "npc",
+               params: params
+             })
+
+    NpcWorld.await(fn -> NpcWorld.balance(fixture.world, cid) == 512 end, 25_000)
+
+    assert {:ok, %{conversation_id: conversation, turn: 1}} =
+             Scene.say(fixture.scene, identity, %{
+               request_id: 1,
+               target_id: cid,
+               conversation_id: 0,
+               text: greeting
+             })
+
+    {cid, body, conversation}
+  end
+
+  defp gather_outcome(body),
+    do: Enum.find(Body.observe(body).outcomes, &(&1.verb == :gather))
+
+  # Life 持久行里（未封存尾部与已封存片段）有没有满足条件的经历。
+  defp life_episode?(cid, predicate) do
+    row = DataService.NpcMemory.get(cid, "life", "state")
+    episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
+    Enum.any?(episodes, predicate)
+  end
 
   defp in_scene?(scene, cid),
     do: Enum.any?(Scene.observe(scene).characters, &(&1.entity_id == cid))

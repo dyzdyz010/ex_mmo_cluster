@@ -24,7 +24,6 @@ defmodule NpcServer.Skill do
 
   @doc """
   技能内部的一步原子动作：编下一个步号，以 `{:skill, 调用号, 步号}` 交给 Body，等这一步的 Outcome（上限 `body_timeout/0`）。
-  Runtime 管理准入的调用带 `step_owner`，先把同一条命令交给 Runtime；Body 仍裁决实际动作。
   `state` 是技能自己的状态，至少有 `body`、`call`（调用号）与 `step`（上一个步号，从 0 起）。可选 `space`：一个技能在自己的
   调用里组合另一个技能（如 expand 调 gather）时，给被组合的那次一个步号命名空间，步号写成 `{space, n}`，同一调用号下的
   内部 id 不重复（Runtime 只按调用号路由，步号原样还给 worker）。返回 `{:ok, data, state}` 或 `{:error, 原因, state}`。
@@ -39,12 +38,7 @@ defmodule NpcServer.Skill do
         space -> {space, step}
       end
 
-    command = Map.put(command, :id, {:skill, state.call, key})
-
-    case Map.get(state, :step_owner) do
-      nil -> NpcServer.Body.command(state.body, command)
-      owner -> send(owner, {:skill_step, self(), command})
-    end
+    NpcServer.Body.command(state.body, Map.put(command, :id, {:skill, state.call, key}))
 
     receive do
       {:outcome, %{id: ^key, status: :done, data: data}} -> {:ok, data, state}

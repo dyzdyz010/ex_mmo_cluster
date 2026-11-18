@@ -29,6 +29,26 @@ defmodule NpcServer.Dialogue do
     end
   end
 
+  @doc """
+  对话回合里“放下手头的事去跟来话者谈”的说话候选（`NpcServer.Selector.turn_question/6`）：目标是来话者本人，带本次
+  `conversation_id`（回复仍在同一会话里，不是新话题，所以不经 Scene 的新话题冷却）；候选名与 `topic_candidates/2` 同一避让规则。
+  """
+  def reply_candidate(registered, speech) do
+    name = State.person_name(speech.speaker_name)
+
+    %{
+      name: vacant_name("speak_to:#{speech.speaker_id}", MapSet.new(registered, & &1.name)),
+      criterion: "Stop what I am doing, go over to #{name} and talk with them.",
+      place_name: nil,
+      target: %{
+        "entity_id" => speech.speaker_id,
+        "entity_epoch" => speech.speaker_epoch,
+        "name" => name,
+        "conversation_id" => speech.conversation_id
+      }
+    }
+  end
+
   defp vacant_name(name, names) do
     if MapSet.member?(names, name), do: vacant_name(name <> "_", names), else: name
   end

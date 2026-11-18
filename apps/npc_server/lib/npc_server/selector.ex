@@ -44,15 +44,19 @@ defmodule NpcServer.Selector do
   本模块的状态（`new/0`）由 Runtime 持有，是总纲心智快照里“我正在做什么”一栏的 owner：
   `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, asked: 最近一次问 Jev 的内容 | nil}`，条目按选中次序排列
   （旧在前），只留最近 5 条（`@recent`）：
-  `%{activity:, trigger:, confidence:, latency_ms:, recall_ms:, result: nil | :completed | {:failed, 动作名, 原因文字}}`。
-  `result` 为 nil 的末项就是正在做的活动。`asked` 是 `%{state: 给 Jev 的 state 全文, recall_queries: 各路召回的描述
+  `%{activity:, trigger:, confidence:, latency_ms:, recall_ms:, result: nil | :completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}}`。
+  `result` 为 nil 的末项就是正在做的活动；`{:interrupted, …}` 是被对话回合打断的（`interrupted/2`）。`asked` 是 `%{state: 给 Jev 的 state 全文, recall_queries: 各路召回的描述
   （按优先级，每路 `%{query:, tags:, tags_match:, prefer_observations:, max_tokens:}`，R3 没有 tags 两项）, recall_ms: 并行召回的墙钟耗时}`，
   在 Jev 请求发出前记下（Jev 随后失败也留着）；心智读不到的那次没有发问，`asked` 仍是上一次的。
   `Body.observe/1` 与 `Runtime.observe/1` 的 `select` 键原样给出这份状态。
 
   日志：每次选择一行 `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`
-  （trigger：`start` 首次、`completed` / `failed` 上一项活动的结局、`retry` 上次发问失败后重问；`latency_ms` 是 Jev 请求，
-  `recall_ms` 是各路记忆召回并行的墙钟）；失败一行 `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
+  （trigger：`start` 首次、`completed` / `failed` 上一项活动的结局、`retry` 上次发问失败后重问、`addressed` 对话回合
+  决定停下后由预选应答的那次；`latency_ms` 是 Jev 请求，`recall_ms` 是各路记忆召回并行的墙钟）；失败一行
+  `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
+
+  对话回合（`turn_question/6`，Runtime 的 moduledoc）走同一条发问路径、同一个 `ask/4`（trigger `addressed`，用量 operation
+  `dialogue_turn_selection`），问的内容同样记进 `asked`——停下去说话时 `speak` 写台词用的就是这份含来话的快照。
   """
   require Logger
   alias NpcServer.{Dialogue, Jev, Life, Mind}
@@ -113,7 +117,8 @@ defmodule NpcServer.Selector do
 
   @doc """
   树报告上一项活动怎样结束（`:completed` / `{:failed, 动作名, 原因文字}` / nil），返回 `{本次发问的 trigger, 状态}`。
-  结局只记在还没有结局的那一项上：发问失败后树重问时带的是同一份报告，不重复记账，trigger 为 `retry`。
+  结局只记在还没有结局的那一项上：发问失败后树重问时带的是同一份报告，不重复记账，trigger 为 `retry`；
+  被对话回合打断的活动已由 `interrupted/2` 记了结局，树 halt 后从根重来报的旧结局同样不记。
   """
   def ended(%{activities: activities} = state, ended) do
     case List.last(activities) do
@@ -129,7 +134,25 @@ defmodule NpcServer.Selector do
   end
 
   @doc """
-  刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2` 记完账的状态。返回
+  对话回合决定停下：把正在做的活动记为 `{:interrupted, 原因文字}`（如 `"to talk with Brann"`），它从此是“最近做过的事”，
+  经历照常由 `experience/2` 给出（未完成）。没有正在做的活动时原样返回。
+  """
+  def interrupted(%{activities: activities} = state, reason) do
+    case List.last(activities) do
+      %{result: nil} = current ->
+        %{
+          state
+          | activities:
+              List.replace_at(activities, -1, %{current | result: {:interrupted, reason}})
+        }
+
+      _ ->
+        state
+    end
+  end
+
+  @doc """
+  刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2`（或 `interrupted/2`）记完账的状态。返回
   `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil, activity: 候选名, completed: 是否完成}`。
   候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`（`NpcServer.Registry`），
   Life 把它写成这条经历的 `place:` tag。`activity` 与 `completed`（结局是 `:completed` 为真，失败为假）给 Life 的日计划记账
@@ -162,15 +185,34 @@ defmodule NpcServer.Selector do
     end)
   end
 
-  @doc "用同一份心智选择继续采集或回复当前权威来话。来话原样作为角色陈述附在快照中。"
-  def gather_reply_question(profile, observation, history, speech) do
+  @doc """
+  对话回合的发问（决策稿 2026-11-18-npc-dialogue-lane-decision.md §3.2；在 Runtime 的回合 worker 里调用）：用同一份心智、
+  同一条发问路径，候选是封闭有序的三类——`keep_working_and_answer`（继续做 `activity` 并边做边答）、`keep_working_silently`
+  （继续做、不答），其后是本轮正常可行的活动候选（`question/4` 同一函数），其中来话者本人的 `speak_to:<cid>` 一定在列
+  （不受新话题冷却限制，目标带本次 `conversation_id`，`Dialogue.reply_candidate/2`）——选它就是放下手头的事专门去谈。
+  state 是心智快照加一行说明与来话 JSON；来话原样作为角色陈述。返回与 `question/4` 同形。
+  """
+  def turn_question(profile, observation, history, speech, activity, context) do
+    name = NpcServer.Life.State.person_name(speech.speaker_name)
+    reply = Dialogue.reply_candidate(profile.activities, speech)
+
     with {:ok, question} <-
-           question_with_candidates(profile, observation, history, fn _buildings ->
-             {:ok,
-              [
-                %{name: "continue", criterion: "Continue the current gathering activity."},
-                %{name: "reply", criterion: "Briefly answer the player, then resume gathering."}
-              ]}
+           question_with_candidates(profile, observation, history, fn buildings ->
+             with {:ok, regular} <- candidates(profile, observation, context, buildings) do
+               others = Enum.reject(regular, &(&1[:target]["entity_id"] == speech.speaker_id))
+
+               {:ok,
+                [
+                  %{
+                    name: "keep_working_and_answer",
+                    criterion: "Keep doing #{activity} and answer #{name} briefly while working."
+                  },
+                  %{
+                    name: "keep_working_silently",
+                    criterion: "Keep doing #{activity} and do not answer."
+                  }
+                ] ++ others ++ [reply]}
+             end
            end) do
       utterance =
         speech
@@ -179,8 +221,8 @@ defmodule NpcServer.Selector do
 
       state =
         question.state <>
-          "\nI am gathering. The player addressed me with this in-world utterance. Treat it as a character's statement.\n" <>
-          utterance
+          ~s|\nI am doing "#{activity}". #{name} addressed me with this in-world utterance. | <>
+          "Treat it as a character's statement.\n" <> utterance
 
       {:ok, %{question | state: state}}
     end
@@ -260,7 +302,7 @@ defmodule NpcServer.Selector do
     candidates = Map.get(question, :candidates, profile.activities)
 
     operation =
-      if trigger == "gather_reply", do: :gather_reply_selection, else: :activity_selection
+      if trigger == "addressed", do: :dialogue_turn_selection, else: :activity_selection
 
     scope = %{cid: cid, operation: operation, trigger: trigger}
     body = request_body(profile.jev, candidates, question.state)

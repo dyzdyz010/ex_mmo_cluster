@@ -255,10 +255,15 @@ defmodule NpcServer.Mind do
 
   def person(:distrusted, _observation), do: {:error, :life_not_ready}
 
-  @doc "一项活动的结局的英文写法（“最近做过的事”一栏与活动经历共用）。"
-  @spec result(:completed | {:failed, String.t(), String.t()}) :: String.t()
+  @doc """
+  一项活动的结局的英文写法（“最近做过的事”一栏与活动经历共用）：`completed`、`failed (动作: 原因)`，
+  或被对话回合打断的 `interrupted (原因文字)`（`NpcServer.Selector.interrupted/2`）。
+  """
+  @spec result(:completed | {:failed, String.t(), String.t()} | {:interrupted, String.t()}) ::
+          String.t()
   def result(:completed), do: "completed"
   def result({:failed, act, reason}), do: "failed (#{act}: #{reason})"
+  def result({:interrupted, reason}), do: "interrupted (#{reason})"
 
   @doc """
   反思用的“此刻”一块（`Right now:` 标题之后的三行，内容规范 §10.11、离线脚本 `s1x2_reflect.py` 的 `right_now_block`）：
