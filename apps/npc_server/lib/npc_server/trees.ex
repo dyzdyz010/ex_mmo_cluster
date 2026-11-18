@@ -135,9 +135,16 @@ defmodule NpcServer.Trees do
     choose = {:act, "choose_activity", &ended_args/1, store: :choice}
 
     # 根下各分支按黑板取用：只有名字等于所选活动的分支往下走；它失败时其余分支的守卫都为假，整段失败。
-    branches =
+    registered =
       for activity <- profile.activities do
         {:seq, [{:cond, &chosen?(&1, &2, activity.name)}, run(activity.run)]}
+      end
+
+    branches =
+      if get_in(profile, [:skills, :speak]) do
+        [{:seq, [{:cond, &speaking?/2}, {:act, "speak", &speech_args/2}]} | registered]
+      else
+        registered
       end
 
     round = {:seq, [choose, {:succeed, {:sel, branches}, store: :ended}]}
@@ -160,6 +167,11 @@ defmodule NpcServer.Trees do
   end
 
   defp chosen?(%{choice: %{activity: chosen}}, _observation, name), do: chosen == name
+
+  defp speaking?(%{choice: %{speech: _}}, _observation), do: true
+  defp speaking?(_blackboard, _observation), do: false
+
+  defp speech_args(%{choice: %{speech: args}}, _observation), do: args
 
   # 上一项活动怎样结束：还没有选中过任何活动 → 都是 null；发问失败后重问时黑板没变，报的是同一份（选择器不重复记账）。
   defp ended_args(%{choice: nil}), do: %{"ended" => nil, "act" => nil, "reason" => nil}

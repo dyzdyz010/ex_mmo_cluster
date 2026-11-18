@@ -41,6 +41,7 @@ defmodule NpcServer.Runtime do
 
       loop(%{
         body: body,
+        context: context,
         backend: backend,
         mind: backend.init(profile),
         life: life,
@@ -344,7 +345,8 @@ defmodule NpcServer.Runtime do
         fn ->
           result =
             with :ok <- record_experience(life, experience),
-                 {:ok, question} <- Selector.question(profile, observation, history) do
+                 {:ok, question} <-
+                   Selector.question(profile, observation, history, state.context) do
               send(parent, {:select_asked, question})
               Selector.ask(profile, question, trigger)
             end
@@ -374,8 +376,13 @@ defmodule NpcServer.Runtime do
           # 新活动从这里开始：Life 从此记它期间谁靠近过，结束时写进这项活动的经历。
           NpcServer.Life.activity_started(state.life)
 
+          data = %{activity: selection.activity}
+
+          data =
+            if selection[:topic], do: Map.put(data, :speech, selection.topic.target), else: data
+
           {Selector.chose(state.select, selection, state.profile, cid),
-           %{status: :done, reason: nil, data: %{activity: selection.activity}}}
+           %{status: :done, reason: nil, data: data}}
 
         {:error, reason} ->
           {Selector.failed(state.select, reason, cid),
@@ -400,7 +407,8 @@ defmodule NpcServer.Runtime do
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
 
   defp start_skill(%{skill: nil} = state, command) do
-    active = Skills.start(state.body, command, state.profile, state.observation)
+    mind_snapshot = if command.skill == :speak, do: get_in(state.select, [:asked, :state])
+    active = Skills.start(state.body, command, state.profile, state.observation, mind_snapshot)
 
     %{
       state

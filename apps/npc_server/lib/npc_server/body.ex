@@ -1055,7 +1055,11 @@ defmodule NpcServer.Body do
 
     if is_integer(target) and is_integer(conversation) do
       seq = state.speech_seq + 1
-      request = %{request_id: seq, target_id: target, conversation_id: conversation, text: text}
+
+      request =
+        %{request_id: seq, target_id: target, conversation_id: conversation, text: text}
+        |> Map.merge(Map.take(command, [:target_epoch]))
+
       submit(state, id, {:say, request})
       %{state | speech_seq: seq, world: Map.put(state.world, id, :say)}
     else

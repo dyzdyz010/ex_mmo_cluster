@@ -423,8 +423,12 @@ flowchart LR
   n tick，60 Hz），或 `{"person": "distrusted", "stay_ticks": n}`（选中时从当时的观察与 Life 信任里选附近信任 ≤ −0.2 中最低的人，
   `Mind.person/2`，travel 走到他身边再待 n tick；选不到人以 `failed (travel: nobody_distrusted)` 结束，Life 状态还没到是
   `life_not_ready`）。每个候选还可以带可选的 `"place_name"`（这项活动在哪里的名字，非空字符串）：只进记忆——活动结束时成为
-  那条经历的 `place:<地名>` tag，召回按地点调取；不进给 Jev 的候选，也不决定去哪里。技能表由候选推出，不另写 `skills`。
+  那条经历的 `place:<地名>` tag，召回按地点调取。工作技能表由登记候选推出，统一形态另外提供主动说话，无需另写 `skills`。
   坏人格卡、空候选表、重名候选、未知技能、未知选择器、place 与 person 同写、地名为空或不是字符串在 `put/2` 被拒并说明原因。
+- **主动说话**：从本轮身体观察与 Scene 此刻同场、可听、当前话题资格的对象交集中产生候选。Jev 选中后，`speak` 携带该角色的 ID 与实体代次，
+  复用 Travel 走近它，由 `NPC_REFLECT_*` 写作端点按同一份心智写一句。Scene 在提交当刻重新裁决代次、范围、冷却与文本，接纳后沿既有
+  Speech 链路送达目标及同场旁听者；Life 依据本人权威回声记忆。CLI 可从 `Body.observe/1` 查目标、选择与技能终态，从 Scene 的
+  `dialogue.result` 及客户端 `Voxim.Dialogue.Status` 对账。日计划仍按登记活动记账。
 - **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
   `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
   只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；

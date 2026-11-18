@@ -322,8 +322,12 @@ Global system：`Scene.say(scene, identity, request)` 是玩家与 NPC 共用的
 Scene 使用已收到的权威 observation，不向 Player 同步查询坐标；`dialogue_available` 由 Player
 投影 Ready、移交、失败与位置状态，不复用只服务 AOI 的 `active`。kind / name 从鉴权角色的
 kind / profile 一次保存，随正式移交 cut 保留。每次发言重算听众并检查指定目标；会话参与资格按
-完整会话 identity 记录，离场删除，重连不可使用旧会话的听见资格。NPC 新起冷却按 cid 保留至到期，
+完整会话 identity 记录，离场删除，重连不可使用旧会话的听见资格。统一 NPC 的内部定向请求携带目标代次，
+Scene 用同一份角色表裁决目标的 ID、代次和范围。代次也进入请求去重凭证。NPC 新起冷却按 cid 保留至到期，
 同 Scene 重连不能绕过。Scene 重启及跨 Scene 移交不携带历史对话状态；旧会话号在目标 Scene 明确失效。
+`Scene.dialogue_topic_targets/2` 在同一份 Scene 成员缓存上检查新话题冷却、Ready 和听觉距离，返回按角色 ID 与代次排序的目标。
+AOI 可以复制邻区人物。发言目标来自本 Scene 的可用成员，提交时 `Scene.say/3` 再按当时的权威位置和身份裁决。
+空间查询由交互的 owner 筛选，执行另行接纳，这里沿用 [Epic Smart Objects 的运行时查询与使用流程](https://dev.epicgames.com/documentation/en-us/unreal-engine/smart-objects-in-unreal-engine---overview#runtime-flow)。
 
 同身份只缓存最近一次请求及结果，同时保留请求高水位。同号不同内容拒绝，旧号拒绝；原结果重放
 不广播、不产生新轮次。去重在角色身份接纳后执行，Ready 等业务拒绝也会缓存，因此调用方再次发言
@@ -351,7 +355,7 @@ speaker_observation_tick，以及 Scene 的 server_tick 裁决水位，可逐笔
 
 Test-only：`dialogue_test.exs` 用受控时钟证明文本、三维距离、限频、轮次、身份、去重及到期边界。
 `dialogue_scene_test.exs` 用真实 Scene/Player/NIF、公开 join/Ready/移动输入与正式 Outbound，
-证明近远听众、并发顺序、离场重连、移交拒绝和无后续发言的主动退休；canonical 快照与 BodyStore
+证明近远听众、新话题目标的 Ready 与冷却边界、并发顺序、离场重连、移交拒绝和无后续发言的主动退休；canonical 快照与 BodyStore
 是每次测试独占替身，计时器测试仅读取真实 timer ref 并提前交付到期信号，不注入角色/对话状态。
 这些测试不证明 QUIC、真实模型或客户端 UI。扩大到既有 Scene/Player 两个测试文件的理由是新增了
 共享 observation 投影与 Scene 生命周期状态，需要检测移动/Ready/重连行为受到的直接影响。

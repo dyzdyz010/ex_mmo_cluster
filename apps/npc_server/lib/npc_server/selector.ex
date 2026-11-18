@@ -13,7 +13,7 @@ defmodule NpcServer.Selector do
     T->>R: choose_activity（带上一项活动怎样结束）
     R->>R: ended/2 记账；结束的活动作为经历交给 Life
     R->>W: 起 worker
-    W->>L: question/3：Life.mind（情绪、近期经历、认识 + 按处境并行的多路召回）
+    W->>L: question/4：Life.mind（情绪、近期经历、认识 + 按处境并行的多路召回）
     L-->>W: 视图（读不到 → 这次选择失败，不问 Jev）
     W-->>R: 这次问的是什么（state 全文、各路召回与耗时）
     W->>J: ask/3：HTTPS（心智快照 + 有序候选）
@@ -26,9 +26,8 @@ defmodule NpcServer.Selector do
 
   - **什么时候问**：一项活动结束（成功或失败）回到树根时。树发 `choose_activity` 命令（能力条目 `entries/1`），
     参数是上一项活动怎样结束。Runtime 在独立 worker 里发问，不阻塞权威帧；等应答期间树停在这一步，身体原地不动。
-  - **候选**：`profile.activities`，有序列表 `[%{name:, criterion:, run:, place_name:}]`（注册参数给出，见 `NpcServer.Registry`）。
-    次序由列表承载，原样进请求体。当前没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据
-    （材料单、地块占用都要另查 World），做不成的候选由执行失败后写进“最近做过的事”来体现。
+  - **候选**：先放 `profile.activities` 登记的有序列表，再从同一轮观察生成说话选项，与当前 Scene 允许开新话题的目标取交集。
+    说话选项带冻结的目标身份；应答只能选本轮发出的项。静态工作候选按登记原样发送，执行终态写入“最近做过的事”。
   - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏；最近一轮反思写成了“自己”时多一栏
     `What I have come to think`，栏表见 `Mind` 的 moduledoc），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
     近期经历、认识，并按处境分路召回（附近的人、我的建筑、未了与感受，`Mind.recall_queries/2`；各路在发问 worker 里并行，
@@ -56,7 +55,8 @@ defmodule NpcServer.Selector do
   `recall_ms` 是各路记忆召回并行的墙钟）；失败一行 `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
   """
   require Logger
-  alias NpcServer.{Jev, Life, Mind}
+  alias NpcServer.{Dialogue, Jev, Life, Mind}
+  alias SceneServer.Movement.Scene
 
   # 留多少条最近的活动（给 Jev 的“最近做过的事”与 observe 共用）。
   @recent 5
@@ -136,10 +136,10 @@ defmodule NpcServer.Selector do
   （`NpcServer.Life.DayPlan.record_activity/4`：只记完成的）。
   """
   def experience(state, profile) do
-    %{activity: name, result: result} = List.last(history(state))
+    %{activity: name, result: result} = ended = List.last(history(state))
 
     %{criterion: criterion, place_name: place} =
-      Enum.find(profile.activities, &(&1.name == name))
+      ended[:topic] || Enum.find(profile.activities, &(&1.name == name))
 
     %{
       text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|,
@@ -151,22 +151,25 @@ defmodule NpcServer.Selector do
 
   @doc """
   这次要问 Jev 的内容（在 Runtime 的 worker 里调用，会阻塞到 Life 应答与各路召回结束）：
-  `{:ok, %{state: 心智快照的英文转写, recall_queries: 各路召回的描述, recall_ms: 并行召回的墙钟耗时}}`。
+  `{:ok, %{state: 心智快照的英文转写, recall_queries: 各路召回的描述, recall_ms: 并行召回的墙钟耗时, candidates: 本轮候选}}`。
   各路召回由 `Mind.recall_queries/2` 按此刻的观察与 Life 记得的建筑给出（观察里 Runtime 带的 Life 规范状态的 `"buildings"`）。
   心智读不到 → `{:error, {:mind_unavailable, 原因}}`（原因见 `NpcServer.Life.mind/2`；观察里还没有 Life 的规范状态时是
   `:life_not_ready`），这次不发问。
   """
-  def question(profile, observation, history) do
+  def question(profile, observation, history, context) do
     with {:ok, buildings} <- remembered_buildings(observation),
          queries = Mind.recall_queries(observation, buildings),
-         {:ok, life} <- Life.mind(observation.self.entity_id, queries) do
+         {:ok, life} <- Life.mind(observation.self.entity_id, queries),
+         {:ok, candidates} <- candidates(profile, observation, context) do
       {:ok,
        %{
          state: Mind.text(Mind.snapshot(profile, observation, history, life)),
          recall_queries: queries,
-         recall_ms: life.recall_ms
+         recall_ms: life.recall_ms,
+         candidates: candidates
        }}
     else
+      {:error, {:dialogue_unavailable, _}} = error -> error
       {:error, reason} -> {:error, {:mind_unavailable, reason}}
     end
   end
@@ -175,44 +178,76 @@ defmodule NpcServer.Selector do
   defp remembered_buildings(%{life: %{state: state}}), do: {:ok, state["buildings"]}
   defp remembered_buildings(_observation), do: {:error, :life_not_ready}
 
+  defp candidates(%{activities: registered, skills: %{speak: _}}, observation, context) do
+    case Dialogue.topic_candidates(registered, observation) do
+      [] ->
+        {:ok, registered}
+
+      topics ->
+        scene_id = Map.get(observation.self, :scene_id, context.scene_id)
+
+        with {:ok, route} <- context.router.route(scene_id),
+             {:ok, allowed} <- topic_targets(route.scene_ref, observation.self.entity_id) do
+          topics =
+            Enum.filter(topics, fn %{target: %{"entity_id" => id, "entity_epoch" => epoch}} ->
+              MapSet.member?(allowed, {id, epoch})
+            end)
+
+          {:ok, registered ++ topics}
+        else
+          {:error, reason} -> {:error, {:dialogue_unavailable, reason}}
+        end
+    end
+  end
+
+  defp candidates(profile, _observation, _context), do: {:ok, profile.activities}
+
+  defp topic_targets(scene, cid) do
+    {:ok, MapSet.new(Scene.dialogue_topic_targets(scene, cid))}
+  catch
+    :exit, {reason, {GenServer, :call, _}} -> {:error, reason}
+  end
+
   @doc """
   发问一次（在 Runtime 的 worker 里调用，会阻塞到应答或超时）。`profile` 含 `activities`、`jev`（endpoint），
-  可带 `request`（发送函数，缺省 `NpcServer.Http.request/2`）；`question` 是 `question/3` 的结果。
+  可带 `request`（发送函数，缺省 `NpcServer.Http.request/2`）；`question` 是 `question/4` 的结果。
   返回 `{:ok, %{activity:, confidence:, latency_ms:, recall_ms:, trigger:, model:}}`；传输错误原样 `{:error, 原因}`，
   应答不成形 `{:error, :malformed_response}`，top1 不在候选里 `{:error, {:unknown_activity, 选项}}`。
   """
   def ask(profile, question, trigger) do
     request = Map.get(profile, :request, &NpcServer.Http.request/2)
+    candidates = Map.get(question, :candidates, profile.activities)
     started = System.monotonic_time(:millisecond)
-    result = request.(profile.jev, body(profile, question.state))
+    result = request.(profile.jev, request_body(profile.jev, candidates, question.state))
     latency = System.monotonic_time(:millisecond) - started
 
     with {:ok, response} <- result,
          {:ok, choice, confidence} <- Jev.top1(response) do
-      if Enum.any?(profile.activities, &(&1.name == choice)) do
-        {:ok,
-         %{
-           activity: choice,
-           confidence: confidence,
-           latency_ms: latency,
-           recall_ms: question.recall_ms,
-           trigger: trigger,
-           model: profile.jev.model
-         }}
-      else
-        {:error, {:unknown_activity, choice}}
+      selection = %{
+        activity: choice,
+        confidence: confidence,
+        latency_ms: latency,
+        recall_ms: question.recall_ms,
+        trigger: trigger,
+        model: profile.jev.model
+      }
+
+      case Enum.find(candidates, &(&1.name == choice)) do
+        nil -> {:error, {:unknown_activity, choice}}
+        %{target: _} = candidate -> {:ok, Map.put(selection, :topic, candidate)}
+        _ -> {:ok, selection}
       end
     end
   end
 
   @doc "请求体：`state` 是心智快照的英文转写，候选按 `profile.activities` 的次序（有序 JSON 对象）。"
-  def body(profile, state) do
-    candidates =
-      Jason.OrderedObject.new(
-        for activity <- profile.activities, do: {activity.name, activity.criterion}
-      )
+  def body(profile, state), do: request_body(profile.jev, profile.activities, state)
 
-    Jev.body(profile.jev, %{instructions: @instructions, activities: candidates}, state)
+  defp request_body(endpoint, activities, state) do
+    candidates =
+      Jason.OrderedObject.new(for activity <- activities, do: {activity.name, activity.criterion})
+
+    Jev.body(endpoint, %{instructions: @instructions, activities: candidates}, state)
   end
 
   @doc "记下这次问 Jev 的内容（`question/3` 的结果），供 observe 读取。"
@@ -220,16 +255,18 @@ defmodule NpcServer.Selector do
 
   @doc "记下一次选择（成为正在做的活动）并记一行 `npc_select`。"
   def chose(state, selection, profile, cid) do
+    candidates = Map.get(state.asked || %{}, :candidates, profile.activities)
+
     Logger.info(
       "npc_select cid=#{cid} trigger=#{selection.trigger} " <>
-        "candidates=#{Enum.map_join(profile.activities, ",", & &1.name)} chosen=#{selection.activity} " <>
+        "candidates=#{Enum.map_join(candidates, ",", & &1.name)} chosen=#{selection.activity} " <>
         "confidence=#{selection.confidence} latency_ms=#{selection.latency_ms} " <>
         "recall_ms=#{selection.recall_ms} model=#{selection.model}"
     )
 
     entry =
       selection
-      |> Map.take([:activity, :trigger, :confidence, :latency_ms, :recall_ms])
+      |> Map.take([:activity, :trigger, :confidence, :latency_ms, :recall_ms, :topic])
       |> Map.put(:result, nil)
 
     %{state | activities: Enum.take(state.activities ++ [entry], -@recent), failure: nil}

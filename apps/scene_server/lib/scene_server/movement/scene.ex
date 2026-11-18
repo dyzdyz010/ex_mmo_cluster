@@ -18,6 +18,10 @@ defmodule SceneServer.Movement.Scene do
   def observe(scene), do: GenServer.call(scene, :observe)
   @doc "玩家与 NPC 共用的附近发言入口；只以本 Scene 最新权威观察接纳并可靠投递。"
   def say(scene, identity, request), do: GenServer.call(scene, {:say, identity, request})
+  @doc "读取当前 Scene 内可听见 NPC 新话题的 `{entity_id, entity_epoch}`；提交时由 say 裁决。"
+  def dialogue_topic_targets(scene, cid),
+    do: GenServer.call(scene, {:dialogue_topic_targets, cid})
+
   @doc "从本场景的实际移动与出生配置提供只读设计上下文。"
   def design_context(scene), do: GenServer.call(scene, :design_context)
   @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
@@ -220,25 +224,20 @@ defmodule SceneServer.Movement.Scene do
     {:reply, owner, state}
   end
 
+  def handle_call({:dialogue_topic_targets, cid}, _, state) do
+    targets =
+      case Dialogue.topic_status(state.dialogue, cid, div(now(state), 1000)) do
+        :ok -> Dialogue.topic_targets(dialogue_roster(state), cid)
+        {:error, :topic_rate_limited} -> []
+      end
+
+    {:reply, targets, state}
+  end
+
   def handle_call({:say, identity, request}, _, state) do
     monotonic_ms = div(now(state), 1000)
     {time_us, _} = Clock.sample(state)
-
-    roster =
-      Map.new(state.characters, fn {identity, c} ->
-        observation = c.observation
-
-        {identity,
-         %{
-           id: c.id,
-           epoch: c.epoch,
-           kind: c.kind,
-           name: c.name,
-           available:
-             observation != nil and observation.dialogue_available and state.failure == nil,
-           position: if(observation && observation.state, do: observation.state.position)
-         }}
-      end)
+    roster = dialogue_roster(state)
 
     {dialogue, result, recipients} =
       Dialogue.say(
@@ -971,6 +970,23 @@ defmodule SceneServer.Movement.Scene do
         Replication.leave(state.replication, identity, c.id, c.epoch, state.tick)
         %{state | characters: characters, dialogue: Dialogue.leave(state.dialogue, identity)}
     end
+  end
+
+  defp dialogue_roster(state) do
+    Map.new(state.characters, fn {identity, c} ->
+      observation = c.observation
+
+      {identity,
+       %{
+         id: c.id,
+         epoch: c.epoch,
+         kind: c.kind,
+         name: c.name,
+         available:
+           observation != nil and observation.dialogue_available and state.failure == nil,
+         position: if(observation && observation.state, do: observation.state.position)
+       }}
+    end)
   end
 
   defp close_sink(state, gate, identity, reason), do: state.sink.close(gate, identity, reason)

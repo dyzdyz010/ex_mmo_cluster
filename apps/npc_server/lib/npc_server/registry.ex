@@ -175,13 +175,14 @@ defmodule NpcServer.Registry do
       persona: card,
       activities: activities,
       tools: belt(tools),
-      # 技能表由候选推出：技能候选用到的技能，去处与“去找某人”候选用 travel。
+      # 静态技能表由候选推出；说话的目标由运行时观察给出。
       skills:
         Map.new(activities, fn
           %{run: {:skill, name, _}} -> {Map.fetch!(@activity_skills, name), %{}}
           %{run: {:place, _, _}} -> {:travel, %{}}
           %{run: {:person, _, _}} -> {:travel, %{}}
-        end),
+        end)
+        |> Map.put(:speak, %{}),
       jev: jev_endpoint(),
       # 反思写日记的接口（`NpcServer.Life.Reflection.Writer`，Anthropic Messages 形状）：同 Jev，不入库，每次解析时取运行环境。
       reflect: %{

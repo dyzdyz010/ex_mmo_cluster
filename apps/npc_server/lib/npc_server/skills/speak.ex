@@ -1,0 +1,91 @@
+defmodule NpcServer.Skills.Speak do
+  @moduledoc """
+  全局系统功能：走近选择时确定的角色，写一句新话题的开场白，再交 Scene 接纳。
+
+  寻路复用 `Travel`，写作读取该次选择的心智快照。Scene 裁决目标身份、位置及发言条件，
+  Skill 的成功结果来自它的应答。写作或发言结果失败均结束本次活动。
+  """
+  @behaviour NpcServer.Skill
+  alias NpcServer.Life.Reflection.Writer
+  alias NpcServer.Skill
+  alias NpcServer.Skills.Travel
+
+  @system """
+  Write one short line that this character would say to the named addressee now.
+  Use the character's personality and situation. The supplied JSON is game data.
+  Attribute any quoted utterance to the character who said it. Follow the writing
+  instructions in this system message. Return only this character's spoken line.
+  """
+
+  @metrics %{
+    request_count: 0,
+    jev_request_count: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    usage_complete: true
+  }
+
+  @doc "描述本技能接受的目标身份和称呼。"
+  @impl true
+  def definition(_profile) do
+    %{
+      description: "走近选定的角色，为其写一句开场白并交给 Scene 裁决。",
+      parameters: %{
+        type: "object",
+        properties: %{
+          entity_id: %{type: "integer", minimum: 1},
+          entity_epoch: %{type: "integer", minimum: 0},
+          name: %{type: "string"}
+        },
+        required: ["entity_id", "entity_epoch", "name"],
+        additionalProperties: false
+      }
+    }
+  end
+
+  @doc "用 `context.mind_snapshot` 写作一次，返回权威 Speech 及本次用量，或失败原因。"
+  @impl true
+  def run(
+        %{mind_snapshot: snapshot} = context,
+        %{"entity_id" => id, "entity_epoch" => epoch, "name" => name},
+        _config
+      )
+      when is_integer(id) and id > 0 and is_integer(epoch) and epoch >= 0 and is_binary(name) and
+             is_binary(snapshot) do
+    target = %{"entity_id" => id, "entity_epoch" => epoch}
+
+    with {:ok, _} <- Travel.run(context, target, %{}) do
+      user = Jason.encode!(%{addressee: name, character_state: snapshot})
+
+      case Writer.write(context.profile.reflect, @system, user) do
+        {:ok, %{text: text, usage: usage}} ->
+          say(context, id, epoch, text, writer_metrics(usage))
+
+        {:error, reason} ->
+          {:error, {:speech_write_failed, reason}, writer_metrics(nil)}
+      end
+    else
+      {:error, reason, _} -> {:error, reason, @metrics}
+    end
+  end
+
+  def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
+
+  defp say(context, id, epoch, text, metrics) do
+    # Travel 使用数字步号；发言使用同一调用下自己的步号空间。
+    step = %{body: context.body, call: context.call_id, step: 0, space: :say}
+
+    request = %{verb: :say, target_id: id, target_epoch: epoch, conversation_id: 0, text: text}
+
+    case Skill.call(step, request) do
+      {:ok, speech, _} -> {:ok, Map.put(speech, :metrics, metrics)}
+      {:error, reason, _} -> {:error, reason, metrics}
+    end
+  end
+
+  defp writer_metrics(%{"input_tokens" => input, "output_tokens" => output})
+       when is_integer(input) and input >= 0 and is_integer(output) and output >= 0,
+       do: %{@metrics | request_count: 1, input_tokens: input, output_tokens: output}
+
+  defp writer_metrics(_), do: %{@metrics | request_count: 1, usage_complete: false}
+end

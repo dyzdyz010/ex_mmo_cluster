@@ -242,7 +242,7 @@ defmodule NpcServer.NpcDialogueWorldTest do
     end
   end
 
-  test "Routine bodies receive real Speech and own echo without crashing or restarting" do
+  test "Routine bodies reject a different target epoch and receive real Speech for the current epoch" do
     fixture = NpcWorld.start()
     cid = System.unique_integer([:positive]) + 400_000
 
@@ -263,9 +263,29 @@ defmodule NpcServer.NpcDialogueWorldTest do
          ]}
       )
 
+    peer = cid + 1
+
     NpcWorld.await(fn ->
-      Body.observe(body).position != nil and Body.observe(other).position != nil
+      Map.has_key?(Body.observe(body).entities, peer) and Body.observe(other).position != nil
     end)
+
+    %{entity_epoch: epoch} = Body.observe(body).entities[peer]
+
+    Body.command(body, %{
+      id: :stale_greeting,
+      verb: :say,
+      text: "旧身份不应收到",
+      target_id: peer,
+      target_epoch: epoch + 1,
+      conversation_id: 0
+    })
+
+    NpcWorld.await(fn -> Enum.any?(Body.observe(body).outcomes, &(&1.id == :stale_greeting)) end)
+
+    assert [%{status: :rejected, reason: :target_unavailable}] =
+             Enum.filter(Body.observe(body).outcomes, &(&1.id == :stale_greeting))
+
+    assert Body.observe(other).dialogue == []
 
     ref = Process.monitor(other)
 
@@ -273,7 +293,8 @@ defmodule NpcServer.NpcDialogueWorldTest do
       id: :greeting,
       verb: :say,
       text: "早上好",
-      target_id: cid + 1,
+      target_id: peer,
+      target_epoch: epoch,
       conversation_id: 0
     })
 

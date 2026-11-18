@@ -102,6 +102,42 @@ defmodule SceneServer.DialogueTest do
              say(state, identity(4), request(1, %{conversation_id: 100}), rejoined, 2000)
   end
 
+  test "定向发言按当前目标代次接纳，附近其他角色仍能听见" do
+    npc = identity(1)
+    target = identity(9)
+    listener = identity(3)
+
+    roster = %{
+      npc => actor(1, {0, 0, 0}, 1),
+      target => %{actor(2, {0, 0, 2}) | epoch: 9},
+      listener => actor(3, {0, 0, 3})
+    }
+
+    old = request(1, %{target_id: 2, target_epoch: 2})
+
+    assert {state, {:error, :target_unavailable}, []} =
+             say(Dialogue.new(), npc, old, roster, 0)
+
+    current = %{old | request_id: 2, target_epoch: 9}
+
+    assert {_, {:ok, %{target_id: 2, turn: 1}}, recipients} =
+             say(state, npc, current, roster, 0)
+
+    assert MapSet.new(recipients) == MapSet.new([npc, target, listener])
+  end
+
+  test "重用请求号时修改目标代次构成冲突" do
+    npc = identity(1)
+    target = identity(2)
+    roster = %{npc => actor(1, {0, 0, 0}, 1), target => actor(2, {0, 0, 2})}
+    request = request(1, %{target_id: 2, target_epoch: 2})
+
+    assert {state, {:ok, _}, _} = say(Dialogue.new(), npc, request, roster, 0)
+
+    assert {_, {:error, :request_conflict}, []} =
+             say(state, npc, %{request | target_epoch: 9}, roster, 1)
+  end
+
   test "NPC连续8句后拒绝，玩家发言重置；新话题5分钟冷却不会因重连绕过" do
     a = identity(1)
     b = identity(2)

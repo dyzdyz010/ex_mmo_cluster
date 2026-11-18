@@ -172,7 +172,7 @@ defmodule NpcServer.NpcRegistryTest do
                     }
                   ],
                   tools: %{1 => "镐"},
-                  skills: %{gather: %{}, travel: %{}},
+                  skills: %{gather: %{}, travel: %{}, speak: %{}},
                   jev: %{
                     url: "http://127.0.0.1:9/jev",
                     key: "test-key",
@@ -845,6 +845,150 @@ defmodule NpcServer.NpcRegistryTest do
           assert :ok = NpcRegistry.remove(name)
         end
       )
+    end
+
+    @tag timeout: 60_000
+    test "a registered npc approaches the selected nearby character and starts a Scene conversation",
+         fixture do
+      target = System.unique_integer([:positive]) + 300_000
+      witness = target + 1
+      distant = target + 2
+      inert = {Brain.Routine, %{steps: []}}
+
+      %{body: target_body, sup: sup} =
+        NpcWorld.body(fixture, inert, cid: target, spawn: {8.0, 66.0, 10.0})
+
+      [witness_body, distant_body] =
+        for {cid, spawn} <- [{witness, {6.0, 66.0, 11.0}}, {distant, {29.0, 66.0, 10.0}}] do
+          {:ok, body} =
+            DynamicSupervisor.start_child(
+              sup,
+              {Body,
+               scene_id: 1,
+               cid: cid,
+               spawn: spawn,
+               claims: fixture.claims,
+               route_module: NpcWorld.Route,
+               brain: inert}
+            )
+
+          body
+        end
+
+      NpcWorld.await(fn ->
+        Enum.all?([target_body, witness_body, distant_body], &Body.observe(&1).position)
+      end)
+
+      test = self()
+      option = "speak_to:#{target}"
+      witness_option = "speak_to:#{witness}"
+      line = "Do you know what happened to the house?"
+
+      endpoint =
+        http_stub(fn
+          :post, "/jev", request ->
+            send(test, {:speech_options, request})
+            options = request["questions"]["activity"]["criteria"]
+
+            choice =
+              if match?(%{^option => _, ^witness_option => _}, options),
+                do: option,
+                else: "rest_at_home"
+            %{"answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.6}}}
+
+          :post, "/v1/messages", %{"system" => "Write one short line" <> _} = request ->
+            send(test, {:speech_written, request})
+            %{"stop_reason" => "end_turn", "content" => [%{"type" => "text", "text" => line}], "usage" => %{}}
+
+          :get, path, _ ->
+            cond do
+              path =~ "/mental-models/" -> %{"content" => "I tend to speak plainly."}
+              path =~ "/operations?" -> %{"operations" => [], "total" => 0}
+              path =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
+              true -> %{}
+            end
+
+          :post, path, _ ->
+            if String.ends_with?(path, "/memories/recall"), do: %{"results" => []}, else: %{}
+
+          _, _, _ ->
+            %{}
+        end)
+
+      env = %{
+        @npc_env
+        | "TYPESAFE_API_URL" => endpoint <> "/jev",
+          "NPC_REFLECT_URL" => endpoint <> "/v1/messages",
+          "NPC_LIFE_HINDSIGHT_URL" => endpoint
+      }
+
+      with_env(Map.put(env, "NPC_JEV_API", nil), fn ->
+        name = "会招呼的住民#{target}"
+
+        # 第一帧可能先于 AOI 的邻居进入。候选出现前的既有活动是在当前位置等候。
+        [gather, rest] = @npc["activities"]
+
+        params = %{
+          @npc
+          | "activities" => [gather, %{rest | "place" => [4.0, 10.0], "stay_ticks" => 120}]
+        }
+
+        assert {:ok, %{cid: cid, pid: body}} =
+                 NpcRegistry.put(name, %{
+                   scene_id: 1,
+                   spawn: {4.0, 66.0, 10.0},
+                   brain: "npc",
+                   params: params
+                 })
+
+        assert_receive {:speech_options,
+                        %{
+                          "questions" => %{
+                            "activity" => %{"criteria" => %{^option => _, ^witness_option => _}}
+                          }
+                        } = first},
+                       25_000
+        options = first["questions"]["activity"]["criteria"]
+        assert options[option] =~ "actor #{target}"
+        refute Map.has_key?(options, "speak_to:#{distant}")
+        assert options["gather_stone"] == "Cut stone at the quarry."
+
+        assert_receive {:speech_written, %{"messages" => [%{"content" => user}]}}, 15_000
+        assert Jason.decode!(user)["character_state"] == first["state"]
+
+        speech = NpcWorld.await(fn -> List.first(Body.observe(target_body).dialogue) end)
+        assert %{speaker_id: ^cid, target_id: ^target, turn: 1, text: ^line} = speech
+        assert ^speech = NpcWorld.await(fn -> List.first(Body.observe(witness_body).dialogue) end)
+        assert [^speech] = Body.observe(body).dialogue
+        assert [] = Body.observe(distant_body).dialogue
+
+        NpcWorld.await(fn ->
+          Enum.any?(Body.observe(body).outcomes, &match?(%{verb: :speak, status: :done}, &1))
+        end)
+
+        NpcWorld.await(fn ->
+          row = DataService.NpcMemory.get(cid, "life", "state")
+          episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
+          Enum.any?(episodes, &(&1["speech"]["text"] == line and "kind:conversation" in &1["tags"]))
+        end)
+
+        # 同场景冷却期间，下一轮继续正常选择，说话选项不再进入请求。
+        second =
+          NpcWorld.await(fn ->
+            case Body.observe(body).select.asked do
+              %{state: state, candidates: candidates} ->
+                if state =~ "#{option}: completed.", do: Enum.map(candidates, & &1.name)
+
+              nil ->
+                false
+            end
+          end)
+
+        refute option in second
+        refute witness_option in second
+
+        assert :ok = NpcRegistry.remove(name)
+      end)
     end
 
     # 选择层换成本机 deepseek 时走的那条路：`NPC_JEV_API=openai` + 一个真实的 chat completions 端点。

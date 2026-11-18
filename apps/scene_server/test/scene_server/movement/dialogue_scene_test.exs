@@ -198,6 +198,34 @@ defmodule SceneServer.Movement.DialogueSceneTest do
     assert Scene.observe(ctx.scene).dialogue.accepted == 2
   end
 
+  test "新话题只列 Scene 内可接收的近处对象，冷却时资格关闭", ctx do
+    who = identity(1)
+    near = identity(2)
+    far = identity(3)
+
+    targets = fn -> Scene.dialogue_topic_targets(ctx.scene, 10) end
+
+    {player, start} = join(ctx, who, 10, "NPC甲", "npc")
+    assert [] = targets.()
+    ready(ctx, who, player, start)
+
+    {near_player, near_start} = join(ctx, near, 20, "附近玩家", "player")
+    {far_player, far_start} = join(ctx, far, 30, "远方玩家", "player")
+    ready(ctx, far, far_player, far_start)
+    assert [] = targets.()
+
+    ready(ctx, near, near_player, near_start)
+    assert [{20, 2}] = targets.()
+    assert {:ok, _} = Scene.say(ctx.scene, who, request(who, 20))
+
+    :atomics.add_get(ctx.clock, 1, 299_999_000)
+    assert [] = targets.()
+
+    :atomics.add_get(ctx.clock, 1, 1000)
+    assert [{20, 2}] = targets.()
+    assert %{accepted: 1, rejected: 0} = Scene.observe(ctx.scene).dialogue
+  end
+
   @tag :transfer
   test "真实移动触发移交后，缓存权威观察明确拒绝新发言", ctx do
     config = %{

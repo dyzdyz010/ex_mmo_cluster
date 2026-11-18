@@ -76,13 +76,36 @@ defmodule SceneServer.Dialogue do
     Enum.min(deadlines, fn -> nil end)
   end
 
-  @doc "按当前权威角色表裁决一次请求，返回 {状态, 结果, 本次投递身份}。时间与新会话号由 owner 提供。"
+  @doc "按 Scene 的单调时钟检查该 NPC 的新话题冷却。"
+  def topic_status(state, cid, now_ms),
+    do:
+      interval(state.last_topic[cid], now_ms, @limits.npc_topic_interval_ms, :topic_rate_limited)
+
+  @doc "返回当前 Scene 中能听见该在场 NPC 的其他角色，按角色 ID 与代次排序。"
+  def topic_targets(roster, cid) do
+    case Enum.find_value(roster, fn {_, actor} ->
+           if actor.id == cid and actor.kind == 1 and actor.available, do: actor
+         end) do
+      nil ->
+        []
+
+      actor ->
+        targets =
+          for {_, other} <- roster,
+              other.id != cid and hears?(actor, other),
+              do: {other.id, other.epoch}
+
+        Enum.sort(targets)
+    end
+  end
+
+  @doc "按当前权威角色表裁决一次请求。内部定向请求可带目标代次。返回 {状态, 结果, 本次投递身份}。"
   def say(state, identity, request, roster, now_ms, at_ms, new_conversation_id) do
     state = expire(state, now_ms)
 
     with {:ok, actor} <- speaker(roster, identity),
          :ok <- request_shape(request, identity) do
-      fingerprint = Map.take(request, [:target_id, :conversation_id, :text])
+      fingerprint = Map.take(request, [:target_id, :target_epoch, :conversation_id, :text])
 
       case Map.get(state.requests, identity) do
         %{id: id, fingerprint: ^fingerprint, result: result} when id == request.request_id ->
@@ -121,18 +144,25 @@ defmodule SceneServer.Dialogue do
               target <= @max_u64 and
               is_integer(conversation) and conversation >= 0 and conversation <= @max_u64 and
               is_binary(text) do
-    if Map.get(request, :identity, identity) == identity,
-      do: :ok,
-      else: {:error, :invalid_session}
+    cond do
+      Map.get(request, :identity, identity) != identity -> {:error, :invalid_session}
+      valid_target_epoch?(target, Map.fetch(request, :target_epoch)) -> :ok
+      true -> {:error, :invalid_request}
+    end
   end
 
   defp request_shape(_, _), do: {:error, :invalid_request}
+
+  defp valid_target_epoch?(_target, :error), do: true
+
+  defp valid_target_epoch?(target, {:ok, epoch}),
+    do: target > 0 and is_integer(epoch) and epoch >= 0 and epoch <= @max_u64
 
   defp accept(state, identity, actor, request, roster, now_ms, at_ms, new_id) do
     with :ok <- if(actor.available, do: :ok, else: {:error, :not_ready}),
          {:ok, text} <- text(request.text),
          :ok <- interval(state.last_said[identity], now_ms, @limits.interval_ms, :rate_limited),
-         {:ok, recipients} <- audience(actor, request.target_id, roster),
+         {:ok, recipients} <- audience(actor, request, roster),
          {:ok, id, conversation} <-
            conversation(state, identity, actor, request.conversation_id, now_ms, new_id) do
       speech = %{
@@ -195,20 +225,19 @@ defmodule SceneServer.Dialogue do
     end
   end
 
-  defp audience(actor, target, roster) do
-    recipients =
-      for {identity, other} <- roster,
-          other.available and in_range?(actor.position, other.position),
-          do: identity
+  defp audience(actor, %{target_id: target} = request, roster) do
+    epoch = Map.get(request, :target_epoch)
+
+    recipients = for {identity, other} <- roster, hears?(actor, other), do: identity
 
     cond do
       target == 0 ->
         {:ok, recipients}
 
-      Enum.any?(recipients, &(roster[&1].id == target)) ->
+      Enum.any?(recipients, &target?(roster[&1], target, epoch)) ->
         {:ok, recipients}
 
-      Enum.any?(roster, fn {_, other} -> other.id == target and other.available end) ->
+      Enum.any?(roster, fn {_, other} -> other.available and target?(other, target, epoch) end) ->
         {:error, :target_out_of_range}
 
       true ->
@@ -216,23 +245,17 @@ defmodule SceneServer.Dialogue do
     end
   end
 
+  defp target?(other, id, epoch), do: other.id == id and (epoch == nil or other.epoch == epoch)
+
+  defp hears?(actor, other), do: other.available and in_range?(actor.position, other.position)
+
   defp in_range?({x, y, z}, {a, b, c}),
     do:
       (x - a) * (x - a) + (y - b) * (y - b) + (z - c) * (z - c) <=
         @limits.range_m * @limits.range_m
 
   defp conversation(state, _identity, actor, 0, now_ms, new_id) do
-    with :ok <-
-           if(actor.kind == 1,
-             do:
-               interval(
-                 state.last_topic[actor.id],
-                 now_ms,
-                 @limits.npc_topic_interval_ms,
-                 :topic_rate_limited
-               ),
-             else: :ok
-           ) do
+    with :ok <- if(actor.kind == 1, do: topic_status(state, actor.id, now_ms), else: :ok) do
       {:ok, new_id, %{turn: 0, npc_turns: 0, heard: MapSet.new()}}
     end
   end

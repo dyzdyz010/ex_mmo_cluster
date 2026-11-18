@@ -7,6 +7,32 @@ defmodule NpcServer.Dialogue do
 
   @history 24
 
+  @doc """
+  把当前观察中发言范围内、已有位置的其他角色投影成说话候选。从已有登记名避让重名，
+  保留原来的候选次序和 ID。最终接纳由 Scene 对着发言时刻的角色表裁决。
+  """
+  def topic_candidates(registered, %{self: self} = observation) do
+    %{range_m: range} = SceneServer.Dialogue.limits()
+    names = MapSet.new(registered, & &1.name)
+
+    for %{entity_id: id, entity_epoch: epoch, name: actor_name, position: {_, _, _} = position} <-
+          State.others(observation),
+        State.distance(self.position, position) <= range do
+      name = State.person_name(actor_name)
+
+      %{
+        name: vacant_name("speak_to:#{id}", names),
+        criterion: "Walk up to #{name} (actor #{id}) and say one thing to them.",
+        place_name: nil,
+        target: %{"entity_id" => id, "entity_epoch" => epoch, "name" => name}
+      }
+    end
+  end
+
+  defp vacant_name(name, names) do
+    if MapSet.member?(names, name), do: vacant_name(name <> "_", names), else: name
+  end
+
   @doc "说话能力；范围和频率直接引用 Scene 的唯一规则。"
   def entries do
     limits = SceneServer.Dialogue.limits()

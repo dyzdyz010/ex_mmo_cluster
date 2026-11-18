@@ -11,6 +11,7 @@ defmodule NpcServer.Skills do
     design_house: NpcServer.Skills.HouseDesign,
     expand: NpcServer.Skills.Expand,
     gather: NpcServer.Skills.Gather,
+    speak: NpcServer.Skills.Speak,
     travel: NpcServer.Skills.Travel,
     wilderness: NpcServer.Skills.Wilderness
   }
@@ -35,8 +36,11 @@ defmodule NpcServer.Skills do
     end
   end
 
-  @doc "启动受监视的技能进程；父进程接收 skill_finished 与普通 DOWN。observes = 技能是否逐帧读观察。"
-  def start(body, command, profile, observation) do
+  @doc """
+  启动受监视的技能进程；父进程接收 skill_finished 与普通 DOWN。observes = 技能是否逐帧读观察。
+  说话使用选择时的 `mind_snapshot`，该快照不进入命令参数或技能经历。
+  """
+  def start(body, command, profile, observation, mind_snapshot \\ nil) do
     parent = self()
 
     observes =
@@ -56,6 +60,7 @@ defmodule NpcServer.Skills do
                   call_id: command.id,
                   profile: profile,
                   observation: observation,
+                  mind_snapshot: mind_snapshot,
                   request: Map.get(profile, :request, &NpcServer.Http.request/2)
                 })
 
