@@ -144,5 +144,10 @@ D-3a 现在的规则是“每路截止时间只有一个 owner：httpc 的 timeo
   - **`cacertfile` 的结论原先是错的**：评审指出外部仓可能还在用，核实 Voxim Gameplay Demo 确实在用（见 §2.1），已恢复支持；
     同时发现初版在 `init/1` 里调 `:public_key.cacerts_get()`，没有系统 CA 的容器里会让应用启动失败，已改为交给 Mint 在建连时取。
     新用例覆盖 `cacertfile` 标签池与 HTTP/2 连不上报 `:connection_unavailable`（连不上的池用 `Finch.stop_pool/2` 收尾，不留后台重连）。
-  - 修后：npc_server 全套 `--seed 0` 633 项通过、20 项排除（`test-20261118T143149Z-finch-full-after-review.log`）；T-4 两条真实冒烟重跑
+  - 修后（提交 `abe1cd95`）：npc_server 全套 `--seed 0` 633 项通过、20 项排除（`test-20261118T143149Z-finch-full-after-review.log`）；T-4 两条真实冒烟重跑
     （TLS 改为 Mint 缺省后）均通过，选择 `finish_reason=stop`、2.8 s，写作 14.8 s（`live-finch-t4-20261118T144038Z.log`）。
+- 2026-11-18：**`slice4-04c` 对照实跑五题全部成立**（统筹页“薄片四第四轮”）：选择超时 0；上游选择中位 3.7 s、p90 5.4 s、最长 8.4 s，
+  产品侧总时长与上游一致；`queue_ms` 交互 35 笔、后台 10 笔全为 0（经本机明文代理，HTTP/1 池）。4 次失败都是代理到 DeepSeek 的 `URLError`
+  （41 秒内集中出现），产品显式记 `http_error`。生产上模型走 HTTP/2，`queue_ms` 为 null，这一轮不覆盖 HTTP/2 下的并发行为。
+- 残余（记录，不改）：HTTP/1 池的空闲连接不主动关闭（Finch `conn_max_idle_time` 缺省 `:infinity`），对端先关空闲连接时存在
+  “恰在关闭瞬间复用”的竞态；httpc 时代（`keep_alive_timeout` 120 s 长于 Hindsight 的 30 s）同样存在，本轮未见失败，有证据再调。
