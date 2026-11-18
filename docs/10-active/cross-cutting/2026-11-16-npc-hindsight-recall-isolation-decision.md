@@ -149,6 +149,33 @@ flowchart LR
 ③ 要加一个维护参数的进程。
 启用条件：下次闭环实跑在 A 之后仍看到“召回排在召回后面”导致的超时（§7 读数 R4），或进入多 NPC 实跑之前。
 
+**D-1b 交互召回与后台召回分池（2026-11-18，用户同意在多 NPC 验收前处理）**
+
+选用交互与后台取材分别持有固定的 httpc profile，两个 profile 沿用缺省参数。交互决策、技能交互判断和 CLI 心智查询走现有交互池。
+反思与日计划通过共用的 `Reflection.Round.materials/3` 进入后台召回池。两池均由 `NpcServer.Application` 在起监督树前启动，
+启动部分失败时释放本次已起的 profile，应用停止时停两池。Hindsight 适配器拥有名字与路由，调用方标明业务类别。
+两类生产召回单路都是 10 秒；保留原有并行度、额度、取消和错误返回。存档、retain、ensure、刷新、状态继续使用缺省池。
+
+依据原版 OTP 29.1.2 的 [httpc 文档](https://www.erlang.org/doc/apps/inets/httpc.html#module-profiles)、
+[manager 会话选择实现](https://github.com/erlang/otp/blob/OTP-29.1.2/lib/inets/src/http_client/httpc_manager.erl#L715-L735) 与
+[inets profile 子规格](https://github.com/erlang/otp/blob/OTP-29.1.2/lib/inets/src/http_client/httpc_profile_sup.erl#L98-L105)：
+会话表属于 profile，忙的同类请求仍可能进入同一 keep-alive 队列。两个固定 profile 把交互和后台的队列拆开。
+每个 profile 对单一 Hindsight host 的持久 TCP 连接上限仍为 2，忙时还可能打开由请求持有的短连接。
+本项给该 host 增加最多 2 条持久 TCP 连接，不提高单一 NPC 的在途工作槽数，不添加请求重试或 UDP 端点。
+同类队头阻塞和 Hindsight 的共享算力仍可见，保留原有失败与按路超时语义。延续 D-1 使用缺省参数的取舍，由 inets 自己保证 manager
+重启后的参数一致，按多 NPC 的实际读数再判断同类竞争是否需要优化。
+
+验证矩阵：
+
+- T-4 用现有回环 `KeepAliveStub` 和真实 `:httpc`。由 `Reflection.Round.materials/3` 预热同一 host 的 keep-alive，再让一轮后台取材首路
+  挂起并观察它已到对端。用正常 `Hindsight.recall/3` 发交互召回，成功应答且使用另一连接后才释放后台。旧共享池会在后台应答前到达交互超时。
+- T-5 延续 T-3，检查两池正常起停及幂等，停后台池的取材显式报池缺失、交互仍成功。原有 T-1 保证 retain 隔离。
+  运行 `wsl bash .demo/dev-env/build-test.sh test test/npc_server/npc_recall_isolation_test.exs test/npc_server/npc_hindsight_test.exs test/npc_server/npc_reflection_round_test.exs test/npc_server/npc_life_day_plan_round_test.exs`。
+- 用各槽与查询入口的并发语义约束 3–5 个统一 NPC 的采样。在每个 NPC 同时最多一次选择、没有并行额外 CLI 心智查询时，交互召回至多
+  3×NPC 数，后台取材至多 2×NPC 数（规划一条、反思一条），缺省池同时还有每个 NPC 至多一条记忆任务请求或存档。
+  反思取材与该反思槽的存档串行；3 NPC / 5 NPC 的 Hindsight 请求在途之和上界分别 18 / 30，请求数和后端计算耗时在实跑中实际记录。
+  回归不启动 World、Scene、数据库、真实模型或 QUIC，回环替身和本轮连接随测试结束清理。
+
 ### D-2 retain 改不改异步
 
 - **A 保持同步、只靠 D-1 隔离连接（建议）**：retain 继续 `async: false`，在缺省 profile 上占连接 11–49 s，但不再有召回排在它后面。现有检查一概不动：`retain/2` 返回后逐文档 `GET /documents` 查 `memory_unit_count > 0`（`hindsight.ex` L105、L311–319）；记忆任务槽成功才删片段、`retained` 加数（`life.ex` L738–744）；存档结局 `"ok" / "failed"` 写进本轮小结（`life.ex` L810–835、L1352–1363）。

@@ -18,7 +18,7 @@ defmodule NpcServer.Life.Hindsight do
 
   一个 Life 会用到不止一个 bank（经历库、反思库），失败日志 `npc_hindsight_failed` 因此带 `bank=`。
 
-  ## 召回走独立的 httpc profile
+  ## 交互召回与后台取材使用各自的 httpc profile
 
   `:httpc` 缺省 profile 对每个 host 只开少量持久连接，并且有新请求时**优先排进正忙的会话队列**而不是
   另开连接（OTP `httpc_manager:select_session/4`，见召回隔离决策稿 §2 S4）。选择在等一路召回（交互式，
@@ -26,14 +26,17 @@ defmodule NpcServer.Life.Hindsight do
   召回会排在后台请求后面，实测 25 次召回超时里有 13 次是这个原因（同稿 §1、E1 实验：缺省 profile 10,001 ms
   超时且请求从未发出，独立 profile 7.7 ms 返回）。
 
-  所以只有召回（`recall/3`，含 CLI 的 `context/2`）走专用 profile #{inspect(:npc_hindsight_recall)}，其余请求仍走缺省 profile。
-  profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停；参数全用缺省值——E1 用的就是缺省参数，
-  而且 `httpc:set_options` 的结果会在 manager 重启后回到缺省（同稿 S4、S5），用缺省值就不用另起一个进程盯着补设。
+  交互召回和 CLI 的 `context/2` 走交互 profile，反思及日计划的取材走后台召回 profile（D-1b）。
+  建库、写入、刷新、状态查询走缺省 profile。请求体和各调用方的超时预算沿用原值。
+  两个召回 profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停。采用缺省参数，
+  由 inets 的监督保证 manager 重启后仍使用相同参数（决策稿 S4、S5）。
   """
   require Logger
 
-  # 召回专用 httpc profile 名：只在这里定义一次（应用起停、`recall/3`、测试都调本模块的函数，不硬编码）。
-  @recall_profile :npc_hindsight_recall
+  @recall_profiles %{
+    interactive: :npc_hindsight_recall,
+    background: :npc_hindsight_background_recall
+  }
 
   @truth "Subjective memory; not current numeric world truth."
 
@@ -76,26 +79,52 @@ defmodule NpcServer.Life.Hindsight do
   @doc "四份认识文档的 id，按建立次序（self、relationships、world、commitments）；给模型列认识时用这个次序。"
   def model_ids, do: Enum.map(@queries, &elem(&1, 0))
 
-  @doc "召回专用 httpc profile 的名字（唯一一处定义；调用方要读就读这里，不要自己写字面量）。"
-  def recall_profile, do: @recall_profile
+  @doc "读取指定召回类别的 profile 名，缺省为交互召回。"
+  def recall_profile(kind \\ :interactive), do: Map.fetch!(@recall_profiles, kind)
+
+  @doc "为反思或日计划的取材构造后台召回配置，保留库和请求参数。"
+  def for_background_recall(config), do: Map.put(config, :recall_kind, :background)
 
   @doc """
-  起召回专用的 httpc profile，参数全缺省。幂等：已经起过返回 `{:ok, :already_started}`。
-
-  由 `NpcServer.Application.start/2` 在监督树之前调用（任何 Life 起来之前 profile 就在）；
-  其它错误原样返回，由调用方让应用启动失败，不静默降级。
+  用于在监督树前起交互与后台召回池，返回 `{:ok, 本次新起的类别列表}`。
+  第二池起失败时回滚本次新起的交互池。
   """
-  def start_recall_profile do
-    case :inets.start(:httpc, profile: @recall_profile) do
+  def start_recall_profiles do
+    with {:ok, interactive} <- start_recall_profile() do
+      case start_recall_profile(:background) do
+        {:ok, background} ->
+          attempts = [interactive: interactive, background: background]
+          {:ok, for({kind, :started} <- attempts, do: kind)}
+
+        error ->
+          if interactive == :started, do: stop_recall_profile()
+          error
+      end
+    end
+  end
+
+  @doc "关闭指定的召回池，默认关闭两池。对每个池均尝试关闭，并返回最先遇到的错误。"
+  def stop_recall_profiles(kinds \\ [:background, :interactive]) do
+    kinds
+    |> Enum.map(&stop_recall_profile/1)
+    |> Enum.find(:ok, &(&1 != :ok))
+  end
+
+  @doc """
+  以缺省参数启动指定类别的召回池。已经启动返回 `{:ok, :already_started}`，
+  其它错误回传给应用启动边界。
+  """
+  def start_recall_profile(kind \\ :interactive) do
+    case :inets.start(:httpc, profile: recall_profile(kind)) do
       {:ok, _pid} -> {:ok, :started}
       {:error, {:already_started, _pid}} -> {:ok, :already_started}
       other -> other
     end
   end
 
-  @doc "停召回专用 profile（应用停止时调，此后没有召回在用）。没起过也算成功。"
-  def stop_recall_profile do
-    case :inets.stop(:httpc, @recall_profile) do
+  @doc "停指定类别的召回池。池缺失视同已停止。"
+  def stop_recall_profile(kind \\ :interactive) do
+    case :inets.stop(:httpc, recall_profile(kind)) do
       :ok -> :ok
       # 实测（OTP 29.1.2）：profile 不在时 `inets:stop/2` 回 `{:error, :not_found}`。
       {:error, :not_found} -> :ok
@@ -224,7 +253,7 @@ defmodule NpcServer.Life.Hindsight do
              :post,
              "/memories/recall",
              recall_body(description, timestamp),
-             @recall_profile
+             recall_profile(Map.get(config, :recall_kind, :interactive))
            ),
          {:ok, results} <- collect(rows, &recalled(config, &1)) do
       {:ok,
@@ -495,7 +524,7 @@ defmodule NpcServer.Life.Hindsight do
   defp segment(value), do: URI.encode(value, &URI.char_unreserved?/1)
 
   # 发一次请求。`profile` 为 nil 时走 httpc 缺省 profile（建库、retain、刷新、状态这些后台请求）；
-  # 召回传 `@recall_profile`，与后台请求分到不同的连接队列（原因见 moduledoc 末节）。
+  # 召回传所属类别的 profile（原因见 moduledoc 末节）。
   defp request(config, method, path, body \\ nil, profile \\ nil) do
     url =
       String.trim_trailing(config.url, "/") <>

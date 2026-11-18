@@ -479,7 +479,7 @@ flowchart LR
   已知限制：发问时对每座记得的建筑各做一次同步的 `World.instance_cells/2`；建筑所在的页不在内存或建筑很大时可能很慢，
   会拖长这一次选择（目标 2–4 秒）。现在不加超时或缓存：已登记的 NPC 的建筑都在身边，等真的出现再处理。
   句子里的坐标是 Life 记下的锚点（记忆），不是现查的；建筑被整体挪动后坐标会与现状不符。“在 / 不在”只认 World。
-  候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
+  静态工作候选按登记次序进请求体，做不成的候选靠执行失败结果进入“最近做过的事”。主动说话候选按上面的同场和可听资格生成。
 - **召回**：一次选择按处境分路召回（`Mind.recall_queries/2`，问句、tags 与 token 上限照离线重测 S1-Q 的原文），
   各路在发问 worker 里并行（`Life.mind/2` 用 `Task.async_stream`，同时至多 3 路，每路 10 秒），各路都 `prefer_observations: true`、不按类型过滤（至多 4 路：R1 附近至多 2 人各一路，加 R2、R3）：
 
@@ -497,14 +497,12 @@ flowchart LR
   `Task.async_stream` 设第二个超时、也不在第一路失败时停下：被 kill 的任务不经过 `cancel_request`，放弃的请求会照常
   走完（排队的事后发出、已发出的照算到底），白算的还和别的召回抢 CPU。所以是等每一路各自结束后再按“全有全无”合成，
   报第一条失败的那一路。依据见召回隔离决策稿 D-3a（S8 / S10）。
-- **召回走独立的 httpc profile**（决策稿 D-1）：`:httpc` 缺省 profile 会**把新请求排进正忙的 keep-alive 会话队列**
-  （OTP `httpc_manager:select_session/4`），而 retain / 刷新 / 状态这些后台请求一次要 11–49 秒、又没人在等；
-  两者共用时召回就排在它们后面——实测 25 次召回超时里 13 次是这么来的（E1 实验：缺省 profile 10,001 ms 超时且请求
-  从未发出，独立 profile 7.7 ms 返回）。现在只有 `POST /memories/recall`（含 CLI 的 `context/2`）走专用 profile
-  `:npc_hindsight_recall`（名字只在 `Hindsight` 里定义一次，参数全缺省），其余请求仍走缺省 profile。
-  profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停；运行期由 inets 的 `httpc_profile_sup` 监督，
-  重启后参数与重启前一致（都是缺省值）。起不来就让应用启动失败；某次召回发现 profile 不在时显式失败
-  `{:profile_not_started, 名}`，不退回缺省 profile 静默降级。测试跑 `--no-start` 时由 `test_helper` 起同一份。
+- **交互与后台召回各走一个 httpc profile**（决策稿 D-1、D-1b）。原先共用 keep-alive 的召回可能被在途请求挡住。
+  选择与 CLI 心智查询用交互池，反思和计划经共用的 `Reflection.Round.materials/3` 用后台取材池。
+  retain、刷新、状态查询和其它写入仍走缺省池。两池各自复用连接和队列，Hindsight 的服务端算力仍共享。
+  `NpcServer.Application` 在监督树之前起两池、应用停止时停。运行期由 inets 监督，
+  manager 重启后保留缺省参数。应用启动时两池都必须可用，运行时召回池缺失返回
+  `{:profile_not_started, 名}`。测试跑 `--no-start` 时由 `test_helper` 复用同一起池入口。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧

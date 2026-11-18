@@ -2,7 +2,8 @@ Code.require_file("../support/keep_alive_stub.exs", __DIR__)
 
 defmodule NpcServer.NpcRecallIsolationTest do
   @moduledoc """
-  只测试：召回与后台 Hindsight 请求分到不同的 httpc 连接队列（召回隔离决策稿 D-1），以及召回 profile 的起停（D-1 的生命周期）。
+  只测试：交互召回、反思与规划的后台取材、其余后台 Hindsight 请求分别走不同的 httpc 连接队列，
+  以及召回 profile 的起停（召回隔离决策稿 D-1、D-1b）。
 
   真实 `:httpc` 与 JSON 编解码照常运行，只把 Hindsight 对端换成能保持连接、能并发应答的本地替身；
   不验证 Hindsight 本身的检索质量，也不起 World / Scene / Postgres。
@@ -12,6 +13,8 @@ defmodule NpcServer.NpcRecallIsolationTest do
 
   alias NpcServer.KeepAliveStub
   alias NpcServer.Life.Hindsight
+  alias NpcServer.Life.Reflection
+  alias NpcServer.Life.Reflection.Round
 
   # 替身里慢请求的时长与召回的预算：慢请求必须明显长于召回预算，"排在后面"才会表现成超时。
   @slow_ms 700
@@ -28,20 +31,44 @@ defmodule NpcServer.NpcRecallIsolationTest do
 
   setup do
     {:ok, _} = Application.ensure_all_started(:inets)
-    {:ok, _} = Hindsight.start_recall_profile()
+    {:ok, _} = Hindsight.start_recall_profiles()
     :ok
   end
 
-  test "召回 profile 起停：重复起视同成功，停掉之后读不到，再起回来" do
-    assert {:ok, :already_started} = Hindsight.start_recall_profile()
-    assert {:ok, options} = :httpc.get_options(:all, Hindsight.recall_profile())
-    assert is_list(options)
+  test "两个召回池可重复起停" do
+    profiles = Enum.map([:interactive, :background], &Hindsight.recall_profile/1)
+    assert {:ok, []} = Hindsight.start_recall_profiles()
 
-    assert :ok = Hindsight.stop_recall_profile()
-    assert {:error, _} = :httpc.get_options(:all, Hindsight.recall_profile())
+    for profile <- profiles do
+      assert {:ok, options} = :httpc.get_options(:all, profile)
+      assert is_list(options)
+    end
 
-    # 收尾：起回来。`test_helper` 起过它，别的用例还要用。
-    assert {:ok, _} = Hindsight.start_recall_profile()
+    on_exit(fn -> Hindsight.start_recall_profiles() end)
+    assert :ok = Hindsight.stop_recall_profiles()
+    assert :ok = Hindsight.stop_recall_profiles()
+
+    for profile <- profiles do
+      assert {:error, _} = :httpc.get_options(:all, profile)
+    end
+
+    assert {:ok, [:interactive, :background]} = Hindsight.start_recall_profiles()
+  end
+
+  test "NPC 监督树启动失败时只回滚本次新起的池" do
+    supervisor =
+      start_supervised!(%{
+        id: :existing_npc_supervisor,
+        start:
+          {Supervisor, :start_link, [[], [strategy: :one_for_one, name: NpcServer.Supervisor]]}
+      })
+
+    on_exit(fn -> Hindsight.start_recall_profiles() end)
+    assert :ok = Hindsight.stop_recall_profile(:background)
+
+    assert {:error, {:already_started, ^supervisor}} = NpcServer.Application.start(:normal, [])
+    assert {:ok, _} = :httpc.get_options(:all, Hindsight.recall_profile())
+    assert {:error, _} = :httpc.get_options(:all, Hindsight.recall_profile(:background))
   end
 
   test "专用 profile 没起来时召回显式失败，不退回缺省 profile" do
@@ -119,5 +146,102 @@ defmodule NpcServer.NpcRecallIsolationTest do
            "召回被后台写入挡住了（耗时 #{elapsed} ms，慢请求 #{@slow_ms} ms）"
 
     assert {:ok, %{retained: 1}} = Task.await(retain, 5_000)
+  end
+
+  test "后台取材首路挂起时交互召回先从另一条连接返回" do
+    owner = self()
+    release = make_ref()
+    now_ms = 1_791_676_800_000
+    question = Reflection.self_question()
+    background_query = question["text"]
+    recall_path = "/v1/default/banks/probe/memories/recall"
+
+    url =
+      KeepAliveStub.start(fn
+        _,
+        :post,
+        ^recall_path,
+        %{"query" => ^background_query, "types" => ["experience", "world"]} ->
+          send(owner, {:recall_waiting, self()})
+
+          receive do
+            {:release_recall, ^release} -> {200, %{"results" => []}}
+          after
+            5_000 -> {503, %{}}
+          end
+
+        _, :post, ^recall_path, _body ->
+          {200, %{"results" => []}}
+      end)
+
+    config = %{url: url, bank: "probe", timeout_ms: 5_000}
+    snapshot = material_snapshot(config, now_ms)
+
+    # 预热后台连接。旧实现与交互共享这个池，有了空闲的持久连接后，后续请求才会排进该会话。
+    assert {:ok, _} = Round.materials(%{question | "text" => "Warm up"}, [], snapshot)
+
+    assert_received {:http_request, warmed_conn,
+                     %{method: :post, path: ^recall_path, body: %{"query" => "Warm up"}}}
+
+    background = Task.async(fn -> Round.materials(question, [], snapshot) end)
+
+    assert_receive {:http_request, ^warmed_conn,
+                    %{method: :post, path: ^recall_path, body: %{"query" => ^background_query}}},
+                   2_000
+
+    assert_receive {:recall_waiting, responder}
+
+    try do
+      assert {:ok, %{results: []}} =
+               Hindsight.recall(
+                 %{config | timeout_ms: @recall_budget_ms},
+                 %{query: "Who is standing beside me?"},
+                 now_ms
+               )
+
+      assert_received {:http_request, interactive_conn,
+                       %{
+                         method: :post,
+                         path: ^recall_path,
+                         body: %{"query" => "Who is standing beside me?"}
+                       }}
+
+      assert interactive_conn != warmed_conn
+    after
+      send(responder, {:release_recall, release})
+    end
+
+    assert {:ok, %{happened: [_]}} = Task.await(background)
+  end
+
+  test "后台池缺失时取材显式失败，交互池继续服务" do
+    url =
+      KeepAliveStub.start(fn _conn, _method, _path, _body -> {200, %{"results" => []}} end)
+
+    config = %{url: url, bank: "probe", timeout_ms: 1_000}
+    now_ms = 1_791_676_800_000
+    snapshot = material_snapshot(config, now_ms)
+    background = Hindsight.recall_profile(:background)
+
+    on_exit(fn -> Hindsight.start_recall_profiles() end)
+    assert :ok = Hindsight.stop_recall_profile(:background)
+
+    assert {:error, {:profile_not_started, ^background}} =
+             Round.materials(Reflection.self_question(), [], snapshot)
+
+    refute_received {:http_request, _, _}
+    assert {:ok, %{results: []}} = Hindsight.recall(config, %{query: "q"}, now_ms)
+  end
+
+  defp material_snapshot(config, now_ms) do
+    %{
+      adapter: Hindsight,
+      config: config,
+      now_ms: now_ms,
+      recent: [%{at_ms: now_ms - 1_000, text: "I set off at dawn."}],
+      latest: %{},
+      buildings: [],
+      people: []
+    }
   end
 end

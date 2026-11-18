@@ -18,7 +18,7 @@ defmodule NpcServer.Life.Reflection.Round do
   """
   require Logger
   alias NpcServer.Life
-  alias NpcServer.Life.Reflection
+  alias NpcServer.Life.{Hindsight, Reflection}
   alias NpcServer.Mind
 
   # 每问两次召回（离线脚本 `s1x2_reflect.py` 的 RAW_TYPES / OBS_TYPES 与各自的 token 上限）：原始经历与带次数的认识。
@@ -176,8 +176,11 @@ defmodule NpcServer.Life.Reflection.Round do
   （记得的建筑、关系表里的人、“自己”，不含本问）各自最新的一条。
   反思的每一问（传进来的是本轮写成后更新过的 `latest`）与日计划的规划槽（“自己”一问，`Reflection.self_question/0`）共用这一条取材路径。
   `snapshot` 要 `recent`、`latest`、`buildings`、`people`、`adapter`、`config`、`now_ms`。
+  取材的两路召回使用专用后台连接池，反思存档沿用原快照。
   """
   def materials(question, right_now, snapshot) do
+    snapshot = %{snapshot | config: Hindsight.for_background_recall(snapshot.config)}
+
     with {:ok, first} <- recall(question, Enum.at(@recalls, 0), snapshot),
          {:ok, second} <- recall(question, Enum.at(@recalls, 1), snapshot),
          [_ | _] = happened <- happened(snapshot.recent, first, second, snapshot.now_ms) do

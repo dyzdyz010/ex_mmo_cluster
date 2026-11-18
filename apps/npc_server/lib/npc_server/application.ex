@@ -2,20 +2,16 @@ defmodule NpcServer.Application do
   @moduledoc """
   服务器常驻自治行为子系统；权威身体与世界仍属于 Scene / VoxelRegion。
 
-  ## 召回专用的 httpc profile 在这里起停
-
-  召回（选择在等它）与后台 Hindsight 请求（retain / 刷新 / 状态，没人在等）必须分到不同的连接队列，
-  否则召回会排进正忙的会话（见 `NpcServer.Life.Hindsight` 的 moduledoc 与召回隔离决策稿 D-1）。
-  这个 profile 属于本应用：在监督树之前起（任何 Life 起来之前它就在），应用停止时停。
-  起不来就让应用启动失败——没有召回 profile 就不能保证召回不被后台请求挡住，静默降级会让
-  选择在不告警的情况下变慢（铁律第 8 条）。
+  交互召回和后台取材各有独立的 httpc profile（见 `NpcServer.Life.Hindsight` 及召回隔离决策稿 D-1b）。
+  本应用在启动监督树前起两池，应用停止时关闭。起池失败会让应用启动失败。
   """
 
   use Application
+  alias NpcServer.Life.Hindsight
 
   @impl true
   def start(_type, _args) do
-    with {:ok, _} <- NpcServer.Life.Hindsight.start_recall_profile() do
+    with {:ok, started_profiles} <- Hindsight.start_recall_profiles() do
       children = [
         {Registry, keys: :duplicate, name: NpcServer.Names},
         # 崩溃域：这里是**所有** NPC 的父监督者，缺省强度（3 次 / 5 秒）会让一次全节点级别的抖动
@@ -27,14 +23,21 @@ defmodule NpcServer.Application do
       ]
 
       # 名字表失效需重建 Body；Body 监督器失效需重新读取持久化登记。
-      Supervisor.start_link(children, strategy: :rest_for_one, name: NpcServer.Supervisor)
+      case Supervisor.start_link(children, strategy: :rest_for_one, name: NpcServer.Supervisor) do
+        {:ok, _} = started ->
+          started
+
+        error ->
+          Hindsight.stop_recall_profiles(started_profiles)
+          error
+      end
     end
   end
 
   @impl true
   def stop(_state) do
-    # 监督树已经停完、没有 Life 在用之后才停 profile。
-    NpcServer.Life.Hindsight.stop_recall_profile()
+    # 监督树已经退出，此后没有 Life 使用两池。
+    Hindsight.stop_recall_profiles()
     :ok
   end
 end

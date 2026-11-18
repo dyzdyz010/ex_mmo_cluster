@@ -26,6 +26,7 @@ defmodule NpcServer.KeepAliveStub do
     {:ok, listener} =
       :gen_tcp.listen(0, [
         :binary,
+        ip: {127, 0, 0, 1},
         active: false,
         packet: :http_bin,
         reuseaddr: true,
@@ -35,11 +36,9 @@ defmodule NpcServer.KeepAliveStub do
     {:ok, {_, port}} = :inet.sockname(listener)
     counter = :atomics.new(1, [])
     acceptor = spawn(fn -> accept(listener, owner, handler, counter) end)
+    :ok = :gen_tcp.controlling_process(listener, acceptor)
 
-    on_exit(fn ->
-      :gen_tcp.close(listener)
-      Process.exit(acceptor, :kill)
-    end)
+    on_exit(fn -> Process.exit(acceptor, :kill) end)
 
     "http://127.0.0.1:#{port}"
   end
@@ -48,7 +47,8 @@ defmodule NpcServer.KeepAliveStub do
     case :gen_tcp.accept(listener) do
       {:ok, socket} ->
         conn = :atomics.add_get(counter, 1, 1)
-        pid = spawn(fn -> serve(socket, conn, owner, handler) end)
+        # 替身退出时一起回收本轮的连接进程和它们拥有的 socket。
+        pid = spawn_link(fn -> serve(socket, conn, owner, handler) end)
         :ok = :gen_tcp.controlling_process(socket, pid)
         send(pid, :go)
         accept(listener, owner, handler, counter)
