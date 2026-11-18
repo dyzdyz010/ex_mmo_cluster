@@ -17,6 +17,17 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第十九个统筹会话的进展（2026-11-18 起）——上面第十八 → 第十九交接里“下一步”各项的状态以这里为准
+
+- **CI**：run 44361551924 红两项，都是测试自身的顺序 / 时序依赖（npc_server 几处测试把全局 Logger 级别硬写回 `:warning`；voxel_region 转化测试事后读序号与实时热步竞态），
+  `06a7e49a` 修复并推送，run 44369890493 十三项全绿。release `/home/dyz/npc-scale-20261118/voxim_server` 在 `06a7e49a` 重建。
+- **扩人数**（交接第 2 步）：M-1 `scale6-02`、M-1b `scale6-direct-01`、M-2 `scale8-02` 全部通过；明细、原始失败与读数见下文“扩到 6 人：M-1”一节。
+- **每天花费上限**（交接第 3 步）：用户 2026-11-18 答复没有准数、要本机实测；口径写进扩人数决策稿 §7：M-4 实测后统筹会话折成几档给用户选。
+- **用户 2026-11-18 定**：先写“功能全覆盖”稿再写“学技能”稿，与实跑并行。两稿已写成待用户定：
+  [`2026-11-18-npc-full-capability-coverage-decision.md`](2026-11-18-npc-full-capability-coverage-decision.md)（稿 A，§6 Q-1–Q-5）、
+  [`2026-11-18-npc-skill-learning-decision.md`](2026-11-18-npc-skill-learning-decision.md)（稿 B，§6 Q-1–Q-6）。
+- **下一步**：报用户两稿 §6；M-4（3 人 1 小时成本，新驱动，含 Hindsight 自己的模型用量）；M-3（生产限额内存 / CPU，新驱动）。
+
 ### 交接（2026-11-18，第十八个统筹会话 → 第十九个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-19-brief.md`
 
 **一句话**：说话双端实机复验 `lane-01` 通过（下文“说话的双端实机复验”）；扩到 5 个以上 NPC 与进青岚的最低标准合成一份决策稿，用户已定
@@ -362,6 +373,32 @@ release `ea49bd38`（`/home/dyz/npc-slice4-20261118/voxim_server`），四人同
 #### 扩到 5 个以上 NPC 与进青岚的最低标准（2026-11-18，决策稿待定）
 
 用户 2026-11-18 同意把两件合成一份稿：[`2026-11-18-npc-scale-and-qinglan-entry-decision.md`](2026-11-18-npc-scale-and-qinglan-entry-decision.md)。关键现状：生产机 2 核 / 7.2 GiB、World 冷重启峰值约 2.1 GiB，本机 Hindsight 常驻约 1 GiB 且在 CPU 上做嵌入；Hindsight 自己的模型用量不在 `npc_model_request` 里。进青岚清单 E1–E9（E1 说话已过），测试矩阵 M-1–M-4，等用户定 §6 的 D-1–D-4。
+
+#### 扩到 6 人：M-1（`scale6-02`，2026-11-18，release `06a7e49a`）——六题全部成立
+
+- 驱动 `.demo/observe/npc-scale-20261118/`（Test-only，不在 git）。实跑前两轮独立评审共提 15 条，全部按反例修正；关键三条若不修会错判：
+  召回失败的真实形状 `{:mind_unavailable, :timeout | {:http_status, _} …}` 原判定器认不出（Q4 误判通过）；Hindsight 与模型同走 `127.0.0.1:28455`
+  使交互车道一个 8 连接的 Finch 池同时供选择与召回（生产里 Jev 走 HTTP/2、Hindsight 另一主机，不共池）；代理对外在途 8 由选择与日计划共用。
+  现为 Hindsight 单开 28456、代理在途按产品车道各 8、判定按整窗截断、排空与代理关闭各 65 s、WSL 截止看门狗 910 s、判定与资源核对分开落盘。
+- **`scale6-01` 原始失败（保留）**：Q4 不过，召回失败 15 行（8 次选择失败 + 采样里同一批），全部是代理回的 502——代理对 Hindsight 的空闲 keep-alive
+  连接被服务端按 uvicorn `timeout_keep_alive=30` 关掉后被复用（`RemoteDisconnected` 12 次），重发一次又取到另一条失效空闲连接。测试代理缺陷，产品侧无 transport_error。
+  修：代理池空闲上限 15 s（Hindsight `main.py` 注释写明 30 s “Exceed aiohttp's 15s client timeout so the client always closes first”）、复用前零超时可读检查
+  （同 urllib3 `is_connection_dropped`）、重发强制新连接；三例单测，重发一例在旧行为下红。
+- **`scale6-02` 通过**：Q1–Q6 全部成立；召回失败 0（代理丢弃失效空闲连接 56 条）；选择 58 次，产品侧延迟中位 1846 ms / p90 2198 / 最长 2991；两条车道
+  `queue_ms` 全 0；选择超时 0；10 min 请求 90 次（选择 58、日计划 6、说话 9、反思 17），入 17.2 万 / 出 1.9 万 / 缓存命中 2.0 万 token（不含 Hindsight 自己的用量）。
+  资源：UDP 83 → 86 → 79，Tcpip 4266 记录号 127958 未变，代理 0 残留线程，私有库已删。证据 `runs/scale6-02/`（`verdict.json`、`resources.json`、`models.jsonl`、`release.log`）。
+- **M-1b `scale6-direct-01` 通过**（release 经 HTTP/2 直连 DeepSeek，Hindsight 仍经代理 28456）：Q1–Q6 全部成立；87 条模型请求 `queue_ms` 全为 null
+  （HTTP/2 实例，结构前提成立）；选择 56 次，延迟中位 1508 ms / p90 1878 / 最长 2268（比经代理低约 340 ms，即代理自身开销）；选择超时 0、召回失败 0；
+  10 min 入 13.0 万 / 出 2.4 万 token。凭据：key 只在 Windows 驱动内存 → `start` 一次经 `WSLENV` → 按 4 项白名单并入 release 进程环境（环境文件始终是占位串、
+  `ERL_CRASH_DUMP_BYTES=0`、`-start_epmd false` 且 start 前以无 key 环境确保 epmd 在）；收尾原串扫描 823 个文件 0 命中，WSL `/proc/*/environ` 无持有者。
+  两轮独立评审共 9 条（含 epmd 会继承 key 并常驻、stdout 漏扫、排空期间不计上限），全部按反例修正后才跑。UDP 83 → 87 → 82，4266 未变。证据 `runs/scale6-direct-01/`。
+- **M-2 `scale8-02` 通过**（8 人，经代理）：Q1–Q6 全部成立；选择 72 次，延迟中位 1838 ms / p90 2287 / 最长 2510；`queue_ms` 与代理排队全 0；选择超时 0、召回失败 0；
+  10 min 请求 113 次（选择 72、日计划 13、说话 10、反思 18），入 19.8 万 / 出 2.7 万 token。UDP 85 → 86 → 82，4266 未变。
+  `scale8-01` 为环境故障（保留）：紧接上一轮收尾约 1 min 起跑，prepare 绑端口 `Address already in use`（上一轮私有 PostgreSQL 容器删后 Docker 端口转发未及释放；
+  随后核对端口空闲、无遗留容器），按 Testing.md 重跑一次。
+- **读数走向（只记录）**：6 → 8 人（×1.33），请求 ×1.26、入 token ×1.15、选择延迟不变——本层规模内线性或略亚线性，未见交互车道排队。
+  按 10 min 窗口粗算每 NPC 每小时约 17–19 万 token（含开局日计划，不含 Hindsight 自己的用量），**不能外推成每日成本**，以 M-4 为准。
+- 下一步：M-4（3 人 1 小时长稳成本，含 Hindsight 自己的模型用量）→ 统筹会话按 DeepSeek 官方价目折成每 NPC 每天费用给用户几档上限；M-3（生产限额内存 / CPU）。两者都要新驱动。
 
 #### 说话的双端实机复验：对话通道异步化之后（`lane-01`，2026-11-18，release `8a34c96f`）——通过
 
