@@ -33,9 +33,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
   defmodule RefusingStore do
     @moduledoc """
-    只测试：真实 NpcMemory 之上由测试进程控制的一次保存失败（同 `npc_life_test.exs` 的 `ControlledStore`）。测试进程在同名
-    ETS 表里放下 `{cid, 测试进程}` 之后，这个 cid 的 Life 行的**下一次**保存被拒（`:write_denied`，同 `FailingStore`），
-    被拒的那份行交给测试进程；其余读写照常。
+    只测试：真实 NpcMemory 之上由测试进程控制的保存失败。ETS 里的 `{cid, 测试进程}` 拒绝下一次保存，
+    `{{:activity, cid}, 测试进程, 经历原文}` 在测试放行前持续拒绝含该活动的行。其余读写照常。
     """
     defdelegate get(cid, kind, key), to: DataService.NpcMemory
 
@@ -45,12 +44,25 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
           send(test, {:save_refused, row})
           {:error, :write_denied}
 
-        _ ->
+        [] ->
+          put_activity(cid, row)
+
+        false ->
           DataService.NpcMemory.put(cid, "life", "state", row)
       end
     end
 
     def put(cid, kind, key, value), do: DataService.NpcMemory.put(cid, kind, key, value)
+
+    defp put_activity(cid, row) do
+      with [{_, test, text}] <- :ets.lookup(__MODULE__, {:activity, cid}),
+           true <- Enum.any?(row["pending"], &(&1["text"] == text)) do
+        send(test, :activity_write_refused)
+        {:error, :write_denied}
+      else
+        _ -> DataService.NpcMemory.put(cid, "life", "state", row)
+      end
+    end
   end
 
   @plan_fixtures Path.expand("../support/fixtures/day_plan", __DIR__)
@@ -80,7 +92,16 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     %{cid: cid, profile: profile} = planning()
 
     assert {:ok, %{plan: plan}} = Life.observe(cid)
-    assert plan == %{enabled: true, running: false, row: DayPlan.new(), column: nil, error: nil}
+
+    assert plan == %{
+             enabled: true,
+             running: false,
+             waiting_for_activity: false,
+             row: DayPlan.new(),
+             column: nil,
+             error: nil
+           }
+
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == DayPlan.new()
 
     # 真实代码路径存下的行删掉 "plan"，再起 Life。
@@ -163,7 +184,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     Life.activity(life, finished(profile, "guard_hut", :completed))
     Life.activity(life, finished(profile, "visit_plaza", {:failed, "travel", "no_path"}))
 
-    # 同一发送者的 cast 与 call 按次序处理：observe 回来时上面两条都已接纳。
+    # 观察读到已入账的活动。
     assert {:ok, %{plan: plan}} = Life.observe(cid)
     assert dones(plan) == [1, 0, 0]
 
@@ -183,6 +204,83 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     # 四项活动都照常成了经历（失败的那项也是），加上起 Life 后的第一条经历（`planning/1`）。
     assert {:ok, %{pending_episodes: 5}} = Life.observe(cid)
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == after_all.row
+  end
+
+  @tag timeout: 60_000
+  test "活动经历写盘失败可恢复，按完成时刻记一次计划进度" do
+    :ets.new(RefusingStore, [:named_table, :public])
+
+    %{cid: cid, life: life, clock: clock, profile: profile} =
+      context =
+      planning(memory: RefusingStore)
+
+    plan_today(context, @day, "R3-r1")
+    frame(life, @day, 740)
+
+    at_ms = now(clock)
+    experience = finished(profile, "guard_hut", :completed)
+    :ets.insert(RefusingStore, {{:activity, cid}, self(), experience.text})
+
+    assert {:error, {:memory_unavailable, :write_denied}} = Life.activity(life, experience)
+    assert_receive :activity_write_refused
+    assert {:ok, %{activity_pending: true, plan: plan}} = Life.observe(cid)
+    assert dones(plan) == [0, 0, 0]
+    assert {:error, :activity_pending} = Life.mind(cid, [])
+
+    # 放行时守屋的时限已经过去。活动经历和进度仍应以完成时刻为准。
+    advance(clock, 60_000)
+    frame(life, @day, 800)
+    assert {:ok, _} = Life.observe(cid)
+    :ets.delete(RefusingStore, {:activity, cid})
+
+    saved =
+      NpcWorld.await(fn ->
+        row = DataService.NpcMemory.get(cid, "life", "state")
+        Enum.any?(row["pending"], &(&1["text"] == experience.text)) && row
+      end)
+
+    assert [%{"at_ms" => ^at_ms}] =
+             Enum.filter(saved["pending"], &(&1["text"] == experience.text))
+
+    assert Enum.map(saved["plan"]["intents"], & &1["done"]) == [1, 0, 0]
+    assert {:ok, %{activity_pending: false, pending_episodes: 2}} = Life.observe(cid)
+  end
+
+  @tag timeout: 90_000
+  test "在途重排先等已结束的活动落盘，再换掉旧计划的开放意图" do
+    :ets.new(RefusingStore, [:named_table, :public])
+
+    %{fixture: fixture, cid: cid, life: life, clock: clock, profile: profile} =
+      context = planning(memory: RefusingStore)
+
+    plan_today(context, @day, "R3-r1")
+    damage(fixture.world, cid, 1, {5, 64, 8})
+    await_plan(cid, & &1.row["event_waiting"])
+    advance(clock, @gap_ms)
+    frame(life, @day, 740)
+    {worker, _user} = await_plan_write()
+
+    experience = finished(profile, "guard_hut", :completed)
+    :ets.insert(RefusingStore, {{:activity, cid}, self(), experience.text})
+    assert {:error, {:memory_unavailable, :write_denied}} = Life.activity(life, experience)
+
+    reply(worker, "R2-r1")
+
+    before_recovery =
+      await_plan(cid, fn plan ->
+        Map.get(plan, :waiting_for_activity) || plan.row["counts"]["replanned"] == 1
+      end)
+
+    assert before_recovery.row["counts"]["replanned"] == 0
+    assert dones(before_recovery) == [0, 0, 0]
+    :ets.delete(RefusingStore, {:activity, cid})
+
+    after_recovery = await_plan(cid, &(&1.row["counts"]["replanned"] == 1 and not &1.running))
+
+    assert [%{"activity" => "guard_hut", "done" => 1, "id" => id} | _] =
+             after_recovery.row["intents"]
+
+    assert id == "#{@day}:1"
   end
 
   @tag timeout: 90_000

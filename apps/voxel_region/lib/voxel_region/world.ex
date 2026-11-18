@@ -51,7 +51,17 @@ defmodule VoxelRegion.World do
   def content_version(server \\ @name), do: VoxelRegion.World.PageLoad.call(server, :content_version)
   def seq(server \\ @name), do: VoxelRegion.World.PageLoad.call(server, :seq)
   @doc "读取最近 512 个已提交操作；nil 建立当前起点，过旧游标返回显式缺口。"
-  def interactions_since(server, cursor), do: VoxelRegion.World.PageLoad.call(server, {:interactions_since, cursor})
+  def interactions_since(server, cursor),
+    do: VoxelRegion.World.PageLoad.call(server, {:interactions_since, {:strict, cursor}})
+
+  @doc """
+  按持久化的 World 身份与游标继续读取。身份一致且合法游标落后于保留窗时，同一次读取返回完整保留后缀和
+  `gap: %{from_cursor: 游标, oldest_seq: 最早可用操作序号}`；结果的 `cursor` 是本次读取的 World 事务游标。
+  身份不符返回 `:interaction_world_identity_mismatch`，非法游标返回 `:invalid_interaction_cursor`。
+  """
+  def interactions_since(server, cursor, world_id),
+    do: VoxelRegion.World.PageLoad.call(server, {:interactions_since, {:resume, cursor, world_id}})
+
   def liquid_activity(server), do: VoxelRegion.World.PageLoad.call(server, :liquid_activity)
 
   @doc "窗口来源与完整XYZ盒的只读CLI报告；仅观察元数据，不决定世界物理是否演化。"

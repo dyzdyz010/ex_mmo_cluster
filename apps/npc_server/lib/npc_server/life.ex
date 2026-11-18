@@ -29,6 +29,9 @@ defmodule NpcServer.Life do
   World 事件只带被动那一格所属建筑的定义 id（`prefab`）；读取 worker 向 World 的发布元信息查出名字写进事件（`building`），
   经历原文由此说得出是哪座建筑、是整座没了还是毁掉一部分（标准描述表见 `Life.State`）。没有名字的定义与散格不点名。
   自己放下的有名字的建筑记进状态的 `"buildings"`（记忆）；`mind/2` 发问时逐座现查 World 此刻在不在，不用记忆冒充现状。
+  已保存游标落后于同一 World 的保留窗时，接纳仍保留的权威操作，结束依赖连续事件的损坏与修复账。
+  恢复批不产生所见。`observe/1` 的 `last_interaction_gap` 只读最近一次成功持久化的缺口范围，
+  与心智、经历和恢复后的游标同次保存。保存失败时沿用上次游标，下一轮继续读。
   对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
@@ -187,7 +190,7 @@ defmodule NpcServer.Life do
     end
   end
 
-  @doc "读取派生心智、持久游标、批写状态、缓存年龄和显式错误。"
+  @doc "读取派生心智、持久游标及最近缺口、批写状态、缓存年龄和显式错误。"
   def observe(cid), do: call(cid, :observe)
   @doc "封存不足 3000 字的尾片段并后台批写；立即返回任务状态。"
   def flush(cid), do: call(cid, :flush)
@@ -253,6 +256,7 @@ defmodule NpcServer.Life do
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
   {:life_models_unavailable, 原因} | 召回的失败原因 | :recall_timeout | World 路由或查询的失败原因}`。
+  上一项活动的经历与计划进度还未保存时返回 `{:error, :activity_pending}`。
   **任何一路**失败或超时，整次视图都失败（不拿其余几路凑一张残缺的清单）；失败的那一路的问句与原因记进 `observe/1` 的 `recall`。
   新 NPC 的空 bank 召回为空是正常结果。World 读不到时不写“在”或“不在”，整份视图失败（World 调用退出时发问 worker 随之退出，
   同样是显式失败）。
@@ -367,8 +371,12 @@ defmodule NpcServer.Life do
     end
   end
 
-  @doc "接收 Body 当前场景身份和纯观察；不阻塞发送者。"
+  @doc "接收 Body 当前场景身份和观察。`observed_at_ms` 是 Body 生成观察时的墙钟；不阻塞发送者。"
   def observation(pid, observation), do: GenServer.cast(pid, {:observation, observation})
+
+  @doc "按观察的消息顺序接收 Body 会话结束通知。"
+  def observation_lost(pid), do: GenServer.cast(pid, :observation_lost)
+
   @doc "记录社交决策及实际权威终态，并持久确认已完成的感谢来源。"
   def decision(pid, data), do: GenServer.cast(pid, {:decision, data})
 
@@ -389,19 +397,23 @@ defmodule NpcServer.Life do
   completed: 是否完成}`（`NpcServer.Selector.experience/2`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
   原文末尾加一句期间事实（见 moduledoc；没有开始信号或期间没有观察则不加）；tags 是 `kind:activity`、期间进过 6 米内的
   每个人 `actor:<cid>`、有地名时 `place:<地名>`。规划的形态在同一次保存里给日计划记账（完成的才记，见 moduledoc 的“日计划”）；
-  不规划的形态只读 `text` 与 `place`。由 Runtime 在活动结束时调用一次；不改 World 游标、情绪或关系。
+  不规划的形态只读 `text` 与 `place`。由 Runtime 的选择 worker 在活动结束时调用一次。
+  保存后返回 `:ok`；写失败时返回诊断错误，Life 保留原经历并在轮询时重试，期间心智不能供下一次选择。
+  待保存的经历只驻留于本 Life 进程；已经保存的经历与计划进度随持久行恢复。
   """
   def activity(pid, %{text: _, place: _} = experience),
-    do: GenServer.cast(pid, {:activity, experience})
+    do: call_server(pid, {:activity, experience})
 
   @doc "提交本次模型情绪评价；持久化完成才返回成功，调用方随后才执行动作。"
   def appraise(cid, through, entries), do: call(cid, {:appraise, through, entries})
 
   defp name(cid), do: {:global, {__MODULE__, node(), cid}}
 
-  defp call(cid, request) do
+  defp call(cid, request), do: call_server(name(cid), request)
+
+  defp call_server(server, request) do
     try do
-      GenServer.call(name(cid), request)
+      GenServer.call(server, request)
     catch
       :exit, {:noproc, _} -> {:error, :life_not_running}
       :exit, _ -> {:error, :life_unavailable}
@@ -451,6 +463,7 @@ defmodule NpcServer.Life do
        speech_pending: [],
        # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
        activity: nil,
+       activity_pending: nil,
        # “看到的”进行中的账（`Life.Sight.new/0`）：还没结束的相遇、还没合上的建造 / 拆除、每人频率上限。只在内存，重启即丢。
        sight: Sight.new(),
        # 写日记所需（不变的配置）：nil = 这个形态不反思；否则是写日记的函数、人格卡一行与反思库（见 `journaling/3`）。
@@ -504,6 +517,7 @@ defmodule NpcServer.Life do
         cid: s.context.cid,
         bank: s.config.bank,
         state: row && row["state"],
+        last_interaction_gap: row && row["last_interaction_gap"],
         mind: row && State.view(row["state"], s.now.()),
         pending_episodes: if(row, do: length(row["pending"]), else: 0),
         pending_fragments: if(row, do: length(row["fragments"]), else: 0),
@@ -524,6 +538,7 @@ defmodule NpcServer.Life do
         hindsight: s.status,
         recall: s.recall,
         decision: s.decision,
+        activity_pending: s.activity_pending != nil,
         unsaved_speech: length(s.speech_pending),
         unsaved_experiences: length(s.experience_pending),
         sight_capped: s.sight.capped,
@@ -534,6 +549,9 @@ defmodule NpcServer.Life do
   end
 
   def handle_call(:context, _, %{row: nil} = s), do: {:reply, {:error, :life_not_ready}, s}
+
+  def handle_call(:context, _, %{activity_pending: pending} = s) when pending != nil,
+    do: {:reply, {:error, :activity_pending}, s}
 
   def handle_call(:context, _, s) do
     if s.row["cache"] do
@@ -627,10 +645,26 @@ defmodule NpcServer.Life do
     end
   end
 
+  def handle_call({:activity, _}, _, %{row: nil} = s),
+    do: {:reply, {:error, :life_not_ready}, s}
+
+  def handle_call({:activity, _}, _, %{activity_pending: pending} = s) when pending != nil,
+    do: {:reply, {:error, :activity_pending}, s}
+
+  def handle_call({:activity, experience}, _, s) do
+    pending = prepare_activity(s, experience)
+
+    case save_activity(%{s | activity: nil, activity_pending: pending}) do
+      {:ok, s} -> {:reply, :ok, s}
+      {:error, s} -> {:reply, {:error, s.error}, s}
+    end
+  end
+
   @impl true
   def handle_cast({:observation, o}, s) do
     context = %{s.context | scene_id: Map.get(o.self, :scene_id, s.context.scene_id)}
-    {sight, seen, capped} = Sight.see(s.sight, o, s.now.())
+    at_ms = Map.get(o, :observed_at_ms) || s.now.()
+    {sight, seen, capped} = Sight.see(s.sight, o, at_ms)
     s = %{s | observation: o, context: context, activity: approach(s.activity, o), sight: sight}
     s = record_sight(s, seen, capped)
 
@@ -644,6 +678,9 @@ defmodule NpcServer.Life do
 
     {:noreply, maybe_plan(s)}
   end
+
+  def handle_cast(:observation_lost, s),
+    do: {:noreply, %{s | sight: Sight.invalidate(s.sight)}}
 
   def handle_cast({:experience, outcome}, s) do
     position = s.observation && s.observation.self.position
@@ -673,9 +710,13 @@ defmodule NpcServer.Life do
   def handle_cast(:activity_started, s),
     do: {:noreply, %{s | activity: %{observed: false, closest: %{}}}}
 
-  # 活动只能在一次成功的选择之后结束，而选择要先读到本 owner 的视图，所以此时 row 必已加载。
-  # 规划的形态在接纳这条经历的同一次保存里给日计划记账（`record_plan_activity/3`）。
-  def handle_cast({:activity, %{text: text, place: place} = experience}, s) do
+  def handle_cast({:speech, message}, s) do
+    s = %{s | speech_pending: s.speech_pending ++ [message]}
+    {:noreply, save_speech(s)}
+  end
+
+  # 只在活动结束时冻结期间事实与记账时刻。重试只接纳同一条经历。
+  defp prepare_activity(s, %{text: text, place: place} = experience) do
     at_ms = s.now.()
 
     # 期间事实：有开始信号且期间收到过观察才有真值；没有就不写这句、也没有 actor 标签。
@@ -698,23 +739,27 @@ defmodule NpcServer.Life do
           Enum.map(people, &"actor:#{&1}") ++ if(place, do: ["place:#{place}"], else: [])
     }
 
-    s = %{s | activity: nil}
-    {row, next} = accept(s, s.row, [episode])
-    row = record_plan_activity(s, row, experience)
-
-    case save(s, seal(row, false)) do
-      {:ok, s} -> {:noreply, s |> automatic() |> follow_round(next)}
-      {:error, s} -> {:noreply, s}
-    end
+    %{episode: episode, progress: activity_progress(s, experience)}
   end
 
-  def handle_cast({:speech, message}, s) do
-    s = %{s | speech_pending: s.speech_pending ++ [message]}
-    {:noreply, save_speech(s)}
+  defp save_activity(%{activity_pending: nil} = s), do: {:ok, s}
+
+  defp save_activity(%{activity_pending: %{episode: episode, progress: progress}} = s) do
+    {row, next} = accept(s, s.row, [episode])
+    row = record_plan_activity(row, progress)
+
+    case save(s, seal(row, false)) do
+      {:ok, s} ->
+        {:ok, %{s | activity_pending: nil} |> automatic() |> follow_round(next) |> land_plan()}
+
+      {:error, s} ->
+        {:error, s}
+    end
   end
 
   @impl true
   def handle_info(:poll, %{poll: nil} = s) do
+    {_, s} = save_activity(s)
     memory = s.memory
     context = s.context
     row = s.row
@@ -723,11 +768,7 @@ defmodule NpcServer.Life do
      worker(s, :poll, fn ->
        with {:ok, loaded} <- if(row, do: {:ok, row}, else: Memory.life_load(memory, context.cid)),
             {:ok, route} <- context.router.route(context.scene_id),
-            {:ok, events} <-
-              VoxelRegion.World.interactions_since(
-                route.world_ref,
-                loaded && loaded["state"]["cursor"]
-              ) do
+            {:ok, events} <- world_interactions(route.world_ref, loaded) do
          {:ok,
           %{row: loaded, events: Map.update!(events, :events, &buildings(route.world_ref, &1))}}
        end
@@ -743,6 +784,9 @@ defmodule NpcServer.Life do
       case result do
         {:ok, %{row: loaded, events: events}} ->
           accept_world(s, loaded, events)
+
+        {:error, :interaction_world_identity_mismatch} ->
+          error(s, :life_world_identity_mismatch)
 
         {:error, reason} ->
           error(s, reason)
@@ -906,52 +950,10 @@ defmodule NpcServer.Life do
     {:noreply, s}
   end
 
-  # 规划槽交回的结果（`DayPlan.Round.write/1`）：清槽，落栏是一次保存——采用（`DayPlan.adopt/6`，日号与分钟用起槽那一刻的，
-  # 所以调用期间越过日界时计划按起槽时的日号落栏，下一帧观察因日号变了再触发 `:day`）或记一笔失败 / 被拒（`DayPlan.fail/5`，
-  # 意图不动）。时刻一律是起槽那一刻（`now_ms`），两次调用的最小间隔从它算。写作没有发出（`outcome.wrote` 为假：此刻一块、
-  # 召回失败、没有材料）的那次在同一次保存里退回当日额度（`DayPlan.refund/1`；槽在途时不查触发，`calls` 仍是起槽那次记下的）。
-  # 保存失败：行不变、错误经 `save/2` 可见。
+  # 已收到的规划结果留在原槽。若前一条活动还未写盘，先完成那条输入的经历与记账，再决定哪些旧意图应该保留。
   def handle_info({:result, :plan, outcome}, %{plan: slot} = s) do
     s = done(s, :plan)
-    plan = s.row["plan"]
-
-    {landed, plan_error} =
-      case outcome.result do
-        :ok ->
-          {DayPlan.adopt(
-             plan,
-             slot.day,
-             slot.now_minute,
-             outcome.checked,
-             slot.kind,
-             slot.now_ms
-           ), nil}
-
-        {failure, reason} when failure in [:failed, :rejected] ->
-          {DayPlan.fail(plan, slot.kind, failure, reason, slot.now_ms), reason}
-      end
-
-    landed = if outcome.wrote, do: landed, else: DayPlan.refund(landed)
-
-    case save(s, %{s.row | "plan" => landed}) do
-      {:ok, s} ->
-        Logger.info(
-          "npc_plan cid=#{s.context.cid} event=landed kind=#{slot.kind} day=#{slot.day} " <>
-            "result=#{landed["last"]["result"]} reason=#{inspect(plan_error)} wrote=#{outcome.wrote} " <>
-            "intents=#{length(landed["intents"])} wants=#{length(landed["wants"])} " <>
-            "elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
-        )
-
-        {:noreply, %{s | plan_error: plan_error}}
-
-      {:error, s} ->
-        Logger.warning(
-          "npc_plan cid=#{s.context.cid} event=persist_failed kind=#{slot.kind} day=#{slot.day} " <>
-            "result=#{landed["last"]["result"]} reason=#{inspect(s.error)}"
-        )
-
-        {:noreply, %{s | plan_error: s.error}}
-    end
+    {:noreply, land_plan(%{s | plan: Map.put(slot, :outcome, outcome)})}
   end
 
   # 规划槽崩溃（写作函数退出、取材时抛错等）：清槽，当一次失败记（`DayPlan.fail/5`，原因带截断的退出原因）；Life 不受影响。
@@ -1004,6 +1006,13 @@ defmodule NpcServer.Life do
 
   def handle_info({:EXIT, _, _}, s), do: {:noreply, s}
 
+  defp world_interactions(world, nil), do: VoxelRegion.World.interactions_since(world, nil)
+
+  defp world_interactions(world, row) do
+    state = row["state"]
+    VoxelRegion.World.interactions_since(world, state["cursor"], state["world_id"])
+  end
+
   # 事件里 `prefab` 是所属建筑的定义 id（散格与 2026-11-12 之前提交的事件没有）；名字的 owner 是 World 的发布元信息，
   # 这里读一次写进事件的 `building`。空名发布与作者目录里没发布过的定义没有名字。本批没有涉及建筑的事件就不读。
   defp buildings(world, events) do
@@ -1048,7 +1057,7 @@ defmodule NpcServer.Life do
         )
     }
 
-  # 只有 owner 推进当前 canonical；在途 World 读取不能覆盖模型刚提交的情绪。
+  # 只有 owner 推进当前 canonical；在途 World 读取不能覆盖模型刚提交的情绪，持久行的身份与游标已由 World 验证。
   # 加载边界：反思之前存下的行没有 "reflection"、日计划之前存下的行没有 "plan"，只在这里补成空的一份，别处一律直接读。
   defp accept_world(s, loaded, events) do
     row =
@@ -1059,40 +1068,43 @@ defmodule NpcServer.Life do
            |> Map.put_new("plan", DayPlan.new())) ||
         initial(s.context.cid, events, s.now.())
 
-    if row["state"]["world_id"] != events.world_id do
-      error(s, :life_world_identity_mismatch)
-    else
-      canonical = State.upgrade(row["state"])
+    canonical = State.upgrade(row["state"])
 
-      canonical =
-        cond do
-          s.appraise -> Appraisal.enable(canonical)
-          Map.has_key?(canonical, "affect") -> {:error, :emotion_owner_mismatch}
-          true -> canonical
-        end
-
-      case canonical do
-        {:error, reason} -> error(s, reason)
-        canonical -> advance_world(s, row, canonical, events)
+    canonical =
+      cond do
+        s.appraise -> Appraisal.enable(canonical)
+        Map.has_key?(canonical, "affect") -> {:error, :emotion_owner_mismatch}
+        true -> canonical
       end
+
+    case canonical do
+      {:error, reason} -> error(s, reason)
+      canonical -> advance_world(s, row, canonical, events)
     end
   end
 
   defp advance_world(s, row, canonical, events) do
+    gap = Map.get(events, :gap)
+    now_ms = s.now.()
+    canonical = if gap, do: State.after_interaction_gap(canonical), else: canonical
+
     {canonical, episodes} =
       State.advance(
         canonical,
         events.events,
         events.cursor,
-        s.now.(),
+        now_ms,
         if(s.appraise, do: :model, else: :rules),
         names(s)
       )
 
     # 所见只取没有被写成“动我的建筑”经历的事件（同一件事不写两条）；分组账与到点检查在 `Life.Sight`。
-    # 账无论保存成败都换成新的：写失败时这几条丢掉（与活动经历相同），重来的同一批事件按 seq 不再算一次。
+    # 账无论保存成败都换成新的：写失败时这几条丢掉，重来的同一批事件按 seq 不再算一次。
     {sight, seen, capped} =
-      Sight.witness(s.sight, Sight.unwritten(events.events, episodes), s.observation, s.now.())
+      if gap,
+        do: Sight.due(s.sight, s.observation, now_ms),
+        else:
+          Sight.witness(s.sight, Sight.unwritten(events.events, episodes), s.observation, now_ms)
 
     log_capped(s, capped)
     s = %{s | sight: sight}
@@ -1112,10 +1124,30 @@ defmodule NpcServer.Life do
         canonical
       end
 
-    {candidate, next} = accept(s, %{row | "state" => canonical}, episodes ++ seen)
+    row = %{row | "state" => canonical}
+
+    row =
+      if gap do
+        Map.put(row, "last_interaction_gap", %{
+          "from_cursor" => gap.from_cursor,
+          "oldest_seq" => gap.oldest_seq,
+          "resumed_cursor" => events.cursor
+        })
+      else
+        row
+      end
+
+    {candidate, next} = accept(s, row, episodes ++ seen)
 
     case save(s, seal(candidate, false)) do
       {:ok, s} ->
+        if gap do
+          Logger.warning(
+            "npc_life_interaction_gap cid=#{s.context.cid} world_id=#{events.world_id} " <>
+              "from_cursor=#{gap.from_cursor} oldest_seq=#{gap.oldest_seq} resumed_cursor=#{events.cursor}"
+          )
+        end
+
         s = s |> follow_round(next) |> save_experiences() |> save_speech()
         publish(s)
         automatic(s)
@@ -1434,6 +1466,7 @@ defmodule NpcServer.Life do
   # 身体状态与 `Reflection.Round.right_now/1` 同一条件：它为 nil 时此刻一块写不出，起了也只是白锁住最小间隔。
   # 经历同理（`experienced?/1`）：一条都没有时规划没有可依据的事（实跑 S1-R10 出生那一次就是 `:no_materials`）。
   defp maybe_plan(%{row: nil} = s), do: s
+  defp maybe_plan(%{activity_pending: pending} = s) when pending != nil, do: s
 
   defp maybe_plan(s) do
     with true <- planning?(s),
@@ -1525,24 +1558,70 @@ defmodule NpcServer.Life do
     }
   end
 
-  # 日计划记账（在接纳活动经历的同一份行里）：规划的形态、活动完成（失败的不计）、本 owner 此刻的观察里有游戏钟时，
-  # 按此刻的日号与分钟 `DayPlan.record_activity/4`；否则行不动。`experience` 是 `Selector.experience/2` 的结果：规划的形态
-  # 要求它带 `activity` 与 `completed`（缺了直接崩，是产生者的错误）；不规划的形态不读这两个键。
-  defp record_plan_activity(s, row, experience) do
+  # 使用起槽时的日期与分钟，同时读取最新已入账的计划。写作未发出的轮次在同次保存内退额度。
+  defp land_plan(%{activity_pending: nil, plan: %{outcome: outcome} = slot} = s) do
+    s = %{s | plan: nil}
+    plan = s.row["plan"]
+
+    {landed, plan_error} =
+      case outcome.result do
+        :ok ->
+          {DayPlan.adopt(
+             plan,
+             slot.day,
+             slot.now_minute,
+             outcome.checked,
+             slot.kind,
+             slot.now_ms
+           ), nil}
+
+        {failure, reason} when failure in [:failed, :rejected] ->
+          {DayPlan.fail(plan, slot.kind, failure, reason, slot.now_ms), reason}
+      end
+
+    landed = if outcome.wrote, do: landed, else: DayPlan.refund(landed)
+
+    case save(s, %{s.row | "plan" => landed}) do
+      {:ok, s} ->
+        Logger.info(
+          "npc_plan cid=#{s.context.cid} event=landed kind=#{slot.kind} day=#{slot.day} " <>
+            "result=#{landed["last"]["result"]} reason=#{inspect(plan_error)} wrote=#{outcome.wrote} " <>
+            "intents=#{length(landed["intents"])} wants=#{length(landed["wants"])} " <>
+            "elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
+        )
+
+        %{s | plan_error: plan_error}
+
+      {:error, s} ->
+        Logger.warning(
+          "npc_plan cid=#{s.context.cid} event=persist_failed kind=#{slot.kind} day=#{slot.day} " <>
+            "result=#{landed["last"]["result"]} reason=#{inspect(s.error)}"
+        )
+
+        %{s | plan_error: s.error}
+    end
+  end
+
+  defp land_plan(s), do: s
+
+  defp activity_progress(s, experience) do
     if planning?(s) do
       %{activity: activity, completed: completed} = experience
 
       case s.observation do
         %{world_time: %{day: day, minute_of_day: minute}} when completed ->
-          update_in(row["plan"], &DayPlan.record_activity(&1, activity, day, minute))
+          {activity, day, minute}
 
         _ ->
-          row
+          nil
       end
-    else
-      row
     end
   end
+
+  defp record_plan_activity(row, nil), do: row
+
+  defp record_plan_activity(row, {activity, day, minute}),
+    do: update_in(row["plan"], &DayPlan.record_activity(&1, activity, day, minute))
 
   # 给选择的日计划数据（心智快照与 observe 共用）：`DayPlan.column/3` 对持久行与此刻观察里的游戏钟。调用方保证行已加载。
   defp plan_column(s) do
@@ -1560,6 +1639,7 @@ defmodule NpcServer.Life do
       %{
         enabled: true,
         running: s.plan != nil,
+        waiting_for_activity: match?(%{outcome: _}, s.plan),
         row: s.row && s.row["plan"],
         column: s.row && plan_column(s),
         error: s.plan_error

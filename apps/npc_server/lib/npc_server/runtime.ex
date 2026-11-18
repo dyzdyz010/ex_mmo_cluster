@@ -11,7 +11,8 @@ defmodule NpcServer.Runtime do
   发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
   选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
   一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
-  （`Life.activity/2`，`Selector.experience/2` 的结果）；`choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
+  （`Life.activity/2`，`Selector.experience/2` 的结果）。上一项经历保存成功后才发问；失败由 Life 保留同一输入继续提交。
+  `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
   """
   require Logger
   alias NpcServer.{Body, Dialogue, Memory, Selector, Skills, Scheduler}
@@ -105,6 +106,10 @@ defmodule NpcServer.Runtime do
           end
 
           deliver(%{state | observation: observation}, {:observation, observation})
+
+        :observation_lost ->
+          if state.life, do: NpcServer.Life.observation_lost(state.life)
+          state
 
         {:life_state, canonical, thanks} ->
           %{state | life_state: canonical, life_thanks: thanks}
@@ -337,11 +342,9 @@ defmodule NpcServer.Runtime do
     {_pid, ref} =
       :erlang.spawn_opt(
         fn ->
-          # 由同一个进程先交经历、再读视图：Life 按到达次序处理，所以这次的快照一定含刚结束的那项活动。
-          if experience, do: NpcServer.Life.activity(life, experience)
-
           result =
-            with {:ok, question} <- Selector.question(profile, observation, history) do
+            with :ok <- record_experience(life, experience),
+                 {:ok, question} <- Selector.question(profile, observation, history) do
               send(parent, {:select_asked, question})
               Selector.ask(profile, question, trigger)
             end
@@ -358,6 +361,9 @@ defmodule NpcServer.Runtime do
     Body.command(state.body, command)
     state
   end
+
+  defp record_experience(_life, nil), do: :ok
+  defp record_experience(life, experience), do: NpcServer.Life.activity(life, experience)
 
   defp finish_select(%{selecting: %{id: id}} = state, result) do
     cid = state.observation.self.entity_id

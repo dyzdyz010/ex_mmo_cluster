@@ -274,15 +274,36 @@ defmodule VoxelRegion.WorldInteractionsTest do
     assert {:ok, _} = World.apply_edit(c.world, {1, 1, 2}, 19)
     for n <- 1..513, do: assert({:ok, _} = hit(c, n))
     assert {:error, {:interaction_gap, 3}} = World.interactions_since(c.world, 0)
-    assert {:ok, %{events: events, cursor: 514}} = World.interactions_since(c.world, 2)
+    assert {:ok, %{events: events, cursor: 514, world_id: world_id} = batch} =
+             World.interactions_since(c.world, 2)
+
     assert length(events) == 512
     assert hd(events).seq == 3
     assert List.last(events).seq == 514
+    assert {:ok, ^batch} = World.interactions_since(c.world, 2, world_id)
+
+    assert {:ok, %{events: ^events, cursor: 514, world_id: ^world_id, gap: %{from_cursor: 0, oldest_seq: 3}}} =
+             World.interactions_since(c.world, 0, world_id)
+
+    assert {:error, :interaction_world_identity_mismatch} =
+             World.interactions_since(c.world, 0, "another-world")
+
+    assert {:error, :invalid_interaction_cursor} =
+             World.interactions_since(c.world, {:resume, 0, world_id})
+
+    for invalid <- [nil, -1, 515] do
+      assert {:error, :invalid_interaction_cursor} =
+               World.interactions_since(c.world, invalid, world_id)
+    end
+
     assert :ok = World.compact(c.world)
     stop_supervised!(World)
     world = start_supervised!({World, c.opts})
     assert {:error, {:interaction_gap, 3}} = World.interactions_since(world, 1)
     assert {:ok, %{events: ^events}} = World.interactions_since(world, 2)
+
+    assert {:ok, %{events: ^events, cursor: 514, world_id: ^world_id, gap: %{from_cursor: 1, oldest_seq: 3}}} =
+             World.interactions_since(world, 1, world_id)
   end
 
   @tag :database

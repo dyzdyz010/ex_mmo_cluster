@@ -133,17 +133,35 @@ defmodule VoxelRegion.World.Interactions do
 
   def apply(state, _transaction), do: state
 
-  @doc "nil 建立现在的游标；落后于已淘汰操作或非法游标明确失败。"
-  def since(state, nil), do: reply(state, [])
+  @doc "同一提交点读取操作窗口；严格读取报告缺口，持久消费者显式申请同世界保留后缀。"
+  def since(state, {:strict, nil}), do: {:ok, reply(state, FileStore.hex(state.cv), [])}
+  def since(state, {:strict, cursor}), do: read(state, cursor, :strict)
+  def since(state, {:resume, cursor, world_id}), do: read(state, cursor, {:resume, world_id})
+  def since(_state, _request), do: {:error, :invalid_interaction_cursor}
 
-  def since(state, cursor) when is_integer(cursor) and cursor >= 0 and cursor <= state.seq do
-    if cursor < state.interaction_floor,
-      do: {:error, {:interaction_gap, hd(state.interaction_history).seq}},
-      else: reply(state, Enum.filter(state.interaction_history, &(&1.seq > cursor)))
+  defp read(state, cursor, mode)
+       when is_integer(cursor) and cursor >= 0 and cursor <= state.seq do
+    world_id = FileStore.hex(state.cv)
+    history = state.interaction_history
+
+    cond do
+      mode != :strict and mode != {:resume, world_id} ->
+        {:error, :interaction_world_identity_mismatch}
+
+      cursor >= state.interaction_floor ->
+        {:ok, reply(state, world_id, Enum.filter(history, &(&1.seq > cursor)))}
+
+      mode == :strict ->
+        {:error, {:interaction_gap, hd(history).seq}}
+
+      true ->
+        gap = %{from_cursor: cursor, oldest_seq: hd(history).seq}
+        {:ok, Map.put(reply(state, world_id, history), :gap, gap)}
+    end
   end
 
-  def since(_state, _cursor), do: {:error, :invalid_interaction_cursor}
+  defp read(_state, _cursor, _mode), do: {:error, :invalid_interaction_cursor}
 
-  defp reply(state, events),
-    do: {:ok, %{world_id: FileStore.hex(state.cv), cursor: state.seq, events: events}}
+  defp reply(state, world_id, events),
+    do: %{world_id: world_id, cursor: state.seq, events: events}
 end

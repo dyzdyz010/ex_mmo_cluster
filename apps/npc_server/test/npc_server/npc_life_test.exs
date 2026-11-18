@@ -7,6 +7,7 @@ defmodule NpcServer.NpcLifeTest do
   use ExUnit.Case, async: false
   alias NpcServer.{Body, Life}
   alias NpcServer.NpcWorld
+  alias SceneServer.Movement.Scene
   alias VoxelRegion.World
 
   # 反思用例的 Hindsight 替身与“别人打掉我放的一格”的 World 动作（与日计划的 Life 集成用例共用）。
@@ -261,6 +262,70 @@ defmodule NpcServer.NpcLifeTest do
     assert_receive {:life_outcome, %{id: :above, status: :done, data: %{settled: true}}}, 10_000
   end
 
+  test "a short session loss excludes construction until the Body observes again" do
+    offset = start_supervised!({Agent, fn -> 0 end})
+    clock = fn -> System.system_time(:millisecond) + Agent.get(offset, & &1) end
+    {fixture, body, cid} = start(DataService.NpcMemory, %{clock: clock})
+    assert_receive {:life_observation, %{self: %{entity_id: ^cid}}}, 10_000
+
+    builder = NpcWorld.actor(cid + 10, {4.5, 65.5, 10.5})
+    assert {:ok, _} = World.material_supply(fixture.world, builder.cid, "sight-reconnect", %{11 => 1024})
+
+    place = fn sequence, cell ->
+      assert {:ok, seq} =
+               World.production_intent(fixture.world, builder, %{
+                 request_id: sequence,
+                 client_intent_seq: sequence,
+                 logical_scene_id: 1,
+                 action: 1,
+                 coord: cell,
+                 material: 11,
+                 tool_id: 1
+               })
+
+      NpcWorld.await(fn ->
+        {:ok, %{state: %{"cursor" => cursor}}} = Life.observe(cid)
+        cursor >= seq
+      end, 3000)
+
+      seq
+    end
+
+    assert %{identity: identity} =
+             Enum.find(Scene.observe(fixture.scene).characters, &(&1.entity_id == cid))
+
+    # Scene 正常结束会话，只暂挂独立 Claims 以固定恢复和第一笔事务的先后；World 与 Life 继续运行。
+    :ok = :sys.suspend(fixture.claims)
+
+    try do
+      began = System.monotonic_time(:millisecond)
+      assert :ok = Scene.leave(fixture.scene, identity)
+      NpcWorld.await(fn -> Body.observe(body).position == nil end, 3000)
+      place.(1, {6, 64, 10})
+      assert System.monotonic_time(:millisecond) - began < 4000
+    after
+      :ok = :sys.resume(fixture.claims)
+    end
+
+    NpcWorld.await(fn -> match?({_, _, _}, Body.observe(body).position) end)
+    observed = place.(2, {7, 64, 10})
+    Agent.update(offset, &(&1 + 31_000))
+
+    sight =
+      NpcWorld.await(fn ->
+        entries = DataService.NpcMemory.get(cid, "life", "state")["pending"]
+
+        case Enum.filter(entries, &("actor:#{builder.cid}" in &1["tags"] and "kind:sight" in &1["tags"])) do
+          [] -> nil
+          matches -> matches
+        end
+      end)
+
+    assert [%{"id" => id, "text" => text}] = sight
+    assert id == "sight:place:#{builder.cid}:#{observed}"
+    assert text =~ "placed 1 block about"
+  end
+
   defp start(memory \\ DataService.NpcMemory, options \\ %{}) do
     fixture = NpcWorld.start()
     cid = System.unique_integer([:positive]) + 100_000
@@ -340,6 +405,7 @@ defmodule NpcServer.NpcLifeTest do
       experience_pending: [],
       journaling: nil,
       activity: nil,
+      activity_pending: nil,
       sight: Life.Sight.new()
     }
   end
@@ -650,7 +716,7 @@ defmodule NpcServer.NpcLifeTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        {:noreply, trimmed} = Life.handle_cast({:activity, experience}, s)
+        {:reply, :ok, trimmed} = Life.handle_call({:activity, experience}, nil, s)
         assert length(trimmed.row["fragments"]) == 8
         assert trimmed.row["fragments"] == Enum.drop(loaded["fragments"], 1)
       end)

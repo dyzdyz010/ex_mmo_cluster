@@ -9,7 +9,7 @@ defmodule NpcServer.NpcBodyWorldTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   require Logger
-  alias NpcServer.{Abilities, Body}
+  alias NpcServer.{Abilities, Body, Life, Runtime}
   alias MmoContracts.Voxel.Codec
   alias SceneServer.Movement.{Player, Scene}
   alias VoxelRegion.{FileStore, Prefab, World}
@@ -57,9 +57,38 @@ defmodule NpcServer.NpcBodyWorldTest do
          }}
   end
 
+  defmodule HeldTransfer do
+    @moduledoc "只测试：源 Player 封口后暂停准备，放行后仍走正式跨 Scene 移交。"
+    defdelegate route(scene_id), to: WorldServer.Movement
+    defdelegate commit_transfer(old, fresh), to: WorldServer.Movement
+
+    def prepare_transfer(old, fresh, artifact, gate) do
+      send(Process.whereis(__MODULE__), {:transfer_sealed, self(), old, fresh})
+
+      receive do
+        :prepare_transfer -> WorldServer.Movement.prepare_transfer(old, fresh, artifact, gate)
+      after
+        4_000 -> {:error, :test_transfer_wait_timeout}
+      end
+    end
+  end
+
+  defmodule SightHindsight do
+    @moduledoc "只测试：所见回归只读 Life 的未封存尾部，模型缓存使用本地固定响应。"
+    def ensure(_, _), do: {:ok, %{}}
+    def models(_), do: {:ok, %{models: %{}, metadata: %{}}}
+    def status(_), do: {:ok, %{stats: %{}, usage: %{}}}
+  end
+
   # 只测试：把每份 Observation 原样转给测试进程，验证 Body 交给 Brain 的观察本身；不发命令。
   defmodule Spy do
     @behaviour NpcServer.Brain
+
+    def init(%{owner: owner, life: _}) do
+      send(owner, {:spy_runtime, self()})
+      owner
+    end
+
     def init(%{owner: owner}), do: owner
 
     def handle_event({:observation, observation}, owner) do
@@ -335,11 +364,22 @@ defmodule NpcServer.NpcBodyWorldTest do
          )}
       end
 
-    claims = start_supervised!({WorldServer.Session, route_module: router})
+    {claims_router, sight_clock} =
+      if context[:sight_handoff] do
+        Process.register(self(), HeldTransfer)
+        {HeldTransfer, start_supervised!({Agent, fn -> 0 end})}
+      else
+        {router, nil}
+      end
+
+    claims = start_supervised!({WorldServer.Session, route_module: claims_router})
 
     if context[:builder_live] || context[:wilderness_skill] ||
-         context[:runtime_build] || context[:seam] || context[:frozen_llm] || context[:builder],
+         context[:runtime_build] || context[:seam] || context[:frozen_llm] || context[:builder] ||
+         context[:sight_handoff] || context[:sight_queued_frame],
        do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
+
+    brain = brain(Map.put(context, :sight_clock, sight_clock))
 
     body =
       start_supervised!(
@@ -352,11 +392,19 @@ defmodule NpcServer.NpcBodyWorldTest do
          spawn: {4.0, 66.0, 10.0},
          faction: context[:faction],
          genesis: context[:genesis] == true,
-         brain: brain(context)},
+         brain: brain},
         restart: :temporary
       )
 
-    %{world: world, scene: scene, body: body, claims: claims, brain: brain(context), root: root}
+    %{
+      world: world,
+      scene: scene,
+      body: body,
+      claims: claims,
+      brain: brain,
+      root: root,
+      sight_clock: sight_clock
+    }
   end
 
   # 真实模型接口：取自环境（仓库根目录 .env，见 .env.example）；思考强度可选。
@@ -607,6 +655,20 @@ defmodule NpcServer.NpcBodyWorldTest do
            %{verb: :get_targets}
          ]
        }}
+
+  defp brain(%{sight_handoff: true, sight_clock: clock}) do
+    {Spy,
+     %{
+       owner: self(),
+       memory: Memory,
+       life: %{
+         hindsight: SightHindsight,
+         url: "http://life.test.invalid",
+         poll_ms: 30,
+         clock: fn -> System.system_time(:millisecond) + Agent.get(clock, & &1) end
+       }
+     }}
+  end
 
   defp brain(%{idle: true}), do: {NpcServer.Brain.Routine, %{steps: []}}
 
@@ -1031,6 +1093,44 @@ defmodule NpcServer.NpcBodyWorldTest do
   defp ready(body),
     do: await(fn -> Body.observe(body).position end, System.monotonic_time(:millisecond) + 10_000)
 
+  defp sight_builder(world) do
+    builder = %{
+      cid: @npc + 1,
+      gate: self(),
+      identity: :sight_builder,
+      refresh: &Actor.tool_context/2,
+      eye: {22.5, 65.5, 12.5},
+      tick_us: 16_667
+    }
+
+    builder = Map.put(builder, :player, start_supervised!({Actor, builder}))
+    assert {:ok, _} = World.material_supply(world, builder.cid, "sight", %{@stone => 1024})
+    builder
+  end
+
+  defp place_for_sight(world, builder, observer, number, {scene, cell}) do
+    assert {:ok, seq} =
+             World.production_intent(world, builder, %{
+               request_id: number,
+               client_intent_seq: number,
+               logical_scene_id: scene,
+               action: 1,
+               coord: cell,
+               material: @stone,
+               tool_id: 1
+             })
+
+    await(
+      fn ->
+        {:ok, %{state: %{"cursor" => cursor}}} = Life.observe(observer)
+        if cursor >= seq, do: true
+      end,
+      System.monotonic_time(:millisecond) + 2_000
+    )
+
+    seq
+  end
+
   @tag :idle
   @tag :attention
   test "关注接口走真实 Session 与 World：瞄准、可见性、独立焦点和离场清理", %{body: body, claims: claims, world: world} do
@@ -1317,6 +1417,111 @@ defmodule NpcServer.NpcBodyWorldTest do
     Body.command(body, %{id: 3, verb: :move_to, position: {10.5, 10.5}, tolerance: 0.5})
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 3, 40_000)
     assert @npc in ids.(a) and @npc not in ids.(b)
+  end
+
+  @tag :two_scenes
+  @tag :sight_handoff
+  @tag timeout: 120_000
+  test "a successful Scene transfer excludes construction until the new observation segment starts",
+       %{world: world, body: body, sight_clock: clock} do
+    assert_receive {:spy_runtime, runtime}, 10_000
+    assert_receive {:spy_observation, %{self: %{entity_id: @npc, scene_id: 1}}}, 10_000
+
+    await(
+      fn ->
+        if match?({:ok, %{state: %{"cursor" => _}, cache: %{}}}, Life.observe(@npc)), do: true
+      end,
+      System.monotonic_time(:millisecond) + 5_000
+    )
+
+    builder = sight_builder(world)
+    Body.command(body, %{id: 1, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
+    assert_receive {:transfer_sealed, claims, %{scene_id: 1}, %{scene_id: 2}}, 30_000
+
+    try do
+      # 先让 Runtime 处理来自 Body 的移交通知，再提交这一格。放行前源已封口，目标还不能发观察。
+      assert %{} = Runtime.observe(runtime)
+      place_for_sight(world, builder, @npc, 1, {1, {22, 64, 12}})
+    after
+      send(claims, :prepare_transfer)
+    end
+
+    assert_receive {:spy_observation, %{self: %{entity_id: @npc, scene_id: 2}}}, 10_000
+    observed = place_for_sight(world, builder, @npc, 2, {2, {23, 64, 12}})
+    Agent.update(clock, &(&1 + 31_000))
+
+    sight =
+      await(
+        fn ->
+          entries = Memory.get(@npc, "life", "state")["pending"]
+
+          case Enum.filter(
+                 entries,
+                 &("kind:sight" in &1["tags"] and "actor:#{builder.cid}" in &1["tags"])
+               ) do
+            [] -> nil
+            found -> found
+          end
+        end,
+        System.monotonic_time(:millisecond) + 2_000
+      )
+
+    assert [%{"id" => id, "text" => text}] = sight
+    assert id == "sight:place:#{builder.cid}:#{observed}"
+    assert text =~ "placed 1 block about"
+  end
+
+  @tag :idle
+  @tag :sight_queued_frame
+  test "a queued observation cannot make a position current again", %{world: world} do
+    # 真实 World 与 Life，内存存储。观察输入由测试发送，挂起只控制帧排队与消费的顺序。
+    offset = start_supervised!({Agent, fn -> -6_500 end})
+    clock = fn -> System.system_time(:millisecond) + Agent.get(offset, & &1) end
+    cid = @npc + 2
+    context = %{cid: cid, scene_id: 1, router: Route}
+
+    profile = %{
+      memory: Memory,
+      life: %{
+        hindsight: SightHindsight,
+        url: "http://life.test.invalid",
+        poll_ms: 30,
+        clock: clock
+      }
+    }
+
+    life = start_supervised!(%{id: Life, start: {Life, :start_link, [self(), context, profile]}})
+
+    await(
+      fn ->
+        if match?({:ok, %{state: %{"cursor" => _}}}, Life.observe(cid)), do: true
+      end,
+      System.monotonic_time(:millisecond) + 5_000
+    )
+
+    builder = sight_builder(world)
+
+    observation = %{
+      self: %{entity_id: cid, scene_id: 1, position: {20.5, 64.0, 12.5}},
+      entities: []
+    }
+
+    :ok = :sys.suspend(life)
+
+    try do
+      :ok = Life.observation(life, Map.put(observation, :observed_at_ms, clock.()))
+      Agent.update(offset, fn _ -> 0 end)
+    after
+      :ok = :sys.resume(life)
+    end
+
+    # 核对失效帧已处理后再提交施工，让事件本身保持新鲜；最后推进分组结算时间。
+    assert {:ok, _} = Life.observe(cid)
+    place_for_sight(world, builder, cid, 1, {1, {22, 64, 12}})
+    Agent.update(offset, &(&1 + 31_000))
+    :ok = Life.observation(life, observation)
+
+    assert {:ok, %{pending_episodes: 0}} = Life.observe(cid)
   end
 
   # 多 NPC 成本测量（不是门槛测试）：同一个真实 Scene / World 里 1 → 8 → 24 个 NPC 同时沿各自的路线来回走（每次 move_to 都取盒寻路），

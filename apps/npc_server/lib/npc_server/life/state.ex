@@ -79,6 +79,9 @@ defmodule NpcServer.Life.State do
       |> update_in(["traits"], &Map.put_new(&1, "sociability", 0.5))
       |> Map.put_new("buildings", [])
 
+  @doc "World 历史断层后结束依赖连续事件的损坏与修复过程，保留已确认的经历证据、建筑与关系。"
+  def after_interaction_gap(state), do: %{state | "concerns" => %{}}
+
   @doc """
   按权威顺序消费新操作，返回 canonical 事件态和可批量写入记忆的英文经历。
   重复序号不评价；情绪在事件时刻衰减与饱和，消费分批方式不影响结果。

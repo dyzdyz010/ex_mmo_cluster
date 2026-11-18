@@ -193,6 +193,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
       experience_pending: [],
       activity: nil,
       sight: Life.Sight.new(),
+      activity_pending: nil,
       # 这份状态代表“不反思”的形态；反思三字段与日计划四字段的取值须与 `Life.init/1` 在该形态下的返回保持一致。
       journaling: nil,
       reflect: nil,
@@ -235,7 +236,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
     done = ~s|I did "guard_hut" (Guard the hut.). Result: completed.|
 
     finish = fn s, place ->
-      {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: place}}, s)
+      {:reply, :ok, s} = Life.handle_call({:activity, %{text: done, place: place}}, nil, s)
       Agent.update(clock, &(&1 + 1000))
       s
     end
@@ -413,15 +414,17 @@ defmodule NpcServer.NpcDialogueLifeTest do
   end
 
   # “看到的”经 World 读取进尾部：动我的建筑（7）的那一下已写成 World 经历，不再算所见；别人在附近放的一格 30 秒后合成一条，
-  # 在下一次读取结果里写出。观察直接放进状态（不经回调），所以没有相遇账。
+  # 在下一次读取结果里写出。角色本人站在远处，观察仍可为它的施工提供称呼。
   test "sight from World events: events already written as episodes are not repeated; a nearby placement closes on a later poll" do
     clock = start_supervised!({Agent, fn -> 1000 end})
 
     s = %{
       state()
       | now: fn -> Agent.get(clock, & &1) end,
-        observation: seen([person(9, "Mara", 1.0)])
+        context: %{cid: 7, scene_id: 1}
     }
+
+    {:noreply, s} = Life.handle_cast({:observation, seen([person(9, "Mara", 31.0)])}, s)
 
     damaged = world_event(7, 1000, 9, :damage, {1, 0, 0}, 7)
     placed = world_event(8, 1000, 9, :build, {3, 0, 0}, nil)

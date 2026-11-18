@@ -285,6 +285,7 @@ defmodule NpcServer.Body do
     Logger.warning("npc_session_lost cid=#{state.cid} reason=#{inspect(reason)}")
     if state.player_monitor, do: Process.demonitor(state.player_monitor, [:flush])
     Process.send_after(self(), :claim, @reclaim_ms)
+    state = think(state, :observation_lost)
 
     # 施法的回复只按 reply_to 来、执行进程不再兜底：会话没了，在途施法在这里以 session_lost 结束（见 lose_casts/2）。
     # 其余世界调用照常各回结果。
@@ -580,6 +581,9 @@ defmodule NpcServer.Body do
         {:mmo_transfer_request, identity, player, target},
         %{identity: identity, player: player} = state
       ) do
+    # 源 Player 请求切换后已经冻结，切换完成前的坐标不能继续支持新的所见。
+    state = think(state, :observation_lost)
+
     with {:ok, artifact} <- Player.seal(player, identity),
          {:ok, fresh, route, next} <-
            WorldServer.Session.prepare_transfer(state.claims, identity, target, artifact),
@@ -668,6 +672,7 @@ defmodule NpcServer.Body do
 
   defp observation(state, session) do
     %{
+      observed_at_ms: System.system_time(:millisecond),
       self: %{
         entity_id: state.cid,
         scene_id: state.scene_id,

@@ -515,7 +515,8 @@ flowchart LR
   `…; stayed at least <N> m away, then left.`（没进过 6 米、但在视野里累计满 50 秒；N 向下取整）；满 5 分钟还没走先写一条
   `<人> has been around for about <时长> and is still here; …`；观察中断超过 5 秒按最后见到时结束，句末不说 `then left`。
   **B 附近的建造 / 拆除**：每秒读到的 World 事件里不是我做的、没有被写成“动我的建筑”经历的（按 seq 排除）、事件格离我
-  ≤ 30 米且落后 ≤ 5 秒的，按（谁、放 / 拆、哪座建筑或散格）分组，组内 30 秒无新事件或开组满 5 分钟合成一条：
+  ≤ 30 米且落后 ≤ 5 秒的，按（谁、放 / 拆、哪座建筑或散格）分组。事件时刻须从当前连续观察的首帧起算，位置取最近观察；
+  末帧超过 5 秒、Body 通报会话结束或开始跨 Scene 移交时，该段失效。恢复首帧开启新段。组内 30 秒无新事件或开组满 5 分钟合成一条：
   `<人> placed <N> blocks | the building "<名>" | an unnamed building about <M> m from me.`、
   `<人> removed the entire | broke off part of the | damaged part of the building "<名>"[ that <原放置者> placed,] about <M> m from me.`、
   `<人> removed | damaged <N> blocks[ …] about <M> m from me.`（全部句型与取整规则在 `Life.Sight` 的 moduledoc）。时长按游戏钟写
@@ -523,6 +524,18 @@ flowchart LR
   （`Life.observe/1` 的 `sight_capped` 按类计数）。只写看到的：不写意图与评价，不动情绪与信任。门槛与上限都是原创取值，
   实跑导出后再调；进行中的账只在 Life 内存里，重启即丢、不补写；观察每秒 20 帧，没有条目要写的帧不保存。
   与活动句 `During it:` 的重复先两者都留。C 倒下 / 死亡不做（要改 Body）。这些句子没有离线测过。
+
+  观察段的起点采用时间戳数据的有效范围思路，ROS 2 `tf2` 拒绝早于首个样本的查询。Body 生成观察时记录 `observed_at_ms`，
+  Life 用它和同一毫秒墙钟下的 World 事件时刻判断位置证据的有效范围。积压的帧仍保留采样时刻。连续观察期间沿用最新位置近似。
+  会话结束、移交与观察由同一进程发送，沿用 OTP 的同发同收顺序。
+  [ROS 2 `TimeCache::findClosest`](https://github.com/ros2/geometry2/blob/rolling/tf2/src/cache.cpp#L132-L195) ·
+  [OTP 信号交付](https://www.erlang.org/doc/system/ref_man_processes.html#delivery-of-signals)
+
+  观察失效回归在 WSL 运行 `mix test --no-start test/npc_server/npc_life_sight_test.exs`。
+  该纯函数回归用新观察账和受控时刻，通过 `Sight.see/3` 与 `Sight.witness/4` 验证过期帧与恢复首帧各自允许入账的事件，
+  以及已入账事件在断开后按时闭合。短断线另走 `npc_life_test.exs` 的真实 Scene 退出、恢复、World 建造与 NPC 持久行，
+  用 `Life.observe/1` 的游标和精确的所见 id 核对，Hindsight 为替身。`npc_body_world_test.exs` 用同一个文件 World 验证真实双 Scene 移交和 Life 排队帧失效，
+  两条用例用受控时钟、内存存储和固定 Hindsight 响应。开发脚本 `.demo/dev-env/build-test.sh test` 记录实际运行日志。
 - **经历条目与写入 Hindsight**：每条经历是 `%{"id", "at_ms", "text", "tags"}`（World 事件另有 `seq` / `actor`，对话另有 `speech`）。
   `"text"` 不带时刻；交给 Hindsight 的正文由 `Life` 的一处函数加离线测过的 `At <UTC> (UTC), ` 前缀，快照拿到 `%{at_ms:, text:}`、由 `Mind` 写多久以前。tags：
   World 事件 `kind:event` + `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`；对话 `kind:conversation` + 对方 `actor:<cid>`；
@@ -856,7 +869,7 @@ flowchart LR
   `day`（意图属于哪个游戏日）、`intents`（`id` / `activity` / `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
   `calls`（当日发出了写作请求的调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
   意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
-- **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）；模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
+- **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）。活动经历和计数由 Life 同次写盘。写盘失败时，`Life.observe/1` 的 `activity_pending` 为 true，Life 在轮询重投先前冻结的完成事实与时刻。下一次选择和已返回的重排等活动先落盘，`plan.waiting_for_activity` 表示重排在等。模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
   不挡选择，行里沿用上一份；同日重排保留已完成与已过时的旧意图、换掉未了的；计划不是今天的则栏里只剩 `wants`。
 - **原创取值（没有外部依据，实跑后调）**：每游戏日 5 次规划调用（规划加重排共计）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
   `by` 是日内分钟（0..1439）。

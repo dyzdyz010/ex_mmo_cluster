@@ -229,12 +229,48 @@ defmodule NpcServer.NpcLifeSightTest do
 
   # —— B 附近的建造 / 拆除 ——
 
+  test "an expired position cannot add a recent World event to a previously witnessed group" do
+    me = seen([])
+    {ledger, [], []} = Sight.see(Sight.new(), me, 1000)
+
+    {ledger, [], []} =
+      Sight.witness(ledger, [event(1, 1000, 9, :build, {3, 0, 0})], me, 1000)
+
+    {ledger, [], []} =
+      Sight.witness(ledger, [event(2, 7000, 9, :build, {4, 0, 0})], me, 7000)
+
+    assert {_, [%{"id" => "sight:place:9:1", "at_ms" => 1000, "text" => text}], []} =
+             Sight.due(ledger, me, 37_000)
+
+    assert text == "actor 9 placed 1 block about 4 m from me."
+  end
+
+  test "the first observation after a gap witnesses only events from that frame onward" do
+    me = seen([])
+    {ledger, [], []} = Sight.see(Sight.new(), me, 1000)
+    {ledger, [], []} = Sight.see(ledger, me, 10_000)
+
+    batch = [
+      event(1, 9999, 9, :build, {3, 0, 0}),
+      event(2, 10_000, 9, :build, {4, 0, 0}),
+      event(3, 10_100, 9, :build, {5, 0, 0})
+    ]
+
+    {ledger, [], []} = Sight.witness(ledger, batch, me, 10_050)
+
+    assert {_, [%{"id" => "sight:place:9:2", "at_ms" => 10_000, "text" => text}], []} =
+             Sight.due(ledger, me, 40_050)
+
+    assert text == "actor 9 placed 1 block about 5 m from me."
+  end
+
   test "placements by one person are merged into one entry 30 s after the last one" do
     names = seen([person(9, "Mara", 20.0)])
+    {ledger, [], []} = Sight.see(Sight.new(), names, 1000)
 
     {ledger, [], []} =
       Sight.witness(
-        Sight.new(),
+        ledger,
         [event(1, 1000, 9, :build, {3, 0, 0}), event(2, 1000, 9, :build, {4, 0, 0})],
         names,
         1000
@@ -264,7 +300,9 @@ defmodule NpcServer.NpcLifeSightTest do
     ]
 
     me = seen([])
-    {ledger, [], []} = Sight.witness(Sight.new(), batch, me, 10_000)
+    {ledger, [], []} = Sight.see(Sight.new(), me, 5_000)
+    {ledger, [], []} = Sight.see(ledger, me, 10_000)
+    {ledger, [], []} = Sight.witness(ledger, batch, me, 10_000)
 
     # 存储失败后 World 游标没前进，同一批事件会再来一次：按 seq 不再算。
     {ledger, [], []} = Sight.witness(ledger, batch, me, 10_500)
@@ -304,7 +342,8 @@ defmodule NpcServer.NpcLifeSightTest do
       event(12, 1000, 14, :build, {4, 0, 4}, cabin)
     ]
 
-    {ledger, [], []} = Sight.witness(Sight.new(), batch, me, 1000)
+    {ledger, [], []} = Sight.see(Sight.new(), me, 1000)
+    {ledger, [], []} = Sight.witness(ledger, batch, me, 1000)
     {_ledger, entries, []} = Sight.due(ledger, me, 31_000)
 
     # 按组内第一个 seq 的次序。
@@ -340,12 +379,13 @@ defmodule NpcServer.NpcLifeSightTest do
   end
 
   test "a group closes 5 minutes after it opened even while events keep coming" do
-    me = seen([person(9, "Mara", 2.0)])
+    me = seen([person(9, "Mara", 20.0)])
 
     {ledger, entries, []} =
       Enum.reduce(0..31, {Sight.new(), [], []}, fn i, {ledger, entries, capped} ->
         at = i * 10_000
         block = event(i + 1, at, 9, :build, {rem(i, 10), 0, div(i, 10)})
+        {ledger, [], []} = Sight.see(ledger, me, max(0, at - @frame_ms))
         {ledger, new, more} = Sight.witness(ledger, [block], me, at)
         {ledger, entries ++ new, capped ++ more}
       end)
@@ -363,6 +403,7 @@ defmodule NpcServer.NpcLifeSightTest do
     {ledger, entries, capped} =
       Enum.reduce(0..4, {Sight.new(), [], []}, fn i, {ledger, entries, capped} ->
         at = i * 40_000
+        {ledger, [], []} = Sight.see(ledger, me, at)
         {ledger, a, x} = Sight.witness(ledger, [event(i + 1, at, 9, :build, {2, 0, i})], me, at)
         {ledger, b, y} = Sight.due(ledger, me, at + 30_000)
         {ledger, entries ++ a ++ b, capped ++ x ++ y}
@@ -374,7 +415,7 @@ defmodule NpcServer.NpcLifeSightTest do
   end
 
   test "events Life.State already wrote as damage to my construction are not repeated as sights; later hits are, with me as the placer" do
-    me = seen([person(9, "Mara", 2.0)])
+    me = seen([person(9, "Mara", 20.0)])
     names = %{9 => "Mara"}
 
     batch = [
@@ -389,7 +430,8 @@ defmodule NpcServer.NpcLifeSightTest do
     assert episode["seq"] == 1
     assert Enum.map(Sight.unwritten(batch, [episode]), & &1.seq) == [2]
 
-    {ledger, [], []} = Sight.witness(Sight.new(), Sight.unwritten(batch, [episode]), me, 1000)
+    {ledger, [], []} = Sight.see(Sight.new(), me, 1000)
+    {ledger, [], []} = Sight.witness(ledger, Sight.unwritten(batch, [episode]), me, 1000)
     {_ledger, [entry], []} = Sight.due(ledger, me, 31_000)
 
     assert entry == %{

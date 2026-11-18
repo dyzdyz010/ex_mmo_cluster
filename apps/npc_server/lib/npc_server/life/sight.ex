@@ -7,6 +7,7 @@ defmodule NpcServer.Life.Sight do
       see/3      每收到一帧观察（约每 50 毫秒）：相遇账按这一帧更新，并做一次到点检查
       witness/4  每秒读到一批 World 事件：附近的建造 / 拆除进分组账，并做一次到点检查
       due/3      只做到点检查（合上超时的组、结束离开或观察中断的相遇）；上面两个入口也各做一次同样的检查
+      invalidate/1  Body 通报会话结束：撤销建造所见使用的观察段
 
   三个入口都返回 `{新账, 该写出的经历条目, 被上限挡下的 [%{actor:, kind: :encounter | :construction}]}`。
   经历条目与其它经历同形 `%{"id", "at_ms", "text", "tags"}`，`"text"` 不带时刻（Life 的 `dated/1` 统一加前缀）；
@@ -40,8 +41,9 @@ defmodule NpcServer.Life.Sight do
   ## B 附近的建造 / 拆除：某人在我附近放了 / 拆了东西
 
   算所见的 World 事件：不是我做的；没有被“动我的建筑”那条规则写成经历（Life 用 `unwritten/2` 按 seq 排除
-  `Life.State.advance/6` 返回的经历）；事件格中心到我此刻位置不超过 30 米；事件时刻距现在不超过 5 秒（落后太多时我未必在场）。
-  还没有观察（不知道我在哪）就一件都不算。同一 seq 只算一次（Life 写失败后 World 游标没前进、同一批事件会再来）。
+  `Life.State.advance/6` 返回的经历）；事件格中心到我最近一帧位置不超过 30 米；事件已发生且距现在不超过 5 秒。
+  事件时刻还须在当前观察段首帧时刻或之后。末帧超过 5 秒或收到会话结束通知时，该段失效，下一帧开启新段。
+  同一 seq 只算一次（Life 写失败后 World 游标没前进、同一批事件会再来）。已见的事件按既有时限合组。
   按（谁、放 / 拆、哪座建筑或散格）分组：`:build` 是放，`:damage` / `:destroy` 是拆；“哪座建筑”是事件的根实例 `instance`，
   没有所属实例的（散格、地形）同属一组“散格”。组内 30 秒没有新事件、或开组满 5 分钟时合成一条：
 
@@ -74,7 +76,7 @@ defmodule NpcServer.Life.Sight do
       @linger_ms              50 秒    没进过 6 米的人，在视野里累计满这么久才记
       Life.State.near_m/0     6 米     进过这个距离即记（与活动句 `During it:` 同一半径）
       @still_ms               5 分钟   一直不走的，满这么久先写一条“还在”
-      @blackout_ms            5 秒     两帧观察间隔超过这么久算观察中断
+      @blackout_ms            5 秒     末帧超过这么久算观察中断
       @construction_radius_m  30 米    事件格到我的距离上限
       @construction_fresh_ms  5 秒     事件时刻到现在的落后上限
       @group_quiet_ms         30 秒    组内这么久没有新事件就合上
@@ -105,12 +107,14 @@ defmodule NpcServer.Life.Sight do
   @doc """
   空账。`encounters` 是 `%{cid => %{first_ms:, last_seen_ms:, in_sight_ms:, still_written:}}`（进行中的相遇），
   `closest` 是这些人的最近距离账（`Life.State.approach/2` 的形状），`last_frame_ms` 是上一帧观察的时刻；
+  `observed_since_ms` 是建造所见所用的连续观察段首帧时刻；
   `groups` 是 `%{{actor, :place | :remove, instance | :loose} => 组}`（还没合上的建造 / 拆除），`witnessed_through`
   是已经算过的最大 World seq；`written` 是 `%{{类, cid} => [写出的时刻]}`（频率上限），`capped` 是按类挡下的条数。
   """
   def new,
     do: %{
       last_frame_ms: nil,
+      observed_since_ms: nil,
       encounters: %{},
       closest: %{},
       groups: %{},
@@ -131,7 +135,8 @@ defmodule NpcServer.Life.Sight do
       ledger
       | encounters: encounters,
         closest: State.approach(ledger.closest, observation),
-        last_frame_ms: now_ms
+        last_frame_ms: now_ms,
+        observed_since_ms: ledger.observed_since_ms || now_ms
     }
 
     {ledger, still} = still_here(ledger, present, now_ms)
@@ -140,29 +145,40 @@ defmodule NpcServer.Life.Sight do
     admit(ledger, lost ++ still ++ ended ++ built, now_ms)
   end
 
+  @doc "会话结束时立即撤销建造所见使用的观察段。相遇按观察中断时限结算。"
+  def invalidate(ledger), do: %{ledger | observed_since_ms: nil}
+
   @doc """
   喂一批 World 事件（Life 先用 `unwritten/2` 去掉已写成经历的）：`observation` 是 Life 此刻持有的观察（我的位置、
-  我是谁、人名），为 nil 时不知道我在哪，事件一件都不算，只做到点检查。返回值见 moduledoc。
+  我是谁、人名）。观察段有效且覆盖事件时刻，才接纳附近的事件。返回值见 moduledoc。
   """
   def witness(ledger, _events, nil, now_ms), do: due(ledger, nil, now_ms)
 
   def witness(ledger, events, %{self: me} = observation, now_ms) do
-    names = names(observation)
+    {ledger, lost} = blackout(ledger, now_ms)
+    since = ledger.observed_since_ms
     through = ledger.witnessed_through || 0
 
     groups =
-      for event <- events,
-          event.seq > through,
-          event.actor != me.entity_id,
-          now_ms - event.at_ms <= @construction_fresh_ms,
-          metres = State.distance(me.position, centre(event.cell)),
-          metres <= @construction_radius_m,
-          reduce: ledger.groups do
-        groups -> join(groups, event, metres, me.entity_id, names, now_ms)
+      if since != nil and ledger.last_frame_ms <= now_ms do
+        oldest = max(since, now_ms - @construction_fresh_ms)
+        names = names(observation)
+
+        for event <- events,
+            event.seq > through,
+            event.actor != me.entity_id,
+            event.at_ms >= oldest and event.at_ms <= now_ms,
+            metres = State.distance(me.position, centre(event.cell)),
+            metres <= @construction_radius_m,
+            reduce: ledger.groups do
+          groups -> join(groups, event, metres, me.entity_id, names, now_ms)
+        end
+      else
+        ledger.groups
       end
 
     through = Enum.reduce(events, ledger.witnessed_through, &max(&1.seq, &2 || 0))
-    due(%{ledger | groups: groups, witnessed_through: through}, observation, now_ms)
+    close_due(%{ledger | groups: groups, witnessed_through: through}, observation, now_ms, lost)
   end
 
   @doc """
@@ -171,6 +187,10 @@ defmodule NpcServer.Life.Sight do
   """
   def due(ledger, observation, now_ms) do
     {ledger, lost} = blackout(ledger, now_ms)
+    close_due(ledger, observation, now_ms, lost)
+  end
+
+  defp close_due(ledger, observation, now_ms, lost) do
     {ledger, ended} = close_encounters(ledger, now_ms)
     {ledger, built} = close_groups(ledger, names(observation), now_ms)
     admit(ledger, lost ++ ended ++ built, now_ms)
@@ -205,7 +225,7 @@ defmodule NpcServer.Life.Sight do
           qualifies?(encounter, seen),
           do: encounter_entry(cid, encounter, seen, :lost, encounter.last_seen_ms)
 
-    {%{ledger | encounters: %{}, closest: %{}}, lost}
+    {%{invalidate(ledger) | last_frame_ms: nil, encounters: %{}, closest: %{}}, lost}
   end
 
   defp blackout(ledger, _now_ms), do: {ledger, []}
