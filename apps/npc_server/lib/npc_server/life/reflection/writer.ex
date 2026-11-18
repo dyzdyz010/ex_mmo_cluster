@@ -47,7 +47,7 @@ defmodule NpcServer.Life.Reflection.Writer do
   @doc """
   写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`（`:messages` 形状），
   或 `%{api: :openai, url: 完整的 chat completions 地址, key:, model:, reasoning_effort: 可选}`，可带 `timeout_ms`
-  （单次请求，缺省同 `NpcServer.Http`）与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
+  （单次请求，缺省同 `NpcServer.Http`）、出站车道 `lane` 与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
 
   `scope` 可给出此次写作的 `cid` 与 `operation`，缺省分别为 nil 和 `:write`。
   成功返回 `{:ok, %{text: 正文, usage: 应答的 usage 原样, tokens: 归一化用量或 nil}}`，
@@ -56,7 +56,9 @@ defmodule NpcServer.Life.Reflection.Writer do
 
       {:http_status, 状态码, 响应体前 300 字}  非 200
       :timeout                                请求超时
-      {:transport, 原因}                      连接等传输错误（`:httpc` 的原因原样）
+      :pool_timeout                           出站车道在取连接上限内没有空闲连接（请求从未发出）
+      :connection_unavailable                 HTTP/2 主机在取连接上限内连不上（DNS、拒绝连接、证书、没协商出 h2）
+      {:transport, 原因}                      连接等传输错误（`NpcServer.Http` 的原因原样）
       :invalid_json                           200 但响应体不是 JSON
       :invalid_response                       是 JSON 但不是该形状的应答（Messages 没有 `content` 列表；chat 没有 `choices`）
       {:stop_reason, 实际值}                  Messages：`stop_reason` 不是 "end_turn"（如 "max_tokens"；缺这个字段为 nil）
@@ -111,7 +113,8 @@ defmodule NpcServer.Life.Reflection.Writer do
       {{:error, {status, excerpt}}, _} when is_integer(status) ->
         {:error, {:http_status, status, excerpt}}
 
-      {{:error, reason}, _} when reason in [:timeout, :invalid_json] ->
+      {{:error, reason}, _}
+      when reason in [:timeout, :pool_timeout, :connection_unavailable, :invalid_json] ->
         {:error, reason}
 
       {{:error, reason}, _} ->

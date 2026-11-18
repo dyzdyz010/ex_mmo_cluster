@@ -10,7 +10,6 @@ defmodule NpcServer.NpcSpeakTest do
   @tag :model_usage
   test "drafts once after reaching the selected person and preserves an unknown say result" do
     assert Code.ensure_loaded?(Speak), "说话技能必须可执行"
-    {:ok, _} = Application.ensure_all_started(:inets)
 
     %{"usage" => usage} =
       "../support/fixtures/reflection/gateway-response.json"

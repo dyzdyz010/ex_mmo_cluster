@@ -2,7 +2,7 @@ defmodule NpcServer.HttpStub do
   @moduledoc """
   只测试：本地 `:gen_tcp` HTTP 替身，代替 NPC 适配器要访问的外部 HTTP 服务（Hindsight、写日记的模型网关）。
   `npc_hindsight_test` 与 `npc_reflection_writer_test` 共用。端口由 OS 分配，每个测试独占，测试结束时关闭；
-  替身只替代对端，实际的 `:httpc` 与 JSON 编解码照常运行。
+  替身只替代对端，实际的出站客户端（`NpcServer.Http`）与 JSON 编解码照常运行。
 
   每收到一个请求，先向起它的测试进程发 `{:http_request, request}`：
 

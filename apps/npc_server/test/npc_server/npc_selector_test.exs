@@ -1665,7 +1665,6 @@ What just happened: Nothing new.
   @tag :live_jev
   @tag timeout: 120_000
   test "the real Jev: the same situation and candidates, two persona cards, different top1" do
-    {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
 
     jev = %{

@@ -18,26 +18,15 @@ defmodule NpcServer.Life.Hindsight do
 
   一个 Life 会用到不止一个 bank（经历库、反思库），失败日志 `npc_hindsight_failed` 因此带 `bank=`。
 
-  ## 交互召回与后台取材使用各自的 httpc profile
+  ## 交互召回与后台请求走不同的出站车道
 
-  `:httpc` 缺省 profile 对每个 host 只开少量持久连接，并且有新请求时**优先排进正忙的会话队列**而不是
-  另开连接（OTP `httpc_manager:select_session/4`，见召回隔离决策稿 §2 S4）。选择在等一路召回（交互式，
-  10 秒预算），而 retain / refresh / status 是没人在等的后台请求（一次 11–49 秒）；两者共用缺省 profile 时，
-  召回会排在后台请求后面，实测 25 次召回超时里有 13 次是这个原因（同稿 §1、E1 实验：缺省 profile 10,001 ms
-  超时且请求从未发出，独立 profile 7.7 ms 返回）。
-
-  交互召回和 CLI 的 `context/2` 走交互 profile，反思及日计划的取材走后台召回 profile（D-1b）。
-  建库、写入、刷新、状态查询走缺省 profile。请求体和各调用方的超时预算沿用原值。
-  两个召回 profile 由 `NpcServer.Application` 在监督树之前起、应用停止时停。采用缺省参数，
-  由 inets 的监督保证 manager 重启后仍使用相同参数（决策稿 S4、S5）；起停与"profile 不在"的判法在
-  `NpcServer.Http`（活动选择的独立 profile 用同一套）。
+  选择在等一路召回（交互式，10 秒预算），而 retain / refresh / status 是没人在等的后台请求（一次 11–49 秒）。
+  两者若共用一条连接队列，召回会排在后台请求后面（召回隔离决策稿 §1、E1：httpc 缺省 profile 下 10,001 ms 超时
+  且请求从未发出）。所以本模块按请求类别给 `NpcServer.Http` 的车道：交互召回和 CLI 的 `context/2` 走 `:interactive`，
+  反思及日计划的取材（`for_background_recall/1`）与建库、写入、刷新、状态查询走 `:background`
+  （Finch 决策稿 D-2）。车道的连接池、取连接上限与超时契约都在 `NpcServer.Http`；请求体和各调用方的超时预算沿用原值。
   """
   require Logger
-
-  @recall_profiles %{
-    interactive: :npc_hindsight_recall,
-    background: :npc_hindsight_background_recall
-  }
 
   @truth "Subjective memory; not current numeric world truth."
 
@@ -80,47 +69,8 @@ defmodule NpcServer.Life.Hindsight do
   @doc "四份认识文档的 id，按建立次序（self、relationships、world、commitments）；给模型列认识时用这个次序。"
   def model_ids, do: Enum.map(@queries, &elem(&1, 0))
 
-  @doc "读取指定召回类别的 profile 名，缺省为交互召回。"
-  def recall_profile(kind \\ :interactive), do: Map.fetch!(@recall_profiles, kind)
-
-  @doc "为反思或日计划的取材构造后台召回配置，保留库和请求参数。"
+  @doc "为反思或日计划的取材构造后台召回配置（走后台车道），保留库和请求参数。"
   def for_background_recall(config), do: Map.put(config, :recall_kind, :background)
-
-  @doc """
-  用于在监督树前起交互与后台召回池，返回 `{:ok, 本次新起的类别列表}`。
-  第二池起失败时回滚本次新起的交互池。
-  """
-  def start_recall_profiles do
-    with {:ok, interactive} <- start_recall_profile() do
-      case start_recall_profile(:background) do
-        {:ok, background} ->
-          attempts = [interactive: interactive, background: background]
-          {:ok, for({kind, :started} <- attempts, do: kind)}
-
-        error ->
-          if interactive == :started, do: stop_recall_profile()
-          error
-      end
-    end
-  end
-
-  @doc "关闭指定的召回池，默认关闭两池。对每个池均尝试关闭，并返回最先遇到的错误。"
-  def stop_recall_profiles(kinds \\ [:background, :interactive]) do
-    kinds
-    |> Enum.map(&stop_recall_profile/1)
-    |> Enum.find(:ok, &(&1 != :ok))
-  end
-
-  @doc """
-  以缺省参数启动指定类别的召回池。已经启动返回 `{:ok, :already_started}`，
-  其它错误回传给应用启动边界。
-  """
-  def start_recall_profile(kind \\ :interactive),
-    do: NpcServer.Http.start_profile(recall_profile(kind))
-
-  @doc "停指定类别的召回池。池缺失视同已停止。"
-  def stop_recall_profile(kind \\ :interactive),
-    do: NpcServer.Http.stop_profile(recall_profile(kind))
 
   @doc """
   只确保 bank 存在：`PUT` bank（`name` 与 bank 自身的 mission），幂等；返回 `{:ok, %{bank: config.bank}}`。
@@ -243,7 +193,7 @@ defmodule NpcServer.Life.Hindsight do
              :post,
              "/memories/recall",
              recall_body(description, timestamp),
-             recall_profile(Map.get(config, :recall_kind, :interactive))
+             Map.get(config, :recall_kind, :interactive)
            ),
          {:ok, results} <- collect(rows, &recalled(config, &1)) do
       {:ok,
@@ -513,59 +463,38 @@ defmodule NpcServer.Life.Hindsight do
 
   defp segment(value), do: URI.encode(value, &URI.char_unreserved?/1)
 
-  # 发一次请求。`profile` 为 nil 时走 httpc 缺省 profile（建库、retain、刷新、状态这些后台请求）；
-  # 召回传所属类别的 profile（原因见 moduledoc 末节）。
-  defp request(config, method, path, body \\ nil, profile \\ nil) do
+  # 发一次请求。召回给出所属车道（交互或后台），其余请求（建库、retain、刷新、状态）都是后台车道（原因见 moduledoc 末节）。
+  defp request(config, method, path, body \\ nil, lane \\ :background) do
     url =
       String.trim_trailing(config.url, "/") <>
         "/v1/default/banks/" <> segment(config.bank) <> path
 
-    request =
+    {headers, body} =
       if body == nil,
-        do: {String.to_charlist(url), []},
-        else: {String.to_charlist(url), [], ~c"application/json", Jason.encode!(body)}
-
-    ssl = [
-      verify: :verify_peer,
-      cacerts: :public_key.cacerts_get(),
-      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
-    ]
-
-    timeout = Map.get(config, :timeout_ms, 300_000)
+        do: {[], nil},
+        else: {[{"content-type", "application/json"}], Jason.encode!(body)}
 
     result =
-      try do
-        :httpc.request(
-          method,
-          request,
-          [timeout: timeout, connect_timeout: timeout, ssl: ssl, autoredirect: false],
-          [body_format: :binary],
-          profile || :default
-        )
-      catch
-        # 专用 profile 不在（没起、被停、inets 停了）：httpc 在调它的 manager 时退出。只把这一类折成显式失败，
-        # 其它退出照旧上抛（代码缺陷不在这里吞）。不再先做一次 `get_options` 预检——那是一次到 manager 的
-        # infinity 调用，manager 卡住时预检自己会挂住，而且每次召回都多一个来回。
-        :exit, reason ->
-          if profile != nil and NpcServer.Http.profile_absent?(reason),
-            do: {:error, {:profile_not_started, profile}},
-            else: exit(reason)
-      end
+      NpcServer.Http.send_request(
+        lane,
+        method,
+        url,
+        headers,
+        body,
+        Map.get(config, :timeout_ms, 300_000)
+      )
 
     case result do
-      {:ok, {{_, status, _}, _, response}} when status in 200..299 ->
+      {:ok, status, response} when status in 200..299 ->
         case Jason.decode(response) do
           {:ok, map} when is_map(map) -> {:ok, map}
           _ -> failure(config, :invalid_response)
         end
 
-      {:ok, {{_, status, _}, _, _}} ->
+      {:ok, status, _} ->
         failure(config, {:http_status, status})
 
-      {:error, :timeout} ->
-        failure(config, :timeout)
-
-      {:error, {:profile_not_started, _} = reason} ->
+      {:error, reason} when reason in [:timeout, :pool_timeout] ->
         failure(config, reason)
 
       {:error, _} ->

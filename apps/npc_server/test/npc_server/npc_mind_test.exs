@@ -810,7 +810,6 @@ defmodule NpcServer.NpcMindTest do
   @tag :live_jev
   @tag timeout: 120_000
   test "the real Jev: one card, one candidate list, one situation; the event in no section, fresh, or only recalled" do
-    {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
 
     jev = %{

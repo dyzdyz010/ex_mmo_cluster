@@ -19,7 +19,6 @@ defmodule NpcServer.NpcReflectionWriterTest do
   @fixtures Path.expand("../support/fixtures/reflection", __DIR__)
 
   setup_all do
-    {:ok, _} = Application.ensure_all_started(:inets)
     Logger.put_module_level(NpcServer.ModelUsage, :info)
     on_exit(fn -> Logger.delete_module_level(NpcServer.ModelUsage) end)
     :ok
@@ -355,6 +354,11 @@ defmodule NpcServer.NpcReflectionWriterTest do
 
     assert {:ok, %{text: text, tokens: %{input_tokens: _, output_tokens: _}}} = result
     assert String.length(text) > 40
+
+    # Finch 决策稿 T-4：转发到真实端点的那一笔没标车道（后台），`https` 走后台车道的 HTTP/2 实例；
+    # 该实例只接受 ALPN 协商出 h2 的连接，所以请求成功且池落在这里，即协商为 HTTP/2。
+    assert {:ok, _} =
+             Finch.find_pool(NpcServer.Http.BackgroundHttp2, Finch.Pool.new(upstream.url))
   end
 
   defp server(handler),

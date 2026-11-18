@@ -5,7 +5,6 @@ defmodule NpcServer.NpcJevTest do
   @profile NpcServer.Builder.activity_profile()
 
   setup_all do
-    {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
     :ok
   end
@@ -439,7 +438,9 @@ defmodule NpcServer.NpcJevTest do
       key: System.fetch_env!("NPC_JEV_KEY"),
       model: System.fetch_env!("NPC_JEV_MODEL"),
       reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
-      timeout_ms: 60_000
+      timeout_ms: 60_000,
+      # 与 Registry 构造的选择 endpoint 同一车道。
+      lane: :interactive
     }
 
     # 与 Registry 同一开关：`NPC_JEV_THINKING=disabled` 时关思考（部署 2026-11-18 起）。
@@ -472,6 +473,11 @@ defmodule NpcServer.NpcJevTest do
     elapsed = System.monotonic_time(:millisecond) - started
 
     choice = response |> Map.get("choices", []) |> List.first() || %{}
+
+    # Finch 决策稿 T-4：`https` 走交互车道的 HTTP/2 实例；该实例只接受 ALPN 协商出 h2 的连接（Mint.HTTP2），
+    # 所以请求成功且池落在这个实例里，即协商为 HTTP/2。
+    assert {:ok, _} =
+             Finch.find_pool(NpcServer.Http.InteractiveHttp2, Finch.Pool.new(endpoint.url))
 
     assert {:ok, picked, confidence} = Jev.top1(response)
     assert picked in ["build_hut", "visit_plaza"]

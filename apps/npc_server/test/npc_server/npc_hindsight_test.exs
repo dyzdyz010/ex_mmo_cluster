@@ -8,11 +8,6 @@ defmodule NpcServer.NpcHindsightTest do
   alias NpcServer.HttpStub
   alias NpcServer.Life.Hindsight
 
-  setup do
-    {:ok, _} = Application.ensure_all_started(:inets)
-    :ok
-  end
-
   @episodes [
     %{
       "id" => "npc-7-world-a-seq-2",

@@ -64,7 +64,6 @@ defmodule NpcServer.Skills.Wilderness do
 
   @doc "同步运行，返回 {:ok, result} 或 {:error, blocked_result, metrics}。"
   def run(context, %{goal: goal} = args) do
-    {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
 
     profile =

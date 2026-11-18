@@ -751,7 +751,7 @@ defmodule NpcServer.NpcLifeTest do
     refute Enum.any?(stored["fragments"], &(&1["id"] == hd(loaded["fragments"])["id"]))
   end
 
-  # 召回的截止时间只有一个 owner（适配器写进 httpc 的 timeout），所以一路失败时不会再 kill 其余各路：
+  # 召回的截止时间只有一个 owner（适配器交给 `NpcServer.Http` 的总超时），所以一路失败时不会再 kill 其余各路：
   # 等每一路各自结束再合成，仍按“全有全无”报第一条失败（决策稿 D-3a）。
   test "一路失败时仍等其余各路结束再合成、报第一条失败，不 fail-fast" do
     fixture = NpcWorld.start()

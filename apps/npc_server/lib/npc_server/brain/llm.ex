@@ -125,7 +125,6 @@ defmodule NpcServer.Brain.Llm do
 
   defp start(profile, body) do
     Process.flag(:trap_exit, true)
-    {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
     now = System.monotonic_time(:millisecond)
 

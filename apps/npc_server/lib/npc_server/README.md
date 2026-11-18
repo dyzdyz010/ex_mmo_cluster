@@ -24,7 +24,7 @@
   `Perception`（look / survey / inspect / query_balances / read_catalog，另有范围校验、World 只读入口与模型投影；prefab 目录行只在
   `prefab_row/3` 计算；步行判据 `walk_kind/1` 与列扫描 `floors/2` 也只在这里，Body 的寻路网格、survey、travel、expand 共用）、`Attention`（观察方向与敌／友目标组，Body 用的动词表由条目派生）、`Memory`（记忆）、
   `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）、`Genesis`（创世，只在 `profile.genesis` 为真时）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
-- `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是共享 JSON 出站。
+- `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道）。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
   注册表 JSON `cadence` 默认 `"automatic"`；显式 `"manual"` 后仅由
@@ -274,7 +274,7 @@ NpcServer.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, bra
     "quarries" => %{"11" => %{"box" => [[10, 64, 4], [13, 64, 6]], "tool_id" => 1}},
     "expansion" => %{"region" => [[6, 8], [24, 24]], "spacing" => 2, "tool_id" => 1}}})
 # LLM 住民：goal、tools 必填；groups / skills（build、gather、expand、travel、design_house）/ spells / max_requests_per_hour / genesis 可选。
-# 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE。
+# 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE（https 只信这个 CA 文件，不给用系统 CA；见 `NpcServer.Http`）。
 NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
 # 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：缺省取运行环境
@@ -496,21 +496,20 @@ flowchart LR
   取走的，按 id 去重。不按时间排：S1-Q 在真实导出上看到“路内新的在前”截掉了拆屋事实与“守屋 77 次，没人来”
   （`.demo/observe/npc-slice1-20261112/s1q/results.md`）。每路 4 条是原创取值，在那份导出上量过一次，实跑后调。
   任何一路失败或超时，整次心智读不到（见下文“失败”），不拿其余几路凑一张残缺的清单。
-  **每路的截止时间只有一个 owner**：适配器写进 httpc 的那个 10 秒（从调用起算、含排队）。发问 worker 不再给
-  `Task.async_stream` 设第二个超时、也不在第一路失败时停下：被 kill 的任务不经过 `cancel_request`，放弃的请求会照常
-  走完（排队的事后发出、已发出的照算到底），白算的还和别的召回抢 CPU。所以是等每一路各自结束后再按“全有全无”合成，
-  报第一条失败的那一路。依据见召回隔离决策稿 D-3a（S8 / S10）。
-- **交互与后台召回各走一个 httpc profile**（决策稿 D-1、D-1b）。原先共用 keep-alive 的召回可能被在途请求挡住。
-  选择与 CLI 心智查询用交互池，反思和计划经共用的 `Reflection.Round.materials/3` 用后台取材池。
-  retain、刷新、状态查询和其它写入仍走缺省池。两池各自复用连接和队列，Hindsight 的服务端算力仍共享。
-  `NpcServer.Application` 在监督树之前起两池、应用停止时停。运行期由 inets 监督，
-  manager 重启后保留缺省参数。应用启动时两池都必须可用，运行时召回池缺失返回
-  `{:profile_not_started, 名}`。测试跑 `--no-start` 时由 `test_helper` 复用同一起池入口（`Application.start_http_profiles/0`）。
-- **活动选择也走自己的 httpc profile**（`Jev.selection_profile/0` = `:npc_selection`，D-1 的延伸，2026-11-18）。
-  选择与写作同在一个模型主机（生产是 `api.deepseek.com`），写作约 10 s、retain 5–14 s 的慢请求占着缺省池的会话时，
-  选择会排进去、10 s 超时时从未发出（薄片四第二轮实跑：发 38 次、上游收 36 次）。`Registry` 给 Jev endpoint 带
-  `profile`，`Http.request/2` 按它选池（不在时 `{:profile_not_started, 名}`）；写作 endpoint 不带，留在缺省池。
-  选择池与两个召回池一起由 `Application` 起停；起停与缺失判法只在 `NpcServer.Http`。
+  **每路的截止时间只有一个 owner**：适配器交给 `NpcServer.Http` 的那个 10 秒（发送与接收段，Finch `request_timeout`，`receive_timeout`
+  取同值，HTTP/1 最坏约 2×；取连接与建连另由交互车道各 2 s 的上限管，分别报 `:pool_timeout` 与传输错误，三段见 `NpcServer.Http`）。发问 worker 不给 `Task.async_stream` 设第二个超时、
+  也不在第一路失败时停下：等每一路各自结束（超时时 Finch 关掉那条连接，Hindsight 在阶段边界停下）后再按“全有全无”合成，
+  报第一条失败的那一路。依据见召回隔离决策稿 D-3a（按 Finch 决策稿 §3 改写）。
+- **出站 HTTP 分交互、后台两条车道**（`NpcServer.Http`，Finch；[Finch 决策稿](../../../../docs/10-active/cross-cutting/2026-11-18-npc-http-client-finch-decision.md)，
+  2026-11-18 起取代此前的三个 httpc profile）。交互车道：活动选择与对话回合选择（`Registry` 给 Jev endpoint 带 `lane: :interactive`）、
+  说话与对话回复的写作（`Skills.Speak` 标交互）、交互召回与 CLI 心智查询。后台车道：反思与日计划写作（`Life` 标后台）、
+  经共用 `Reflection.Round.materials/3` 的后台取材、retain / 刷新 / 状态等其余 Hindsight 请求，以及没标车道的调用方。
+  每条车道有自己的 Finch 实例与连接池，同一主机上的慢写作 / retain 在结构上挡不住选择与召回（httpc 时代的两次实跑故障见决策稿 §1）。
+  `https`（模型主机）走 HTTP/2、一条连接多路复用；`http`（Hindsight、回环替身）走 HTTP/1、每车道每主机 8 条连接，全忙时显式排队，
+  超过车道上限（交互 2 s、后台 30 s）返回 `:pool_timeout`，那一笔从未发出；HTTP/2 主机连不上报 `:connection_unavailable`。
+  TLS 信任根在建连时取系统 CA；endpoint 带 `cacertfile` 时只信这个文件（同车道 HTTP/2 实例里的标签池）。`npc_model_request` 记 `lane` 与 `queue_ms`（HTTP/1 取连接的
+  排队毫秒，HTTP/2 为 null）。车道由 `Application` 放在监督树第一位；测试跑 `--no-start` 时由 `test_helper` 起同一个 `NpcServer.Http`。
+  Hindsight 的服务端算力与模型主机的并发限额仍由两条车道共享。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧

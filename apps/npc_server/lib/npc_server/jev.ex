@@ -14,7 +14,7 @@ defmodule NpcServer.Jev do
   两类问题的门槛分开：中断与 harm 护栏用 `verdict/3`（置信度不足交回大脑）；偏好类选择（`NpcServer.Selector`
   的“现在做哪件事”）用 `top1/1` 直接取 top1，不设门槛。后者的 `activities` 可以是 `Jason.OrderedObject`，
   候选次序原样进请求体。
-  endpoint: `%{url:, key:, model:, cacertfile: 可选}`。
+  endpoint: `%{url:, key:, model:, lane: 可选, cacertfile: 可选}`。
 
   ## 两种入口形状（`endpoint.api`）
 
@@ -28,20 +28,17 @@ defmodule NpcServer.Jev do
     此时不发 `reasoning_effort`。依据：2026-11-18 薄片四首轮实跑，开思考时选择一次中位 4.3 s、最长 13.7 s，与 10 s 选择超时同量级；
     选择只是封闭候选里挑一项，用户同日定选择位置关思考（写作位置不变）。
 
-  ## 选择请求的 httpc profile
+  ## 选择请求的出站车道
 
-  选择 endpoint（`NpcServer.Registry` 构造，含对话回合的选择）带 `profile: selection_profile()`，经 `NpcServer.Http`
-  走独立 profile；写作与 Hindsight 的后台请求留在别的 profile。原因：同一主机上的慢请求（写作约 10 s、retain 5–14 s）
-  占着缺省 profile 的 keep-alive 会话时，选择会排进去，10 s 超时时从队列取消而从未发出（2026-11-18 薄片四第二轮：
-  产品发 38 次、上游只收到 36 次，5 次超时而上游最长 7.8 s）。与召回隔离决策稿 E1 / D-1 同一机制。
+  选择 endpoint（`NpcServer.Registry` 构造，含对话回合的选择）带 `lane: :interactive`，经 `NpcServer.Http` 走交互车道；
+  写作与 Hindsight 的后台请求在后台车道。原因：同一主机上的慢请求（写作约 10 s、retain 5–14 s）与选择共用连接队列时，
+  选择会排在后面，10 s 超时时从队列取消而从未发出（2026-11-18 薄片四第二轮：产品发 38 次、上游只收到 36 次，
+  5 次超时而上游最长 7.8 s）。与召回隔离决策稿 E1 / D-1 同一机制，Finch 决策稿把它收成两条车道。
   中断策略 `decide/2` 的 scheduler endpoint 由调用方给出，不在此列。
   """
   @confidence 0.85
   @behaviour NpcServer.Scheduler
   require Logger
-
-  # 活动选择请求独占的 httpc profile（见 moduledoc“选择请求的 httpc profile”）。
-  @selection_profile :npc_selection
 
   # `:openai` 入口的 `max_tokens` 缺省值：管"思考 + 正文"的总量。DeepSeek 思考模式下不写就是 64K，
   # 这一问只回一个短 JSON，8192 足够且比正文大得多——给小了会以 `finish_reason: "length"` 截断正文
@@ -279,9 +276,6 @@ defmodule NpcServer.Jev do
            request.(endpoint, body(endpoint, profile, situation, planned_action)),
          do: {:ok, verdict(response, profile), response}
   end
-
-  @doc "活动选择请求所用的 httpc profile 名（由 `NpcServer.Application` 起停，`NpcServer.Registry` 写进选择 endpoint）。"
-  def selection_profile, do: @selection_profile
 
   @doc "发送选择器的封闭候选请求，记录供应商用量并把原应答交给选择器。"
   def request_selection(endpoint, body, scope, request) do

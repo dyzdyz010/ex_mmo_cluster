@@ -4,7 +4,7 @@ defmodule NpcServer.KeepAliveStub do
 
   与 `NpcServer.HttpStub` 的区别——那个替身每个响应都带 `Connection: close`、串行 accept，复现不了 keep-alive 的
   队头阻塞；本替身按 HTTP/1.1 保持连接（响应带 `Content-Length` 与 `Connection: keep-alive`），每条连接一个进程，
-  所以一条连接上的慢请求不会挡住别的连接。它只替代对端，实际的 `:httpc` 与 JSON 编解码照常运行。
+  所以一条连接上的慢请求不会挡住别的连接。它只替代对端，实际的出站客户端（`NpcServer.Http`）与 JSON 编解码照常运行。
 
   每条连接上每收到一个请求，先向起它的测试进程发：
 

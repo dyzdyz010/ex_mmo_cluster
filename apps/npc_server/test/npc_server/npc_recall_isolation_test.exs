@@ -2,10 +2,10 @@ Code.require_file("../support/keep_alive_stub.exs", __DIR__)
 
 defmodule NpcServer.NpcRecallIsolationTest do
   @moduledoc """
-  只测试：交互召回、反思与规划的后台取材、其余后台 Hindsight 请求分别走不同的 httpc 连接队列，
-  以及召回 profile 的起停（召回隔离决策稿 D-1、D-1b）。
+  只测试：交互召回、反思与规划的后台取材、其余后台 Hindsight 请求分别走 `NpcServer.Http` 的交互 / 后台车道，
+  同一主机上的慢后台请求不挡交互召回（召回隔离决策稿 D-1、D-1b；Finch 决策稿 T-1）。
 
-  真实 `:httpc` 与 JSON 编解码照常运行，只把 Hindsight 对端换成能保持连接、能并发应答的本地替身；
+  真实 `NpcServer.Http`（Finch）与 JSON 编解码照常运行，只把 Hindsight 对端换成能保持连接、能并发应答的本地替身；
   不验证 Hindsight 本身的检索质量，也不起 World / Scene / Postgres。
   """
   use ExUnit.Case, async: false
@@ -28,68 +28,6 @@ defmodule NpcServer.NpcRecallIsolationTest do
       "tags" => ["kind:event"]
     }
   ]
-
-  setup do
-    {:ok, _} = Application.ensure_all_started(:inets)
-    {:ok, _} = Hindsight.start_recall_profiles()
-    :ok
-  end
-
-  test "两个召回池可重复起停" do
-    profiles = Enum.map([:interactive, :background], &Hindsight.recall_profile/1)
-    assert {:ok, []} = Hindsight.start_recall_profiles()
-
-    for profile <- profiles do
-      assert {:ok, options} = :httpc.get_options(:all, profile)
-      assert is_list(options)
-    end
-
-    on_exit(fn -> Hindsight.start_recall_profiles() end)
-    assert :ok = Hindsight.stop_recall_profiles()
-    assert :ok = Hindsight.stop_recall_profiles()
-
-    for profile <- profiles do
-      assert {:error, _} = :httpc.get_options(:all, profile)
-    end
-
-    assert {:ok, [:interactive, :background]} = Hindsight.start_recall_profiles()
-  end
-
-  test "NPC 监督树启动失败时只回滚本次新起的池" do
-    supervisor =
-      start_supervised!(%{
-        id: :existing_npc_supervisor,
-        start:
-          {Supervisor, :start_link, [[], [strategy: :one_for_one, name: NpcServer.Supervisor]]}
-      })
-
-    on_exit(fn -> NpcServer.Application.start_http_profiles() end)
-    assert :ok = Hindsight.stop_recall_profile(:background)
-    assert :ok = NpcServer.Http.stop_profile(NpcServer.Jev.selection_profile())
-
-    assert {:error, {:already_started, ^supervisor}} = NpcServer.Application.start(:normal, [])
-    assert {:ok, _} = :httpc.get_options(:all, Hindsight.recall_profile())
-    assert {:error, _} = :httpc.get_options(:all, Hindsight.recall_profile(:background))
-    assert {:error, _} = :httpc.get_options(:all, NpcServer.Jev.selection_profile())
-  end
-
-  test "专用 profile 没起来时召回显式失败，不退回缺省 profile" do
-    url =
-      KeepAliveStub.start(fn _conn, _method, _path, _body -> {200, %{"results" => []}} end)
-
-    assert :ok = Hindsight.stop_recall_profile()
-    # 用例失败也要把它起回来（`test_helper` 起过，别的用例还要用）。
-    on_exit(fn -> Hindsight.start_recall_profile() end)
-
-    assert {:error, {:profile_not_started, :npc_hindsight_recall}} =
-             Hindsight.recall(
-               %{url: url, bank: "probe", timeout_ms: 1_000},
-               %{query: "q"},
-               1_791_676_800_000
-             )
-
-    assert {:ok, _} = Hindsight.start_recall_profile()
-  end
 
   test "慢 retain 在途时召回不被排在同一连接队列里" do
     url =
@@ -179,7 +117,8 @@ defmodule NpcServer.NpcRecallIsolationTest do
     config = %{url: url, bank: "probe", timeout_ms: 5_000}
     snapshot = material_snapshot(config, now_ms)
 
-    # 预热后台连接。旧实现与交互共享这个池，有了空闲的持久连接后，后续请求才会排进该会话。
+    # 预热后台车道的连接。httpc 时代交互与后台共享一个池，有了空闲的持久连接后，后续请求会排进该会话；
+    # 现在两条车道各有池，交互召回应落在另一条连接上。
     assert {:ok, _} = Round.materials(%{question | "text" => "Warm up"}, [], snapshot)
 
     assert_received {:http_request, warmed_conn,
@@ -216,23 +155,53 @@ defmodule NpcServer.NpcRecallIsolationTest do
     assert {:ok, %{happened: [_]}} = Task.await(background)
   end
 
-  test "后台池缺失时取材显式失败，交互池继续服务" do
-    url =
-      KeepAliveStub.start(fn _conn, _method, _path, _body -> {200, %{"results" => []}} end)
+  test "Hindsight 的各类请求落在所属车道的连接池里" do
+    url = fn ->
+      KeepAliveStub.start(fn
+        _conn, :post, path, _body ->
+          if String.ends_with?(path, "/memories"),
+            do: {200, %{"success" => true, "items_count" => 1, "usage" => %{}}},
+            else: {200, %{"results" => []}}
 
-    config = %{url: url, bank: "probe", timeout_ms: 1_000}
+        _conn, :get, path, _body ->
+          if String.contains?(path, "/operations"),
+            do: {200, %{"operations" => [], "total" => 0}},
+            else: {200, %{"memory_unit_count" => 1}}
+      end)
+    end
+
     now_ms = 1_791_676_800_000
-    snapshot = material_snapshot(config, now_ms)
-    background = Hindsight.recall_profile(:background)
 
-    on_exit(fn -> Hindsight.start_recall_profiles() end)
-    assert :ok = Hindsight.stop_recall_profile(:background)
+    # 每一类各用一个新替身：替身端口只被这一类请求用过，池建在哪个实例就是走了哪条车道。
+    interactive = url.()
+    config = %{url: interactive, bank: "probe", timeout_ms: 1_000}
+    assert {:ok, _} = Hindsight.recall(config, %{query: "q"}, now_ms)
+    assert lanes(interactive) == [:interactive]
 
-    assert {:error, {:profile_not_started, ^background}} =
-             Round.materials(Reflection.self_question(), [], snapshot)
+    background = url.()
+    config = %{url: background, bank: "probe", timeout_ms: 1_000}
 
-    refute_received {:http_request, _, _}
-    assert {:ok, %{results: []}} = Hindsight.recall(config, %{query: "q"}, now_ms)
+    assert {:ok, _} =
+             Hindsight.recall(Hindsight.for_background_recall(config), %{query: "q"}, now_ms)
+
+    assert lanes(background) == [:background]
+
+    retain = url.()
+    config = %{url: retain, bank: "probe", timeout_ms: 1_000}
+    assert {:ok, %{retained: 1}} = Hindsight.retain(config, @episodes)
+    assert lanes(retain) == [:background]
+  end
+
+  # 替身根 URL 在哪几条车道的 HTTP/1 实例里有池。
+  defp lanes(url) do
+    pool = Finch.Pool.new(url)
+
+    for {lane, instance} <- [
+          interactive: NpcServer.Http.InteractiveHttp1,
+          background: NpcServer.Http.BackgroundHttp1
+        ],
+        match?({:ok, _}, Finch.find_pool(instance, pool)),
+        do: lane
   end
 
   defp material_snapshot(config, now_ms) do

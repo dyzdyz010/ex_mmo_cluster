@@ -17,9 +17,9 @@ ExUnit.start(
   exclude: [:live_llm, :live_jev, :npc_scale, :npc_soak]
 )
 
-# 正式运行由 NpcServer.Application 在监督树之前起两个召回池与选择池；测试跑 `--no-start` 时在这里复用同一入口。
-{:ok, _} = Application.ensure_all_started(:inets)
-{:ok, _} = NpcServer.Application.start_http_profiles()
+# 正式运行由 NpcServer.Application 把出站车道（`NpcServer.Http`）放在监督树第一位；测试跑 `--no-start` 时在这里起同一个。
+{:ok, _} = Application.ensure_all_started(:finch)
+{:ok, _} = NpcServer.Http.start_link()
 
 Code.require_file("../../data_service/test/support/database.exs", __DIR__)
 Code.require_file("../../scene_server/test/support/body_store.exs", __DIR__)

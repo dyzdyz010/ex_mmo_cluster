@@ -200,6 +200,21 @@ flowchart LR
 - “不 halt、等各路结束”这个合成方式是**原创决策**（先例 S8 只说要传播取消，没有规定合成方式）。
 - 反思 / 规划的召回本来就只有 httpc 计时，不用改。
 
+**D-3a 改写（2026-11-18，随出站 HTTP 换 Finch；[Finch 决策稿](2026-11-18-npc-http-client-finch-decision.md) §3）**
+
+上面“每路只由 httpc 计时、到点经 `cancel_request` 放弃”的写法以 httpc 为前提。换 Finch 后契约改为三条，由 `NpcServer.Http` 唯一持有：
+
+- **发送与接收的截止只有一个 owner**：适配器给的 `timeout_ms` 就是 Finch 的 `request_timeout`；`receive_timeout` 取同一个值（不大于它）。
+  Finch 文档说 `request_timeout` 在 HTTP/1 上是 best effort、只在两次读之间检查，单次读由 `receive_timeout` 兜住，所以两者合起来不会挂死；
+  最坏情况这一段约 2×`timeout_ms`。
+- **建连另有上限**：Mint 的 `transport_opts.timeout` 由车道给（交互 2 s、后台 30 s），不受 `request_timeout` 管。
+- **取连接另有上限**：`pool_timeout` 由车道给（交互 2 s、后台 30 s），只管“取不到连接”，报 `:pool_timeout`（请求从未发出），与上游慢的
+  `:timeout` 分开。httpc 时代“排队时间也算进同一个超时”的性质随之改为三段（取连接、建连、发送与接收）各有上限，
+  调用方最坏总时长约为三者之和（交互召回 2 + 2 + 2×10 s），正常情况下前两段是毫秒级。HTTP/2 连不上报 `:connection_unavailable`。
+- **放弃即取消**：超时时 Finch 关掉那条 HTTP/1 连接（HTTP/2 发 RST_STREAM）；调用进程被杀时它持有的 HTTP/1 连接随之关闭。
+  两条都由 `npc_http_lanes_test.exs` 的 T-3 用替身实测（httpc 下“调用方被杀”那条为红：连接保持 keep-alive，请求照常走完）。
+  `recollect/3` 仍不另设 Task 超时、等各路结束再按全有全无合成，这一条不变。
+
 **D-3b 另立整次决策的 deadline（不建议）**
 
 现状下同时起的各路共用同一个起点，每路超时从调用起算，已经近似 S8 说的“同一绝对截止时间”；只有第 4 路（`max_concurrency: 3`）要等前面某一路结束才起，整次最长可到约 20 s。没有任何失败与整次时长有关，也没有产品上对选择延迟的要求（树在等应答时身体原地不动，`trees.ex` L130）。不加。
@@ -249,7 +264,7 @@ flowchart LR
 
 1. 召回（有人在等）与写入 / 后台请求（没人在等）不共用 httpc 的连接队列：前者只走召回 profile，后者不走。
 2. 召回 profile 的名字只在 `NpcServer.Life.Hindsight` 定义一次；它由 npc_server 应用在起监督树之前起、在应用停止时停；运行期间由 inets 的 `httpc_profile_sup` 监督，重启后参数与重启前一致（都是缺省值）。
-3. 每一路召回的截止时间只有一个 owner（适配器写进 httpc 的 `timeout`，从调用起算），到点经 httpc 的 `cancel_request` 放弃；生产代码里不再有第二个计时器去 kill 召回进程（D-3a）。
+3. 每一路召回的截止时间只有一个 owner（适配器给 `NpcServer.Http` 的 `timeout_ms`，即 Finch `request_timeout`；取连接另由车道的 `pool_timeout` 管），到点 Finch 关掉那条连接；生产代码里不再有第二个计时器去 kill 召回进程（D-3a，2026-11-18 按 Finch 决策稿 §3 改写）。
 4. 选择的视图仍是全有全无（P-1 不动）；召回失败仍是显式失败，`observe/1` 的 `recall` 记失败的那一路与原因。
 5. retain 的语义不变：同步、写完逐文档查 facts、成功才删片段；存档结局只有 `none / pending / ok / failed`。
 
@@ -356,3 +371,7 @@ flowchart LR
     20 项排除（`test-20261118T130034Z-selection-profile-full.log`）。
   - 残余：两池之间只隔离连接队列，模型主机的并发限额与算力仍共享；选择池用缺省参数（每 host 2 条持久会话），
     多 NPC 同时选择时选择之间仍可能排队，等实跑读数再定是否调参。
+- 2026-11-18：**httpc profile 全部换成 Finch 的两条车道**（[Finch 决策稿](2026-11-18-npc-http-client-finch-decision.md) §7）。D-1 / D-1b 的隔离语义
+  （交互召回、后台取材、其余后台请求不共用连接队列；选择不排在同主机的写作 / retain 后面）由交互 / 后台两条车道承担，
+  `npc_recall_isolation_test.exs` 的两项与 `npc_selection_lane_test.exs` 改走 Finch 后仍绿；profile 起停、`{:profile_not_started, 名}` 与相关用例删除。
+  D-3a 按 Finch 决策稿 §3 改写（见上文“D-3a 改写”）。

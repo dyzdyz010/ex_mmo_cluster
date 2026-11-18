@@ -236,8 +236,8 @@ defmodule NpcServer.Life do
   @doc """
   心智快照（`NpcServer.Mind`）用的只读视图，由选择位置的发问 worker 调用；读的是规则模式的状态。
   `queries` 是这次的各路召回描述（`NpcServer.Mind.recall_queries/2`，按优先级排好）：各路在调用者进程里并行
-  （`Task.async_stream`，同时至多 #{@recall_concurrency} 路），每路的截止时间是适配器写进 httpc 的那一个超时
-  （#{@mind_recall_timeout_ms} 毫秒，从调用起算；调用方不再另设 Task 超时，见 `recollect/3` 的注释），
+  （`Task.async_stream`，同时至多 #{@recall_concurrency} 路），每路的截止时间是适配器交给 `NpcServer.Http` 的那一个总超时
+  （#{@mind_recall_timeout_ms} 毫秒；取连接另有交互车道的上限；调用方不再另设 Task 超时，见 `recollect/3` 的注释），
   等每一路各自结束后按 `NpcServer.Mind.merge_recalled/1` 合成一张清单。另给出还没写进 Hindsight 的经历。返回 `{:ok, 视图}`：
 
       now_ms         读视图那一刻 Life 的时钟（Unix 毫秒），Mind 用它算“多久以前”
@@ -335,11 +335,11 @@ defmodule NpcServer.Life do
   # 读一次 owner 快照，再在调用者进程里把各路召回并行做完（同时至多 @recall_concurrency 路），
   # 返回 `%{routes: [每路的结果，按 queries 的次序], latency_ms: 墙钟}`。
   #
-  # 每路的截止时间只有**一个** owner：适配器写进 httpc 的 `timeout`（`timeout_ms`，从调用起算、含排队时间）。
-  # 这里不再给 `Task.async_stream` 设第二个超时，也不在第一路失败时停下：被 kill 的任务不经过 httpc 的
-  # `cancel_request`，manager 也不 monitor 调用方，放弃的请求会照常走完（排队的事后发出、已发出的照算到底），
-  # 白算的那部分还会和别的召回抢 Hindsight 的 CPU。改成等每一路自己结束（成功、失败或 httpc 超时）再按
-  # 现行的“全有全无”规则合成，失败记第一条失败的那一路。依据见召回隔离决策稿 D-3a 与 S8/S10。
+  # 每路的截止时间只有**一个** owner：适配器交给 `NpcServer.Http` 的总超时（`timeout_ms`，Finch `request_timeout`；
+  # 取连接另由车道的 `pool_timeout` 管，见 `NpcServer.Http` moduledoc 的超时契约）。这里不给 `Task.async_stream`
+  # 设第二个超时，也不在第一路失败时停下：等每一路自己结束（成功、失败或超时，超时时 Finch 关掉那条连接、
+  # Hindsight 在阶段边界停下）再按现行的“全有全无”规则合成，失败记第一条失败的那一路。
+  # 依据见召回隔离决策稿 D-3a（按 Finch 决策稿 §3 改写）与 S8/S10。
   defp recollect(cid, queries, timeout_ms) do
     with {:ok, snapshot} <- call(cid, :context),
          do: recollect(cid, snapshot, queries, timeout_ms)
@@ -529,7 +529,10 @@ defmodule NpcServer.Life do
   defp journal_writer(%{write_journal: write}, _cid),
     do: fn _operation, system, user -> write.(system, user) end
 
+  # 反思与日计划没人在等：写作走出站的后台车道（`NpcServer.Http`），与说话的交互写作分开。
   defp journal_writer(%{reflect: endpoint}, cid) do
+    endpoint = Map.put(endpoint, :lane, :background)
+
     fn operation, system, user ->
       Writer.write(endpoint, system, user, %{cid: cid, operation: operation})
     end
@@ -1476,7 +1479,6 @@ defmodule NpcServer.Life do
 
     s =
       worker(s, :reflect, fn ->
-        {:ok, _} = Application.ensure_all_started(:inets)
         {:ok, _} = Application.ensure_all_started(:ssl)
         outcome = Round.write(snapshot)
 
@@ -1647,7 +1649,6 @@ defmodule NpcServer.Life do
 
     s =
       worker(s, :plan, fn ->
-        {:ok, _} = Application.ensure_all_started(:inets)
         {:ok, _} = Application.ensure_all_started(:ssl)
         DayPlan.Round.write(snapshot)
       end)
@@ -1876,7 +1877,6 @@ defmodule NpcServer.Life do
 
     s =
       worker(s, :job, fn ->
-        {:ok, _} = Application.ensure_all_started(:inets)
         {:ok, _} = Application.ensure_all_started(:ssl)
 
         with {:ok, _} <- adapter.ensure(config, "NPC #{s.context.cid}"),

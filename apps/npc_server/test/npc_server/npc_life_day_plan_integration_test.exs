@@ -789,10 +789,11 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     finished =
       for [_, payload] <- Regex.scan(~r/npc_model_request (\{[^\n]+\})/, log),
           %{"cid" => ^cid, "event" => "finished"} = event <- [Jason.decode!(payload)],
-          do: {event["operation"], event["status"]}
+          do: {event["operation"], event["status"], event["lane"]}
 
-    assert {"day_plan", "response"} in finished
-    assert {"reflection", "http_error"} in finished
+    # 日计划与反思的写作没人在等：走出站的后台车道（Finch 决策稿 D-2）。
+    assert {"day_plan", "response", "background"} in finished
+    assert {"reflection", "http_error", "background"} in finished
   end
 
   # 起一个开着规划的 Life（`journaling: false` 时不带写日记接口）：真实 World 与 NpcMemory，Life 的时钟是测试拨动的 Agent。

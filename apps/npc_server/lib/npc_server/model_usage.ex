@@ -8,6 +8,10 @@ defmodule NpcServer.ModelUsage do
 
   请求 ID 可在同一节点的一次启动内配对；worker 在途终止时只有开始记录。用量在业务解析前收集，
   `input_tokens` 和 `output_tokens` 为各自的完整计数，缓存分项同时可见。缺少有效计数时用量为 nil。
+
+  两条记录都带出站车道 `lane`（`NpcServer.Http.lane/1`）；结束记录另带 `queue_ms`：从车道的 HTTP/1 池取连接等了多久
+  （`NpcServer.Http.with_queue_ms/1`），HTTP/2 或注入的发送函数为 nil。取不到连接时 `status` 为 `pool_timeout`，
+  HTTP/2 连不上时为 `connection_unavailable`。
   """
   def request(
         endpoint,
@@ -21,31 +25,35 @@ defmodule NpcServer.ModelUsage do
       |> Map.merge(%{
         node: node(),
         request_id: System.unique_integer([:positive, :monotonic]),
-        request_model: model(Map.get(endpoint, :model))
+        request_model: model(Map.get(endpoint, :model)),
+        lane: NpcServer.Http.lane(endpoint)
       })
 
     started_at = System.monotonic_time(:millisecond)
     log(Map.put(fields, :event, :started))
 
-    result =
-      try do
-        send_fn.(endpoint, body)
-      rescue
-        error in Jason.DecodeError ->
-          finish(fields, started_at, %{status: :invalid_json}, nil)
-          reraise error, __STACKTRACE__
-      end
+    {result, queue_ms} =
+      NpcServer.Http.with_queue_ms(fn ->
+        try do
+          send_fn.(endpoint, body)
+        rescue
+          error in Jason.DecodeError ->
+            finish(fields, started_at, %{status: :invalid_json}, nil, nil)
+            reraise error, __STACKTRACE__
+        end
+      end)
 
     {outcome, usage} = response(result, api)
-    finish(fields, started_at, outcome, usage)
+    finish(fields, started_at, outcome, usage, queue_ms)
     {result, usage}
   end
 
-  defp finish(fields, started_at, outcome, usage) do
+  defp finish(fields, started_at, outcome, usage, queue_ms) do
     fields
     |> Map.merge(%{
       event: :finished,
       duration_ms: System.monotonic_time(:millisecond) - started_at,
+      queue_ms: queue_ms,
       response_model: nil,
       usage: usage
     })
@@ -65,8 +73,9 @@ defmodule NpcServer.ModelUsage do
   defp response({:error, {code, _}}, _api) when is_integer(code),
     do: {%{status: :http_error, status_code: code}, nil}
 
-  defp response({:error, reason}, _api) when reason in [:timeout, :invalid_json],
-    do: {%{status: reason}, nil}
+  defp response({:error, reason}, _api)
+       when reason in [:timeout, :pool_timeout, :connection_unavailable, :invalid_json],
+       do: {%{status: reason}, nil}
 
   defp response({:error, _}, _api), do: {%{status: :transport_error}, nil}
 

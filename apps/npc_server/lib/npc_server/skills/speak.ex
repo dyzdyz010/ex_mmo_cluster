@@ -92,7 +92,10 @@ defmodule NpcServer.Skills.Speak do
   defp draft(profile, snapshot, name, scope) do
     user = Jason.encode!(%{addressee: name, character_state: snapshot})
 
-    case Writer.write(profile.reflect, @system, user, scope) do
+    # 说话与对话回复有人在等：写作走出站的交互车道（`NpcServer.Http`），不排在反思 / 日计划写作后面。
+    endpoint = Map.put(profile.reflect, :lane, :interactive)
+
+    case Writer.write(endpoint, @system, user, scope) do
       {:ok, %{text: text, tokens: tokens}} -> {:ok, text, writer_metrics(tokens)}
       {:error, reason} -> {:error, {:speech_write_failed, reason}, writer_metrics(nil)}
     end

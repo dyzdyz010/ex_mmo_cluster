@@ -18,13 +18,15 @@ defmodule NpcServer.MixProject do
         {:voxel_region, in_umbrella: true},
         {:scene_server, in_umbrella: true},
         {:world_server, in_umbrella: true},
-        {:jason, "~> 1.4"}
+        {:jason, "~> 1.4"},
+        # 出站 HTTP（模型与 Hindsight）的唯一客户端，见 `NpcServer.Http` 与 Finch 决策稿。
+        {:finch, "~> 0.25"}
       ]
     ]
   end
 
   def application do
-    # 模型与长期记忆通过 HTTP 出站，由 NPC 应用拥有这些依赖。
-    [extra_applications: [:logger, :inets, :ssl], mod: {NpcServer.Application, []}]
+    # 模型与长期记忆经 Finch（`NpcServer.Http`）出站；TLS 需要 :ssl。
+    [extra_applications: [:logger, :ssl], mod: {NpcServer.Application, []}]
   end
 end

@@ -226,7 +226,7 @@ defmodule NpcServer.NpcRegistryTest do
                     key: "test-key",
                     model: "jev-test",
                     timeout_ms: 10_000,
-                    profile: :npc_selection
+                    lane: :interactive
                   },
                   # 反思写日记的接口取运行环境（R3 起）。
                   reflect: %{
@@ -561,8 +561,8 @@ defmodule NpcServer.NpcRegistryTest do
                  # 缺省思考强度是 medium；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
                  reasoning_effort: "medium",
                  timeout_ms: 10_000,
-                 # 两种形状都走选择专用的 httpc profile。
-                 profile: :npc_selection
+                 # 两种形状都走出站的交互车道。
+                 lane: :interactive
                } = profile.jev
 
         # `max_tokens` 的缺省值只在 `NpcServer.Jev` 定义一次：没配环境变量时端点里没有这个键，
@@ -1830,12 +1830,18 @@ defmodule NpcServer.NpcRegistryTest do
     end
   end
 
+  # 经真实 Body / Runtime / 技能发出的模型请求各属哪条出站车道（Finch 决策稿 D-2）：这几类都有人在等。
+  @interactive_operations ~w(activity_selection dialogue_turn_selection speak dialogue_reply_write)
+
   defp model_request(events, operation) do
     assert %{"request_id" => id} =
              Enum.find(events, &match?(%{"operation" => ^operation, "event" => "started"}, &1))
 
     assert [%{"event" => "started"}, %{"event" => "finished"} = finished] =
              Enum.filter(events, &(&1["request_id"] == id))
+
+    assert operation in @interactive_operations and finished["lane"] == "interactive",
+           "#{operation} 应走交互车道，实际 #{inspect(finished["lane"])}"
 
     finished
   end

@@ -1,12 +1,11 @@
 Code.require_file("../support/keep_alive_stub.exs", __DIR__)
 
-defmodule NpcServer.NpcSelectionProfileTest do
+defmodule NpcServer.NpcSelectionLaneTest do
   @moduledoc """
-  只测试：活动选择请求走自己的 httpc profile，不排在同一主机上缺省 profile 的慢请求后面
-  （召回隔离决策稿 D-1 的延伸；实跑证据见 NPC 协调稿“薄片四第二轮”），以及 `NpcServer.Http` 在
-  指定 profile 不在时显式失败。
+  只测试：活动选择请求走出站的交互车道，不排在同一主机上后台车道的慢请求后面
+  （召回隔离决策稿 D-1 的延伸、Finch 决策稿 T-1；实跑证据见 NPC 协调稿“薄片四第二轮”）。
 
-  真实 `:httpc`、`NpcServer.Registry` 构造的 Jev endpoint 与 `NpcServer.Selector.ask/4` 照常运行，
+  真实 `NpcServer.Http`（Finch）、`NpcServer.Registry` 构造的 Jev endpoint 与 `NpcServer.Selector.ask/4` 照常运行，
   只把模型对端换成能保持连接、能并发应答的本地替身；不起 World / Scene / Postgres，不发真实模型请求。
   """
   use ExUnit.Case, async: false
@@ -36,7 +35,7 @@ defmodule NpcServer.NpcSelectionProfileTest do
     ]
   }
 
-  test "同一主机的慢请求占着缺省 profile 的会话时，选择请求不排在它后面" do
+  test "同一主机的慢请求占着后台车道的连接时，选择请求不排在它后面" do
     slow_path = "/slow"
 
     url =
@@ -74,8 +73,8 @@ defmodule NpcServer.NpcSelectionProfileTest do
         end
       )
 
-    # 写作 / Hindsight 那一侧走缺省 profile：先预热出一条空闲的持久连接，缺省 profile 之后的请求才会排进这个会话
-    # （OTP `httpc_manager:select_session/4`）——这就是实跑里选择被挡住的前提。
+    # 写作 / Hindsight 那一侧（没标车道 = 后台车道）：先预热出一条空闲的持久连接，再让慢请求占住它。
+    # httpc 时代选择会排进这个会话（OTP `httpc_manager:select_session/4`）——这就是实跑里选择被挡住的前提。
     default = %{url: url <> "/warm", key: "k", timeout_ms: 5_000}
     assert {:ok, %{"ok" => true}} = Http.request(default, %{})
     assert_receive {:http_request, warmed_conn, %{path: "/warm"}}
@@ -93,26 +92,18 @@ defmodule NpcServer.NpcSelectionProfileTest do
 
     assert_received {:http_request, selection_conn, %{path: "/jev"}}
 
+    # 只有选择会在交互车道的实例里为这个替身建池（预热与慢请求没标车道，走后台车道）：
+    # 池在哪个实例就是请求走了哪条车道，不依赖“慢请求占住一条连接”这一时序。
+    assert {:ok, _} = Finch.find_pool(NpcServer.Http.InteractiveHttp1, Finch.Pool.new(url))
+
     assert selection_conn != warmed_conn,
-           "选择必须走与缺省 profile 不同的连接，否则会排在慢请求后面"
+           "选择必须走与后台车道不同的连接，否则会排在慢请求后面"
 
     # 阈值只证明"没排在慢请求后面"：排队就是 ~#{@slow_ms} ms，隔离就是几毫秒；留一半余量防负载抖动。
     assert elapsed < div(@slow_ms, 2),
-           "选择被缺省 profile 上的慢请求挡住了（耗时 #{elapsed} ms，慢请求 #{@slow_ms} ms）"
+           "选择被后台车道上的慢请求挡住了（耗时 #{elapsed} ms，慢请求 #{@slow_ms} ms）"
 
     assert {:ok, %{"ok" => true}} = Task.await(slow, 5_000)
-  end
-
-  test "endpoint 指定的 profile 不在时显式失败，不退回缺省 profile" do
-    url = KeepAliveStub.start(fn _conn, _method, _path, _body -> {200, %{"ok" => true}} end)
-
-    assert {:error, {:profile_not_started, :npc_selection_missing_test}} =
-             Http.request(
-               %{url: url, key: "k", timeout_ms: 1_000, profile: :npc_selection_missing_test},
-               %{}
-             )
-
-    refute_received {:http_request, _, _}
   end
 
   defp with_env(env, fun) do

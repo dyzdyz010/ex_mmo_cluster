@@ -37,6 +37,15 @@ defmodule NpcServer.NpcApplicationTest do
       Supervisor.child_spec({WorldServer.Session, name: WorldServer.Session}, id: :shared_session)
     )
 
+    # 正式应用自己把出站车道（`NpcServer.Http`）放在监督树第一位：先停掉 test_helper 起的那一个，
+    # 测完（受监督的应用已停）再起回来给别的用例。
+    :ok = Supervisor.stop(NpcServer.Http)
+
+    on_exit(fn ->
+      {:ok, http} = NpcServer.Http.start_link()
+      Process.unlink(http)
+    end)
+
     start_supervised!(%{
       id: :npc_application,
       start: {NpcServer.Application, :start, [:normal, []]},

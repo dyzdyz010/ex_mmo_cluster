@@ -1,7 +1,7 @@
 # NPC 出站 HTTP 换 Finch：车道隔离与显式排队（2026-11-18）
 
 分类：npc_server 出站 HTTP 层的结构决策稿（新依赖、跨模块边界，按 AGENTS §3 第 8 条先写稿）。
-状态：**用户已定 §5 全部按建议（2026-11-18，原话“全部按你建议来”）；未实现。** 前置的 httpc 选择池隔离（D-1 的延伸）先落地，本稿在薄片四第三轮实跑之后、扩到更多 NPC 之前实施。
+状态：**用户已定 §5 全部按建议（2026-11-18，原话“全部按你建议来”）；已实现（2026-11-18，见 §7 进度，落地与 §2 的差异见 §2.1）。** 前置的 httpc 选择池隔离（D-1 的延伸）先落地，本稿在薄片四第三轮实跑之后、扩到更多 NPC 之前实施。
 相关：[召回隔离决策稿](2026-11-16-npc-hindsight-recall-isolation-decision.md)（E1、D-1、D-1b、D-3a）、[统筹页](2026-11-11-npc-coordination.md) 薄片四两轮记录。
 
 ## 1. 问题
@@ -51,7 +51,31 @@ flowchart LR
 - **不引入**：Tesla（中间件层，“The default adapter is erlang's built-in `httpc`”，池交给适配器，对我们只是多一层）；Req（建在 Finch 上，
   缺省带重试，与“显式失败、不自动重发”的约束相反，关掉后剩下的价值不足以多一层）。
 
-## 3. 超时与取消契约（要改写 D-3a）
+### 2.1 落地时与上面的差异（2026-11-18 实施时读 finch 0.25.0 源码后定）
+
+- **每条车道按协议两个实例，共四个**（`NpcServer.Http.{Interactive,Background}Http{1,2}`），不是一车道一个。原因：Finch 的池配置只能按
+  `{scheme, host, port}` 写死或用一份 `:default`，而主机来自运行环境与测试替身的随机端口；`:protocols` 同时写 `:http1, :http2` 时
+  官方文档说“there is no multiplexing”。运行中用 `Finch.start_pool/3` 给池单独起配置也不行：HTTP/2 池断线时会注销自己，下一个请求经
+  `Pool.Manager` 按实例的 `:default` 重新找池，拿到与该池不符的协议模块（`Finch.Pool.Manager.maybe_start_pool/5`）。
+  所以每个实例用一份静态 `:default`：`https` → HTTP/2 实例（`count` 1），`http` → HTTP/1 实例（`size` 8）。车道仍是隔离单位。
+  模型主机 `api.deepseek.com`、`api.typesafe.ai`、`api.muteki.site` 2026-11-18 用 `curl --http2` 实测都协商为 h2；Hindsight 与回环替身是明文 HTTP/1。
+- **HTTP/1 取连接超时 Finch 是抛错不是返回**（`Finch.HTTP1.Pool.request/6` 把 NimblePool 的 checkout 超时重抛成 `RuntimeError`），
+  `NpcServer.Http` 只把这一条消息折成 `{:error, :pool_timeout}`；HTTP/2 兜底计时（2×`request_timeout` 仍无回执时抛
+  “no response was received…”）折成 `:timeout`；其它异常照抛。HTTP/2 没有取连接队列，池在 `pool_timeout` 内连不上
+  （DNS、拒绝连接、证书、没协商出 h2）的 `:pool_not_available` 单报 `:connection_unavailable`，不混进排队失败。
+- **`queue_ms` 只有 HTTP/1 有**：`[:finch, :queue, *]` 只在 HTTP/1 取连接时发；HTTP/2 多路复用、没有取连接队列，`queue_ms` 为 null。
+  生产上模型请求走 HTTP/2，所以生产日志里模型请求的 `queue_ms` 恒为 null；经本机代理（明文）跑时有读数。
+- **没标车道的 endpoint 走后台车道**：旧形态（`llm`、builder、技能）的调用方不改；交互车道只给明确标了的调用方。
+- **TLS 信任根**：实例不显式给 CA，交给 Mint 的缺省（`verify_peer`，建连时才取 `:public_key.cacerts_get/0`）。没有系统 CA 的环境
+  只在真连 https 时显式失败，不影响应用启动（正式镜像根 `Dockerfile` 的运行层装了 `ca-certificates`）。
+- **endpoint 级 `cacertfile` 保留**（及 `NPC_LLM_CACERTFILE`）：Voxim `Docs/Gameplay/server.py` 的 `--npc-llm` Demo 用 `ubuntu:24.04`
+  裸容器、没有系统 CA，给 `llm` NPC 的 endpoint 带 `cacertfile: /demo/npc-ca.pem`（certifi 的包）。Finch 的 TLS 参数按池配置，
+  所以带 `cacertfile` 的 https 请求走同车道 HTTP/2 实例里以 `{:cacertfile, 路径}` 为标签的池，每次请求前 `Finch.start_pool/3`
+  确保它在。它与实例的 `:default` 同为 HTTP/2，断线后重新找池拿到的协议模块一致（上面否决动态池的理由只针对协议不同）。
+- **建连有车道上限**：Mint 缺省建连 30 s，不受 `request_timeout` 管；每个实例按车道配 `transport_opts.timeout`（交互 2 s、后台 30 s，原创初值）。
+- **协议不是 http / https** 时返回 `{:error, {:unsupported_scheme, 协议}}`，不崩。
+
+## 3. 超时与取消契约（要改写 D-3a；落地后的三段上限见 §7 第十七个会话一条与 `NpcServer.Http` moduledoc）
 
 D-3a 现在的规则是“每路截止时间只有一个 owner：httpc 的 timeout；调用方不再套第二个超时，放弃的请求要真的取消”。换 Finch 后：
 
@@ -92,3 +116,33 @@ D-3a 现在的规则是“每路截止时间只有一个 owner：httpc 的 timeo
 - 2026-11-18：httpc 选择池隔离已提交（`7afe29fe`），薄片四第三轮 `slice4-03` 五题全部成立、选择超时 0；上游选择最长 9.3 s，离 10 s 很近。
 - 2026-11-18：用户定 §5 全部按建议：D-1 换 Finch；D-2 车道划分如 §2 图；D-3 DeepSeek 走 HTTP/2；D-4 池初值如 §5 第 4 条（原创取值，实跑后调）；
   D-5 现在实施（第三轮已跑完），扩到 5 个以上 NPC 之前完成。实施交给下一个统筹会话，按 §4 测试矩阵先红后绿。
+- 2026-11-18（第十七个统筹会话）：**已实现**。`NpcServer.Http` 是监督者（四个 Finch 实例 + 排队时长的 telemetry 处理器），在 NPC 监督树第一位；
+  `Life.Hindsight` 经 `Http.send_request/6` 发全部请求（召回按 `recall_kind` 走交互 / 后台车道，其余后台）；`Registry` 的 Jev endpoint 带
+  `lane: :interactive`，说话与对话回复的写作标交互、反思与日计划的写作标后台；`ModelUsage` 记 `lane` 与 `queue_ms`，取不到连接记 `status=pool_timeout`。
+  删除了三个 httpc profile 的起停、`profile_absent?`、`Jev.selection_profile/0`、`Application.start_http_profiles/0` 与 `:inets` 依赖。
+  依赖：finch 0.25.0（MIT）、mint 1.11.0、nimble_pool 1.2.0、nimble_options 1.2.0（均 Apache-2.0），hpax / mime / telemetry 已在树里。
+  - **改前红**（`test/npc_server/npc_http_lanes_test.exs`，跑在 httpc 实现上）：T-0 两车道共用一条连接、T-2 第 9 个请求没有排队上限照常发出、
+    T-3 调用进程被杀后连接仍保持 keep-alive、T-5 结束事件没有 `queue_ms`（`.demo/dev-env/logs/test-20261118T133637Z-finch-red.log`、
+    `test-20261118T133713Z-finch-red-t2.log`）。T-3 的“超时关连接”一条在 httpc 下也绿（httpc 到点 `cancel_request`），作为 D-3a 的回归。
+  - **改后绿**：新文件 5 项与 T-1（`npc_recall_isolation_test.exs` 两项、`npc_selection_lane_test.exs`，原 `npc_selection_profile_test.exs`）共 8 项
+    （`test-20261118T134401Z-finch-green.log`）；npc_server 全套 `--seed 0` 630 项通过、20 项排除（`test-20261118T134547Z-finch-full.log`）。
+  - **T-4 真实冒烟**（`live-finch-t4-20261118T135545Z.log`）：选择经交互车道 HTTP/2 实例打 DeepSeek，`finish_reason=stop`、3.5 s；
+    写作经后台车道 HTTP/2 实例转发，成功、16.7 s；两条都断言池落在 HTTP/2 实例里（该实例只接受协商出 h2 的连接）。
+  - 未做：HTTP/2 上调用进程被杀时的取消（Finch 监视调用方并发 RST_STREAM）只读了源码，本机没有 h2 替身，未实测；
+    `slice4-04` 对照实跑（看上游尾延迟与 `queue_ms`）。
+- 2026-11-18（同一会话，独立评审之后）：评审确认车道归属、主要错误映射、取消、telemetry 与启停成立，另提 7 条，处理如下：
+  - **建连不受 `timeout_ms` 约束**（Mint 缺省 30 s，旧 Hindsight 写了 `connect_timeout`，是回归）→ 每实例按车道配建连上限。
+    超时契约改成三段各有上限：取连接 `pool_timeout`、建连 `transport_opts.timeout`、发送与接收 `timeout_ms`；
+    HTTP/1 接收段最坏约 2×`timeout_ms`（`request_timeout` 只在两次读之间检查），调用方最坏总时长约为三者之和，已写进 moduledoc 与 D-3a 改写。
+  - **https 连不上被报成 `:pool_timeout`** → 改报 `:connection_unavailable`（`ModelUsage` 的 status、`Writer` 的失败原因同步）。
+  - **T-1 证明不了车道路由**（HTTP/1 池有 8 条连接，误路由也会另开一条）→ 加按实例查池的断言：选择用例断言池在交互实例；
+    新用例逐类核 Hindsight 召回（交互 / 后台）与 retain（后台）；`npc_registry_test` 的 `model_request/2` 对选择、对话回合选择、说话、
+    对话回复断言 `lane=interactive`；日计划集成用例对日计划与反思写作断言 `lane=background`。**变异验证**：把这四处车道临时改错，
+    9 项变红（`.demo/dev-env/logs/test-20261118T142910Z-lane-mutation-red.log`），改回后绿。
+  - **HTTP/2 兜底异常会打崩 worker** → 折成 `:timeout`。**非 http / https 协议崩溃** → `{:unsupported_scheme, _}`，加用例。
+  - **`rest_for_one` 注释理由不成立** → 改为如实说明：排第一只为启动顺序，整体重启时连带重起 NPC 是可接受的副作用。
+  - **`cacertfile` 的结论原先是错的**：评审指出外部仓可能还在用，核实 Voxim Gameplay Demo 确实在用（见 §2.1），已恢复支持；
+    同时发现初版在 `init/1` 里调 `:public_key.cacerts_get()`，没有系统 CA 的容器里会让应用启动失败，已改为交给 Mint 在建连时取。
+    新用例覆盖 `cacertfile` 标签池与 HTTP/2 连不上报 `:connection_unavailable`（连不上的池用 `Finch.stop_pool/2` 收尾，不留后台重连）。
+  - 修后：npc_server 全套 `--seed 0` 633 项通过、20 项排除（`test-20261118T143149Z-finch-full-after-review.log`）；T-4 两条真实冒烟重跑
+    （TLS 改为 Mint 缺省后）均通过，选择 `finish_reason=stop`、2.8 s，写作 14.8 s（`live-finch-t4-20261118T144038Z.log`）。
