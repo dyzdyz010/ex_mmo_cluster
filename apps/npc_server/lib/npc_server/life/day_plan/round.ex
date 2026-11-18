@@ -70,7 +70,7 @@ defmodule NpcServer.Life.DayPlan.Round do
 
     Logger.info(
       "#{head} event=end #{which} #{outcome(result, checked)} wrote=#{wrote} elapsed_ms=#{elapsed_ms} " <>
-        "input_tokens=#{tokens(usage, "input_tokens")} output_tokens=#{tokens(usage, "output_tokens")}"
+        "uncached_input_tokens=#{tokens(usage, "input_tokens")} output_tokens=#{tokens(usage, "output_tokens")}"
     )
 
     %{result: result, checked: checked, elapsed_ms: elapsed_ms, usage: usage, wrote: wrote}
@@ -109,7 +109,7 @@ defmodule NpcServer.Life.DayPlan.Round do
   defp outcome({:failed, reason}, nil), do: "result=failed reason=#{inspect(reason)}"
   defp outcome({:rejected, reason}, nil), do: "result=rejected reason=#{inspect(reason)}"
 
-  # usage 是写作应答的原样（Anthropic Messages 的字符串键）；没有就写 nil。
+  # 槽日志读取 Messages 原始字段；完整输入见模型请求日志。
   defp tokens(%{} = usage, key), do: inspect(Map.get(usage, key))
   defp tokens(nil, _key), do: "nil"
 end

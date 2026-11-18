@@ -511,12 +511,9 @@ defmodule NpcServer.Life do
   # （同 Selector 经 `profile.request` 注入 Jev 发送函数的做法），缺省是 `Writer.write(profile.reflect, …)`。
   # 反思库的 config 是经历库的换一个 bank。日计划共用写日记的接口与人格卡，词表是候选表的名字与判据（`profile.activities`，
   # 次序不变；没有候选表的形态为 []，不规划）。
-  defp journaling(%{reflect: endpoint} = profile, config, cid),
+  defp journaling(%{reflect: _} = profile, config, cid),
     do: %{
-      write:
-        Map.get(profile, :write_journal, fn system, user ->
-          Writer.write(endpoint, system, user)
-        end),
+      write: journal_writer(profile, cid),
       character: Persona.describe(profile.who, profile.persona),
       archive: %{config | bank: "npc-reflect-#{cid}"},
       archive_name: "NPC #{cid} journal",
@@ -528,6 +525,18 @@ defmodule NpcServer.Life do
     }
 
   defp journaling(_profile, _config, _cid), do: nil
+
+  defp journal_writer(%{write_journal: write}, _cid),
+    do: fn _operation, system, user -> write.(system, user) end
+
+  defp journal_writer(%{reflect: endpoint}, cid) do
+    fn operation, system, user ->
+      Writer.write(endpoint, system, user, %{cid: cid, operation: operation})
+    end
+  end
+
+  defp write_for(%{write: write}, operation),
+    do: fn system, user -> write.(operation, system, user) end
 
   @impl true
   def handle_call(:observe, _, s) do
@@ -1447,6 +1456,7 @@ defmodule NpcServer.Life do
     snapshot =
       Map.merge(s.journaling, %{
         cid: s.context.cid,
+        write: write_for(s.journaling, :reflection),
         round: round,
         new: new,
         now_ms: now_ms,
@@ -1616,6 +1626,7 @@ defmodule NpcServer.Life do
     snapshot =
       Map.merge(s.journaling, %{
         cid: s.context.cid,
+        write: write_for(s.journaling, :day_plan),
         kind: kind,
         day: day,
         now_minute: minute,

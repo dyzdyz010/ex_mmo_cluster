@@ -76,11 +76,11 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
       assert String.starts_with?(user, "Right now:\nIt is night, 22:26. It is day 1346.\n")
       assert String.ends_with?(user, "\n\nPlan the rest of today now.")
 
-      # 日志：起止各一行，带 kind、day、结局、耗时与 token；计划原文（why）不进日志。
+      # 槽日志的输入数明确指普通输入；请求总量由模型用量事件记录。
       assert log =~ "npc_plan cid=#{snapshot.cid} event=start kind=day day=1346"
 
       assert log =~
-               ~r/npc_plan cid=#{snapshot.cid} event=end kind=day day=1346 result=written .*wrote=true .*input_tokens=2 output_tokens=747/
+               ~r/npc_plan cid=#{snapshot.cid} event=end kind=day day=1346 result=written .*wrote=true .* uncached_input_tokens=2 output_tokens=747/
 
       for %{"why" => why} <- result.checked.intents, do: refute(log =~ why)
     end

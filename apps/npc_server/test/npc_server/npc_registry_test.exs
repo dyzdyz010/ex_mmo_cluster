@@ -890,6 +890,7 @@ defmodule NpcServer.NpcRegistryTest do
       )
     end
 
+    @tag :model_usage
     @tag timeout: 60_000
     test "a registered npc approaches the selected nearby character and starts a Scene conversation",
          fixture do
@@ -937,11 +938,21 @@ defmodule NpcServer.NpcRegistryTest do
               if match?(%{^option => _, ^witness_option => _}, options),
                 do: option,
                 else: "rest_at_home"
-            %{"answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.6}}}
+
+            %{
+              "answers" => %{
+                "activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.6}
+              }
+            }
 
           :post, "/v1/messages", %{"system" => "Write one short line" <> _} = request ->
             send(test, {:speech_written, request})
-            %{"stop_reason" => "end_turn", "content" => [%{"type" => "text", "text" => line}], "usage" => %{}}
+
+            %{
+              "stop_reason" => "end_turn",
+              "content" => [%{"type" => "text", "text" => line}],
+              "usage" => %{}
+            }
 
           :get, path, _ ->
             cond do
@@ -965,7 +976,7 @@ defmodule NpcServer.NpcRegistryTest do
           "NPC_LIFE_HINDSIGHT_URL" => endpoint
       }
 
-      with_env(Map.put(env, "NPC_JEV_API", nil), fn ->
+      run = fn ->
         name = "会招呼的住民#{target}"
 
         # 第一帧可能先于 AOI 的邻居进入。候选出现前的既有活动是在当前位置等候。
@@ -991,6 +1002,7 @@ defmodule NpcServer.NpcRegistryTest do
                           }
                         } = first},
                        25_000
+
         options = first["questions"]["activity"]["criteria"]
         assert options[option] =~ "actor #{target}"
         refute Map.has_key?(options, "speak_to:#{distant}")
@@ -1001,7 +1013,10 @@ defmodule NpcServer.NpcRegistryTest do
 
         speech = NpcWorld.await(fn -> List.first(Body.observe(target_body).dialogue) end)
         assert %{speaker_id: ^cid, target_id: ^target, turn: 1, text: ^line} = speech
-        assert ^speech = NpcWorld.await(fn -> List.first(Body.observe(witness_body).dialogue) end)
+
+        assert ^speech =
+                 NpcWorld.await(fn -> List.first(Body.observe(witness_body).dialogue) end)
+
         assert [^speech] = Body.observe(body).dialogue
         assert [] = Body.observe(distant_body).dialogue
 
@@ -1012,7 +1027,11 @@ defmodule NpcServer.NpcRegistryTest do
         NpcWorld.await(fn ->
           row = DataService.NpcMemory.get(cid, "life", "state")
           episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
-          Enum.any?(episodes, &(&1["speech"]["text"] == line and "kind:conversation" in &1["tags"]))
+
+          Enum.any?(
+            episodes,
+            &(&1["speech"]["text"] == line and "kind:conversation" in &1["tags"])
+          )
         end)
 
         # 同场景冷却期间，下一轮继续正常选择，说话选项不再进入请求。
@@ -1031,10 +1050,16 @@ defmodule NpcServer.NpcRegistryTest do
         refute witness_option in second
 
         assert :ok = NpcRegistry.remove(name)
-      end)
+        cid
+      end
+
+      requests = with_model_usage(Map.put(env, "NPC_JEV_API", nil), run)
+
+      assert %{"api" => "messages", "status" => "response"} = model_request(requests, "speak")
     end
 
     @tag :gather_reply
+    @tag :model_usage
     @tag timeout: 60_000
     test "a registered gatherer replies to a player between steps and resumes the original gather",
          fixture do
@@ -1049,24 +1074,37 @@ defmodule NpcServer.NpcRegistryTest do
 
       endpoint =
         http_stub(fn
-          :post, "/jev", %{"questions" => %{"activity" => %{"criteria" => %{"reply" => _}}}} =
-                            request ->
+          :post,
+          "/jev",
+          %{"questions" => %{"activity" => %{"criteria" => %{"reply" => _}}}} =
+              request ->
             send(owner, {:reply_choice, self(), request})
 
             receive do
-              :choose_reply -> jev_choice("reply")
+              :choose_reply ->
+                jev_choice("reply")
+                |> Map.put("model", "jev-1.14.0")
+                |> Map.put("usage", %{"input_tokens" => 1976, "output_tokens" => 102})
             after
               5_000 -> jev_choice("continue")
             end
 
           :post, "/jev", request ->
             options = request["questions"]["activity"]["criteria"]
-            choice = if Map.has_key?(options, "gather_stone"), do: "gather_stone", else: "rest_at_home"
+
+            choice =
+              if Map.has_key?(options, "gather_stone"), do: "gather_stone", else: "rest_at_home"
+
             jev_choice(choice)
 
           :post, "/v1/messages", %{"system" => "Write one short line" <> _} = request ->
             send(owner, {:reply_written, request})
-            %{"stop_reason" => "end_turn", "content" => [%{"type" => "text", "text" => line}], "usage" => %{}}
+
+            %{
+              "stop_reason" => "end_turn",
+              "content" => [%{"type" => "text", "text" => line}],
+              "usage" => %{}
+            }
 
           :get, path, _ ->
             cond do
@@ -1090,7 +1128,7 @@ defmodule NpcServer.NpcRegistryTest do
           "NPC_LIFE_HINDSIGHT_URL" => endpoint
       }
 
-      with_env(Map.put(env, "NPC_JEV_API", nil), fn ->
+      run = fn ->
         name = "采石居民#{speaker}"
         [gather, rest] = @npc["activities"]
         valid_args = %{gather["args"] | "box" => [[21, 64, 6], [22, 64, 6]], "units" => 1024}
@@ -1115,8 +1153,10 @@ defmodule NpcServer.NpcRegistryTest do
                  })
 
         assert_receive {:reply_choice, selector, request}, 3_000
+
         assert MapSet.new(Map.keys(request["questions"]["activity"]["criteria"])) ==
                  MapSet.new(["continue", "reply"])
+
         assert request["state"] =~ greeting
         assert request["state"] =~ "Lin, a builder"
 
@@ -1165,16 +1205,34 @@ defmodule NpcServer.NpcRegistryTest do
         NpcWorld.await(fn ->
           row = DataService.NpcMemory.get(cid, "life", "state")
           episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
-          Enum.any?(episodes, &match?(%{"speech" => %{"conversation_id" => ^conversation, "turn" => 2}}, &1))
+
+          Enum.any?(
+            episodes,
+            &match?(%{"speech" => %{"conversation_id" => ^conversation, "turn" => 2}}, &1)
+          )
         end)
 
         assert :ok = NpcRegistry.remove(name)
-      end)
+        cid
+      end
+
+      requests = with_model_usage(Map.put(env, "NPC_JEV_API", nil), run)
+
+      assert %{
+               "api" => "answers",
+               "trigger" => "gather_reply",
+               "response_model" => "jev-1.14.0",
+               "usage" => %{"input_tokens" => 1976, "output_tokens" => 102}
+             } = model_request(requests, "gather_reply_selection")
+
+      assert %{"api" => "messages", "status" => "response", "usage" => nil} =
+               model_request(requests, "gather_reply_write")
     end
 
     # 选择层换成本机 deepseek 时走的那条路：`NPC_JEV_API=openai` + 一个真实的 chat completions 端点。
     # 这一条覆盖"配置 → Registry → 真实 Body → Jev 请求 → 解析 → 执行"的整条链，**只把对端换成能回
     # OpenAI 形状的本机替身**（真实 deepseek 的那次冒烟见 `npc_jev_test` 的 `:live_jev` 用例）。
+    @tag :model_usage
     @tag timeout: 120_000
     test "an npc row selects through an OpenAI-compatible chat endpoint when NPC_JEV_API=openai" do
       test = self()
@@ -1192,7 +1250,12 @@ defmodule NpcServer.NpcRegistryTest do
                 }
               }
             ],
-            "usage" => %{"prompt_tokens" => 1234, "completion_tokens" => 12}
+            "usage" => %{
+              "prompt_tokens" => 1234,
+              "completion_tokens" => 12,
+              "prompt_cache_hit_tokens" => 1024,
+              "prompt_tokens_details" => %{"cached_tokens" => 1024}
+            }
           }
         end) <> "/jev"
 
@@ -1249,7 +1312,7 @@ defmodule NpcServer.NpcRegistryTest do
           "NPC_LIFE_HINDSIGHT_URL" => hindsight
         })
 
-      with_env(env, fn ->
+      run = fn ->
         assert {:ok, %{cid: cid, pid: pid}} =
                  NpcRegistry.put(name, %{
                    scene_id: 1,
@@ -1299,7 +1362,20 @@ defmodule NpcServer.NpcRegistryTest do
                  Body.observe(pid).select.activities
 
         assert :ok = NpcRegistry.remove(name)
-      end)
+        cid
+      end
+
+      requests = with_model_usage(env, run)
+
+      assert %{
+               "api" => "openai",
+               "request_model" => "deepseek-flash",
+               "usage" => %{
+                 "input_tokens" => 1234,
+                 "output_tokens" => 12,
+                 "cache_read_input_tokens" => 1024
+               }
+             } = model_request(requests, "activity_selection")
     end
 
     # 走向一个角色（S1-F），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）：Jev 选中“去找我不信任的人”，
@@ -1456,7 +1532,9 @@ defmodule NpcServer.NpcRegistryTest do
   end
 
   defp jev_choice(choice),
-    do: %{"answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.9}}}
+    do: %{
+      "answers" => %{"activity" => %{"type" => "choice", "choice" => choice, "confidence" => 0.9}}
+    }
 
   defp in_scene?(scene, cid),
     do: Enum.any?(Scene.observe(scene).characters, &(&1.entity_id == cid))
@@ -1546,6 +1624,30 @@ defmodule NpcServer.NpcRegistryTest do
   end
 
   # 只测试：临时改运行环境变量（nil = 删除），结束后还原。
+  defp with_model_usage(env, fun) do
+    Logger.put_module_level(NpcServer.ModelUsage, :info)
+
+    try do
+      {cid, log} = ExUnit.CaptureLog.with_log(fn -> with_env(env, fun) end)
+
+      for [_, payload] <- Regex.scan(~r/npc_model_request (\{[^\n]+\})/, log),
+          %{"cid" => ^cid} = event <- [Jason.decode!(payload)],
+          do: event
+    after
+      Logger.delete_module_level(NpcServer.ModelUsage)
+    end
+  end
+
+  defp model_request(events, operation) do
+    assert %{"request_id" => id} =
+             Enum.find(events, &match?(%{"operation" => ^operation, "event" => "started"}, &1))
+
+    assert [%{"event" => "started"}, %{"event" => "finished"} = finished] =
+             Enum.filter(events, &(&1["request_id"] == id))
+
+    finished
+  end
+
   defp with_env(env, fun) do
     previous = Map.new(env, fn {key, _} -> {key, System.get_env(key)} end)
 

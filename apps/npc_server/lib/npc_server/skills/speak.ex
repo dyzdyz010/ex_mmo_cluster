@@ -55,9 +55,10 @@ defmodule NpcServer.Skills.Speak do
       when is_integer(id) and id > 0 and is_integer(epoch) and epoch >= 0 and is_binary(name) and
              is_binary(snapshot) do
     target = %{"entity_id" => id, "entity_epoch" => epoch}
+    scope = %{cid: context.actor.cid, operation: :speak}
 
     with {:ok, _} <- Travel.run(context, target, %{}) do
-      with {:ok, text, metrics} <- draft(context.profile, snapshot, name) do
+      with {:ok, text, metrics} <- draft(context.profile, snapshot, name, scope) do
         say(context, command(id, epoch, 0, text), metrics)
       end
     else
@@ -68,18 +69,20 @@ defmodule NpcServer.Skills.Speak do
   def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
   @doc "给权威来话撰写同一会话的回复，返回由 Runtime 定号提交的 Body 命令与写作用量。"
-  def reply(profile, snapshot, speech) do
-    with {:ok, text, metrics} <- draft(profile, snapshot, speech.speaker_name) do
+  def reply(profile, snapshot, speech, cid \\ nil) do
+    scope = %{cid: cid, operation: :gather_reply_write}
+
+    with {:ok, text, metrics} <- draft(profile, snapshot, speech.speaker_name, scope) do
       {:ok, command(speech.speaker_id, speech.speaker_epoch, speech.conversation_id, text),
        metrics}
     end
   end
 
-  defp draft(profile, snapshot, name) do
+  defp draft(profile, snapshot, name, scope) do
     user = Jason.encode!(%{addressee: name, character_state: snapshot})
 
-    case Writer.write(profile.reflect, @system, user) do
-      {:ok, %{text: text, usage: usage}} -> {:ok, text, writer_metrics(usage)}
+    case Writer.write(profile.reflect, @system, user, scope) do
+      {:ok, %{text: text, tokens: tokens}} -> {:ok, text, writer_metrics(tokens)}
       {:error, reason} -> {:error, {:speech_write_failed, reason}, writer_metrics(nil)}
     end
   end
@@ -103,9 +106,8 @@ defmodule NpcServer.Skills.Speak do
     end
   end
 
-  defp writer_metrics(%{"input_tokens" => input, "output_tokens" => output})
-       when is_integer(input) and input >= 0 and is_integer(output) and output >= 0,
-       do: %{@metrics | request_count: 1, input_tokens: input, output_tokens: output}
+  defp writer_metrics(%{input_tokens: input, output_tokens: output}),
+    do: %{@metrics | request_count: 1, input_tokens: input, output_tokens: output}
 
   defp writer_metrics(_), do: %{@metrics | request_count: 1, usage_complete: false}
 end

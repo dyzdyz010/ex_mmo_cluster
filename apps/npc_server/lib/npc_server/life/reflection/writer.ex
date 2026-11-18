@@ -17,9 +17,9 @@ defmodule NpcServer.Life.Reflection.Writer do
   与 `max_tokens` 都被网关丢掉）。应答的 `content` 第一块总是空的 `thinking`，因此按块的 `type` 取 `text`、不按位置取；
   `stop_reason` 不是 `"end_turn"` 一律算失败。
 
-  本模块不重试、不重问、不打日志：失败原因原样返回（见 `write/3`），由调用方带上 cid 写进日志。
+  本模块发一次请求，模型回执用量由 `NpcServer.ModelUsage` 记录。失败原因交给调用方处理。
   """
-  alias NpcServer.Http
+  alias NpcServer.ModelUsage
 
   # 离线测量与网关核实时请求带的版本（直连上游时必须带；网关不要求）。
   @anthropic_version "2023-06-01"
@@ -34,7 +34,9 @@ defmodule NpcServer.Life.Reflection.Writer do
   写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`，可带 `timeout_ms`
   （单次请求，缺省同 `NpcServer.Http`）与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
 
-  成功返回 `{:ok, %{text: 正文, usage: 应答的 usage 原样}}`，`text` 是全部 `text` 块按次序连起来的原文
+  `scope` 可给出此次写作的 `cid` 与 `operation`，缺省分别为 nil 和 `:write`。
+  成功返回 `{:ok, %{text: 正文, usage: 应答的 usage 原样, tokens: 归一化用量或 nil}}`，
+  `text` 是全部 `text` 块按次序连起来的原文
   （同离线脚本的 `"".join`），不去空白、不做检查。失败返回 `{:error, 原因}`，可直接写进日志：
 
       {:http_status, 状态码, 响应体前 300 字}  非 200
@@ -45,7 +47,7 @@ defmodule NpcServer.Life.Reflection.Writer do
       {:stop_reason, 实际值}                  `stop_reason` 不是 "end_turn"（如 "max_tokens"；缺这个字段为 nil）
       :no_text                                `stop_reason` 是 "end_turn"，但 `content` 里没有 `text` 块
   """
-  def write(config, system, user) do
+  def write(config, system, user, scope \\ %{cid: nil, operation: :write}) do
     endpoint =
       Map.put(config, :headers, [
         {"x-api-key", config.key},
@@ -59,39 +61,39 @@ defmodule NpcServer.Life.Reflection.Writer do
       messages: [%{role: "user", content: user}]
     }
 
-    case send_request(endpoint, body) do
-      {:ok, response} ->
-        read(response)
+    case send_request(endpoint, body, Map.put(scope, :api, :messages)) do
+      {{:ok, response}, tokens} ->
+        read(response, tokens)
 
-      {:error, {status, excerpt}} when is_integer(status) ->
+      {{:error, {status, excerpt}}, _} when is_integer(status) ->
         {:error, {:http_status, status, excerpt}}
 
-      {:error, reason} when reason in [:timeout, :invalid_json] ->
+      {{:error, reason}, _} when reason in [:timeout, :invalid_json] ->
         {:error, reason}
 
-      {:error, reason} ->
+      {{:error, reason}, _} ->
         {:error, {:transport, reason}}
     end
   end
 
   # `Http.request/2` 对 200 但不是 JSON 的响应体用 `Jason.decode!` 直接抛错；改它会改变现有调用方的行为，
   # 所以这里只把这一种异常在本模块的边界变成失败原因，别的异常照常抛出。
-  defp send_request(endpoint, body) do
-    Http.request(endpoint, body)
+  defp send_request(endpoint, body, scope) do
+    ModelUsage.request(endpoint, body, scope)
   rescue
-    Jason.DecodeError -> {:error, :invalid_json}
+    Jason.DecodeError -> {{:error, :invalid_json}, nil}
   end
 
-  defp read(%{"stop_reason" => "end_turn", "content" => blocks} = response)
+  defp read(%{"stop_reason" => "end_turn", "content" => blocks} = response, tokens)
        when is_list(blocks) do
     case for(%{"type" => "text", "text" => text} <- blocks, do: text) do
       [] -> {:error, :no_text}
-      texts -> {:ok, %{text: Enum.join(texts), usage: response["usage"]}}
+      texts -> {:ok, %{text: Enum.join(texts), usage: response["usage"], tokens: tokens}}
     end
   end
 
-  defp read(%{"content" => blocks} = response) when is_list(blocks),
+  defp read(%{"content" => blocks} = response, _tokens) when is_list(blocks),
     do: {:error, {:stop_reason, response["stop_reason"]}}
 
-  defp read(_response), do: {:error, :invalid_response}
+  defp read(_response, _tokens), do: {:error, :invalid_response}
 end

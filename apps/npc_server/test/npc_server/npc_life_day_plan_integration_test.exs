@@ -1,4 +1,5 @@
 Code.require_file("../support/life_fixtures.exs", __DIR__)
+Code.require_file("../support/http_stub.exs", __DIR__)
 
 defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   @moduledoc """
@@ -27,7 +28,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   import ExUnit.CaptureLog
   import NpcServer.LifeFixtures, only: [damage: 4, reflect_profile: 3]
   import NpcServer.ReflectionFixtures, only: [rawobs: 1]
-  alias NpcServer.{Life, NpcWorld, Selector}
+  alias NpcServer.{HttpStub, Life, NpcWorld, Selector}
   alias NpcServer.Life.DayPlan
   alias NpcServer.LifeFixtures.ReflectHindsight
 
@@ -746,6 +747,54 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert %{"kind" => "day"} = plan.row["last"]
   end
 
+  @tag :model_usage
+  @tag timeout: 60_000
+  test "规划和反思通过真实 Writer 按同一角色分别记录模型请求" do
+    Logger.put_module_level(NpcServer.ModelUsage, :info)
+    on_exit(fn -> Logger.delete_module_level(NpcServer.ModelUsage) end)
+    sample = plan_sample("R3-r1")
+    plan_system = plan_request()["system"]
+
+    url =
+      HttpStub.start(fn
+        :post, "/v1/messages", %{"system" => ^plan_system} ->
+          {200,
+           %{
+             "stop_reason" => "end_turn",
+             "content" => [%{"type" => "text", "text" => sample["text"]}]
+           }}
+
+        :post, "/v1/messages", _ ->
+          {429, %{"type" => "error", "error" => %{"type" => "rate_limit_error"}}}
+      end)
+
+    endpoint = %{url: url <> "/v1/messages", key: "test-key", model: "reflect-test"}
+    %{fixture: fixture, cid: cid, life: life} = planning(writer_endpoint: endpoint)
+
+    log =
+      capture_log(fn ->
+        frame(life, @day, sample["now_minute"])
+        await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
+
+        damage(fixture.world, cid, 1, {5, 64, 8})
+
+        NpcWorld.await(fn ->
+          match?(
+            {:ok, %{reflection: %{running: false, error: error}}} when error != nil,
+            Life.observe(cid)
+          )
+        end)
+      end)
+
+    finished =
+      for [_, payload] <- Regex.scan(~r/npc_model_request (\{[^\n]+\})/, log),
+          %{"cid" => ^cid, "event" => "finished"} = event <- [Jason.decode!(payload)],
+          do: {event["operation"], event["status"]}
+
+    assert {"day_plan", "response"} in finished
+    assert {"reflection", "http_error"} in finished
+  end
+
   # 起一个开着规划的 Life（`journaling: false` 时不带写日记接口）：真实 World 与 NpcMemory，Life 的时钟是测试拨动的 Agent。
   # `memory:` 换存储（保存失败的用例用 `RefusingStore`），`activities:` 换候选表（空表即不规划的形态）。
   # 同一用例里起第二个 Life 时用 `fixture:` 共用同一个世界（世界进程是具名的，一个用例只起一个）。
@@ -775,6 +824,12 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       if Keyword.get(opts, :journaling, true),
         do: profile,
         else: Map.drop(profile, [:reflect, :write_journal])
+
+    profile =
+      case Keyword.fetch(opts, :writer_endpoint) do
+        {:ok, endpoint} -> profile |> Map.put(:reflect, endpoint) |> Map.delete(:write_journal)
+        :error -> profile
+      end
 
     life = start_life(cid, profile)
 

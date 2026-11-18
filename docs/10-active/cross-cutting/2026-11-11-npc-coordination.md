@@ -213,6 +213,19 @@ D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次
 
 最后把建筑资格和写作约束纳入 NPC 全套。WSL `mix test --no-start --seed 0` 在新测试库运行完成，616 项通过、19 项排除，见 `.demo/dev-env/logs/test-20261118T050509Z.log`。阶段验证在上面记录的 release 指纹与模型替身范围内。真实模型验证的两份语义原始结果仍按其实际判定。
 
+#### 多人运行的模型用量
+
+本轮先补统一居民的活动选择、采集步间回复选择，以及反思、日计划和主动／回复写作的直接模型用量。`causal-real-01` 的一次选择返回 1976 输入和 102 输出 token；`causal-writer-01` 的写作返回 2 普通输入、3884 缓存写入和 111 输出 token。前者在运行时没有用量记录，后者照旧的技能字段只会看到 2 个输入。三人同场记录还没有 World 轮询成本与队列读数，后续用该场景的真实入口量出重复读取再决定共享边界。
+
+- Jev 选择与 Writer 在共享的模型请求记录处登记开始、结束和上下文。`npc_model_request` 后跟 JSON，可按角色 `cid`、`operation`、`api` 与请求／应答模型归类。一次应用侧请求在同一节点启动期间用 `request_id` 配对，网络应答在业务解析前记用量。HTTP 失败或缺少有效回执时 `usage=null`。结束窗口未配对的请求用量仍未知。事件字段限于请求元数据和计量。日计划槽日志把 Messages 原始输入数标为 `uncached_input_tokens`。
+- 按 OpenTelemetry 的 GenAI 请求与 token 用量惯例记录调用与供应商计量，复用 release 日志出口。TypeSafe System One 的输入／输出取同名计数。Chat Completions 的提示与生成计数已含分项，缓存命中单列。Claude Messages 的总输入按普通、缓存读取和缓存写入三项相加。记录供应商返回的 token 数，货币金额需用实际路由账单核对。 [OpenTelemetry](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-metrics.md) · [TypeSafe System One](https://docs.typesafe.ai/api/system-one) · [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [Claude Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- 先在现有 Writer 回环测试里截断真实响应夹具，验证业务拒绝仍记录缓存用量，再查无用量、超时与取消。Registry 测试经正常登记、真实 Life/Body/Scene/World 和独占 PostgreSQL 触发选择、步间回复与后台写作，模型与 Hindsight 使用现有回环替身。核对请求配对、角色和用途、用量及原有权威结果。WSL 从 `apps/npc_server` 运行 `mix test --no-start` 的直接相关文件，日志写本地 `.demo/dev-env/logs/`；本次用量变更由回环 HTTP 和正式服务端入口验证。
+- 正式 release 日志验证复用三 NPC 同场短场景。每轮独占 World 与 PostgreSQL，0 UE、1 个本轮 QUIC listener、回环 HTTP 上限 24 个连接和 320 个请求。先核对 Windows 与 WSL UDP 基线，轮内复采，收尾按 release、替身、数据库的顺序清理。登记后窗口上限 45 秒。判定器按三名居民的登记身份对账 TypeSafe 替身的每个选择与 Writer 回执，区分缺用量和供应商明确报告的零。其余模型用量边界由上述定向测试验证。
+
+Writer 改前因缺模型事件失败，见 `.demo/dev-env/logs/test-20261118T060731Z.log`。主动发话、步间回复、OpenAI 选择、Life 后台写作和 Speak 缓存总输入共五项改前红、改后绿，见 `test-20261118T061108Z.log` 与 `test-20261118T061321Z.log`。日计划槽日志旧字段的反例在 `test-20261118T061749Z.log`。WSL 上 `mix test --no-start --seed 0` 选择 `npc_{jev,selector,registry,speak,reflection_writer,reflection_round,life,life_day_plan_integration,life_day_plan_round,dialogue_life}_test.exs` 共 135 项通过、4 项排除，见 `test-20261118T062136Z.log`。
+
+`multi-usage01` 的正式原生 release 同场场景通过，三名居民的 6 次选择和 3 次规划均与回环替身的调用流水一一配对。6 次选择缺少用量，3 次规划明确报告零，收尾时 0 个未配对请求。生产源码摘要与关键 BEAM 指纹在 `server-build.json`。UDP 84 → 90 → 88，Tcpip 4266 记录号未变，原生服务、端口及私有库已回收。命令为 `python -B .demo/observe/npc-multi-20261118/run.py live --run multi-usage01 --release /home/dyz/npc-model-usage-20261118/voxim_server`。在对应 `runs/multi-usage01/` 读 `verdict.json`、`model-usage.json` 和 `release.log`。本轮关注三人路径及用量对账，真实模型行为仍待复验。
+
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 
 - **日计划层第 1 步（S1-R8，离线，探索性，不是验收）已跑完、已判定**：计划 `.demo/observe/npc-slice1-20261112/s1r8/plan.md`（发问前写）、判定 `results.md`、脚本 `docs/10-active/cross-cutting/tools/jev/s1r8_plan.py`、执行任务书 `exec-brief.md`。R7 的 6 份真实反思材料 × 3 次 = 18 次规划调用（用量实测合计约 12 万 token，开跑前估约 8 万，偏低）。P1、P2、P4、P5 成立；P3 里占比与 A 类成立、**B 类 27% > 15% 落空**（R2 一份材料三次采样都写了“回来路过小屋看一眼”进 `cannot_yet`，读法有争议）。读法：D-1 的意图形状 `{activity, times, by, why}` + `cannot_yet` 站住，进拆实现；`cannot_yet` 里 64% 是“对某人说话”，印证它是下一层。B 类按发问前规则报用户，统筹会话建议记为词表内容问题、后期处理。

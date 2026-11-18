@@ -789,6 +789,20 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 需 JSON 时用 `NpcServer.Context.plain(map) |> Jason.encode!()`。flush/refresh 立即返回 started/busy/empty，随后用 observe
 等待真实完成；context 在调用者中执行一次网络召回，返回 `{:ok, context}` 或显式错误，Llm 只在自己的请求 worker 中调用。
 
+### 统一居民的模型用量
+
+release 的 `npc_model_request` JSON 事件记录六种直接调用，用 `operation` 区分 `activity_selection`、
+`gather_reply_selection`、`reflection`、`day_plan`、`speak` 和 `gather_reply_write`。按单次节点启动内的
+`node` 与 `request_id` 配对 `started`／`finished`，再按 `cid`、操作和模型归类。下面的命令会提取这些 JSON 事件。
+
+```sh
+rg -o --no-filename 'npc_model_request \{.*\}$' release.log | cut -d' ' -f2-
+```
+
+`finished` 提供请求耗时、响应状态、应答模型和用量。`usage.input_tokens` 含缓存，`usage.output_tokens` 为供应商报告的
+完整输出，缓存分项用于进一步对账。HTTP 成功后被业务拒绝的回执仍计入。`usage=null` 及窗口结束时尚未配对的请求用量未知。
+`Life.observe/1` 的 Hindsight 用量来自 Hindsight 自己的状态接口。各路货币金额以实际路由账单为准。
+
 ### 反思（`Life.Reflection`，内容规范 §10.11、§10.12）
 
 **是什么**：NPC 隔一段时间就自己最近经历的事想一想，给“我的建筑”“有关系的人”“自己”各写一段简短日记，

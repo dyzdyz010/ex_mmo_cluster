@@ -258,4 +258,12 @@ defmodule NpcServer.Jev do
            request.(endpoint, body(endpoint, profile, situation, planned_action)),
          do: {:ok, verdict(response, profile), response}
   end
+
+  @doc "发送选择器的封闭候选请求，记录供应商用量并把原应答交给选择器。"
+  def request_selection(endpoint, body, scope, request) do
+    {result, _usage} =
+      NpcServer.ModelUsage.request(endpoint, body, Map.put(scope, :api, api(endpoint)), request)
+
+    result
+  end
 end

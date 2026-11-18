@@ -7,9 +7,16 @@ defmodule NpcServer.NpcSpeakTest do
   alias NpcServer.{HttpStub, Skills}
   alias NpcServer.Skills.Speak
 
+  @tag :model_usage
   test "drafts once after reaching the selected person and preserves an unknown say result" do
     assert Code.ensure_loaded?(Speak), "说话技能必须可执行"
     {:ok, _} = Application.ensure_all_started(:inets)
+
+    %{"usage" => usage} =
+      "../support/fixtures/reflection/gateway-response.json"
+      |> Path.expand(__DIR__)
+      |> File.read!()
+      |> Jason.decode!()
 
     url =
       HttpStub.start(fn :post, "/v1/messages", _ ->
@@ -17,13 +24,14 @@ defmodule NpcServer.NpcSpeakTest do
          %{
            "stop_reason" => "end_turn",
            "content" => [%{"type" => "text", "text" => "阿乔，早上好。"}],
-           "usage" => %{"input_tokens" => 17, "output_tokens" => 5}
+           "usage" => usage
          }}
       end)
 
     context = %{
       body: self(),
       call_id: 7,
+      actor: %{cid: 11},
       profile: %{
         skills: %{speak: %{module: Speak}},
         reflect: %{url: url <> "/v1/messages", key: "test-key", model: "test", timeout_ms: 1000}
@@ -86,7 +94,8 @@ defmodule NpcServer.NpcSpeakTest do
     refute say_step == travel_step
     send(task.pid, {:outcome, %{id: say_step, status: :rejected, reason: :delivery_unknown}})
 
-    assert {:error, :delivery_unknown, %{request_count: 1, input_tokens: 17, output_tokens: 5}} =
+    assert {:error, :delivery_unknown,
+            %{request_count: 1, input_tokens: 7135, output_tokens: 747}} =
              Task.await(task, 2000)
 
     refute_received {:http_request, _}

@@ -355,7 +355,7 @@ defmodule NpcServer.Runtime do
                  {:ok, question} <-
                    Selector.question(profile, observation, history, state.context) do
               send(parent, {:select_asked, question})
-              Selector.ask(profile, question, trigger)
+              Selector.ask(profile, question, trigger, observation.self.entity_id)
             end
 
           send(parent, {:select_finished, command.id, result})
@@ -570,11 +570,13 @@ defmodule NpcServer.Runtime do
   end
 
   defp choose_reply(profile, observation, history, speech) do
+    cid = observation.self.entity_id
+
     with {:ok, question} <- Selector.gather_reply_question(profile, observation, history, speech),
-         {:ok, choice} <- Selector.ask(profile, question, "gather_reply") do
+         {:ok, choice} <- Selector.ask(profile, question, "gather_reply", cid) do
       case choice.activity do
         "continue" -> :continue
-        "reply" -> Speak.reply(profile, question.state, speech)
+        "reply" -> Speak.reply(profile, question.state, speech, cid)
       end
     end
   end

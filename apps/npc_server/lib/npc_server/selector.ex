@@ -251,15 +251,21 @@ defmodule NpcServer.Selector do
 
   @doc """
   发问一次（在 Runtime 的 worker 里调用，会阻塞到应答或超时）。`profile` 含 `activities`、`jev`（endpoint），
-  可带 `request`（发送函数，缺省 `NpcServer.Http.request/2`）；`question` 是 `question/4` 的结果。
+  可带 `request`（发送函数，缺省 `NpcServer.Http.request/2`）；`question` 是 `question/4` 的结果，`cid` 用于用量归属。
   返回 `{:ok, %{activity:, confidence:, latency_ms:, recall_ms:, trigger:, model:}}`；传输错误原样 `{:error, 原因}`，
   应答不成形 `{:error, :malformed_response}`，top1 不在候选里 `{:error, {:unknown_activity, 选项}}`。
   """
-  def ask(profile, question, trigger) do
+  def ask(profile, question, trigger, cid \\ nil) do
     request = Map.get(profile, :request, &NpcServer.Http.request/2)
     candidates = Map.get(question, :candidates, profile.activities)
+
+    operation =
+      if trigger == "gather_reply", do: :gather_reply_selection, else: :activity_selection
+
+    scope = %{cid: cid, operation: operation, trigger: trigger}
+    body = request_body(profile.jev, candidates, question.state)
     started = System.monotonic_time(:millisecond)
-    result = request.(profile.jev, request_body(profile.jev, candidates, question.state))
+    result = Jev.request_selection(profile.jev, body, scope, request)
     latency = System.monotonic_time(:millisecond) - started
 
     with {:ok, response} <- result,
