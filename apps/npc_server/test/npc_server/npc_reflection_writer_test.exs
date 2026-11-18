@@ -206,11 +206,172 @@ defmodule NpcServer.NpcReflectionWriterTest do
     assert {:error, :no_text} = Writer.write(config, "system", "user")
   end
 
+  # —— `:openai` 入口（chat completions）。夹具 `deepseek-chat-response.json` 是下面 live 冒烟留下的真实 DeepSeek 回执。 ——
+
+  test "openai: sends a chat request with a bearer key and reads the content, not the reasoning" do
+    response = fixture("deepseek-chat-response.json")
+
+    assert %{
+             "choices" => [
+               %{
+                 "finish_reason" => "stop",
+                 "message" => %{"content" => expected, "reasoning_content" => reasoning}
+               }
+             ],
+             "usage" => usage
+           } = Jason.decode!(response)
+
+    assert reasoning != "" and reasoning != expected
+
+    system = fixture("system-prompt.txt")
+    user = fixture("round4-user-Q_place.txt")
+    config = chat_server(fn :post, "/chat/completions", _ -> {200, response} end)
+
+    log =
+      capture_log([level: :info], fn ->
+        assert {:ok, %{text: ^expected, usage: ^usage, tokens: tokens}} =
+                 Writer.write(config, system, user, %{cid: 37, operation: :reflection})
+
+        assert %{input_tokens: 3931, output_tokens: 1042, cache_read_input_tokens: 0} = tokens
+      end)
+
+    assert [
+             %{"event" => "started", "api" => "openai", "request_model" => "deepseek-flash"},
+             %{
+               "event" => "finished",
+               "status" => "response",
+               "response_model" => "deepseek-flash"
+             }
+           ] = model_events(log, "deepseek-flash")
+
+    refute log =~ "deepseek-test-key"
+
+    assert [%{headers: headers, body: body}] = HttpStub.requests(1)
+    assert headers["authorization"] == "Bearer deepseek-test-key"
+    refute Map.has_key?(headers, "x-api-key")
+
+    assert body == %{
+             "model" => "deepseek-flash",
+             "max_tokens" => 8192,
+             "reasoning_effort" => "medium",
+             "messages" => [
+               %{"role" => "system", "content" => system},
+               %{"role" => "user", "content" => user}
+             ]
+           }
+  end
+
+  test "openai: a finish_reason other than stop fails with the actual value, usage still recorded" do
+    truncated =
+      fixture("deepseek-chat-response.json")
+      |> Jason.decode!()
+      |> put_in(["choices", Access.at(0), "finish_reason"], "length")
+
+    config = chat_server(fn :post, _, _ -> {200, truncated} end)
+
+    log =
+      capture_log([level: :info], fn ->
+        assert {:error, {:finish_reason, "length"}} = Writer.write(config, "system", "user")
+      end)
+
+    assert [_, %{"status" => "response", "usage" => %{"output_tokens" => 1042}}] =
+             model_events(log, "deepseek-flash")
+  end
+
+  test "openai: a stop answer with empty content fails as no_text" do
+    empty =
+      fixture("deepseek-chat-response.json")
+      |> Jason.decode!()
+      |> put_in(["choices", Access.at(0), "message", "content"], "")
+
+    config = chat_server(fn :post, _, _ -> {200, empty} end)
+    assert {:error, :no_text} = Writer.write(config, "system", "user")
+  end
+
+  test "openai: a JSON answer without choices is not a chat response" do
+    config = chat_server(fn :post, _, _ -> {200, %{"object" => "error"}} end)
+    assert {:error, :invalid_response} = Writer.write(config, "system", "user")
+  end
+
+  # 真实 OpenAI 兼容写作端点（2026-11-18 起部署统一用 DeepSeek）的一次冒烟。只在显式 `--only live_reflect_openai`
+  # 且环境里写了 `NPC_REFLECT_API=openai` 与 `NPC_REFLECT_URL/_KEY/_MODEL` 时跑。
+  # Writer 照常把请求发给本机替身；替身把产品构造的请求体原样转发到真实端点（鉴权只在这里加），回执原样交回 Writer。
+  # 这样一次真实请求同时验证：产品请求体被供应商接受、`finish_reason` 是 `stop`（不是 `length` 截断）、正文按产品读法取得到。
+  # 给了 `NPC_LIVE_CAPTURE` 时把回执（解码后重新编码的 JSON，不含凭据）写到该路径，作 chat 形状单元用例的夹具来源。
+  # 材料用 S1-X2 真实发过的系统提示词与第 4 轮用户消息（与 `gateway-response.json` 同一份）。
+  # 真实模型用例挂 `:live_llm`（test_helper 缺省排除）。
+  @tag :live_llm
+  @tag :live_reflect_openai
+  @tag timeout: 180_000
+  test "the real OpenAI-compatible writer endpoint writes one journal entry through the product request" do
+    if System.get_env("NPC_REFLECT_API") != "openai" do
+      flunk("live: 需要 NPC_REFLECT_API=openai 与 NPC_REFLECT_URL / _KEY / _MODEL")
+    end
+
+    upstream = %{
+      url: System.fetch_env!("NPC_REFLECT_URL"),
+      key: System.fetch_env!("NPC_REFLECT_KEY"),
+      timeout_ms: 150_000
+    }
+
+    capture = System.get_env("NPC_LIVE_CAPTURE")
+
+    forward = fn :post, _path, body ->
+      case NpcServer.Http.request(upstream, body) do
+        {:ok, response} ->
+          if capture, do: File.write!(capture, Jason.encode!(response, pretty: true))
+          {200, response}
+
+        {:error, {status, excerpt}} when is_integer(status) ->
+          {status, excerpt}
+      end
+    end
+
+    config = %{
+      api: :openai,
+      url: HttpStub.start(forward) <> "/chat/completions",
+      key: "local-forwarder",
+      model: System.fetch_env!("NPC_REFLECT_MODEL"),
+      reasoning_effort: System.get_env("NPC_REFLECT_EFFORT", "medium"),
+      timeout_ms: 160_000
+    }
+
+    started = System.monotonic_time(:millisecond)
+
+    result =
+      Writer.write(config, fixture("system-prompt.txt"), fixture("round4-user-Q_place.txt"), %{
+        cid: nil,
+        operation: :live_smoke
+      })
+
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert [%{body: body}] = HttpStub.requests(1)
+
+    IO.puts(
+      "live_reflect openai model=#{config.model} effort=#{config.reasoning_effort} " <>
+        "elapsed_ms=#{elapsed} request_keys=#{inspect(Map.keys(body) |> Enum.sort())} " <>
+        "result=#{inspect(result, limit: 6, printable_limit: 160)}"
+    )
+
+    assert {:ok, %{text: text, tokens: %{input_tokens: _, output_tokens: _}}} = result
+    assert String.length(text) > 40
+  end
+
   defp server(handler),
     do: %{
       url: HttpStub.start(handler) <> "/v1/messages",
       key: "test-key",
       model: "claude/claude-sonnet-5-5",
+      timeout_ms: 1000
+    }
+
+  defp chat_server(handler),
+    do: %{
+      api: :openai,
+      url: HttpStub.start(handler) <> "/chat/completions",
+      key: "deepseek-test-key",
+      model: "deepseek-flash",
+      reasoning_effort: "medium",
       timeout_ms: 1000
     }
 
@@ -223,10 +384,10 @@ defmodule NpcServer.NpcReflectionWriterTest do
     end
   end
 
-  defp model_events(log) do
+  defp model_events(log, model \\ "claude/claude-sonnet-5-5") do
     for [_, json] <- Regex.scan(~r/npc_model_request (\{[^\n]+\})/, log),
         event = Jason.decode!(json),
-        event["request_model"] == "claude/claude-sonnet-5-5",
+        event["request_model"] == model,
         do: event
   end
 end

@@ -18,6 +18,15 @@ defmodule NpcServer.Life.Reflection.Writer do
   `stop_reason` 不是 `"end_turn"` 一律算失败。
 
   本模块发一次请求，模型回执用量由 `NpcServer.ModelUsage` 记录。失败原因交给调用方处理。
+
+  ## 两种入口形状（`config.api`）
+
+  - `:messages`（缺省）：上面的 Anthropic Messages 形状。
+  - `:openai`（OpenAI 兼容 chat completions；2026-11-18 起部署统一用 DeepSeek `deepseek-flash`）：
+    `authorization: Bearer <key>`（`NpcServer.Http` 的缺省头），请求体
+    `{"model", "max_tokens", "messages": [system, user]}`，`config.reasoning_effort` 给了就随请求发。
+    应答取 `choices[0].message.content`（DeepSeek 的思考在另一个字段 `reasoning_content`，不取）；
+    `finish_reason` 不是 `"stop"` 一律算失败。发送与用量记录同 Jev 的 `:openai` 入口，经同一个 `NpcServer.ModelUsage.request/4`。
   """
   alias NpcServer.ModelUsage
 
@@ -30,8 +39,14 @@ defmodule NpcServer.Life.Reflection.Writer do
   # 换到会执行这个参数（或思考参数）的入口时，必须重测写作。
   @max_tokens 2000
 
+  # `:openai` 入口的 `max_tokens`：DeepSeek 会执行这个参数，且它管“思考 + 正文”的总量（DeepSeek Chat Completions
+  # 文档；思考模式缺省开、`medium` 映射为 `high`）。日记正文约 300–800 token，思考量未测；8192 与 Jev 的 `:openai`
+  # 入口同量级、远大于正文，用尽时以 `{:finish_reason, "length"}` 显式失败而不是截半句。实测后再调（2026-11-18 起）。
+  @openai_max_tokens 8192
+
   @doc """
-  写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`，可带 `timeout_ms`
+  写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`（`:messages` 形状），
+  或 `%{api: :openai, url: 完整的 chat completions 地址, key:, model:, reasoning_effort: 可选}`，可带 `timeout_ms`
   （单次请求，缺省同 `NpcServer.Http`）与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
 
   `scope` 可给出此次写作的 `cid` 与 `operation`，缺省分别为 nil 和 `:write`。
@@ -43,11 +58,32 @@ defmodule NpcServer.Life.Reflection.Writer do
       :timeout                                请求超时
       {:transport, 原因}                      连接等传输错误（`:httpc` 的原因原样）
       :invalid_json                           200 但响应体不是 JSON
-      :invalid_response                       是 JSON 但没有 `content` 列表（不是 Messages 应答的形状）
-      {:stop_reason, 实际值}                  `stop_reason` 不是 "end_turn"（如 "max_tokens"；缺这个字段为 nil）
-      :no_text                                `stop_reason` 是 "end_turn"，但 `content` 里没有 `text` 块
+      :invalid_response                       是 JSON 但不是该形状的应答（Messages 没有 `content` 列表；chat 没有 `choices`）
+      {:stop_reason, 实际值}                  Messages：`stop_reason` 不是 "end_turn"（如 "max_tokens"；缺这个字段为 nil）
+      {:finish_reason, 实际值}                chat：`finish_reason` 不是 "stop"（如 "length" = `max_tokens` 用尽）
+      :no_text                                正常结束，但没有正文（Messages 没有 `text` 块；chat 的 `content` 为空）
   """
-  def write(config, system, user, scope \\ %{cid: nil, operation: :write}) do
+  def write(config, system, user, scope \\ %{cid: nil, operation: :write})
+
+  def write(%{api: :openai} = config, system, user, scope) do
+    body = %{
+      model: config.model,
+      max_tokens: @openai_max_tokens,
+      messages: [%{role: "system", content: system}, %{role: "user", content: user}]
+    }
+
+    body =
+      case Map.get(config, :reasoning_effort) do
+        nil -> body
+        effort -> Map.put(body, :reasoning_effort, to_string(effort))
+      end
+
+    config
+    |> send_request(body, Map.put(scope, :api, :openai))
+    |> answer(&read_chat/2)
+  end
+
+  def write(config, system, user, scope) do
     endpoint =
       Map.put(config, :headers, [
         {"x-api-key", config.key},
@@ -61,9 +97,16 @@ defmodule NpcServer.Life.Reflection.Writer do
       messages: [%{role: "user", content: user}]
     }
 
-    case send_request(endpoint, body, Map.put(scope, :api, :messages)) do
+    endpoint
+    |> send_request(body, Map.put(scope, :api, :messages))
+    |> answer(&read/2)
+  end
+
+  # 两种形状共用的失败归类；成功应答交给各自的读法。
+  defp answer(sent, read) do
+    case sent do
       {{:ok, response}, tokens} ->
-        read(response, tokens)
+        read.(response, tokens)
 
       {{:error, {status, excerpt}}, _} when is_integer(status) ->
         {:error, {:http_status, status, excerpt}}
@@ -96,4 +139,19 @@ defmodule NpcServer.Life.Reflection.Writer do
     do: {:error, {:stop_reason, response["stop_reason"]}}
 
   defp read(_response, _tokens), do: {:error, :invalid_response}
+
+  defp read_chat(%{"choices" => [%{"finish_reason" => "stop"} = choice | _]} = response, tokens) do
+    case get_in(choice, ["message", "content"]) do
+      text when is_binary(text) and text != "" ->
+        {:ok, %{text: text, usage: response["usage"], tokens: tokens}}
+
+      _ ->
+        {:error, :no_text}
+    end
+  end
+
+  defp read_chat(%{"choices" => [choice | _]}, _tokens) when is_map(choice),
+    do: {:error, {:finish_reason, choice["finish_reason"]}}
+
+  defp read_chat(_response, _tokens), do: {:error, :invalid_response}
 end

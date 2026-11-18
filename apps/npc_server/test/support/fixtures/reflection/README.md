@@ -14,6 +14,7 @@
 | `round{1,4}-user-Q_place.txt` | `s1x2/rounds/{1,4}/user-Q_place.txt` | 原样复制（真实发出的用户消息） |
 | `round4-before.json` | `s1x2/rounds/4/before.json` | 三个问题各自之前的日记正文（`journal`） |
 | `gateway-response.json` | `s1x3/gateway/resp-a-repro.json`（网关核实时的一次真实响应，请求见同目录 `req-a-repro.json`） | 原样复制（content 第一块是空的 `thinking`，第二块是 `text`；`stop_reason` 为 `end_turn`） |
+| `deepseek-chat-response.json` | 本仓 `.demo/dev-env/logs/live-reflect-openai-response-20261118T120413Z.json`（`npc_reflection_writer_test.exs` 的 `live_reflect_openai` 冒烟：产品 Writer 以 `system-prompt.txt` + `round4-user-Q_place.txt` 经本机转发打到真实 DeepSeek `deepseek-flash`、effort medium 的一次回执） | 原样复制（`Http.request/2` 解码后重新编码的 JSON，不含凭据；`finish_reason` 为 `stop`，`message` 有 `content` 与 `reasoning_content`） |
 | `round{1,4}-rawobs.txt` | `s1t/export/rawobs/`（`s1x2/rounds/{1,4}/plan.json` 的 `rawobs`：离线“此刻”的日号与身体一句取自它） | 原样复制（`inspect` 出的 Elixir 字面量，测试里 `Code.eval_string` 还原成观察） |
 | `round4-recalled-Q_place.json` | `s1x2/rounds/4/materials-Q_place.json` | 只留两次召回的各条（`kind` 为 `raw` / `observation`），每条留 `kind`、`id`、`at`、`type`、`tags`、原文 `text` 与离线渲染的 `body`，原次序 |
 | `s1z/<时刻>-{built,round1,round3,round4-aborted,round5}-reflection.json` | `s1z/export/rows/<时刻>-<时点>-row.json`（S1-Z 真实服务端实跑各时点的 Life 持久行全文） | 只取 `"reflection"` 对象，删去 `"new"`、`"trigger"`、`"counts"`；`"round"` 与 `"latest"` 原样，不改任何值（R4 新栏的取法用） |

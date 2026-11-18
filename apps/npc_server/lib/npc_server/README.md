@@ -281,8 +281,8 @@ NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain
 # TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）；写 NPC_JEV_API=openai 时改取 NPC_JEV_URL
 # （完整 chat completions 地址）/ NPC_JEV_KEY / NPC_JEV_MODEL，可选 NPC_JEV_EFFORT（缺省 medium）。必带 Life：Hindsight 地址取运行环境 NPC_LIFE_HINDSIGHT_URL
 # （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。选择本身不用 LLM 接口；Life 的反思写日记要一个，
-# 同样不入库：每次解析取运行环境 NPC_REFLECT_URL（完整的 …/v1/messages 地址）/ NPC_REFLECT_KEY / NPC_REFLECT_MODEL（必须，
-# 缺一个登记即 raise；用途与请求形状见下文“反思”）。
+# 同样不入库：每次解析取运行环境 NPC_REFLECT_URL / NPC_REFLECT_KEY / NPC_REFLECT_MODEL（必须，缺一个登记即 raise）；
+# 形状缺省 Anthropic Messages（完整的 …/v1/messages 地址），写 NPC_REFLECT_API=openai 为 chat completions（部署现用 DeepSeek；见下文“反思”）。
 NpcServer.Registry.put("阿林", %{scene_id: 1, spawn: {22.5, 520.0, 34.5}, brain: "npc",
   params: %{
     "who" => "Lin, a builder",
@@ -854,8 +854,11 @@ flowchart LR
 - **观察与操作**：手动起一轮 `NpcServer.Life.reflect(cid)`（形状同 `flush/1`）；`Life.observe(cid)` 的 `reflection` 给出槽在不在途、
   触发状态、新经历条数、各问最新一条、最近一轮、计数、此刻新栏里的那一句（`thought`，同 `Life.mind/2` 交给 Mind 的）与最近一次失败原因；日志一律 `npc_reflect cid=<cid> …`，日记正文不进日志。
 - **写作接口（环境变量）**：同 Jev，不入库，每次解析 `"npc"` 登记时取运行环境 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）、
-  `NPC_REFLECT_KEY`、`NPC_REFLECT_MODEL`，三个都必填，缺一个时解析即 raise（`Registry.put/2` 回 `{:error, {:invalid_params, …}}`，不登记）。请求是 Anthropic Messages 形状
-  （`POST`，头 `x-api-key` 与 `anthropic-version`，不带思考参数），细节见 [`life/reflection/writer.ex`](life/reflection/writer.ex) 的 moduledoc。
+  `NPC_REFLECT_KEY`、`NPC_REFLECT_MODEL`，三个都必填，缺一个时解析即 raise（`Registry.put/2` 回 `{:error, {:invalid_params, …}}`，不登记）。请求缺省是 Anthropic Messages 形状
+  （`POST`，头 `x-api-key` 与 `anthropic-version`，不带思考参数）；写 `NPC_REFLECT_API=openai` 时改为 OpenAI 兼容 chat completions
+  （URL 是完整的 chat completions 地址，Bearer 鉴权，可选 `NPC_REFLECT_EFFORT` 缺省 `medium`，`finish_reason` 不是 `stop` 显式失败），
+  认不出的值登记即拒绝。2026-11-18 起部署统一用 DeepSeek `deepseek-flash`（与选择位置同一端点、同一把 key），
+  真实冒烟 `--only live_reflect_openai`：一篇日记约 10 秒、3931 入 / 1042 出（思考 836）。细节见 [`life/reflection/writer.ex`](life/reflection/writer.ex) 的 moduledoc。
   这三个变量**还没有配进任何部署环境**（生产现在 NPC `enabled=0`）；启用 `"npc"` 登记之前要先补上。
 - **当前状态**（2026-11-14）：实现分 R1 纯函数核心、R2 写作与存档两个出口、R3 接进 Life 三步（R 编号是内容规范 §10.12 的实现拆分），
   三步都已实现、已测试、已评审；R3 做过一次真实服务端短实跑 S1-Z（只起 NPC 的真实服务端跑五轮反思，判定见内容规范 §10.12 末尾的进度），

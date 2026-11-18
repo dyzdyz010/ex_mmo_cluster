@@ -221,7 +221,9 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 同日用户定模型统一用 DeepSeek（`deepseek-flash` = DeepSeek-V4.1-Flash-1017）：主检出 `.env` 已写 `NPC_JEV_*` 与 `NPC_REFLECT_*`
 （同一端点、同一把 key）；Hindsight 容器以同镜像、同卷重建为 `npc-s1g-hindsight-20261118`（`openai` provider → DeepSeek），旧容器只停未删。
-写作位置的 `NPC_REFLECT_API=openai` 入口尚待实现。薄片四（四张人格卡、真实模型）计划与驱动在本地 `.demo/observe/npc-slice4-20261118/`，用量已由用户确认。
+写作位置已加 `NPC_REFLECT_API=openai` 入口（Writer 按 `api` 分形状，发送与用量仍走 `ModelUsage.request/4`）。两条真实冒烟各一次请求通过：
+选择 2.2 s、205 入 / 99 出；写作一篇日记 10 s、3931 入 / 1042 出（思考 836），均 `finish_reason=stop`（`.demo/dev-env/logs/test-20261118T120413Z-live-deepseek.log`）。
+chat 形状单元用例的夹具取自这次真实回执；改前红 `test-20261118T120600Z-writer-openai-red.log`，改后绿 `test-20261118T121000Z-writer-openai-green.log`。薄片四（四张人格卡、真实模型）计划与驱动在本地 `.demo/observe/npc-slice4-20261118/`，用量已由用户确认。
 
 #### 三 NPC 同场与交互／后台召回
 

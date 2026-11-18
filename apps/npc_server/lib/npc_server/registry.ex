@@ -13,7 +13,7 @@ defmodule NpcServer.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：缺省取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须）；写 `NPC_JEV_API=openai` 时改取 `NPC_JEV_URL`（完整 chat completions 地址，如 `https://api.deepseek.com/v1/chat/completions`）/ `NPC_JEV_KEY` / `NPC_JEV_MODEL`（如 `deepseek-flash`，显示名 "DeepSeek V4.1 Flash"），可选 `NPC_JEV_EFFORT`（缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`——这条只服务选择位置，中断策略仍用 `:answers` 形状。反思写日记的 endpoint（profile 的 `reflect`，`Life.Reflection.Writer`）同样不入库，取 `NPC_REFLECT_URL`（完整的 `/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须） |
+  | `"npc"` | `Brain.Tree` + `Trees.npc/1` + `Life` | 统一形态（控制链“选择 → 执行”加心智与记忆，见下）：`who`、`persona`、`activities`、`tools`（必填）；必带 Life（规则模式），`life` 省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`，不能是 `false`。Jev 的 endpoint 不入库：缺省取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须）；写 `NPC_JEV_API=openai` 时改取 `NPC_JEV_URL`（完整 chat completions 地址，如 `https://api.deepseek.com/v1/chat/completions`）/ `NPC_JEV_KEY` / `NPC_JEV_MODEL`（如 `deepseek-flash`，显示名 "DeepSeek V4.1 Flash"），可选 `NPC_JEV_EFFORT`（缺省 `medium`）与 `NPC_JEV_MAX_TOKENS`——这条只服务选择位置，中断策略仍用 `:answers` 形状。写作 endpoint（profile 的 `reflect`，`Life.Reflection.Writer`：反思、日计划、说话共用）同样不入库，取 `NPC_REFLECT_URL` / `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须）；缺省 Anthropic Messages（完整的 `/v1/messages` 地址），写 `NPC_REFLECT_API=openai` 为 chat completions（可选 `NPC_REFLECT_EFFORT`，缺省 `medium`；部署 2026-11-18 起统一用 DeepSeek） |
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
@@ -185,12 +185,8 @@ defmodule NpcServer.Registry do
         end)
         |> Map.put(:speak, %{}),
       jev: jev_endpoint(),
-      # 反思写日记的接口（`NpcServer.Life.Reflection.Writer`，Anthropic Messages 形状）：同 Jev，不入库，每次解析时取运行环境。
-      reflect: %{
-        url: System.fetch_env!("NPC_REFLECT_URL"),
-        key: System.fetch_env!("NPC_REFLECT_KEY"),
-        model: System.fetch_env!("NPC_REFLECT_MODEL")
-      }
+      # 写作接口（`NpcServer.Life.Reflection.Writer`：反思、日计划、说话共用）：同 Jev，不入库，每次解析时取运行环境。
+      reflect: reflect_endpoint()
     }
 
     # 建树即校验：能力名与节点形状（与 Body 起树同一个函数）。
@@ -416,6 +412,38 @@ defmodule NpcServer.Registry do
   #
   #     只有选择位置用它；中断策略拿到这种应答按“拿不准”继续（见 `NpcServer.Jev` 的 moduledoc）。
   #     写了未知值属于配置错误：明确拒绝并说清合法值，不静默退回 TypeSafe。
+  # 写作位置（反思、日计划、说话，`NpcServer.Life.Reflection.Writer`）的 endpoint：不入库，每次解析时取运行环境
+  # `NPC_REFLECT_URL` / `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（必须）。形状由 `NPC_REFLECT_API` 选：
+  #
+  #   - 不写或写 `messages`：Anthropic Messages（URL 是完整的 `…/v1/messages`）。
+  #   - 写 `openai`：OpenAI 兼容 chat completions（URL 是完整的 chat completions 地址，部署自 2026-11-18 起统一用
+  #     DeepSeek `https://api.deepseek.com/chat/completions` + `deepseek-flash`）；可选 `NPC_REFLECT_EFFORT`（缺省 `medium`，
+  #     DeepSeek 的档位映射见上面 `jev_endpoint/0` 的说明）。
+  #
+  # 写了未知值是配置错误：明确拒绝并说清合法值，不静默退回 Messages。
+  defp reflect_endpoint do
+    endpoint = %{
+      url: System.fetch_env!("NPC_REFLECT_URL"),
+      key: System.fetch_env!("NPC_REFLECT_KEY"),
+      model: System.fetch_env!("NPC_REFLECT_MODEL")
+    }
+
+    case System.get_env("NPC_REFLECT_API") do
+      api when api in [nil, "messages"] ->
+        endpoint
+
+      "openai" ->
+        Map.merge(endpoint, %{
+          api: :openai,
+          reasoning_effort: System.get_env("NPC_REFLECT_EFFORT", "medium")
+        })
+
+      other ->
+        raise ArgumentError,
+              "NPC_REFLECT_API=#{inspect(other)} is not supported; use \"messages\" (default) or \"openai\""
+    end
+  end
+
   defp jev_endpoint do
     case System.get_env("NPC_JEV_API") do
       nil ->

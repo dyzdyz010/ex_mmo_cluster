@@ -46,7 +46,10 @@ defmodule NpcServer.NpcRegistryTest do
            |> Map.merge(%{
              "NPC_REFLECT_URL" => "http://127.0.0.1:9/v1/messages",
              "NPC_REFLECT_KEY" => "test-key",
-             "NPC_REFLECT_MODEL" => "reflect-test"
+             "NPC_REFLECT_MODEL" => "reflect-test",
+             # 写作入口形状不写：Messages（缺省）。显式钉住，免得进程环境里的值串进来。
+             "NPC_REFLECT_API" => nil,
+             "NPC_REFLECT_EFFORT" => nil
            })
   @npc %{
     "who" => "Lin, a builder",
@@ -485,6 +488,44 @@ defmodule NpcServer.NpcRegistryTest do
           fn -> NpcRegistry.brain("llm", %{"goal" => "g", "tools" => %{}}) end,
           :no_url
         )
+      end)
+    end
+
+    # 写作位置（反思、日计划、说话）的入口形状由 `NPC_REFLECT_API` 选：不写是 Messages（`api` 键不存在），
+    # 写 `openai` 是 chat completions（2026-11-18 起部署统一用 DeepSeek）；认不出的值明确拒绝。
+    test "npc: NPC_REFLECT_API=openai builds the chat writer endpoint; without it Messages stays" do
+      with_env(@npc_env, fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        refute Map.has_key?(profile.reflect, :api)
+      end)
+
+      openai =
+        Map.merge(@npc_env, %{
+          "NPC_REFLECT_API" => "openai",
+          "NPC_REFLECT_URL" => "https://api.deepseek.com/chat/completions",
+          "NPC_REFLECT_KEY" => "deepseek-test",
+          "NPC_REFLECT_MODEL" => "deepseek-flash"
+        })
+
+      with_env(openai, fn ->
+        assert {Brain.Tree, %{reflect: reflect}} = NpcRegistry.brain("npc", @npc)
+
+        assert reflect == %{
+                 api: :openai,
+                 url: "https://api.deepseek.com/chat/completions",
+                 key: "deepseek-test",
+                 model: "deepseek-flash",
+                 reasoning_effort: "medium"
+               }
+      end)
+
+      with_env(Map.put(openai, "NPC_REFLECT_EFFORT", "low"), fn ->
+        assert {Brain.Tree, %{reflect: %{reasoning_effort: "low"}}} =
+                 NpcRegistry.brain("npc", @npc)
+      end)
+
+      with_env(Map.put(openai, "NPC_REFLECT_API", "anthropic"), fn ->
+        assert_raise ArgumentError, ~r/NPC_REFLECT_API/, fn -> NpcRegistry.brain("npc", @npc) end
       end)
     end
 
