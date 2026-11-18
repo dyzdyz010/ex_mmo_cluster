@@ -814,7 +814,7 @@ defmodule NpcServer.NpcMindTest do
 
     jev = %{
       url: System.fetch_env!("TYPESAFE_API_URL"),
-      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      key: NpcServer.Secret.wrap(System.fetch_env!("TYPESAFE_API_KEY")),
       model: System.fetch_env!("TYPESAFE_MODEL"),
       timeout_ms: 10_000
     }

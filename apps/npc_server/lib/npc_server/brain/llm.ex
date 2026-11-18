@@ -22,7 +22,7 @@ defmodule NpcServer.Brain.Llm do
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
-        endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
+        endpoint: %{url:, key:（`NpcServer.Secret`）, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
         groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选（正整数 / :infinity），
         cadence: 可选（:automatic / :manual，缺省 :automatic），
         spells: 可选（作者法术带 %{名字 => 程序字节}，非空时投影 cast_spell / cancel_cast；见 Abilities）}

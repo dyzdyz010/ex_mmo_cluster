@@ -51,7 +51,7 @@ defmodule NpcServer.Registry do
   """
   require Logger
   alias DataService.NpcSpecs
-  alias NpcServer.{Abilities, Body, Brain, Persona, Trees}
+  alias NpcServer.{Abilities, Body, Brain, Persona, Secret, Trees}
 
   @names NpcServer.Names
   # 注册表可登记的技能：build / gather / expand / travel 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
@@ -372,6 +372,9 @@ defmodule NpcServer.Registry do
   defp running(cid),
     do: for({pid, _} <- Registry.lookup(@names, cid), Process.alive?(pid), do: pid)
 
+  # 模型 endpoint 的 key（本函数与下面的 Jev / 写作 endpoint 同理）一律经 `secret_env!/1` 读入：读运行环境的信任边界
+  # 只在这里，校验一次后包成 `NpcServer.Secret`，之后随 profile 流转时不以原文出现在进程状态与崩溃报告里；
+  # 只有 `NpcServer.Http.request/2` 拼请求头时取出。
   defp endpoint do
     optional =
       for {key, env} <- [effort: "NPC_LLM_EFFORT", cacertfile: "NPC_LLM_CACERTFILE"],
@@ -389,7 +392,7 @@ defmodule NpcServer.Registry do
     Map.merge(
       %{
         url: System.fetch_env!("NPC_LLM_URL"),
-        key: System.fetch_env!("NPC_LLM_KEY"),
+        key: secret_env!("NPC_LLM_KEY"),
         model: System.fetch_env!("NPC_LLM_MODEL")
       },
       Map.merge(optional, timeout)
@@ -425,7 +428,7 @@ defmodule NpcServer.Registry do
   defp reflect_endpoint do
     endpoint = %{
       url: System.fetch_env!("NPC_REFLECT_URL"),
-      key: System.fetch_env!("NPC_REFLECT_KEY"),
+      key: secret_env!("NPC_REFLECT_KEY"),
       model: System.fetch_env!("NPC_REFLECT_MODEL")
     }
 
@@ -457,7 +460,7 @@ defmodule NpcServer.Registry do
         endpoint = %{
           api: :openai,
           url: System.fetch_env!("NPC_JEV_URL"),
-          key: System.fetch_env!("NPC_JEV_KEY"),
+          key: secret_env!("NPC_JEV_KEY"),
           model: System.fetch_env!("NPC_JEV_MODEL"),
           reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
           # 不写就不带这个键：缺省值只在 `NpcServer.Jev`（`@openai_max_tokens`）定义一次。
@@ -508,11 +511,49 @@ defmodule NpcServer.Registry do
   defp typesafe_endpoint do
     %{
       url: System.fetch_env!("TYPESAFE_API_URL"),
-      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      key: secret_env!("TYPESAFE_API_KEY"),
       model: System.fetch_env!("TYPESAFE_MODEL"),
       timeout_ms: @jev_timeout_ms,
       lane: :interactive
     }
+  end
+
+  # 读一个模型 key：它只用作 HTTP 请求头的值（`NpcServer.Http`），所以在这里按 RFC 9110 §5.5 校验一次再包成
+  # `NpcServer.Secret`。§5.5 原文：“Field values containing CR, LF, or NUL characters are invalid and dangerous, due to
+  # the varying ways that implementations might parse and interpret those characters”；“Field values containing other
+  # CTL characters are also invalid”；“A field value does not include leading or trailing whitespace.”
+  # 字段内容的 ABNF 允许中间出现 SP 与 HTAB（`field-content = field-vchar [ 1*( SP / HTAB / field-vchar ) field-vchar ]`），
+  # 所以中间的 HTAB 不算控制字符。
+  #
+  # 有意比 RFC 严格：RFC 的 `field-vchar = VCHAR / obs-text` 允许 obs-text（0x80–0xFF），而 Mint HTTP/1 只收
+  # 33..126、SP、HTAB（mint 1.11.0 `http1/parse.ex` 的 `is_vchar/1`、`http1/request.ex` 的 `validate_header_value!/2`）。
+  # 这里取两者的交集：首尾 0x21–0x7E，中间 0x20–0x7E 与 HTAB，且不为空——NBSP、零宽空格、全角字符这类从网页或
+  # 文档复制 key 时带进来的字节在登记时就被拒，而不是等到发请求时才失败。
+  # 不合法时显式失败、不静默 trim（Windows 编辑的 .env 留下的 CRLF 就是这一类）；原值不进错误也不进日志。
+  defp secret_env!(name) do
+    value = System.fetch_env!(name)
+
+    problem =
+      cond do
+        value == "" ->
+          "为空"
+
+        Regex.match?(~r/[\x00-\x08\x0A-\x1F\x7F]/, value) ->
+          "含控制字符（RFC 9110 §5.5 不许 CR / LF / NUL 等 CTL）"
+
+        Regex.match?(~r/[\x80-\xFF]/, value) ->
+          "含非 ASCII 字节（如 NBSP、零宽空格、全角字符；比 RFC 严格，与 Mint HTTP/1 一致）"
+
+        Regex.match?(~r/\A[ \t]|[ \t]\z/, value) ->
+          "首尾空白（RFC 9110 §5.5 字段值不含首尾空白；不自动去掉）"
+
+        true ->
+          nil
+      end
+
+    if problem,
+      do: raise(ArgumentError, "#{name} 不是合法的 HTTP 头值：#{problem}；原值不回显"),
+      else: Secret.wrap(value)
   end
 
   # 组名只取本 profile 的条目里出现的组（如没授予创世就没有 :genesis）；nil = 全部组。

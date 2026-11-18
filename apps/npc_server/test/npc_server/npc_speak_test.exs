@@ -33,7 +33,12 @@ defmodule NpcServer.NpcSpeakTest do
       actor: %{cid: 11},
       profile: %{
         skills: %{speak: %{module: Speak}},
-        reflect: %{url: url <> "/v1/messages", key: "test-key", model: "test", timeout_ms: 1000}
+        reflect: %{
+          url: url <> "/v1/messages",
+          key: NpcServer.Secret.wrap("test-key"),
+          model: "test",
+          timeout_ms: 1000
+        }
       },
       observation: %{self: %{position: {0.0, 65.0, 0.0}}},
       movement_profile: %{half_height: 0.9},

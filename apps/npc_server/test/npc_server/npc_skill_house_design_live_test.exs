@@ -132,7 +132,7 @@ defmodule NpcServer.NpcSkillDesignLiveTest do
 
     endpoint = %{
       url: System.fetch_env!("NPC_LLM_URL"),
-      key: System.fetch_env!("NPC_LLM_KEY"),
+      key: NpcServer.Secret.wrap(System.fetch_env!("NPC_LLM_KEY")),
       model: "gpt-5.6-terra",
       effort: "high"
     }

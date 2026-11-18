@@ -24,7 +24,8 @@
   `Perception`（look / survey / inspect / query_balances / read_catalog，另有范围校验、World 只读入口与模型投影；prefab 目录行只在
   `prefab_row/3` 计算；步行判据 `walk_kind/1` 与列扫描 `floors/2` 也只在这里，Body 的寻路网格、survey、travel、expand 共用）、`Attention`（观察方向与敌／友目标组，Body 用的动词表由条目派生）、`Memory`（记忆）、
   `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）、`Genesis`（创世，只在 `profile.genesis` 为真时）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
-- `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道）。
+- `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道），
+  也是模型 key（`Secret`，`Registry` 读环境时包成闭包）唯一的取出处。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
   注册表 JSON `cadence` 默认 `"automatic"`；显式 `"manual"` 后仅由
@@ -283,6 +284,7 @@ NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain
 # （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。选择本身不用 LLM 接口；Life 的反思写日记要一个，
 # 同样不入库：每次解析取运行环境 NPC_REFLECT_URL / NPC_REFLECT_KEY / NPC_REFLECT_MODEL（必须，缺一个登记即 raise）；
 # 形状缺省 Anthropic Messages（完整的 …/v1/messages 地址），写 NPC_REFLECT_API=openai 为 chat completions（部署现用 DeepSeek；见下文“反思”）。
+# 以上各 *_KEY 读进来即包成 NpcServer.Secret（闭包），profile 里不出现原文；取出只在 NpcServer.Http 拼请求头时（见下文“模型 key 不进日志”）。
 NpcServer.Registry.put("阿林", %{scene_id: 1, spawn: {22.5, 520.0, 34.5}, brain: "npc",
   params: %{
     "who" => "Lin, a builder",
@@ -510,6 +512,20 @@ flowchart LR
   TLS 信任根在建连时取系统 CA；endpoint 带 `cacertfile` 时只信这个文件（同车道 HTTP/2 实例里的标签池）。`npc_model_request` 记 `lane` 与 `queue_ms`（HTTP/1 取连接的
   排队毫秒，HTTP/2 为 null）。车道由 `Application` 放在监督树第一位；测试跑 `--no-start` 时由 `test_helper` 起同一个 `NpcServer.Http`。
   Hindsight 的服务端算力与模型主机的并发限额仍由两条车道共享。
+- **模型 key 不进日志**（`NpcServer.Secret`）：四个 key（`NPC_LLM_KEY`、`NPC_REFLECT_KEY`、`TYPESAFE_API_KEY`、`NPC_JEV_KEY`）由
+  `Registry` 在读运行环境时（唯一入口 `secret_env!/1`）先校验是合法的 HTTP 头值——为空、含控制字符（RFC 9110 §5.5）、含非 ASCII
+  字节（NBSP、零宽空格等；有意比 RFC 严格，与 Mint HTTP/1 的字符集一致）或首尾有空白即登记被拒（不自动 trim；错误只报变量名
+  与原因，不回显原值），再包成闭包，endpoint 的 `key` 只有这一种形状；随 profile 进 Runtime / Brain / Life 的状态与各 worker 的参数时，
+  `inspect` 与崩溃报告里只是 `#Function<…>`（据 ERLEF 安全工作组，闭包也不会写进崩溃转储；本仓库未测）。
+  唯一的取出入口在 `NpcServer.Http.request/2` 拼鉴权头的那一刻：缺省 `authorization: Bearer`，写作 endpoint 的 Messages 形状
+  由 `Writer` 标 `auth: :x_api_key`；endpoint 的 `headers` 只放附加的非敏感头。**代码里直接拼 endpoint 的调用方**（wilderness 的
+  `planner` / `scheduler`、`interrupt_policy: {Jev, %{scheduler: …}}`、`Builder`）也必须用 `NpcServer.Secret.wrap/1` 包 key：
+  传原文字符串时 `Secret.reveal/1` 抛不带值的 ArgumentError。头值不合法时 `Http` 返回不带值的 `{:invalid_header_value, 头名}`。
+  依据是 ERLEF 安全工作组《Protecting sensitive data》（“Wrap sensitive data in a closure …”），引文与取舍见 `Secret` 的 moduledoc；
+  测试 `npc_key_redaction_test.exs`（`--only key_redaction`）。残余（读源码所得）：取出后的明文请求头在 HTTP/2 池进程的在途请求里；
+  Messages 形状的 `x-api-key` 还会进连接的 HPACK 动态表、留到连接关闭；池进程崩溃报告的 `Queue:` 可能带出排队请求的头，
+  debug 级别的 `State:` 带出在途请求与编码表。详见 `NpcServer.Http` moduledoc 的“密钥”；部署侧关闭或限制 crash dump
+  （见 `deploy/README.md` 的“NPC 常驻应用”）。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
   它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
@@ -859,7 +875,7 @@ flowchart LR
   触发状态、新经历条数、各问最新一条、最近一轮、计数、此刻新栏里的那一句（`thought`，同 `Life.mind/2` 交给 Mind 的）与最近一次失败原因；日志一律 `npc_reflect cid=<cid> …`，日记正文不进日志。
 - **写作接口（环境变量）**：同 Jev，不入库，每次解析 `"npc"` 登记时取运行环境 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）、
   `NPC_REFLECT_KEY`、`NPC_REFLECT_MODEL`，三个都必填，缺一个时解析即 raise（`Registry.put/2` 回 `{:error, {:invalid_params, …}}`，不登记）。请求缺省是 Anthropic Messages 形状
-  （`POST`，头 `x-api-key` 与 `anthropic-version`，不带思考参数）；写 `NPC_REFLECT_API=openai` 时改为 OpenAI 兼容 chat completions
+  （`POST`，头 `x-api-key`（`Writer` 标 `auth: :x_api_key`，由 `NpcServer.Http` 取出 key 写头）与 `anthropic-version`，不带思考参数）；写 `NPC_REFLECT_API=openai` 时改为 OpenAI 兼容 chat completions
   （URL 是完整的 chat completions 地址，Bearer 鉴权，可选 `NPC_REFLECT_EFFORT` 缺省 `medium`，`finish_reason` 不是 `stop` 显式失败），
   认不出的值登记即拒绝。2026-11-18 起部署统一用 DeepSeek `deepseek-flash`（与选择位置同一端点、同一把 key），
   真实冒烟 `--only live_reflect_openai`：一篇日记约 10 秒、3931 入 / 1042 出（思考 836）。细节见 [`life/reflection/writer.ex`](life/reflection/writer.ex) 的 moduledoc。

@@ -13,7 +13,7 @@ defmodule NpcServer.NpcReflectionWriterTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   @moduletag :t0
-  alias NpcServer.HttpStub
+  alias NpcServer.{HttpStub, Secret}
   alias NpcServer.Life.Reflection.Writer
 
   @fixtures Path.expand("../support/fixtures/reflection", __DIR__)
@@ -309,7 +309,7 @@ defmodule NpcServer.NpcReflectionWriterTest do
 
     upstream = %{
       url: System.fetch_env!("NPC_REFLECT_URL"),
-      key: System.fetch_env!("NPC_REFLECT_KEY"),
+      key: Secret.wrap(System.fetch_env!("NPC_REFLECT_KEY")),
       timeout_ms: 150_000
     }
 
@@ -329,7 +329,7 @@ defmodule NpcServer.NpcReflectionWriterTest do
     config = %{
       api: :openai,
       url: HttpStub.start(forward) <> "/chat/completions",
-      key: "local-forwarder",
+      key: Secret.wrap("local-forwarder"),
       model: System.fetch_env!("NPC_REFLECT_MODEL"),
       reasoning_effort: System.get_env("NPC_REFLECT_EFFORT", "medium"),
       timeout_ms: 160_000
@@ -364,7 +364,7 @@ defmodule NpcServer.NpcReflectionWriterTest do
   defp server(handler),
     do: %{
       url: HttpStub.start(handler) <> "/v1/messages",
-      key: "test-key",
+      key: Secret.wrap("test-key"),
       model: "claude/claude-sonnet-5-5",
       timeout_ms: 1000
     }
@@ -373,7 +373,7 @@ defmodule NpcServer.NpcReflectionWriterTest do
     do: %{
       api: :openai,
       url: HttpStub.start(handler) <> "/chat/completions",
-      key: "deepseek-test-key",
+      key: Secret.wrap("deepseek-test-key"),
       model: "deepseek-flash",
       reasoning_effort: "medium",
       timeout_ms: 1000

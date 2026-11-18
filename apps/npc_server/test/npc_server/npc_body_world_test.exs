@@ -411,7 +411,7 @@ defmodule NpcServer.NpcBodyWorldTest do
   defp endpoint do
     %{
       url: System.fetch_env!("NPC_LLM_URL"),
-      key: System.fetch_env!("NPC_LLM_KEY"),
+      key: NpcServer.Secret.wrap(System.fetch_env!("NPC_LLM_KEY")),
       model: System.fetch_env!("NPC_LLM_MODEL")
     }
     |> Map.merge(if effort = System.get_env("NPC_LLM_EFFORT"), do: %{effort: effort}, else: %{})
@@ -636,7 +636,7 @@ defmodule NpcServer.NpcBodyWorldTest do
        endpoint: endpoint(),
        scheduler: %{
          url: System.fetch_env!("TYPESAFE_API_URL"),
-         key: System.fetch_env!("TYPESAFE_API_KEY"),
+         key: NpcServer.Secret.wrap(System.fetch_env!("TYPESAFE_API_KEY")),
          model: System.fetch_env!("TYPESAFE_MODEL")
        },
        skills: %{wilderness: %{activities: NpcServer.Builder.activity_profile()}},

@@ -15,6 +15,7 @@ defmodule NpcServer.Builder do
       %{cid:, goal: "自然语言目标（含坐标与材料 id）", tool_id: 放置用的工具,
         planner: LLM endpoint, scheduler: Jev endpoint, activities: 显式 Jev 活动 profile,
         memory: 模块（get/3、put/4、delete/3、journal/3）}
+  planner 与 scheduler 是 endpoint，`key` 必须用 `NpcServer.Secret.wrap/1` 包（见 `NpcServer.Http`）。
   """
   require Logger
   alias NpcServer.{Blueprint, Jev}

@@ -768,7 +768,12 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
           {429, %{"type" => "error", "error" => %{"type" => "rate_limit_error"}}}
       end)
 
-    endpoint = %{url: url <> "/v1/messages", key: "test-key", model: "reflect-test"}
+    endpoint = %{
+      url: url <> "/v1/messages",
+      key: NpcServer.Secret.wrap("test-key"),
+      model: "reflect-test"
+    }
+
     %{fixture: fixture, cid: cid, life: life} = planning(writer_endpoint: endpoint)
 
     log =

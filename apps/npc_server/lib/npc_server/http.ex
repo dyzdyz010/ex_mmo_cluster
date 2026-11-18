@@ -55,12 +55,38 @@ defmodule NpcServer.Http do
   只有 HTTP/1 池有取连接这一步；HTTP/2 多路复用、没有取连接队列，读数为 nil。`NpcServer.ModelUsage` 把它记进
   `npc_model_request` 的 `queue_ms`。
 
+  ## 密钥
+
+  模型 endpoint 的 `key` 是 `NpcServer.Secret` 闭包，随 profile 流转时不以原文出现在进程状态与崩溃报告里；
+  `request/2` 是唯一取出它的地方，取出后只作为局部变量进请求头（见 `request/2` 的说明）。
+
+  头值不合法（Mint HTTP/1 只收 33..126、SP、HTAB）时 Mint 的错误原因带着整条头值；`finch_request/8` 在错误离开本模块前
+  把它折成不带值的 `{:invalid_header_value, 头名}`（脱敏，不是兜底，结果仍是失败）。`endpoint.key` 不是 Secret 时
+  `NpcServer.Secret.reveal/1` 抛不带值的 ArgumentError。
+
+  残余（取出之后的明文请求头交给 Finch / Mint；不改 Finch。依据为本仓库锁定的 finch 0.25.0、mint 1.11.0、hpax 1.1.0
+  与 OTP 29 / Elixir 1.20 源码，均为读源码所得，未实测）：
+
+    * HTTP/1（`http` 主机：Hindsight、回环替身）：请求在发起请求的进程里编码发送，明文头只在它的栈与堆上停留到请求结束。
+    * HTTP/2（`https` 模型主机），在途期间：Finch HTTP/2 池进程（`:gen_statem`）把请求存进 `data.requests`，其中
+      telemetry 元数据里的 `Finch.Request` 带着请求头（`finch/http2/pool.ex` 的 `send_request/6`），请求结束才删除。
+    * HTTP/2，`x-api-key`（Messages 形状的写作 endpoint）还会常驻：Mint 以 `:store_name` 编码请求头
+      （`mint/http2.ex` 的 `encode_header_block/4`）；`x-api-key` 不在 HPACK 静态表里，走 `:not_found` 分支，名和值
+      一起进连接的动态编码表（`hpax.ex` 的 `encode_headers/3`、`Table.add/3`），留在池进程里，直到连接关闭或被新条目挤出。
+      `authorization` 在静态表里（只有名字），走“只存名”的分支，Bearer 的值不进动态表。
+    * 池进程崩溃时的报告：Finch 没有实现 `format_status`。OTP 的 gen_statem 终止报告（domain `[otp]`，Elixir 缺省不过滤）
+      经 Elixir `Logger.Translator` 打印时，`Queue:`（待处理事件，可能含排队中的 `{:request, …}` 调用及其请求头）在任何
+      日志级别都打印，`State:`（池的 `data`，即上面的 `requests` 与编码表）只在 debug 级别打印。
+    * VM 崩溃时上述进程的堆会进 `erl_crash.dump`：部署侧应关闭或限制转储（`ERL_CRASH_DUMP_BYTES=0` 不写转储），
+      见 `deploy/README.md` 的“NPC 常驻应用”一节。
+
   ## 生命周期
 
   本模块是一个监督者（四个 Finch 实例），由 `NpcServer.Application` 放在 NPC 监督树的第一位；测试跑 `--no-start`
   时由 `test_helper` 起同一个。
   """
   use Supervisor
+  alias NpcServer.Secret
 
   # 缺省请求超时（毫秒）；endpoint 的 `timeout_ms` 覆盖它。高推理强度的大上下文请求（如 design_house 后几轮）
   # 常超过 60 s：超时的请求已经计费却拿不到结果（2026-10-08 长跑 run03：gpt-6.1-sol / high 设计会话 6 次败 5 次）。
@@ -140,19 +166,23 @@ defmodule NpcServer.Http do
   发送一次模型 JSON 请求（POST），返回解码后的 JSON 响应或明确的失败；超时取 endpoint 的 `timeout_ms`（缺省 #{@timeout_ms} ms），
   车道取 endpoint 的 `lane`（缺省 `:background`）。
 
-  请求头缺省只有 `authorization: Bearer <endpoint.key>`；endpoint 带 `headers`（`[{名, 值}]`，都是小写字符串）时
-  改用这一组、不再加 `authorization`（例如 Anthropic Messages 形状的入口用 `x-api-key`）。
+  `endpoint.key` 是 `NpcServer.Secret`（`NpcServer.Registry` 在读运行环境时包好），本函数是唯一取出它的地方：
+  在拼请求头的那一刻按 `auth` 写成鉴权头——缺省 `authorization: Bearer <key>`，`auth: :x_api_key` 时为 `x-api-key: <key>`
+  （Anthropic Messages 形状的入口）。endpoint 可带 `headers`（`[{名, 值}]`，都是小写字符串，不放敏感值）附加在鉴权头之后。
   `content-type: application/json` 总由本函数带上，调用方不必写进 `headers`。
   endpoint 带 `cacertfile`（PEM 路径）时 https 请求只信这个 CA 文件（见 moduledoc）。
 
   结果：`{:ok, map}`（200；响应体不是 JSON 时 `Jason.decode!/1` 抛出，由调用方在自己的边界处理）、
   `{:error, {状态码, 响应体前 300 字}}`、`{:error, :timeout}`、`{:error, :pool_timeout}`、`{:error, :connection_unavailable}`、
-  `{:error, {:unsupported_scheme, 协议}}`、`{:error, 传输错误}`（含义见 moduledoc 的超时契约）。
+  `{:error, {:unsupported_scheme, 协议}}`、`{:error, {:invalid_header_value, 头名}}`（头值不合法，值已去掉，见 moduledoc 的“密钥”）、
+  `{:error, 传输错误}`（含义见 moduledoc 的超时契约）。`endpoint.key` 不是 `NpcServer.Secret` 时抛 ArgumentError（不回显值）。
   """
   def request(endpoint, body) do
     headers =
-      [{"content-type", "application/json"}] ++
-        Map.get_lazy(endpoint, :headers, fn -> bearer(endpoint) end)
+      [
+        {"content-type", "application/json"},
+        auth_header(endpoint) | Map.get(endpoint, :headers, [])
+      ]
 
     case send_request(
            lane(endpoint),
@@ -171,7 +201,7 @@ defmodule NpcServer.Http do
 
   @doc """
   经指定车道发一次请求，返回 `{:ok, 状态码, 响应体}` 或
-  `{:error, :timeout | :pool_timeout | :connection_unavailable | {:unsupported_scheme, 协议} | 传输错误}`。
+  `{:error, :timeout | :pool_timeout | :connection_unavailable | {:unsupported_scheme, 协议} | {:invalid_header_value, 头名} | 传输错误}`。
   `headers` 是 `[{小写名, 值}]`，`body` 为 nil 或已编码的 binary；`timeout_ms` 是发送与接收这一段的截止（三段上限见 moduledoc）。
   模型请求用 `request/2`；Hindsight 适配器直接用本函数（它有 GET / PUT / PATCH 与自己的状态码规则）。
   `opts` 可给 `cacertfile:`（https 只信这个 CA 文件；nil 或不给用系统 CA）。
@@ -238,6 +268,13 @@ defmodule NpcServer.Http do
       {:error, %{reason: reason}} when reason in [:timeout, :request_timeout] ->
         {:error, :timeout}
 
+      # 请求头的值不合法（Mint HTTP/1 只收 33..126、SP、HTAB）：Mint 的原因带着整条头值，鉴权头就是 "Bearer <key>"，
+      # Finch 包成 `%Finch.HTTPError{}`（`source` 里还有一份 `%Mint.HTTPError{}`）原样返回，调用方的失败日志会把它打出来，
+      # 对话构建器还会把它拼进下一次提示词。错误离开本信任边界前去掉值、只留头名——这是脱敏，不是兜底：
+      # 结果仍是显式失败。登记边界（`Registry`）已按同一字符集校验 key，这里接住的是直接拼 endpoint 的调用方。
+      {:error, %{reason: {:invalid_header_value, name, _value}}} ->
+        {:error, {:invalid_header_value, name}}
+
       {:error, error} ->
         {:error, error}
     end
@@ -270,6 +307,8 @@ defmodule NpcServer.Http do
   defp instance(lane, "https"), do: Map.fetch!(@instances, {lane, :http2})
   defp instance(lane, "http"), do: Map.fetch!(@instances, {lane, :http1})
 
-  # 缺省鉴权头（现有的 OpenAI 形状入口与 Jev 都用它）。
-  defp bearer(endpoint), do: [{"authorization", "Bearer " <> endpoint.key}]
+  # 鉴权头：key 只在这里取出（`NpcServer.Secret`）。缺省 Bearer（OpenAI 形状入口、Jev、LLM 大脑）；
+  # Anthropic Messages 形状的写作入口由 `Life.Reflection.Writer` 标 `auth: :x_api_key`。
+  defp auth_header(%{auth: :x_api_key, key: key}), do: {"x-api-key", Secret.reveal(key)}
+  defp auth_header(%{key: key}), do: {"authorization", "Bearer " <> Secret.reveal(key)}
 end

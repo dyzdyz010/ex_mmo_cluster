@@ -87,7 +87,11 @@ defmodule NpcServer.LifeFixtures do
       who: "Garen, a builder",
       persona: card,
       # 写日记的接口只是让 Life 开反思；发送函数被替换，这个地址不会被请求。
-      reflect: %{url: "http://127.0.0.1:9/v1/messages", key: "test-key", model: "reflect-test"},
+      reflect: %{
+        url: "http://127.0.0.1:9/v1/messages",
+        key: NpcServer.Secret.wrap("test-key"),
+        model: "reflect-test"
+      },
       write_journal: fn system, user ->
         send(test, {:write, self(), system, user})
 

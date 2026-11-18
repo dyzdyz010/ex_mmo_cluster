@@ -1,7 +1,7 @@
 defmodule NpcServer.NpcJevTest do
   @moduledoc "只测试：Jev 调度层的请求形状与决定规则。应答样本按官方 HTTP 文档的形状手写；真实接口见 :live_jev 用例。"
   use ExUnit.Case, async: true
-  alias NpcServer.Jev
+  alias NpcServer.{Jev, Secret}
   @profile NpcServer.Builder.activity_profile()
 
   setup_all do
@@ -100,7 +100,7 @@ defmodule NpcServer.NpcJevTest do
         %{
           api: :openai,
           url: "http://127.0.0.1:9/v1/chat/completions",
-          key: "test-key",
+          key: Secret.wrap("test-key"),
           model: "deepseek-flash",
           reasoning_effort: "medium",
           timeout_ms: 1_000
@@ -355,7 +355,7 @@ defmodule NpcServer.NpcJevTest do
   test "the real model on the hand-labelled scheduling cases: no wrong automatic decision, at least 80 % automatic" do
     endpoint = %{
       url: System.fetch_env!("TYPESAFE_API_URL"),
-      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      key: Secret.wrap(System.fetch_env!("TYPESAFE_API_KEY")),
       model: System.fetch_env!("TYPESAFE_MODEL")
     }
 
@@ -387,7 +387,7 @@ defmodule NpcServer.NpcJevTest do
   test "the real model: routine, danger, shortage, surprise and harm to others" do
     endpoint = %{
       url: System.fetch_env!("TYPESAFE_API_URL"),
-      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      key: Secret.wrap(System.fetch_env!("TYPESAFE_API_KEY")),
       model: System.fetch_env!("TYPESAFE_MODEL")
     }
 
@@ -435,7 +435,7 @@ defmodule NpcServer.NpcJevTest do
     endpoint = %{
       api: :openai,
       url: System.fetch_env!("NPC_JEV_URL"),
-      key: System.fetch_env!("NPC_JEV_KEY"),
+      key: Secret.wrap(System.fetch_env!("NPC_JEV_KEY")),
       model: System.fetch_env!("NPC_JEV_MODEL"),
       reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
       timeout_ms: 60_000,

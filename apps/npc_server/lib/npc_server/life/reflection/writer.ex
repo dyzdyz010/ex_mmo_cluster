@@ -18,6 +18,7 @@ defmodule NpcServer.Life.Reflection.Writer do
   `stop_reason` 不是 `"end_turn"` 一律算失败。
 
   本模块发一次请求，模型回执用量由 `NpcServer.ModelUsage` 记录。失败原因交给调用方处理。
+  key 是 `NpcServer.Secret`，本模块只标鉴权头的形状（Messages 为 `auth: :x_api_key`），取出与拼头在 `NpcServer.Http`。
 
   ## 两种入口形状（`config.api`）
 
@@ -45,7 +46,7 @@ defmodule NpcServer.Life.Reflection.Writer do
   @openai_max_tokens 8192
 
   @doc """
-  写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`（`:messages` 形状），
+  写一次日记：`config` 为 `%{url: 完整的 /v1/messages 地址, key: API key, model: 模型名}`（`:messages` 形状；`key` 是 `NpcServer.Secret`），
   或 `%{api: :openai, url: 完整的 chat completions 地址, key:, model:, reasoning_effort: 可选}`，可带 `timeout_ms`
   （单次请求，缺省同 `NpcServer.Http`）、出站车道 `lane` 与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
 
@@ -86,11 +87,9 @@ defmodule NpcServer.Life.Reflection.Writer do
   end
 
   def write(config, system, user, scope) do
+    # 鉴权头由 `NpcServer.Http.request/2` 在拼请求头时取出 key 写成 `x-api-key`，本模块不取出 key。
     endpoint =
-      Map.put(config, :headers, [
-        {"x-api-key", config.key},
-        {"anthropic-version", @anthropic_version}
-      ])
+      Map.merge(config, %{auth: :x_api_key, headers: [{"anthropic-version", @anthropic_version}]})
 
     body = %{
       model: config.model,

@@ -15,7 +15,7 @@ defmodule NpcServer.NpcHttpLanesTest do
 
   import ExUnit.CaptureLog
 
-  alias NpcServer.{Http, KeepAliveStub, ModelUsage}
+  alias NpcServer.{Http, KeepAliveStub, ModelUsage, Secret}
 
   # 交互车道取连接的上限（决策稿 D-4 的原创初值）；断言留出调度余量。
   @interactive_pool_timeout_ms 2_000
@@ -27,7 +27,10 @@ defmodule NpcServer.NpcHttpLanesTest do
 
     for {lane, path} <- [interactive: "/a", background: "/b", interactive: "/c"] do
       assert {:ok, %{"ok" => true}} =
-               Http.request(%{url: url <> path, key: "k", timeout_ms: 1_000, lane: lane}, %{})
+               Http.request(
+                 %{url: url <> path, key: Secret.wrap("k"), timeout_ms: 1_000, lane: lane},
+                 %{}
+               )
     end
 
     assert_received {:http_request, interactive_conn, %{path: "/a"}}
@@ -57,7 +60,13 @@ defmodule NpcServer.NpcHttpLanesTest do
           {200, %{"ok" => true}}
       end)
 
-    endpoint = %{url: url <> "/hold", key: "k", timeout_ms: 15_000, lane: :interactive}
+    endpoint = %{
+      url: url <> "/hold",
+      key: Secret.wrap("k"),
+      timeout_ms: 15_000,
+      lane: :interactive
+    }
+
     holders = for _ <- 1..@http1_pool_size, do: Task.async(fn -> Http.request(endpoint, %{}) end)
 
     responders =
@@ -120,7 +129,7 @@ defmodule NpcServer.NpcHttpLanesTest do
     caller =
       spawn(fn ->
         Http.request(
-          %{url: url <> "/hang", key: "k", timeout_ms: 10_000, lane: :interactive},
+          %{url: url <> "/hang", key: Secret.wrap("k"), timeout_ms: 10_000, lane: :interactive},
           %{}
         )
       end)
@@ -155,7 +164,7 @@ defmodule NpcServer.NpcHttpLanesTest do
 
     assert {:error, :timeout} =
              Http.request(
-               %{url: url <> "/hang", key: "k", timeout_ms: 300, lane: :interactive},
+               %{url: url <> "/hang", key: Secret.wrap("k"), timeout_ms: 300, lane: :interactive},
                %{}
              )
 
@@ -175,7 +184,13 @@ defmodule NpcServer.NpcHttpLanesTest do
     {_, log} =
       with_log([level: :info], fn ->
         ModelUsage.request(
-          %{url: url, key: "k", timeout_ms: 1_000, lane: :interactive, model: "lane-probe"},
+          %{
+            url: url,
+            key: Secret.wrap("k"),
+            timeout_ms: 1_000,
+            lane: :interactive,
+            model: "lane-probe"
+          },
           %{},
           %{cid: 7, operation: :select, api: :openai}
         )
@@ -190,7 +205,7 @@ defmodule NpcServer.NpcHttpLanesTest do
     {_, log} =
       with_log([level: :info], fn ->
         ModelUsage.request(
-          %{url: url, key: "k", timeout_ms: 1_000, model: "lane-probe"},
+          %{url: url, key: Secret.wrap("k"), timeout_ms: 1_000, model: "lane-probe"},
           %{},
           %{cid: 7, operation: :reflect, api: :openai}
         )
@@ -202,7 +217,10 @@ defmodule NpcServer.NpcHttpLanesTest do
 
   test "协议既不是 http 也不是 https 时显式失败，不发请求" do
     assert {:error, {:unsupported_scheme, "ftp"}} =
-             Http.request(%{url: "ftp://127.0.0.1/x", key: "k", lane: :interactive}, %{})
+             Http.request(
+               %{url: "ftp://127.0.0.1/x", key: Secret.wrap("k"), lane: :interactive},
+               %{}
+             )
   end
 
   @tag :capture_log
@@ -220,7 +238,13 @@ defmodule NpcServer.NpcHttpLanesTest do
 
     assert {:error, :connection_unavailable} =
              Http.request(
-               %{url: url, key: "k", timeout_ms: 1_000, lane: :interactive, cacertfile: path},
+               %{
+                 url: url,
+                 key: Secret.wrap("k"),
+                 timeout_ms: 1_000,
+                 lane: :interactive,
+                 cacertfile: path
+               },
                %{}
              )
 

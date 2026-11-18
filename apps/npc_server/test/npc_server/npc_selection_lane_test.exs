@@ -75,7 +75,7 @@ defmodule NpcServer.NpcSelectionLaneTest do
 
     # 写作 / Hindsight 那一侧（没标车道 = 后台车道）：先预热出一条空闲的持久连接，再让慢请求占住它。
     # httpc 时代选择会排进这个会话（OTP `httpc_manager:select_session/4`）——这就是实跑里选择被挡住的前提。
-    default = %{url: url <> "/warm", key: "k", timeout_ms: 5_000}
+    default = %{url: url <> "/warm", key: NpcServer.Secret.wrap("k"), timeout_ms: 5_000}
     assert {:ok, %{"ok" => true}} = Http.request(default, %{})
     assert_receive {:http_request, warmed_conn, %{path: "/warm"}}
 

@@ -13,7 +13,7 @@ defmodule NpcServer.NpcEmotionProbeTest do
 
     endpoint = %{
       url: System.fetch_env!("NPC_LLM_URL"),
-      key: System.fetch_env!("NPC_LLM_KEY"),
+      key: NpcServer.Secret.wrap(System.fetch_env!("NPC_LLM_KEY")),
       model: System.fetch_env!("NPC_LLM_MODEL"),
       effort: System.fetch_env!("NPC_LLM_EFFORT"),
       timeout_ms: 180_000
@@ -104,7 +104,7 @@ defmodule NpcServer.NpcEmotionProbeTest do
 
     endpoint = %{
       url: System.fetch_env!("NPC_LLM_URL"),
-      key: System.fetch_env!("NPC_LLM_KEY"),
+      key: NpcServer.Secret.wrap(System.fetch_env!("NPC_LLM_KEY")),
       model: System.fetch_env!("NPC_LLM_MODEL"),
       effort: System.fetch_env!("NPC_LLM_EFFORT"),
       timeout_ms: 180_000

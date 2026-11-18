@@ -111,11 +111,35 @@ Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 en
 详见 [NPC 应用说明](../apps/npc_server/README.md)。升级请重启 release，旧 `GateServer.Npc.*` 名称不保留兼容转发。
 
 统一形态（注册表 brain `"npc"`）的登记要求运行环境里有三组变量，都不入库、缺一个登记即失败：选择用的 Jev 接口
-`TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`，记忆库地址 `NPC_LIFE_HINDSIGHT_URL`（或写在登记参数里），
-反思写日记的接口 `NPC_REFLECT_URL`（完整的 `…/v1/messages` 地址）/ `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`。
+（缺省 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`；`NPC_JEV_API=openai` 时改用 `NPC_JEV_URL` / `NPC_JEV_KEY` /
+`NPC_JEV_MODEL`），记忆库地址 `NPC_LIFE_HINDSIGHT_URL`（或写在登记参数里），写作（反思、日计划、说话）的接口
+`NPC_REFLECT_URL` / `NPC_REFLECT_KEY` / `NPC_REFLECT_MODEL`（形状由 `NPC_REFLECT_API` 选）。
 各自的用途与请求形状以 [NPC 运行时说明](../apps/npc_server/lib/npc_server/README.md) 为准（“注册表”“反思”两节），这里不复述。
-**现状（2026-11-14）**：生产 NPC `enabled=0`，这些变量没有配进任何部署环境，`deploy/.env.example` 里也还没有 NPC 一组；
-启用 `"npc"` 登记之前要先把它们补进 `.env` 与 `.env.example`。
+变量名与说明见 `.env.example` 的 NPC 一组（整组注释掉、值留空：启用时取消注释并填写；可选项不用就保持注释——
+空值不等于不写：`NPC_JEV_API`、`NPC_REFLECT_API`、`NPC_JEV_THINKING`、`NPC_JEV_MAX_TOKENS`、`NPC_LLM_TIMEOUT_MS` 为空时登记被拒，
+三个 `*_EFFORT`（`NPC_LLM_EFFORT`、`NPC_JEV_EFFORT`、`NPC_REFLECT_EFFORT`）为空时空串会原样随请求发出，`NPC_LLM_CACERTFILE`
+为空时空串会被当成 CA 文件路径、https 请求连不上（最后这条是读源码所得，未实测））。llm / life 大脑另需 `NPC_LLM_*` 一组，
+同样列在 `.env.example` 里。
+**现状（2026-11-18）**：生产 NPC `enabled=0`，这些变量还没有配进任何部署环境；`.env.example` 已列出 NPC 一组，
+启用 `"npc"` 登记之前要先在 `.env` 里填好。
+
+**模型 key 与崩溃转储**：各 `*_KEY`（含 llm / life 大脑的 `NPC_LLM_KEY`）登记时先校验是合法的 HTTP 头值：非空、首尾为
+0x21–0x7E、中间只有 0x20–0x7E 与制表符（不含 CR / LF 等控制字符，RFC 9110 §5.5；也不含 NBSP、零宽空格、全角字符等非 ASCII
+字节——有意比 RFC 严格，与 Mint HTTP/1 一致），不合法即登记被拒、错误只报变量名与原因，不自动 trim——Windows 编辑的 `.env`
+留下 CRLF、从网页复制 key 时带进的不可见字符都要先改掉。之后在 NPC 进程里以闭包（`NpcServer.Secret`）流转，进程状态与崩溃
+报告里不是原文；据 ERLEF 安全工作组《Protecting sensitive data》，闭包也不会写进崩溃转储（本仓库未测）。
+
+残余是发请求时的明文请求头（读 finch 0.25.0 / mint 1.11.0 / hpax 1.1.0 与本机 OTP / Elixir 源码所得，未实测；细节见
+`NpcServer.Http` moduledoc 的“密钥”）：
+- `https` 模型主机走 HTTP/2，在途请求连同请求头存在 Finch 的 HTTP/2 池进程里，请求结束才删除；
+- 写作 endpoint 的 Messages 形状用 `x-api-key`，它不在 HPACK 静态表里，key 会进连接的动态编码表，**留在池进程里直到连接关闭
+  或被新条目挤出**，不只是在途期间（Bearer 用的 `authorization` 在静态表里，值不进动态表）；
+- 池进程崩溃时 Finch 没有 `format_status`：Elixir 打印的 gen_statem 终止报告里，`Queue:`（可能含排队中的请求及其头）在任何
+  日志级别都会出现，`State:`（在途请求与编码表）在 debug 级别出现——生产不要开 debug 级别日志；
+- VM 崩溃时这些进程的堆会进 `erl_crash.dump`。
+
+建议生产在 `.env` 里写 `ERL_CRASH_DUMP_BYTES=0`（ERTS 读这个环境变量，0 表示不写转储），或至少保证转储文件不落在
+可被他人读取、会被收集上传的位置；代价是 VM 整体崩溃（如内存耗尽）后没有转储可查，只剩 release 日志与容器退出码。
 
 ### 青岚内存兜底
 

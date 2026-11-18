@@ -13,7 +13,7 @@ defmodule NpcServer.NpcRegistryTest do
   use ExUnit.Case, async: false
   alias DataService.Schema.Character
   alias MmoContracts.Session, as: WireSession
-  alias NpcServer.{Body, Brain, Trees}
+  alias NpcServer.{Body, Brain, Secret, Trees}
   alias NpcServer.Registry, as: NpcRegistry
   alias NpcServer.NpcWorld
   alias SceneServer.Movement.{Player, Scene}
@@ -223,7 +223,7 @@ defmodule NpcServer.NpcRegistryTest do
                   skills: %{gather: %{}, travel: %{}, speak: %{}},
                   jev: %{
                     url: "http://127.0.0.1:9/jev",
-                    key: "test-key",
+                    key: Secret.wrap("test-key"),
                     model: "jev-test",
                     timeout_ms: 10_000,
                     lane: :interactive
@@ -231,7 +231,7 @@ defmodule NpcServer.NpcRegistryTest do
                   # 反思写日记的接口取运行环境（R3 起）。
                   reflect: %{
                     url: "http://127.0.0.1:9/v1/messages",
-                    key: "test-key",
+                    key: Secret.wrap("test-key"),
                     model: "reflect-test"
                   },
                   # 必带 Life：行里没写 life，地址取运行环境。大脑仍是 Tree，不套 Social。
@@ -397,7 +397,7 @@ defmodule NpcServer.NpcRegistryTest do
                   genesis: true,
                   endpoint: %{
                     url: "https://llm.example/v1/responses",
-                    key: "test-key",
+                    key: Secret.wrap("test-key"),
                     model: "test-model",
                     effort: "high",
                     cacertfile: "/etc/ca.pem",
@@ -406,6 +406,8 @@ defmodule NpcServer.NpcRegistryTest do
                 }} == NpcRegistry.brain("llm", params)
 
         # 只有 goal 与 tools 是必填；没给 genesis 就不是创世 NPC，groups 缺省 = 全部组。
+        key = Secret.wrap("test-key")
+
         assert {Brain.Llm,
                 %{
                   goal: "g",
@@ -414,7 +416,7 @@ defmodule NpcServer.NpcRegistryTest do
                   skills: %{},
                   spells: %{},
                   genesis: false,
-                  endpoint: %{url: "https://llm.example/v1/responses", key: "test-key"}
+                  endpoint: %{url: "https://llm.example/v1/responses", key: ^key}
                 } = profile} = NpcRegistry.brain("llm", %{"goal" => "g", "tools" => %{}})
 
         refute Map.has_key?(profile, :max_requests_per_hour)
@@ -516,7 +518,7 @@ defmodule NpcServer.NpcRegistryTest do
         assert reflect == %{
                  api: :openai,
                  url: "https://api.deepseek.com/chat/completions",
-                 key: "deepseek-test",
+                 key: Secret.wrap("deepseek-test"),
                  model: "deepseek-flash",
                  reasoning_effort: "medium"
                }
@@ -552,11 +554,12 @@ defmodule NpcServer.NpcRegistryTest do
 
       with_env(openai, fn ->
         assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        key = Secret.wrap("deepseek-test")
 
         assert %{
                  api: :openai,
                  url: "https://api.deepseek.com/v1/chat/completions",
-                 key: "deepseek-test",
+                 key: ^key,
                  model: "deepseek-flash",
                  # 缺省思考强度是 medium；Jev 的超时与 TypeSafe 那条相同（选择是秒级决策）。
                  reasoning_effort: "medium",

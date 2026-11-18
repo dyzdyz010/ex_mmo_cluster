@@ -6,6 +6,7 @@ defmodule NpcServer.Skills.Wilderness do
 
   context 必须提供 body、world、call_id、初始 observation 和 profile；可传 request 替换模型发送函数。
   profile 含 cid、tool_id、planner、scheduler、activities、memory。args 含 goal 和可选 ops。
+  planner / scheduler 两个 endpoint 的 `key` 必须用 `NpcServer.Secret.wrap/1` 包（见 `NpcServer.Http`）。
   记忆只保存蓝图；同目标才复用。终态重新只读 World，不把旧观察或模型措辞当成完成依据。
   """
   require Logger

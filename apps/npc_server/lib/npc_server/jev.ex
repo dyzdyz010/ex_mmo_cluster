@@ -14,7 +14,7 @@ defmodule NpcServer.Jev do
   两类问题的门槛分开：中断与 harm 护栏用 `verdict/3`（置信度不足交回大脑）；偏好类选择（`NpcServer.Selector`
   的“现在做哪件事”）用 `top1/1` 直接取 top1，不设门槛。后者的 `activities` 可以是 `Jason.OrderedObject`，
   候选次序原样进请求体。
-  endpoint: `%{url:, key:, model:, lane: 可选, cacertfile: 可选}`。
+  endpoint: `%{url:, key:, model:, lane: 可选, cacertfile: 可选}`，`key` 是 `NpcServer.Secret`。
 
   ## 两种入口形状（`endpoint.api`）
 
@@ -48,6 +48,7 @@ defmodule NpcServer.Jev do
   @doc """
   中断检查（`profile.interrupt_policy = {Jev, config}`）。config 为
   `%{scheduler: endpoint, activities: 活动 profile, continue_activity: 继续的选项, request: 可选发送函数}`。
+  `scheduler` endpoint 的 `key` 必须用 `NpcServer.Secret.wrap/1` 包（见 `NpcServer.Http`）。
   只有有把握地选了非继续的选项才中断；拿不准（置信度不足、选项不属于 profile）等同继续，下次检查再问。
   """
   @impl true
