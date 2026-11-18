@@ -205,6 +205,12 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 建筑资格与写作约束共四项定向用例改前全红、改后全绿，分别见 `.demo/dev-env/logs/test-20261118T050222Z.log` 和 `test-20261118T050449Z.log`。新旧场景判定与驱动测试共 16 项离线通过。
 
+2026-11-18 UTC 用 `28db99dd` 扩大复验。`recheck_models.py` 从 `causal-real-01` 和 `causal-writer-01` 取两份真实返场快照，保留同一份心智，按本轮登记将确定失效的守屋项换成 `watch_plot`，写作使用当前 `Speak` 的提示词。两份真实 Jev 回执均选择了 `watch_plot`，两条真实 Claude 台词都准确追问了拆屋原因，也保留了目击证据边界。两份样本的请求、原始回执和语义判定见 `.demo/observe/npc-causal-speech-20261117/model-recheck-real-20261118/`。
+
+`causal-real-02` 用同版服务端和 Hello 44 双客户端实跑。双端确认 World txn 42 移除同一小屋，Life 经历保留同一事务与拆除者。A 同一会话从 NPC 的 17.165 m 外返回到 5.307 m。离场时只保留旁听 B，返场时 A/B 都可选，旧守屋项已消失。一次真实 Jev 返回 `watch_plot` 权重 0.46，追问 A 权重 0.37。实跑按 `desired_choice_not_met` 结束，该轮未触发 Writer，原失败记录和离线复算在 `runs/causal-real-02/{failed,selection-recheck}.json`。UDP 86 → 91 → 90，4266 记录号未变，双 UE、release 和私有库均已回收。
+
+`causal-writer-03` 在独占的新双端会话中用受控选择发起同一类追问，随后调用一次真实 Writer，保留生产请求的 `max_tokens`。台词准确询问为什么拆自己的小屋，并以记录的拆除事实为依据。A、B、NPC 自己收到同一权威发言 `695208712436984313:1`，Hindsight 回读同一记忆，两张 HUD 已逐张核对。正式日志记录 3736 输入和 182 输出 token，同供应商回执对账通过。该轮 UDP 87 → 94 → 85，4266 记录号未变，所有本轮资源已回收。前一份 `causal-writer-02` 在固定端口暂占时于准备阶段停止，验证端口可绑定后换新目录补跑。证据见 `runs/causal-writer-03/{verdict,speech-memory-proof,visual-review,semantic-review,cleanup}.json`。合计真实 Jev 3 次、真实 Writer 3 次，写作语义与独立双端写作场景通过，自主选择追问的行为仍未达标。
+
 #### 三 NPC 同场与交互／后台召回
 
 D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次创建的池。回环 keep-alive 改前的 250ms 超时以及启动冲突误停已有池都已红绿，4 个相关文件共 38 项绿，见 `.demo/dev-env/logs/test-20261118T040844Z.log`。
