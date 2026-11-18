@@ -166,7 +166,17 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - `speak` 先走近当轮选中的目标，用规划与反思所用的写作服务读同一份心智快照、写一句定向台词，最后经现有 `say` 提交。Scene 在接纳当刻核对目标的 ID、代次和范围，按现行可靠 Speech 广播；NPC 从权威回声保存自己的发言。CLI 查 `Body.observe` 的选择、目标及终态，Scene/Gate 的结构化日志与客户端 `Voxim.Dialogue.Status` 对账。当前写作只负责这一句，计划栏继续使用已登记活动。
 - 最小集成先让真实 World、Scene、Body 运行，按现有测试形状替换模型接口。验证合法在场对象才进入本轮，选择后只向同一代次发言，失效与拒绝可从终态判定，真实发言可读回。UE 验收使用两位真实登录的玩家与一个居民，先核对 Ready、站位与版本，再让居民发起第一句。按计划核对目标、旁听者、消息身份和 HUD；拆屋与跨日恢复使用单独有完整前提的场景。
 
-实现与测试进度。三条记忆故障的改前、改后证据保存在本地 `.demo/dev-env/logs/`。World 操作历史测试 6 项通过（`test-voxel_region-20261118T023106Z.log`），Scene 对话与在场资格 12 项通过（`test-scene_server-20261118T021827Z.log`）。NPC 全套首轮 600/607 通过，定位到旧回调夹具、启动时 AOI 到达顺序和缺代次的观察；修正后按失败清单重跑 7 项全通过（`test-20261118T023329Z.log`）。主动开口的服务端集成覆盖附近候选、权威发言、旁听、冷却及持久回声；双 UE 场景独立取证。
+实现与测试进度。三条记忆故障的改前、改后证据保存在本地 `.demo/dev-env/logs/`。World 操作历史测试 6 项通过（`test-voxel_region-20261118T023106Z.log`），Scene 对话与在场资格 12 项通过（`test-scene_server-20261118T021827Z.log`）。NPC 全套首轮 600/607 通过，定位到旧回调夹具、启动时 AOI 到达顺序和缺代次的观察；修正后按失败清单重跑 7 项全通过（`test-20261118T023329Z.log`）。提交 `362fef94` 用 WSL 新库完整复跑，607 项通过、19 项排除（`test-20261118T025049Z.log`）。主动开口的服务端集成覆盖附近候选、权威发言、旁听、冷却及持久回声；双 UE 场景独立取证。
+
+双 UE 短场景用提交 `362fef94` 构建的 WSL 原生 release、Hello 44、私有 PostgreSQL 和本机模型替身。首轮发现地图将 `LogVoxim` 压低，旧回放门漏读了已成功的登录。第二轮两端到达站位后发现驱动未把 Scene 的状态结构投影成 JSON。用当前 release 的真实结构和此前日志完成离线回归后，`short-03` 实际注册统一 NPC 临溪。玩家没有先发话，NPC 在两人同时可选时主动对 A 说话。A、旁听 B 与 NPC 自己收到同一会话 `3431057279571177255` 的第 1 句，两张 HUD 截图已逐张查看。PostgreSQL 读回带同一会话与目标的经历；首份日计划为空意图，已经落盘。
+
+原始场景总判定为红，原因是发言之后反思写作调用遇到模型替身未实现的自省请求，返回 422（`release.log` 的 `npc_reflect`）。保留 `failed.json`，`player-chain-review.json` 独立对账主动发言证据，`visual-review.json` 记录双图核对。拆屋后基于经历开口、真实模型的台词质量及跨日恢复是另有前提的场景。运行脚本与证据在 `.demo/observe/npc-active-speech-20261117/`，实际场景在其 `runs/short-03/`。该轮 Windows UDP 为 83 → 92 → 87，4266 记录号未变，客户端、release 与私有库均已回收。
+
+#### 步骤边界暂停的验证准备
+
+首例用正在采多格石料的居民。收到玩家经 Scene 发出的定向来话时，Runtime 等本次已经放行的 Body 步骤返回权威终态，暂缓下一步。Jev 在共享心智和这条来话下选继续或回复，回复沿原会话发出。回复结束后，原 Gather worker 从同一次调用的下一步继续，保留原采集进度。现有立即取消和结算继续服务它原有的场景。参照 [Epic 的事件驱动观察](https://dev.epicgames.com/documentation/en-us/unreal-engine/behavior-tree-in-unreal-engine---overview)、[BehaviorTree.CPP 的步间让出控制](https://behaviortree.dev/docs/nodes-library/SequenceNode/) 与 [Erlang 的信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html#delivery-of-signals)。一处 Runtime 步骤入口串行决定何时发下一步，Body 和 World 继续裁决各步的结果。
+
+可观测证据串起 Scene 的来话 `conversation_id/turn`、技能调用号、已结算步号、回复终态及恢复后的下一步号。先用受控来话与匹配／不匹配的 Outcome 钉住顺序，再经实际采集和玩家发言核对事务与材料余额。样本使用有限、可归因的同一场景。本节为下阶段设计准备。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 
