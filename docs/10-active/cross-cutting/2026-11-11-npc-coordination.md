@@ -331,6 +331,10 @@ release `ea49bd38`（`/home/dyz/npc-slice4-20261118/voxim_server`），四人同
 - 用量：选择 31 次、日计划 4、反思 6、说话 4（DeepSeek 计量见 `verdict.json`）。资源：UDP 85 → 83–89 → 88（基线 89），Tcpip 4266 记录号
   127958 未变，release 停、私有库已删、代理无残留。证据：`.demo/observe/npc-slice4-20261118/runs/slice4-04c/`。
 
+#### 扩到 5 个以上 NPC 与进青岚的最低标准（2026-11-18，决策稿待定）
+
+用户 2026-11-18 同意把两件合成一份稿：[`2026-11-18-npc-scale-and-qinglan-entry-decision.md`](2026-11-18-npc-scale-and-qinglan-entry-decision.md)。关键现状：生产机 2 核 / 7.2 GiB、World 冷重启峰值约 2.1 GiB，本机 Hindsight 常驻约 1 GiB 且在 CPU 上做嵌入；Hindsight 自己的模型用量不在 `npc_model_request` 里。进青岚清单 E1–E9（E1 说话已过），测试矩阵 M-1–M-4，等用户定 §6 的 D-1–D-4。
+
 #### 说话的双端实机复验：对话通道异步化之后（`lane-01`，2026-11-18，release `8a34c96f`）——通过
 
 - 范围：决策稿 §7 T1 的真实双客户端版（A 在居民采集途中经真实 UI 直呼，B 旁听；选择与写作用回环替身，动作、体素、Speech、
