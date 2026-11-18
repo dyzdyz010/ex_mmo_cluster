@@ -331,6 +331,24 @@ release `ea49bd38`（`/home/dyz/npc-slice4-20261118/voxim_server`），四人同
 - 用量：选择 31 次、日计划 4、反思 6、说话 4（DeepSeek 计量见 `verdict.json`）。资源：UDP 85 → 83–89 → 88（基线 89），Tcpip 4266 记录号
   127958 未变，release 停、私有库已删、代理无残留。证据：`.demo/observe/npc-slice4-20261118/runs/slice4-04c/`。
 
+#### 说话的双端实机复验：对话通道异步化之后（`lane-01`，2026-11-18，release `8a34c96f`）——通过
+
+- 范围：决策稿 §7 T1 的真实双客户端版（A 在居民采集途中经真实 UI 直呼，B 旁听；选择与写作用回环替身，动作、体素、Speech、
+  余额与记忆走真实模块）。T2–T5 由产品集成测试覆盖，不在本场景。驱动 `.demo/observe/npc-gather-reply-20261117/`（README“现行”一节），
+  旧契约的判定器与单测移到其 `superseded-729bb6b8/`。
+- 离线先行：新判定器、替身与阶段门 13 项单测，39 条反例各在自己的判定点被拒（含旧契约的步间暂停、静默、停下去说、被打断、
+  重复回复、错会话、丢收件）；dry-run 用同一 release 的 BEAM 核生成 RPC 里 35 个远程调用都存在。独立评审提 7 条，全部按反例修正后才实跑，
+  其中两条若不修会错判：来话时在途那一步的 destroy 会让暂停回归被判通过；`select.activities` 只留 5 项会让正确行为被判失败。
+- **机器判定通过、两张 HUD 逐图检查通过、离线复判与原判一致**。回合 `received` 时正在 `gather_stone`；替身扣住回合发问期间
+  World 记下本居民 damage +241 ms、damage +742 ms、destroy +1243 ms（相对回合开始）——回合未决定时采集照常推进；决定
+  `keep_working_and_answer`（产品侧 1754 ms）、同一会话第 2 句由 Scene 接纳、双端收件；Gather 四格做完（事务 8、15、22、29）、
+  活动记 `completed`；产品用量恰好一次 `dialogue_turn_selection`、一次 `dialogue_reply_write`，都在交互车道；回复进持久经历
+  `speech:1635370255153983905:2`。
+- 观察项（不属本场景判定）：B 端 HUD 截图相机贴近自身角色仰向天空，看不到场景；对话文字完整。
+- 资源：UDP 85 → 92 → 89（运行前 87），Tcpip 4266 记录号 127958 未变；release 停、私有库 `voxim-npc-gather-lane-01` 已删、无残留 beam / UE。
+  证据 `.demo/observe/npc-gather-reply-20261117/runs/lane-01/`（`verdict.json`、`recheck.json`、`visual-review.json`、
+  `during-turn.json`、`after-reply.json`、`gather.json`、`server.log`、`cleanup.json`）。
+
 #### 三 NPC 同场与交互／后台召回
 
 D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次创建的池。回环 keep-alive 改前的 250ms 超时以及启动冲突误停已有池都已红绿，4 个相关文件共 38 项绿，见 `.demo/dev-env/logs/test-20261118T040844Z.log`。

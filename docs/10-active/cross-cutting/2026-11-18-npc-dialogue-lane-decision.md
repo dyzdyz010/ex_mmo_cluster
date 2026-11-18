@@ -127,3 +127,5 @@ flowchart LR
 （`test-20261118T090011Z-full.log`）；最后一处 Runtime 改动之后决策稿 §7 的四个文件复跑 54 通过 / 1 排除
 （`test-20261118T090906Z-dialogue-lane-final.log`，之后无源码改动），`mix format --check-formatted` 通过。统筹会话逐段评审了差异，无阻断项。未删 `interrupt_policy` 形态被直接叫到时
   立即检查一次的旧路径（`npc_skill_brain_test` 与 README“中断策略”仍以它为契约，不属于 §3.4 的删除项）。
+- 2026-11-18（第十八个统筹会话）：**T1 的真实双客户端复验通过**（`lane-01`，release `8a34c96f`）：回合未决定时 World 照常记下本居民的
+  锤击与整格移除，决定“继续并答话”后同一会话第 2 句双端收件，采集记 `completed`。驱动、反例与证据见统筹页“说话的双端实机复验”一节。
