@@ -62,6 +62,13 @@ defmodule NpcServer.NpcSpeakTest do
 
     assert prompt =~ "I am looking after the plaza."
     assert prompt =~ "阿乔"
+
+    assert body["system"] =~
+             "Claim to have personally seen an event only when the state explicitly records that observation."
+
+    assert body["system"] =~
+             "If you address a specific incident and the motive is unknown, ask about it in character."
+
     refute Map.has_key?(body, "tools")
 
     assert_receive {:"$gen_cast",

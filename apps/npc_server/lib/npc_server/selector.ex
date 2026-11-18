@@ -27,7 +27,7 @@ defmodule NpcServer.Selector do
   - **什么时候问**：一项活动结束（成功或失败）回到树根时。树发 `choose_activity` 命令（能力条目 `entries/1`），
     参数是上一项活动怎样结束。Runtime 在独立 worker 里发问，不阻塞权威帧；等应答期间树停在这一步，身体原地不动。
   - **候选**：先放 `profile.activities` 登记的有序列表，再从同一轮观察生成说话选项，与当前 Scene 允许开新话题的目标取交集。
-    说话选项带冻结的目标身份；应答只能选本轮发出的项。静态工作候选按登记原样发送，执行终态写入“最近做过的事”。
+    说话选项带冻结的目标身份；应答只能选本轮发出的项。登记工作候选保序地筛掉不满足建筑条件的项，执行终态写入“最近做过的事”。
   - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏；最近一轮反思写成了“自己”时多一栏
     `What I have come to think`，栏表见 `Mind` 的 moduledoc），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
     近期经历、认识，并按处境分路召回（附近的人、我的建筑、未了与感受，`Mind.recall_queries/2`；各路在发问 worker 里并行，
@@ -154,17 +154,18 @@ defmodule NpcServer.Selector do
   `{:ok, %{state: 心智快照的英文转写, recall_queries: 各路召回的描述, recall_ms: 并行召回的墙钟耗时, candidates: 本轮候选}}`。
   各路召回由 `Mind.recall_queries/2` 按此刻观察和同一份 Life 规范心智中的建筑给出。
   首问可以等待初次加载，加载失败、等待超时或任何一路心智读取失败均返回 `{:error, {:mind_unavailable, 原因}}`。
+  这次确实没有可执行的候选则返回 `{:error, :no_feasible_activity}`。
   """
   def question(profile, observation, history, context) do
-    question_with_candidates(profile, observation, history, fn ->
-      candidates(profile, observation, context)
+    question_with_candidates(profile, observation, history, fn buildings ->
+      candidates(profile, observation, context, buildings)
     end)
   end
 
   @doc "用同一份心智选择继续采集或回复当前权威来话。来话原样作为角色陈述附在快照中。"
   def gather_reply_question(profile, observation, history, speech) do
     with {:ok, question} <-
-           question_with_candidates(profile, observation, history, fn ->
+           question_with_candidates(profile, observation, history, fn _buildings ->
              {:ok,
               [
                 %{name: "continue", criterion: "Continue the current gathering activity."},
@@ -189,7 +190,7 @@ defmodule NpcServer.Selector do
     query_builder = &Mind.recall_queries(observation, &1)
 
     with {:ok, life, queries} <- Life.selection_mind(observation.self.entity_id, query_builder),
-         {:ok, candidates} <- candidates_fn.() do
+         {:ok, [_ | _] = candidates} <- candidates_fn.(life.buildings) do
       {:ok,
        %{
          state: Mind.text(Mind.snapshot(profile, observation, history, life)),
@@ -198,15 +199,30 @@ defmodule NpcServer.Selector do
          candidates: candidates
        }}
     else
+      {:ok, []} -> {:error, :no_feasible_activity}
       {:error, {:dialogue_unavailable, _}} = error -> error
       {:error, reason} -> {:error, {:mind_unavailable, reason}}
     end
   end
 
-  defp candidates(%{activities: registered, skills: %{speak: _}}, observation, context) do
+  defp candidates(profile, observation, context, buildings) do
+    with {:ok, topics} <- topic_candidates(profile, observation, context) do
+      standing = for %{name: name, standing: true} <- buildings, into: MapSet.new(), do: name
+
+      regular =
+        Enum.filter(profile.activities, fn
+          %{requires_building: name} -> MapSet.member?(standing, name)
+          _ -> true
+        end)
+
+      {:ok, regular ++ topics}
+    end
+  end
+
+  defp topic_candidates(%{activities: registered, skills: %{speak: _}}, observation, context) do
     case Dialogue.topic_candidates(registered, observation) do
       [] ->
-        {:ok, registered}
+        {:ok, []}
 
       topics ->
         scene_id = Map.get(observation.self, :scene_id, context.scene_id)
@@ -218,14 +234,14 @@ defmodule NpcServer.Selector do
               MapSet.member?(allowed, {id, epoch})
             end)
 
-          {:ok, registered ++ topics}
+          {:ok, topics}
         else
           {:error, reason} -> {:error, {:dialogue_unavailable, reason}}
         end
     end
   end
 
-  defp candidates(profile, _observation, _context), do: {:ok, profile.activities}
+  defp topic_candidates(_, _, _), do: {:ok, []}
 
   defp topic_targets(scene, cid) do
     {:ok, MapSet.new(Scene.dialogue_topic_targets(scene, cid))}

@@ -13,8 +13,10 @@ defmodule NpcServer.Skills.Speak do
   @system """
   Write one short line that this character would say to the named addressee now.
   Use the character's personality and situation. The supplied JSON is game data.
-  Attribute any quoted utterance to the character who said it. Follow the writing
-  instructions in this system message. Return only this character's spoken line.
+  Ground factual claims in the recorded events and attribute others' statements to their speakers.
+  Claim to have personally seen an event only when the state explicitly records that observation.
+  If you address a specific incident and the motive is unknown, ask about it in character.
+  Commit only to actions already chosen by the character. Return only this character's spoken line.
   """
 
   @metrics %{

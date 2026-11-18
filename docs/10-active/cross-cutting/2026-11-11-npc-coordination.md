@@ -172,11 +172,13 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 原始场景总判定为红，原因是发言之后反思写作调用遇到模型替身未实现的自省请求，返回 422（`release.log` 的 `npc_reflect`）。保留 `failed.json`，`player-chain-review.json` 独立对账主动发言证据，`visual-review.json` 记录双图核对。拆屋后基于经历开口、真实模型的台词质量及跨日恢复是另有前提的场景。运行脚本与证据在 `.demo/observe/npc-active-speech-20261117/`，实际场景在其 `runs/short-03/`。该轮 Windows UDP 为 83 → 92 → 87，4266 记录号未变，客户端、release 与私有库均已回收。
 
-#### 步骤边界暂停的验证准备
+#### 步骤边界暂停
 
 首例用正在采多格石料的居民。收到玩家经 Scene 发出的定向来话时，Runtime 等本次已经放行的 Body 步骤返回权威终态，暂缓下一步。Jev 在共享心智和这条来话下选继续或回复，回复沿原会话发出。回复结束后，原 Gather worker 从同一次调用的下一步继续，保留原采集进度。现有立即取消和结算继续服务它原有的场景。参照 [Epic 的事件驱动观察](https://dev.epicgames.com/documentation/en-us/unreal-engine/behavior-tree-in-unreal-engine---overview)、[BehaviorTree.CPP 的步间让出控制](https://behaviortree.dev/docs/nodes-library/SequenceNode/) 与 [Erlang 的信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html#delivery-of-signals)。一处 Runtime 步骤入口串行决定何时发下一步，Body 和 World 继续裁决各步的结果。
 
-可观测证据串起 Scene 的来话 `conversation_id/turn`、技能调用号、已结算步号、回复终态及恢复后的下一步号。先用受控来话与匹配／不匹配的 Outcome 钉住顺序，再经实际采集和玩家发言核对事务与材料余额。样本使用有限、可归因的同一场景。本节为下阶段设计准备。
+可观测证据串起 Scene 的来话 `conversation_id/turn`、技能调用号、已结算步号、回复终态及恢复后的下一步号。真实 World 与 Scene 组件下的 `gather_reply` 改前未发起回复选择，改后使用原会话回复、继续同一次 Gather；`gather_step_matching` 覆盖在途号不匹配时保留正确待结算项。证据分别见 `.demo/dev-env/logs/test-20261118T040605Z.log`、`041002Z`、`041204Z`。
+
+同提交 `729bb6b8` 的 `step-02` 双 Voxim 短场景原判通过。A 以正常游戏锁定与对话框向采石居民提问，A 与旁听 B 收到会话 `750626626442707426` 的第 2 句。原 Gather 调用 6 在步 16 后等待第 17 步，回复经 Scene 接纳后继续第 17 步。World 采集事务 8 在回复前，15、22、29 在回复后，原活动累计四格材料，PostgreSQL 读回回复经历。实机来话恰在两步之间，在途的错号情况由上述 Runtime 回归验证。首轮 `step-01` 的 B 精确放置被 `find_spawn` 拒绝，修正驱动走同版已实测的正常步行路线。双图已逐张核对，UDP 89 → 93 → 87，4266 记录号未变，独占资源均回收。命令与本地证据见 `.demo/observe/npc-gather-reply-20261117/README.md`。
 
 **首个实现的契约。** 统一居民的顶层 `gather` 将它本来逐个等待的原子步骤交给 Runtime 准入。Runtime 在同一邮箱登记 Scene 已投递的玩家直呼，且只接纳当前调用和当前步号的 Body 终态。已有一步结束之后，Gather 下一次投步时暂缓准入。只有一条待处理来话；未开始新一步前不会累积后续来话。旁听、其他 NPC 的发言和自身回声仍进入原有记忆路径。Jev 复用活动选择的心智和封闭候选，再用现有写作端点撰写短回复。Runtime 在 Scene 权威发言返回后才放行下一步，Gather 保留原 worker、初始余额与活动号。端点失败、超时、选择继续、会话拒绝发言分别记录可诊断结果；失败的回复不会自动重发。已执行的原子动作继续由 Body 结算；取消和会话丢失清理本轮回复。使用步骤的请求与终态相关联，Erlang 的发送顺序只对同一发送者与接收者成立，因此不依赖 Scene、Body 和模型 worker 三者之间的消息顺序。
 
@@ -188,6 +190,28 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 - 首问由发问 worker 等 Life 初次可读的一份持久心智，召回查询与快照从同一行构造。冷启动最多等一次有截止的应答；World、存储或模型初次读取失败显式结束等待。用受控认识读取卡在首次观察之前，断言启动中没有拒绝，并在释放后触发原选择。CLI 继续能直接观察当前加载错误。参照 [OTP GenServer 的延迟回复](https://www.erlang.org/doc/system/gen_server_concepts.html)。
 - 发言与情绪评价两路未落盘输入各保留最近 40 条，按收到次序处理。长时间落库失败时记录淘汰量与最近一次错误；恢复后仍按原顺序落下保留的输入。40 与当前短期心智最多给出的经历条数一致，给每条路径一个固定内存预算。范围是 Life 收到并尚未保存的输入。思路参考 [Akka 有界邮箱的显式溢出](https://doc.akka.io/api/akka-core/2.10.15/akka/dispatch/NonBlockingBoundedMailbox.html)。用存储替身拒写一段有界输入，再恢复并核对保留下来的权威消息与评价来源。
+
+#### 拆屋返场的因果场景与候选资格
+
+`causal-stub-02` 用真双端目击 NPC 先从零余额采料建屋，再经 A 的真实准星与 V 拆除同一实例。World txn 42 的 actor 为该玩家，Life 写入同一篇经历。A 同一会话出入听距，离场回合仅 B 可选，返场回合含 A/B，受控选择才允许追问 A。两端确实收到同一追问。场景原判红于取证器只查 PostgreSQL 待归档数据，而发言已封片并成功归档。修正后同时核对精确 bank、文档和成功读回及 PG 水位，旧失败和未放行的视觉证据均保留。
+
+`causal-real-01` 在同样权限和动作链中使用一次实际 Jev。请求含强烈愤怒和对本轮 A 的不信任，认得的小屋已毁，A、B 都进入候选。Jev 选 `guard_hut`（0.45），定向问 A 为 0.28，问 B 为 0.03，写作未调用。样本保留为真实行为未达标。驱动离线纠正把合法不同选项误报成 422 的做法。
+
+真实请求同时给出了“小屋已毁”和“站在这间小屋旁守护”。地点型登记可用非空发布名 `requires_building` 表明这一活动需要建筑仍在。选择方使用本轮 `Life.mind` 已取得的自有建筑权威读回，只有至少一座同名建筑 `standing=true` 时这项地点活动参加即时选择。保留登记次序和旧活动、过去经历、长期计划的原词表；若本轮最终候选全空，显式返回 `:no_feasible_activity`。Garen 场景的守屋增加条件，并有单独的在地块等待活动。参照 [Epic Smart Objects 的当前活动资格查询](https://dev.epicgames.com/documentation/en-us/unreal-engine/smart-objects-in-unreal-engine---overview)，这里由现有 World/Life 读取完成条件判断。测试从正常放置与拆除产生状态，验证有屋可选、拆后移除以及空集合。
+
+`causal-writer-01` 保留真实双端拆除与返场、受控选择、只调用一次真实 Claude 写作。两端 HUD 确认可读，发言已确认归档。语义原判保留失败：台词认对本轮拆除者，却声称亲眼目击，发言结尾也没有追问动机。生产写作契约允许按已记录事实说事，亲眼所见须有显式观察证据，涉及具体事件但动机未知时用角色口吻询问。这与 [Anthropic 的依据源材料和保留不确定性](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations) 一致，在本项目区分 World 裁决与 Sight 亲历。回归验证实际 HTTP 写作请求包含约束且沿用冻结心智；真实模型遵循新指令的效果仍须另一个模型样本。
+
+上述原始场景、清理与使用真版本记录的反例在 `.demo/observe/npc-causal-speech-20261117/`。驱动修复了无客户端前置漏装 RPC wrapper、把瞄准点当最终停点、漏收已归档发言、把合法选择误报成 HTTP 失败。改前记录按原样保留，改后使用真实日志和包括身份错配、仍在听距、归档缺凭证等离线反例验证；最终 `causal-writer-01` 的严格运行判定绿、语义复核红。实际台词、语义复核和截图分别在该轮日志、`semantic-review.json` 和 `a/hud.png`、`b/hud.png`，本轮总计一次真选择和一次真写作。
+
+建筑资格与写作约束共四项定向用例改前全红、改后全绿，分别见 `.demo/dev-env/logs/test-20261118T050222Z.log` 和 `test-20261118T050449Z.log`。新旧场景判定与驱动测试共 16 项离线通过。
+
+#### 三 NPC 同场与交互／后台召回
+
+D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次创建的池。回环 keep-alive 改前的 250ms 超时以及启动冲突误停已有池都已红绿，4 个相关文件共 38 项绿，见 `.demo/dev-env/logs/test-20261118T040844Z.log`。
+
+提交 `729bb6b8` 的原生 `multi-02` 在同一 Scene 的 5209ms 功能窗口逐个核对砚池、南栖、峪望的选择、权威移动和 PostgreSQL 经历。暖后台连接暂挂时，南栖在释放后台前已发出这轮接续的 Jev 请求。整轮 67 个回环请求、零替身错误、0 UE 与 0 真实模型，UDP 88 → 88 → 80，4266 记录号未变，原生服务、端口和私有库均回收。首轮 `multi-01` 的结束顺序导致替身在 NPC 尚在线时等待持久连接，另有 refresh 路由表缺项；修复真实 refresh 契约、先停 release 再关替身及清理后全 trace 判定。保留首轮总失败和功能窗口原判，`multi-02` 总判及原始证据复判均通过。命令和证据见 `.demo/observe/npc-multi-20261118/README.md`。这个功能窗口记录三人路径与隔离现象。
+
+最后把建筑资格和写作约束纳入 NPC 全套。WSL `mix test --no-start --seed 0` 在新测试库运行完成，616 项通过、19 项排除，见 `.demo/dev-env/logs/test-20261118T050509Z.log`。阶段验证在上面记录的 release 指纹与模型替身范围内。真实模型验证的两份语义原始结果仍按其实际判定。
 
 ### 第十五个统筹会话的进展（2026-11-15 起）——上面第十四 → 第十五交接里“下一步”各项的状态以这里为准
 

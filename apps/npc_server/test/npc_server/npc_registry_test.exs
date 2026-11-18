@@ -77,6 +77,47 @@ defmodule NpcServer.NpcRegistryTest do
   }
 
   describe "brain/2" do
+    @tag :building_requirement_registration
+    test "only a place activity may declare a non-empty required building" do
+      [gather, rest] = @npc["activities"]
+
+      confront = %{
+        "name" => "confront",
+        "criterion" => "Face the person I distrust.",
+        "person" => "distrusted",
+        "stay_ticks" => 60
+      }
+
+      with_env(@npc_env, fn ->
+        guard = Map.merge(rest, %{"requires_building" => "small hut", "place_name" => "home"})
+
+        assert {Brain.Tree,
+                %{
+                  activities: [
+                    %{
+                      name: "rest_at_home",
+                      run: {:place, [2, -3.5], 600},
+                      place_name: "home",
+                      requires_building: "small hut"
+                    }
+                  ]
+                }} = NpcRegistry.brain("npc", %{@npc | "activities" => [guard]})
+
+        for unavailable <- [
+              Map.put(rest, "requires_building", ""),
+              Map.put(rest, "requires_building", nil),
+              Map.put(rest, "requires_building", 7),
+              Map.put(gather, "requires_building", "small hut"),
+              Map.put(confront, "requires_building", "small hut")
+            ] do
+          assert_raise_any(
+            fn -> NpcRegistry.brain("npc", %{@npc | "activities" => [unavailable]}) end,
+            unavailable
+          )
+        end
+      end)
+    end
+
     test "settler: the row's JSON becomes the Settler tree profile; skills build / gather are fixed" do
       params = %{
         "definition" => @hex,

@@ -1321,9 +1321,21 @@ What just happened: Nothing new.
     # 整座移除的标准句，处境说它没了。定义只有一格石料 {0,0,0}，以 “small hut” 为名发布；锚点微格 (32, 512, 64) =
     # 宏格 (4, 64, 8)（1 宏格 = 8 微格），这一格就是整座建筑，拆下它根实例就没了。实例身份 = {放下它的事务序号, 0}。
     # 期望句子手写（标准描述表 `:removed` 与处境句，原文同离线对照 s1c_diag.py 的 WHOLE_ALT、SIT_GONE）。
+    @tag :building_required_place
     @tag timeout: 120_000
-    test "a named building I placed is removed entirely: the experience says so and the situation says it is gone",
+    test "a named building I placed disappears from feasible guarding choices after removal",
          %{profile: profile, cid: cid, fixture: fixture} do
+      [north, south, rest] = profile.activities
+
+      guard = %{
+        name: "guard_hut",
+        criterion: "Stand beside the small hut and keep an eye on it.",
+        run: {:place, [4, 8], 120},
+        place_name: "home",
+        requires_building: "small hut"
+      }
+
+      profile = %{profile | activities: [north, guard, south, rest]}
       {body, _runtime, _recall} = start(profile, cid)
       world = fixture.world
 
@@ -1372,6 +1384,9 @@ What just happened: Nothing new.
       event(body, {:observation, observation(1, cid)})
       assert_receive {:jev_request, worker, request}
 
+      assert ["zeta_build_north", "guard_hut", "alpha_build_south", "rest_at_home"] ==
+               Enum.map(request.questions.activity.criteria.values, &elem(&1, 0))
+
       assert [
                ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
                  ~s|My building "small hut" at (4, 64, 8) is standing. Inventory: not checked yet.|
@@ -1393,7 +1408,10 @@ What just happened: Nothing new.
       skill_step(body, 2, :done, nil)
       assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
       event(body, {:observation, observation(3, cid)})
-      assert_receive {:jev_request, _worker, request}
+      assert_receive {:jev_request, worker, request}
+
+      assert ["zeta_build_north", "alpha_build_south", "rest_at_home"] ==
+               Enum.map(request.questions.activity.criteria.values, &elem(&1, 0))
 
       [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
       [situation] = Regex.run(~r/^Current situation: .*$/m, request.state)
@@ -1414,6 +1432,35 @@ What just happened: Nothing new.
       assert ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
                ~s|My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.| ==
                situation
+
+      send(worker, {:jev_reply, answer("guard_hut", 0.9)})
+
+      assert_receive {:runtime_outcome,
+                      %{verb: :choose_activity, status: :rejected, reason: {:unknown_activity, "guard_hut"}}}
+      refute_received {:command, _}
+    end
+
+    @tag :building_required_place
+    test "missing required buildings with no other candidates rejects without asking Jev",
+         %{profile: profile, cid: cid} do
+      rest =
+        profile.activities
+        |> List.last()
+        |> Map.put(:requires_building, "small hut")
+
+      {body, _runtime, _recall} = start(%{profile | activities: [rest]}, cid)
+      event(body, {:observation, observation(1, cid)})
+
+      assert_receive {:runtime_outcome,
+                      %{
+                        id: 1,
+                        verb: :choose_activity,
+                        status: :rejected,
+                        reason: :no_feasible_activity
+                      }}
+
+      refute_received {:jev_request, _, _}
+      refute_received {:command, _}
     end
 
     test "the first observation waits for the initial models and selects immediately after readiness",

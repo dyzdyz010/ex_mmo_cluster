@@ -29,10 +29,11 @@ defmodule NpcServer.Registry do
                     {"name": 候选名, "criterion": 同上, "person": 选择器, "stay_ticks": 同上}
                   技能只能是 build / gather / expand / travel（参数见 `NpcServer.Brain` 的共用技能命令）；去处由 travel 走过去。
                   “去找某人”的选择器只有 "distrusted"（附近信任 ≤ −0.2 中最低的那个人，`NpcServer.Mind.person/2`），
-                  选中时由 travel 走到他身边再待 stay_ticks。每项恰好四个键：place 与 person 同写、未知选择器都被拒。
-                  三种形状都可以另加第五个键 "place_name"：这项活动在哪里的名字（非空字符串，如 "the plaza"）。
+                  选中时由 travel 走到他身边再待 stay_ticks。每项有四个基本键，place 与 person 同写、未知选择器都被拒。
+                  三种形状都可以另加 "place_name"：这项活动在哪里的名字（非空字符串，如 "the plaza"）。
                   它只进记忆：活动结束时 Life 把它写成那条经历的 `place:<地名>` tag，召回按地点调取（`NpcServer.Life.activity/2`）；
                   不进给 Jev 的候选，也不决定去哪里。空串、非字符串被拒；不写就是没有地名（profile 里为 nil）。
+                  只有 place 项可以另加 "requires_building"（非空发布名）。本轮有至少一座同名自有建筑站立时才列为即时选项。
       tools       工具带（同 settler）。
       life        可省略。统一形态必带 Life：情绪与关系、近期经历、Hindsight 的认识与召回都经它进心智快照（`NpcServer.Mind`）。
                   省略或 true → Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`（没有即拒绝登记）；`{"url": 地址}` 显式给出；
@@ -507,11 +508,18 @@ defmodule NpcServer.Registry do
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}
 
-  # 统一形态的一项候选：技能调用，去一个地点待一段时间，或去找某人（按选择器）待一段时间；可选的地名 place_name
-  # （非空字符串）先拿出来，其余四个键按三种形状之一校验。没写地名的候选 place_name 为 nil。
+  # 统一形态的一项候选先取出可选字段，再按三种基本形状之一校验。没写地名的候选 place_name 为 nil。
   defp activity(%{"place_name" => place_name} = json)
        when is_binary(place_name) and place_name != "",
        do: %{activity(Map.delete(json, "place_name")) | place_name: place_name}
+
+  defp activity(%{"requires_building" => name, "place" => _} = json)
+       when is_binary(name) and name != "" do
+    json
+    |> Map.delete("requires_building")
+    |> activity()
+    |> Map.put(:requires_building, name)
+  end
 
   defp activity(
          %{"name" => name, "criterion" => criterion, "skill" => skill, "args" => args} = json
