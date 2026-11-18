@@ -225,6 +225,24 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 选择 2.2 s、205 入 / 99 出；写作一篇日记 10 s、3931 入 / 1042 出（思考 836），均 `finish_reason=stop`（`.demo/dev-env/logs/test-20261118T120413Z-live-deepseek.log`）。
 chat 形状单元用例的夹具取自这次真实回执；改前红 `test-20261118T120600Z-writer-openai-red.log`，改后绿 `test-20261118T121000Z-writer-openai-green.log`。薄片四（四张人格卡、真实模型）计划与驱动在本地 `.demo/observe/npc-slice4-20261118/`，用量已由用户确认。
 
+#### 薄片四首轮：四张人格卡、真实 DeepSeek（`slice4-01`，2026-11-18）
+
+release `ea49bd38`（`/home/dyz/npc-slice4-20261118/voxim_server`），四人同一份四项去处候选表，选择与写作走真实 DeepSeek `deepseek-flash`（effort medium = high），
+真实 Hindsight。运行前计划与期望在本地 `.demo/observe/npc-slice4-20261118/plan.md`，产物在其 `runs/slice4-01/`。总判定按运行前规则为**不通过**：
+
+- **Q1 链路 成立**：四人各 4–8 次成功选择，全部有权威 travel 与 Life 活动经历。
+- **Q2 差别 成立**：同一处境、同一候选表，四张卡的首选各不相同（4 种）；整窗分布也随卡偏移（独处卡 6/8 选 `sit_quietly_apart`，外向卡 5/8 选 `wait_at_the_walkway`）。
+- **Q3 用量 不成立（按规则）**：47 次请求，2 次未配对，都是停服前 1.5 s / 7 s 才发出、停服时仍在途的选择，不是记账遗漏；其余全部配对。
+- **Q4 隔离 判定器量错**：它把 7 次 `npc_select_failed reason=:timeout` 当成召回超时。实际 `mind_unavailable` / `recall_timeout` 为 0，两人 `retained > 0`，召回隔离未见失败。原判保留，驱动待修。
+- **Q5 说话候选 成立**：10 次发问的候选含 `speak_to:`，被选中 3 次，3 次 `speak` done。
+- **结构发现：选择延迟**。产品侧 36 次选择里 7 次 10 s 超时、1 次上游 504。代理计时（只含上游）中位 4.3 s、p90 8.1 s、最大 13.7 s，思考 64–1218 token；
+  上游超过 10 s 的只有 2 次，其余超时来自测试代理“对外在途 ≤ 3”的排队（代理计时不含排队，下轮要分开记）。总纲按 Jev 估的选择延迟是约 0.6 s，
+  DeepSeek 默认开思考（官方：缺省 high；`thinking: {"type": "disabled"}` 可关）使它与 10 s 的选择超时同量级。另有 2 次上游 504（URLError，一次选择、一次反思）。
+- 资源：UDP 94 → 97 → 92，Tcpip 4266 记录号未变，release 0.42 s 停，私有库已删，代理无残留连接。
+- **用户 2026-11-18 定：选择位置关思考**（写作位置不变）。产品新增可选 `NPC_JEV_THINKING`（`disabled` 发 `"thinking": {"type": "disabled"}`、不发 effort；
+  认不出的值登记即拒绝），主检出 `.env` 已写 `disabled`。真实冒烟 3 次：无思考内容，输出 35–49 token，冷连接约 2 s
+  （`.demo/dev-env/logs/test-20261118T123934Z-live-jev-nothinking.log`）。下一轮薄片四在新 release 上复跑，驱动同时修 Q4 判定与代理排队计时。
+
 #### 三 NPC 同场与交互／后台召回
 
 D-1b 将交互与后台取材分为两个连接池，启动失败只回收此次创建的池。回环 keep-alive 改前的 250ms 超时以及启动冲突误停已有池都已红绿，4 个相关文件共 38 项绿，见 `.demo/dev-env/logs/test-20261118T040844Z.log`。

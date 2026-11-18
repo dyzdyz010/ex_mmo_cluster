@@ -472,8 +472,24 @@ defmodule NpcServer.Registry do
               Map.put(endpoint, :max_tokens, String.to_integer(text) |> tap(&(true = &1 > 0)))
           end
 
+        # 可选 `NPC_JEV_THINKING`：`disabled` 关思考（`NpcServer.Jev` 发 DeepSeek 的 thinking 开关、不发 effort），
+        # `enabled` 或不写保持供应商缺省（开）。认不出的值明确拒绝。部署 2026-11-18 起写 disabled（用户定，依据见 Jev moduledoc）。
+        endpoint =
+          case System.get_env("NPC_JEV_THINKING") do
+            value when value in [nil, "enabled"] ->
+              endpoint
+
+            "disabled" ->
+              Map.put(endpoint, :thinking, "disabled")
+
+            other ->
+              raise ArgumentError,
+                    "NPC_JEV_THINKING 只接受 enabled / disabled，收到 #{inspect(other)}"
+          end
+
         Logger.info(
           "npc_jev_endpoint api=openai model=#{endpoint.model} " <>
+            "thinking=#{Map.get(endpoint, :thinking, "default")} " <>
             "effort=#{endpoint.reasoning_effort} " <>
             "max_tokens=#{Map.get(endpoint, :max_tokens, "default")}"
         )

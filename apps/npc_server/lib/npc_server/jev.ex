@@ -24,6 +24,9 @@ defmodule NpcServer.Jev do
     应答取 `choices[0].message.content` 里的 JSON `{"choice", "confidence", "reason"}`。**只有选择位置用它**
     （`Selector.top1`）；中断策略遇到这种应答一律当拿不准（继续），因为它要的 `noul`/多问一答的语义这里没有。
   - `endpoint.reasoning_effort`（`:low | :medium | :high`）给了就随请求发；没给就不发。
+  - `endpoint.thinking` 为 `"disabled"` 时发 `"thinking": {"type": "disabled"}`（DeepSeek《思考模式》的开关；思考缺省开、档位 high），
+    此时不发 `reasoning_effort`。依据：2026-11-18 薄片四首轮实跑，开思考时选择一次中位 4.3 s、最长 13.7 s，与 10 s 选择超时同量级；
+    选择只是封闭候选里挑一项，用户同日定选择位置关思考（写作位置不变）。
   """
   @confidence 0.85
   @behaviour NpcServer.Scheduler
@@ -143,9 +146,16 @@ defmodule NpcServer.Jev do
       ]
     }
 
-    case Map.get(endpoint, :reasoning_effort) do
-      nil -> body
-      effort -> Map.put(body, :reasoning_effort, to_string(effort))
+    # 关思考（`endpoint.thinking == "disabled"`）时发 DeepSeek 的 `thinking` 开关，不再发思考强度。
+    case endpoint do
+      %{thinking: "disabled"} ->
+        Map.put(body, :thinking, %{type: "disabled"})
+
+      %{reasoning_effort: effort} when effort != nil ->
+        Map.put(body, :reasoning_effort, to_string(effort))
+
+      _ ->
+        body
     end
   end
 

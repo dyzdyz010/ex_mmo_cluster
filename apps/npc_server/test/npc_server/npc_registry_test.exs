@@ -37,7 +37,9 @@ defmodule NpcServer.NpcRegistryTest do
   @jev_env %{
     "TYPESAFE_API_URL" => "http://127.0.0.1:9/jev",
     "TYPESAFE_API_KEY" => "test-key",
-    "TYPESAFE_MODEL" => "jev-test"
+    "TYPESAFE_MODEL" => "jev-test",
+    # 选择位置的思考开关不写（供应商缺省）；显式钉住，免得进程环境里的值串进来。
+    "NPC_JEV_THINKING" => nil
   }
   # 只测试：统一形态必带 Life，Hindsight 的地址取自运行环境；集成用例里指向本文件起的本机 HTTP 替身。
   # 只测试：反思写日记的接口同样取自运行环境；本文件不触发反思（地址是本机不监听的端口，不会被请求到外部）。
@@ -591,6 +593,41 @@ defmodule NpcServer.NpcRegistryTest do
         assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
         assert profile.jev.reasoning_effort == "high"
         assert profile.jev.max_tokens == 1024
+      end)
+
+      # 关思考（部署 2026-11-18 起）：端点带 thinking，请求体发 DeepSeek 的开关、不发 effort；不写时请求体两者都按缺省。
+      with_env(Map.put(openai, "NPC_JEV_THINKING", "disabled"), fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        assert profile.jev.thinking == "disabled"
+
+        body =
+          NpcServer.Jev.body(
+            profile.jev,
+            %{instructions: "Decide.", activities: %{"a" => "b"}},
+            "s"
+          )
+
+        assert body.thinking == %{type: "disabled"}
+        refute Map.has_key?(body, :reasoning_effort)
+      end)
+
+      with_env(openai, fn ->
+        assert {Brain.Tree, profile} = NpcRegistry.brain("npc", @npc)
+        refute Map.has_key?(profile.jev, :thinking)
+
+        body =
+          NpcServer.Jev.body(
+            profile.jev,
+            %{instructions: "Decide.", activities: %{"a" => "b"}},
+            "s"
+          )
+
+        refute Map.has_key?(body, :thinking)
+        assert body.reasoning_effort == "medium"
+      end)
+
+      with_env(Map.put(openai, "NPC_JEV_THINKING", "off"), fn ->
+        assert_raise ArgumentError, ~r/NPC_JEV_THINKING/, fn -> NpcRegistry.brain("npc", @npc) end
       end)
     end
   end

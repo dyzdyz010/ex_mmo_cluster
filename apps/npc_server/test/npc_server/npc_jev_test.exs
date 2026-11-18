@@ -442,6 +442,12 @@ defmodule NpcServer.NpcJevTest do
       timeout_ms: 60_000
     }
 
+    # 与 Registry 同一开关：`NPC_JEV_THINKING=disabled` 时关思考（部署 2026-11-18 起）。
+    endpoint =
+      if System.get_env("NPC_JEV_THINKING") == "disabled",
+        do: Map.put(endpoint, :thinking, "disabled"),
+        else: endpoint
+
     profile = %{
       instructions: "Decide what this character does next.",
       activities:
@@ -474,7 +480,8 @@ defmodule NpcServer.NpcJevTest do
     # 有没有思考内容（DeepSeek 思考模式默认开）、以及 usage（成本）。`NPC_JEV_EFFORT=medium` 时
     # `model` 回显不变，但按官方映射表实际跑的是 high——这一行只报实际发出的 effort，映射由文档负责。
     IO.puts(
-      "live_jev openai model=#{endpoint.model} effort=#{endpoint.reasoning_effort} " <>
+      "live_jev openai model=#{endpoint.model} thinking=#{Map.get(endpoint, :thinking, "default")} " <>
+        "effort=#{endpoint.reasoning_effort} " <>
         "picked=#{picked} confidence=#{confidence} elapsed_ms=#{elapsed} " <>
         "finish_reason=#{inspect(choice["finish_reason"])} " <>
         "has_reasoning=#{Map.has_key?(Map.get(choice, "message", %{}), "reasoning_content")} " <>
