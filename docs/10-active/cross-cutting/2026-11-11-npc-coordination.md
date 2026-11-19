@@ -17,6 +17,29 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 交接（2026-11-18，第十九个统筹会话 → 第二十个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-20-brief.md`
+
+**一句话**：CI 修绿；扩人数 M-1 / M-1b / M-2 通过；M-4 截断于 37.4 min、用户定采用其读数；每天花费上限用户定 **3 人 $50**；
+功能全覆盖（稿 A）与学技能（稿 B）两份决策稿已写成、**用户尚未答 §6**。明细见紧接着的“第十九个统筹会话的进展”与下文“扩到 6 人：M-1”一节。
+
+**用户 2026-11-18 最后定的**：按统筹会话建议推进下面三项；**驱动 UDP 守护“适当放宽”**；由统筹会话自己开新会话继续。
+
+**下一步（按此顺序）**
+1. **放宽驱动 UDP 守护**（Test-only，`.demo/observe/npc-slice4-20261118/run.py` 的 `guard` 与 `npc-active-speech-20261117/run.py` 的 `samples`，
+   扩人数驱动共用）。现状：任何一次采样命令超时（PowerShell 12 s / `ss` 6 s）就写 `abort` 停服，`scale3-direct-02` 因此在 37.4 min 误停（UDP 本身 83–90）。
+   建议放宽为：读取失败**连续 2 次**才停（单次失败记进 `udp.jsonl`）；PowerShell 采样超时 12 → 20 s；总量阈值（基线 + 32）、Tcpip 4266 新增即停、
+   beam.smp 端点连续增长即停**不放宽**（这些是资源硬约束本身）。先写反例（单次超时不停、连续两次停、两次之间成功则清零），再改；slice4 缺省可同步。
+2. **产品侧花费额度决策稿**（AGENTS §3.8，按扩人数稿 §3 的 SRE *Handling Overload* 依据）：每天 $50（首批 3 人）超出即拒后台请求；
+   难点是 Hindsight 自己调 DeepSeek（花费 84%）不经产品出站车道，额度要连它覆盖（选项：Hindsight 侧限额 / 产品控制刷新节奏 / 读回 Hindsight 用量做全局预算）。
+   写成报用户定，不实施。顺带评估认识刷新（`life.ex` `@refresh_ms 600_000`）放宽或按需刷新的成本收益（只评估，取值后调）。
+3. **M-3**（扩人数稿 §5：release 与 Hindsight 各在 `docker run` 限额内，`--memory 4600m --cpus 1.8`、`+S 2:2`，N = 3 / 6，不连客户端，窗口 10 min），新驱动：
+   离线 → 独立评审 → 实跑。注意 HEAD 每次提交都会让 release 指纹失配，实跑前重建（`npc-gather-reply-20261117/build-scale-release.sh`）。
+4. 稿 A / 稿 B 的 §6 等用户答复后再实施（稿 B Q-6 花费上限已定）。
+
+**环境（交接时）**：没有在跑的 release、beam、私有库；UDP 88，Tcpip 4266 记录号 127958 未变；常驻容器 `npc-s1g-hindsight-20261118`（18933）、
+`npc-dev-pg-20261117`（55480）不动。release `/home/dyz/npc-scale-20261118/voxim_server` 指纹 `21d14dec`（HEAD 已前进，用前重建）。
+Git Bash 的 `python` 现指向 WindowsApps 占位（退出 49），用 `/c/ProgramData/miniconda3/python.exe`；长跑驱动用 PowerShell `Start-Process` 脱开工具会话启动。
+
 ### 第十九个统筹会话的进展（2026-11-18 起）——上面第十八 → 第十九交接里“下一步”各项的状态以这里为准
 
 - **CI**：run 44361551924 红两项，都是测试自身的顺序 / 时序依赖（npc_server 几处测试把全局 Logger 级别硬写回 `:warning`；voxel_region 转化测试事后读序号与实时热步竞态），
