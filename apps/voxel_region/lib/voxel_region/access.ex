@@ -138,6 +138,7 @@ defmodule VoxelRegion.Access do
     tool_range: :read,
     tool_definition: :read,
     material_balances: :read,
+    production_options: :read,
     material_catalog: :read,
     beacon_directory: :read,
     prefab_catalog: :read,

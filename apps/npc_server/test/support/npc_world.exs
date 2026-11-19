@@ -8,7 +8,8 @@ defmodule NpcServer.NpcWorld do
   P1 NIF、真实 `Session.Claims`；NPC 的 Body 起在测试自己的 DynamicSupervisor 下（崩溃即按 transient 重启）。
 
   世界是作者写入的平地（世界 y ≤ 63 实心，石料 11），x、z 各 −64..127。属性目录：材料 0..23 同一组基础属性
-  （HP 100、防御 2），一把镐（tool 1：伤害 30 − 2 = 28，一格石料 4 击；射程 6 米、间隔 0.5 秒）；生产材料只有石料。
+  （HP 100、防御 2），一把镐（tool 1：伤害 30 − 2 = 28，一格石料 4 击；射程 6 米、间隔 0.5 秒）；生产材料缺省只有石料
+  （`start/1` 的 `material_rows` / `production_materials` 可加可食材料与配方产物，npc_offers_integration_test 用）。
   有限样本（采石堆、余额）只经作者入口（`World.apply_edits/2`、`World.material_supply/4`）一次写入并记账。
   `start/1` 断言采石前提（设计稿 §11 I3 第 7 步）：石料是本世界的生产材料、目录里没有 drop_table（否则挖掉不入账）。
   """
@@ -41,7 +42,10 @@ defmodule NpcServer.NpcWorld do
 
   @doc """
   起 World、Scene、Claims。opts：`prefab_access: true` 写入 L1–L5 结构 LOD（prefab 放置要读）；
-  `prefabs: [字节]` 作为作者目录（World 启动时载入）。返回 `%{world, scene, claims, root}`。
+  `prefabs: [字节]` 作为作者目录（World 启动时载入）；`material_rows: %{材料号 => 目录字段}` 给个别材料行补目录字段
+  （名称、可食 `food` 与一份 `place_units`、配方 `recipe_inputs` / `recipe_units`，形状同真实材料目录），0..23 之外的号
+  列在这里才进目录；`production_materials: [材料号]` 是本世界的生产材料（必须含石料，缺省只有石料）。
+  两项缺省时目录与生产材料同原来一样。返回 `%{world, scene, claims, root}`。
   """
   def start(opts \\ []) do
     root = Path.join(System.tmp_dir!(), "npc_fixture_#{System.unique_integer([:positive])}")
@@ -53,6 +57,7 @@ defmodule NpcServer.NpcWorld do
         do: File.write!(Path.join([root, "prefabs", hex(bytes) <> ".vxpd"]), bytes)
 
     catalog = Path.join(root, "properties.json")
+    rows = Keyword.get(opts, :material_rows, %{})
 
     File.write!(
       catalog,
@@ -61,14 +66,18 @@ defmodule NpcServer.NpcWorld do
         tags: [%{id: "damage"}],
         materials:
           for(
-            id <- 0..23,
-            do: %{
-              material_id: id,
-              max_hp_per_macro: if(id == 0, do: 0.0, else: 100.0),
-              defense: 2.0,
-              tags: [],
-              responses: [%{action: "damage", multiplier: 1.0}]
-            }
+            id <- Enum.uniq(Enum.to_list(0..23) ++ Enum.sort(Map.keys(rows))),
+            do:
+              Map.merge(
+                %{
+                  material_id: id,
+                  max_hp_per_macro: if(id == 0, do: 0.0, else: 100.0),
+                  defense: 2.0,
+                  tags: [],
+                  responses: [%{action: "damage", multiplier: 1.0}]
+                },
+                Map.get(rows, id, %{})
+              )
           ),
         tools: [
           %{
@@ -91,7 +100,7 @@ defmodule NpcServer.NpcWorld do
          name: :npc_fixture_world,
          property_catalog_path: catalog,
          prefab_catalog_path: Path.join(root, "prefabs"),
-         production_materials: [@stone]}
+         production_materials: Keyword.get(opts, :production_materials, [@stone])}
       )
 
     profile =

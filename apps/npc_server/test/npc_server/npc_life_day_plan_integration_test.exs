@@ -232,9 +232,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       "\n- speak_to: Walk up to someone and say one thing to them. " <>
         ~s|Optionally add "object": exactly one of "#{tobin_name}", "actor #{attacker}".|
 
-    golden = plan_request()["system"]
-    marker = "\n\nOr it is something you want to do"
-    {worker, _user} = await_plan_write(String.replace(golden, marker, line <> marker))
+    {worker, _user} = await_plan_write(plan_system(line))
     assert_received {:plan_system_checked, true}
 
     text =
@@ -675,8 +673,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   @tag timeout: 60_000
-  test "有写日记接口但候选表为空（不规划的形态）：收到 kind:event 后持久行的 plan 仍是空的一份" do
-    %{fixture: fixture, cid: cid} = planning(activities: [], experienced: false)
+  test "有写日记接口但没有候选表（不在选择层选活动、不规划的形态）：收到 kind:event 后持久行的 plan 仍是空的一份" do
+    %{fixture: fixture, cid: cid} = planning(activities: nil, experienced: false)
     damage(fixture.world, cid, 1, {5, 64, 8})
 
     NpcWorld.await(fn -> match?({:ok, %{pending_episodes: n}} when n >= 1, Life.observe(cid)) end)
@@ -805,7 +803,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     Logger.put_module_level(NpcServer.ModelUsage, :info)
     on_exit(fn -> Logger.delete_module_level(NpcServer.ModelUsage) end)
     sample = plan_sample("R3-r1")
-    plan_system = plan_request()["system"]
+    plan_system = plan_system()
 
     url =
       HttpStub.start(fn
@@ -854,7 +852,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   # 起一个开着规划的 Life（`journaling: false` 时不带写日记接口）：真实 World 与 NpcMemory，Life 的时钟是测试拨动的 Agent。
-  # `memory:` 换存储（保存失败的用例用 `RefusingStore`），`activities:` 换候选表（空表即不规划的形态）。
+  # `memory:` 换存储（保存失败的用例用 `RefusingStore`），`activities:` 换候选表（nil 是没有候选表、不规划的形态）。
   # 同一用例里起第二个 Life 时用 `fixture:` 共用同一个世界（世界进程是具名的，一个用例只起一个）。
   # 规划要求 NPC 有过至少一条经历，所以起好之后先接纳一条活动经历（还没有观察，不记账，“出生”的样子只差这一条）；
   # `experienced: false` 时不给（出生不触发的用例、要数经历条数的用例）。
@@ -876,7 +874,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
         %{clock: fn -> Agent.get(clock, & &1) end},
         Keyword.get(opts, :memory, DataService.NpcMemory)
       )
-      |> Map.put(:activities, Keyword.get_lazy(opts, :activities, &activities/0))
+      |> with_activities(Keyword.get_lazy(opts, :activities, &activities/0))
 
     # `speak: true`：配上说话技能（注册表的 `"npc"` 行总配，`Registry.brain/2`），规划词表多出说话一类。
     profile =
@@ -955,7 +953,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   # 等下一次规划写作，返回 `{worker, 用户消息}`；顺带核对系统提示词与期望逐字节相同（结果放进邮箱）。期望缺省是 S1-R8 的
   # 真实请求体（没配说话的词表）；配了说话的用例传入自己的期望。
   # 途中到来的反思写作（kind:event 也触发反思；系统提示词不同）一律给写作接口真实形状的失败（`Writer.write/3` 的 `:timeout`）。
-  defp await_plan_write(plan_system \\ plan_request()["system"]) do
+  defp await_plan_write(plan_system \\ plan_system()) do
     receive do
       {:write, worker, ^plan_system, user} ->
         send(self(), {:plan_system_checked, true})
@@ -974,7 +972,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
   # 这段时间里没有起规划写作（只认规划的系统提示词；途中到来的反思写作留在邮箱里，由下一次 `await_plan_write/0` 处理）。
   defp refute_plan_write(ms) do
-    plan_system = plan_request()["system"]
+    plan_system = plan_system()
     refute_receive {:write, _, ^plan_system, _}, ms
   end
 
@@ -994,9 +992,12 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   # 一项活动结束时 Runtime 交给 Life 的经历：经 Selector 的产品函数做出（选定 → 结局 → 经历）。
+  # 选中的候选是登记项生成器（`Offers.registered/2`）给出的那一份（`Selector.ask/4` 把它整份冻结进选择）。
   defp finished(profile, name, result) do
     selection = %{
       activity: name,
+      candidate:
+        Enum.find(NpcServer.Offers.registered(profile.activities, []), &(&1.name == name)),
       trigger: "start",
       confidence: 0.6,
       latency_ms: 1,
@@ -1004,17 +1005,29 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       model: "test"
     }
 
-    {_trigger, state} =
-      Selector.new() |> Selector.chose(selection, profile, 0) |> Selector.ended(result)
-
-    Selector.experience(state, profile)
+    {_trigger, state} = profile |> chosen(selection) |> Selector.ended(result)
+    Selector.experience(state)
   end
 
-  # 一项说话活动结束时的经历：选定的是生成器做出的说话候选（Selector 把它记作 `topic`，同 `Selector.ask/4` 选中说话项）。
+  # 选定一项：Runtime 在应答之前一定先记下这次所问的内容（`Selector.asked/2`，`chose/3` 的日志从它取候选），
+  # 候选是登记项生成器给出的那一组再加上选中的这一份（说话候选由生成器另做）。
+  defp chosen(profile, selection) do
+    Selector.new()
+    |> Selector.asked(%{
+      state: "",
+      recall_queries: [],
+      recall_ms: 1,
+      candidates:
+        Enum.uniq(NpcServer.Offers.registered(profile.activities, []) ++ [selection.candidate])
+    })
+    |> Selector.chose(selection, 0)
+  end
+
+  # 一项说话活动结束时的经历：选定的是生成器做出的说话候选（Selector 把它记作 `candidate`，同 `Selector.ask/4` 选中的候选）。
   defp finished_speaking(profile, candidate, result) do
     selection = %{
       activity: candidate.name,
-      topic: candidate,
+      candidate: candidate,
       trigger: "start",
       confidence: 0.6,
       latency_ms: 1,
@@ -1022,15 +1035,30 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       model: "test"
     }
 
-    {_trigger, state} =
-      Selector.new() |> Selector.chose(selection, profile, 0) |> Selector.ended(result)
-
-    Selector.experience(state, profile)
+    {_trigger, state} = profile |> chosen(selection) |> Selector.ended(result)
+    Selector.experience(state)
   end
 
   defp dones(plan), do: Enum.map(plan.row["intents"], & &1["done"])
   defp advance(clock, ms), do: Agent.update(clock, &(&1 + ms))
   defp now(clock), do: Agent.get(clock, & &1)
+
+  # 候选表：`nil` 是不在选择层选活动的形态（profile 没有 `activities` 键，不规划）。
+  defp with_activities(profile, nil), do: profile
+  defp with_activities(profile, activities), do: Map.put(profile, :activities, activities)
+
+  # 产品拼出的规划系统提示词：S1-R8 金标（`requests-R1.json`，六个静态种类）的工作列表末尾多出生成的种类——
+  # `speak_line` 是配了说话时的那一行（稿 A 批 0b），其后是每个带候选表的形态都有的进食与合成（批 1，不可点名对象）；
+  # 其余逐字节不变。
+  @generated_kinds "\n- eat: Eat one serving of something edible from my inventory." <>
+                     "\n- craft: Craft something from materials in my inventory."
+  @after_kinds "\n\nOr it is something you want to do"
+
+  defp plan_system(speak_line \\ "") do
+    golden = plan_request()["system"]
+    [_, _] = String.split(golden, @after_kinds)
+    String.replace(golden, @after_kinds, speak_line <> @generated_kinds <> @after_kinds)
+  end
 
   defp plan_sample(name), do: plan_fixture("s1r8-#{name}.json")
   defp plan_request, do: plan_fixture("requests-R1.json")

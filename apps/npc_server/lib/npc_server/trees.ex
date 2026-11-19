@@ -116,13 +116,21 @@ defmodule NpcServer.Trees do
   每一轮先发 `choose_activity`（`NpcServer.Selector`，异步问 Jev），应答写进黑板 `:choice`，再执行被选中的那一项直到它结束，
   结局（`:success` / `:failure`）写进黑板 `:ended`；下一轮发问时把它连同失败原因报给选择器。
 
-  profile：`activities` 是有序候选表 `[%{name:, criterion:, run:}]`（`NpcServer.Registry` 在登记边界构造）。`run` 三种：
+  profile：`activities` 是有序候选表 `[%{name:, criterion:, run:}]`（`NpcServer.Registry` 在登记边界构造）。登记项的分支在建树时
+  按 `run` 静态生成，守卫是“所选候选名等于它”；`run` 三种：
 
   | run | 分支 |
   |---|---|
   | `{:skill, 能力名, 参数}` | 一次技能调用（参数是 JSON 形，原样透传给技能）；技能的终态就是这项活动的结局 |
   | `{:place, [x, z], ticks}` | `travel` 到该地点，再原地待 `ticks`（60 Hz）；走不到则失败 |
   | `{:person, 选择器, ticks}` | 分支开始时按选择器从树手里最新的观察与 Life 关系选一个人（`NpcServer.Mind.person/2`），`travel` 到他身边（水平 2.0 米内），再原地待 `ticks`；选不到人（`nobody_distrusted`、`life_not_ready`）不发 travel，这一项以 travel 失败结束；目标离开（`stale_target`）或走远（`target_moved`）同样失败 |
+
+  生成的候选（`NpcServer.Offers`）建树时还不存在，分支按种类建，参数取选择应答里冻结的那一份（Runtime 放进 done 的 data）：
+
+  | 应答带的 | 分支 |
+  |---|---|
+  | `speech: 目标`（说话候选，配了 speak 技能才有这条分支） | 一次 `speak` 技能调用，参数就是这个目标 |
+  | `action: {动作名, 参数}`（背包候选，每个 `Offers.acts/0` 的动作一条分支；键名与登记项的分支规格 `run` 分开） | 一条世界动作命令（`eat` / `craft`，参数 `%{"material" => 材料号}`）；World 的 done 就是完成，拒绝（如可行性过时 `insufficient_material`）就是这一项以该动作失败结束 |
 
   | 规则 | 内容 |
   |---|---|
@@ -135,17 +143,24 @@ defmodule NpcServer.Trees do
   def npc(profile) do
     choose = {:act, "choose_activity", &ended_args/1, store: :choice}
 
-    # 根下各分支按黑板取用：只有名字等于所选活动的分支往下走；它失败时其余分支的守卫都为假，整段失败。
+    # 根下各分支按黑板取用：只有守卫为真的那一条往下走（登记项按候选名，生成的候选按应答里冻结的参数）；
+    # 它失败时其余分支的守卫都为假，整段失败。
     registered =
       for activity <- profile.activities do
         {:seq, [{:cond, &chosen?(&1, &2, activity.name)}, run(activity.run)]}
       end
 
+    # 背包候选（`Offers.eat/2` / `craft/2`）：每个世界动作一条分支，参数取应答里冻结的 `action`。
+    acts =
+      for act <- NpcServer.Offers.acts() do
+        {:seq, [{:cond, &acting?(&1, &2, act)}, {:act, act, &act_args/1}]}
+      end
+
     branches =
       if get_in(profile, [:skills, :speak]) do
-        [{:seq, [{:cond, &speaking?/2}, {:act, "speak", &speech_args/2}]} | registered]
+        [{:seq, [{:cond, &speaking?/2}, {:act, "speak", &speech_args/2}]} | registered ++ acts]
       else
-        registered
+        registered ++ acts
       end
 
     round = {:seq, [choose, {:succeed, {:sel, branches}, store: :ended}]}
@@ -173,6 +188,11 @@ defmodule NpcServer.Trees do
   defp speaking?(_blackboard, _observation), do: false
 
   defp speech_args(%{choice: %{speech: args}}, _observation), do: args
+
+  defp acting?(%{choice: %{action: {act, _args}}}, _observation, act), do: true
+  defp acting?(_blackboard, _observation, _act), do: false
+
+  defp act_args(%{choice: %{action: {_act, args}}}), do: args
 
   # 上一项活动怎样结束：还没有任何活动结束过（没选过，或第一项活动进行中被对话回合 halt、树从根重来）→ 都是 null；
   # 发问失败后重问时黑板没变，报的是同一份（选择器不重复记账；halt 后报的旧结局同样不记）。

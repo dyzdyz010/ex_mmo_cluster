@@ -10,8 +10,8 @@ defmodule NpcServer.NpcLifeTest do
   alias SceneServer.Movement.Scene
   alias VoxelRegion.World
 
-  # 反思用例的 Hindsight 替身与“别人打掉我放的一格”的 World 动作（与日计划的 Life 集成用例共用）。
-  alias NpcServer.LifeFixtures.ReflectHindsight
+  # 反思用例的 profile（Hindsight 替身 `LifeFixtures.ReflectHindsight` 由它带上）与“别人打掉我放的一格”的 World 动作
+  # （与日计划的 Life 集成用例共用）。
   import NpcServer.LifeFixtures, only: [damage: 4, actor: 1, reflect_profile: 3]
 
   defmodule Hindsight do

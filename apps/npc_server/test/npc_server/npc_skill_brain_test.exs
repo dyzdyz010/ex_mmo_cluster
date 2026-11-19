@@ -245,7 +245,9 @@ defmodule NpcServer.NpcSkillBrainTest do
       assert_receive {:script_outcome,
                       %{id: 1, verb: :build, status: ^status, reason: ^reason} = outcome}
 
-      if status == :done, do: assert(outcome.data.seq == 41)
+      # 成功的那一例带世界回执的事务号，拒绝的那一例没有回执（data 为 nil）：按本例的 data 取期望，
+      # 不在编译期已知的 status 上比较（那样一例里恒假、类型检查告警）。
+      for %{seq: seq} <- [data], do: assert(outcome.data.seq == seq)
       refute_receive {:script_outcome, _}, 50
       refute_receive {:command, _}, 50
     end

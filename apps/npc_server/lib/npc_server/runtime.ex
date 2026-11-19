@@ -19,11 +19,12 @@ defmodule NpcServer.Runtime do
   `observe` 的 `dialogue_turn` 是在途回合（`nil` 或 `%{phase: :deciding | :speaking, conversation_id:, turn:, speaker_id:, speaker_epoch:, started_ms:}`）。
 
   活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
-  （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
-  发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
+  （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`，
+  选中的是生成的候选时另带它冻结的执行参数：说话 `speech: 目标`、进食 / 合成 `action: {动作名, 参数}`；心智或候选读不到、
+  发问失败或 worker 崩溃是 rejected）。选中的候选整份记进选择器状态（`select.activities[].candidate`），活动结束时的经历读它。等应答期间本进程照常处理观察与其他命令。
   选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
   一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
-  （`Life.activity/2`，`Selector.experience/2` 的结果）。上一项经历保存成功后才发问；失败由 Life 保留同一输入继续提交。
+  （`Life.activity/2`，`Selector.experience/1` 的结果）。上一项经历保存成功后才发问；失败由 Life 保留同一输入继续提交。
   `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
   """
   require Logger
@@ -359,7 +360,7 @@ defmodule NpcServer.Runtime do
   defp execute(%{preselected: selection} = state, %{verb: :choose_activity} = command)
        when selection != nil do
     parent = self()
-    experience = Selector.experience(state.select, state.profile)
+    experience = Selector.experience(state.select)
     life = state.life
 
     {_pid, ref} =
@@ -383,7 +384,7 @@ defmodule NpcServer.Runtime do
     history = Selector.history(select)
 
     # 经历是“做了什么、结果如何”：一项活动刚结束时记一条。发问失败后的重问（retry）带的是同一份报告，不再记。
-    experience = if trigger in ["completed", "failed"], do: Selector.experience(select, profile)
+    experience = if trigger in ["completed", "failed"], do: Selector.experience(select)
     life = state.life
 
     {_pid, ref} =
@@ -422,12 +423,9 @@ defmodule NpcServer.Runtime do
           # 新活动从这里开始：Life 从此记它期间谁靠近过，结束时写进这项活动的经历。
           NpcServer.Life.activity_started(state.life)
 
-          data = %{activity: selection.activity}
+          data = Map.merge(%{activity: selection.activity}, frozen(selection.candidate))
 
-          data =
-            if selection[:topic], do: Map.put(data, :speech, selection.topic.target), else: data
-
-          {Selector.chose(state.select, selection, state.profile, cid),
+          {Selector.chose(state.select, selection, cid),
            %{status: :done, reason: nil, data: data}}
 
         {:error, reason} ->
@@ -440,6 +438,13 @@ defmodule NpcServer.Runtime do
       Map.merge(outcome, %{id: id, verb: :choose_activity})
     )
   end
+
+  # 生成的候选在建树时还不存在，它在发问那一刻冻结的执行参数随应答（done 的 data）交给树（`Trees.npc/1`）：
+  # 说话候选的目标（`speech`，交给 speak 技能）、背包候选的世界动作（`action`，按动作名建的分支原样执行）。
+  # 登记项的分支在建树时已按登记参数（候选的 `run`）静态生成，只按候选名选分支，这里不带任何参数。
+  defp frozen(%{target: target}), do: %{speech: target}
+  defp frozen(%{action: action}), do: %{action: action}
+  defp frozen(_candidate), do: %{}
 
   defp emit(state, outcome) do
     send(state.body, {:npc_runtime_outcome, outcome})

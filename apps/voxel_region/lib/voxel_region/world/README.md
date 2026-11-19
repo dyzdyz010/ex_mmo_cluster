@@ -50,6 +50,11 @@ sequenceDiagram
 
 想改某类玩法时，从“玩法意图”一行找到模块；想知道某条消息读哪些页，看 `Closure`；想知道它能否被某个主体发起，看 `../access.ex`。
 
+进食（生产意图 action 5）与合成（action 4）的可行性门槛只写在 `Production.consumable/3`、`Production.craftable/3` 一处：
+提交（`consume/3`、`craft/3`）与只读查询 `World.production_options/2`（角色此刻能吃一份 / 能合成一次的材料，`Production.feasible/2`，
+不装页、不改世界）共用同一组判定。调用方（如 NPC 的背包候选 `NpcServer.Offers`）读这个查询，不自己镜像条件；
+执行时 World 仍按提交那一刻的状态重新裁决。
+
 ## 必须守住的不变量
 
 1. **唯一写者**：只有 World 进程改世界状态；其他进程拿到的是快照或增量。

@@ -8,7 +8,6 @@ defmodule NpcServer.NpcBodyWorldTest do
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
-  require Logger
   alias NpcServer.{Abilities, Body, Life, Runtime}
   alias MmoContracts.Voxel.Codec
   alias SceneServer.Movement.{Player, Scene}

@@ -146,21 +146,80 @@ defmodule VoxelRegion.World.Production do
     end
   end
 
-  # 全局系统功能（身体闭环 H1）：进食 = 生产意图 action 5，material = 可食材料（目录“可食”轴 food），一次吃一株 = place_units。
-  # 余额足额才扣一株；food_ledger 记累计吃掉的单位，营养收据与扣料同笔持久化。
-  # Scene 从 canonical snapshot/delta 按本角色的 World 游标吸收收据，身体真值仍在 Scene。
-  def consume(before, actor, request) do
-    food = get_in(before, [Access.key(:properties), Access.key(:materials, %{}), request.material, "food"])
-    units = build_cost(before, request.material)
+  @doc """
+  进食门（生产意图 action 5 能不能吃这一份）：目录有可食轴 `food` 且是本世界的生产材料，否则 `:not_edible`；
+  角色余额至少一份（一份 = `build_cost/2`，即目录 `place_units`），否则 `:insufficient_material`。可行时 `{:ok, %{food:, units:}}`。
+  提交（`consume/3`）与只读查询（`feasible/2`）共用这一处判定，条件只写在这里。
+  """
+  def consumable(state, cid, material) do
+    food = get_in(state, [Access.key(:properties), Access.key(:materials, %{}), material, "food"])
+    units = build_cost(state, material)
 
     cond do
-      food == nil or request.material not in before.production_materials ->
-        {:error, :not_edible}
+      food == nil or material not in state.production_materials -> {:error, :not_edible}
+      balance_state(state, cid, material).balance < units -> {:error, :insufficient_material}
+      true -> {:ok, %{food: food, units: units}}
+    end
+  end
 
-      balance_state(before, actor.cid, request.material).balance < units ->
+  @doc """
+  合成门（生产意图 action 4 能不能合成这一份）：产物行有配方 `recipe_inputs` 且产物是本世界的生产材料，否则 `:unknown_recipe`；
+  配方的**每一条**输入都按角色的真实余额比较（输入本身是不是生产材料不论，没有余额即 0），任一条不够即
+  `:insufficient_material`。可行时 `{:ok, 产物目录行}`。提交（`craft/3`）与只读查询（`feasible/2`）共用这一处判定。
+  """
+  def craftable(state, cid, material) do
+    product = Map.get(state.properties.materials, material, %{})
+
+    cond do
+      not Map.has_key?(product, "recipe_inputs") or material not in state.production_materials ->
+        {:error, :unknown_recipe}
+
+      Enum.any?(product["recipe_inputs"], &(balance_state(state, cid, &1["material_id"]).balance < &1["units"])) ->
         {:error, :insufficient_material}
 
       true ->
+        {:ok, product}
+    end
+  end
+
+  @doc """
+  只读（`VoxelRegion.World.production_options/2`）：某角色此刻能吃一份、能合成一次的材料。逐个生产材料（材料号升序）过
+  `consumable/3` 与 `craftable/3`——与提交同一判定，不另写条件；两道门都要求生产材料，所以只看生产材料不漏项。
+  返回 `%{seq:, eat: [%{material:, name:, units:}], craft: [%{material:, name:, inputs: [%{material:, units:}], units:}]}`：
+  `seq` 是读到的事务位置；`name` 是目录 `display_name`（没有为 nil）；进食的 `units` 是一份，合成的 `inputs` 按配方原序、
+  `units` 是一次合成的产物单位。不改世界。执行时 World 仍按提交那一刻的状态重新裁决。
+  """
+  def feasible(state, cid) do
+    materials = Enum.sort(state.production_materials)
+
+    eat =
+      for material <- materials, {:ok, %{units: units}} <- [consumable(state, cid, material)],
+        do: %{material: material, name: display_name(state, material), units: units}
+
+    craft =
+      for material <- materials, {:ok, product} <- [craftable(state, cid, material)],
+        do: %{
+          material: material,
+          name: product["display_name"],
+          inputs: Enum.map(product["recipe_inputs"], &%{material: &1["material_id"], units: &1["units"]}),
+          units: product["recipe_units"]
+        }
+
+    %{seq: state.seq, eat: eat, craft: craft}
+  end
+
+  defp display_name(state, material),
+    do: get_in(state, [Access.key(:properties), Access.key(:materials, %{}), material, "display_name"])
+
+  # 全局系统功能（身体闭环 H1）：进食 = 生产意图 action 5，material = 可食材料（目录“可食”轴 food），一次吃一株 = place_units。
+  # 余额足额才扣一株（`consumable/3`）；food_ledger 记累计吃掉的单位，营养收据与扣料同笔持久化。
+  # Scene 从 canonical snapshot/delta 按本角色的 World 游标吸收收据，身体真值仍在 Scene。
+  def consume(before, actor, request) do
+    case consumable(before, actor.cid, request.material) do
+      {:error, _} = refused ->
+        refused
+
+      {:ok, %{food: food, units: units}} ->
         {state, paid} = settle_material(before, actor.cid, request.material, -units)
         ledger = Map.update(state.food_ledger, request.material, units, &(&1 + units))
         seq = before.seq + 1
@@ -185,20 +244,11 @@ defmodule VoxelRegion.World.Production do
   end
 
   # 全局系统功能（R8-04 增量 2）：黑盒构件只能按目录配方从库存合成（生产意图 action 4，material = 产物，一次一份）。
-  # 输入全部足额才整笔扣减、产物入库；合成账 craft_ledger 记各材料累计净变化。拆掉产物只返还产物本身（不可拆回原料）。
+  # 输入全部足额（`craftable/3`）才整笔扣减、产物入库；合成账 craft_ledger 记各材料累计净变化。拆掉产物只返还产物本身（不可拆回原料）。
   def craft(before, actor, request) do
-    product = Map.get(before.properties.materials, request.material, %{})
-
-    cond do
-      not Map.has_key?(product, "recipe_inputs") or request.material not in before.production_materials ->
-        {:error, :unknown_recipe}
-
-      Enum.any?(product["recipe_inputs"], &(balance_state(before, actor.cid, &1["material_id"]).balance < &1["units"])) ->
-        {:error, :insufficient_material}
-
-      true ->
-        delta = Map.put(Map.new(product["recipe_inputs"], &{&1["material_id"], -&1["units"]}), request.material, product["recipe_units"])
-        convert(before, actor, delta, "voxel_craft", "product=#{request.material}")
+    with {:ok, product} <- craftable(before, actor.cid, request.material) do
+      delta = Map.put(Map.new(product["recipe_inputs"], &{&1["material_id"], -&1["units"]}), request.material, product["recipe_units"])
+      convert(before, actor, delta, "voxel_craft", "product=#{request.material}")
     end
   end
 

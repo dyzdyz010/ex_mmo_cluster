@@ -93,7 +93,7 @@ flowchart LR
   全部技能）算出的 `Abilities.entries/1` 名字集合，多一个少一个都红；`offer` 必有生成器，`withheld` 理由非空。做法与能力库设计稿 §6“不进 Abilities 的能力”相同，上移一层。
 - **A-2 候选 = 技能 × 眼下可行对象**。每个 `offer` 一个纯函数生成器：输入本轮观察、Life 规范心智里已有的栏（如自己的建筑）与目录（`read_catalog` 已有），
   输出 `%{name, kind, criterion, args, place_name}`；名字 `种类:对象`（沿用 `speak_to:` 的避让规则），参数在本轮冻结、执行时原样用，World 仍裁决。
-  需要额外 World 只读查询的种类每轮至多一次，并进发问 worker 已有的并行读取。静态登记只保留作者写的地理（place / person 与地名），它们不是系统能力。
+  需要额外 World 只读查询的种类每轮至多一次，并进发问 worker 已有的并行读取。（批 1 实际做法：召回之后顺序读一次 `World.production_options/2`，见 §7“批 1 开工”“批 1 评审修正”。）静态登记只保留作者写的地理（place / person 与地名），它们不是系统能力。
   `speak_to:` 迁成第一个生成器，行为不变。
 - **A-3 Jev 只在技能层选**，不逐原语组合。量级：一次 gather 在技能里是几十步原子动作（look / probe_toward / use_tool / query_balances），逐步问 Jev 按中位 3.7 s
   算是分钟级纯等待、几十倍 token；一次技能选择是 3.7 s / 约 1.1k。组合写在技能里——手写，或按稿 B 由 NPC 自己写成树。
@@ -107,7 +107,7 @@ flowchart LR
 | 批 | 内容 | 为什么这样排 |
 |---|---|---|
 | 0 | 覆盖登记 + 覆盖测试；`speak_to:` 迁入生成器；计划词表改为种类 + 对象 | 无行为变化，先把唯一来源与缝立起来 |
-| 1 | `eat`、`craft`（单个世界动作，候选的 `run` 加一种 `{:act, 名, 参数}`） | 没有空间参数，最小地验证生成器、冻结参数与计划记账 |
+| 1 | `eat`、`craft`（单个世界动作，候选的 `run` 加一种 `{:act, 名, 参数}`；批 1 实际改为独立的 `action:` 键，见 §7） | 没有空间参数，最小地验证生成器、冻结参数与计划记账 |
 | 2 | `gather`（盒由附近 survey / look 算出，替代手写盒）、`use_tool` 的点火 / 加热 / 冷却 / 电路开关（对象来自 inspect）、`dismantle`（只列自己放的） | 用上材料与局部场系统 |
 | 3 | `build` / `expand`（定义取自目录或自己发布的）、`attach` / `detach`、`scoop` / `pour`、prefab replace | 空间参数最多，放在缝稳定之后 |
 | 4（后期） | 施法（`"npc"` 读 `spells`）；`design_house` 作为“一项由 LLM 执行的活动” | 要新授予或写作预算，与 `Brain.Llm` 收编同一议题 |
@@ -180,3 +180,113 @@ flowchart LR
 - 2026-11-19（第二十二个统筹会话）：**A-5 的“不建目标层”被推翻**（用户 2026-11-19 在对话里认可，原话：“全部同意”）：多步固定套路仍放进技能，
   但依赖执行反馈的长程任务要一层由 Life 持有的“任务”，LLM 在步骤有结果时推进下一步（种类 + 对象），任务步作为 Jev 的候选。五条概念见统筹页“第二十二个统筹会话的进展”，
   正文待任务层决策稿。上一条 S1-R8b 的 (a) / (b) 二选一不再单独定，并入任务层稿件。批 1（eat / craft）不受影响。
+- 2026-11-19（第二十二个统筹会话）：**批 1 开工**。T-A5 三项前提用户定为都可以（用户 2026-11-19 在对话里答复，原话：“都可以，开工”）：NPC 余额可由作者入口 `material_supply` 一次供给并记账；
+  Test-only 部署可放宽 `VOXIM_PRODUCTION_MATERIALS`（加可食植物与配方产物）；eat / craft 的结果只在 NPC 背包，“双端可见”本批只由服务端日志 / CLI 判定。
+  统筹会话按只读规划（`.demo/observe/npc-slice1-20261112/batch1-plan-20261119.md`）定：T-A4 另替 Hindsight 适配器（只替外部依赖）；生成器每轮顺序读 World 两次（余额、目录），不并进发问 worker 的并行读取；
+  C 推迟到 X-1，k 只套 eat / craft、不套 `speak_to`；选中候选 `:topic` 改名 `:candidate`（observe 字段名随之变）；eat / craft 进所有带候选表 NPC 的计划词表（计划是打算，眼下不可行也可写）。
+  原创取值 / 措辞（实施后实跑再调，已报用户）：每类 k = 3；每类按材料号升序（批 1 无相关性信号）；生成器次序 `[:registered, :speak_to, :eat, :craft]`；判据英文措辞；计划里 eat / craft 不可点名对象。
+  已知不覆盖：选择快照没有饥饿信号，eat 被选中与否缺驱动力依据（后续议题）。
+- 2026-11-19：**批 1 实现**（eat / craft；实施子会话，未提交、待统筹独立评审；未跑 T-A5、未调真实模型）。
+  改了什么：① 前置：`Offers` 的 `@generators [:registered, :speak_to, :eat, :craft]` 显式次序，`generators/1` 按它过滤，登记里有、次序表没有即
+  raise。② 覆盖登记 `"eat" => {:offer, :eat}`、`"craft" => {:offer, :craft}`；生成器 `Offers.eat/2` / `craft/2`（registered, inventory）：可行性
+  eat = 材料行有 `edible` 且 `balance >= cost`，craft = 配方各输入够（没有余额行按 0）；按材料号升序给完整列表；候选
+  `%{name: "eat:<id>", kind: "eat", object: %{"material" => id}, criterion:, place_name: nil, run: {:act, "eat", %{"material" => id}}}`，名字 `vacant_name` 避让；
+  判据 `Eat one serving of <label> from my inventory.` / `Craft <label> from materials in my inventory.`（label = `名字 (material id)` 或 `material id`）。
+  ③ `candidates/4` 每轮至多路由一次（说话与库存共用，第一个要用的去路由）、库存至多读一次（余额、目录顺序读，进食与合成共用），
+  `@per_kind 3` 只截 eat / craft；库存路由失败 `{:inventory_unavailable, 原因}`，Selector 原样透传（不并进 `mind_unavailable`），World 调用退出不捕获。
+  ④ DRY：生产材料门槛拆成纯函数 `Perception.materials/2`，`read/3` 的 `{:catalog, :materials, nil}` 与 Offers 共用。⑤ `Offers.acts/0` → `["eat", "craft"]`，
+  `Trees.npc/1` 按它建分支（守卫读选择应答 data 里的 `run`）；Runtime `finish_select` 把生成候选冻结的参数放进 done 的 data（说话 `speech`、背包 `run`）。
+  ⑥ 选中候选整份冻结：`Selector.ask` 一律带 `candidate`（原 `:topic`，只有说话项才有），`chose` 记进选择条目（observe 的 `select.activities[].topic`
+  → `.candidate`），`experience` 直接读 candidate、去掉回查登记表。⑦ `plan_kinds/1` 按生成器次序派生，eat / craft `objects: :none`，判据
+  `Eat one serving of something edible from my inventory.` / `Craft something from materials in my inventory.`（原创措辞）。Registry 撞名检查自然覆盖 eat / craft。
+  与规划 / 稿件的偏差：(a) `Selector.experience/2` 改为 `experience/1`（不再读 profile；调用方 Runtime 两处与三个测试辅助函数跟着改）；
+  (b) `Selector.ask/4` 不再在 `question` 没有 `candidates` 时退回 `profile.activities`（只有测试走过那条退路，退回去的登记项没有 kind / object）；
+  (c) `plan_kinds(%{activities: []})` 现为 `[eat, craft]`（规划已预告会变），`npc_life_day_plan_integration_test` 里“不规划的形态”改为 profile 没有 `activities` 键
+  （登记边界不接受空候选表，空表不是产品能产生的形态）；(d) eat 生成器对可食材料的余额行用 `Map.fetch!`（可食 ⇒ 生产材料 ⇒ World 一定给余额行，
+  不加防御），T-A2 原计划的“没有任何余额行”用例改为“余额都是 0”；(e) T-A4 用 `Registry.brain/2` 解析 profile 再起 `NpcWorld.body/3`，不经 `Registry.put/2`
+  （Hindsight 适配器模块经 put 的 JSON 参数注入不了；同 `npc_selector_test` 的做法），且 `profile.life` 去掉生产注入的 `spend`——额度进程不在时
+  `SpendBudget.background/0` 回 paused，日计划被闸门挡住；Life 约定不给即放行，闸门由 `npc_spend_life_test` 证明。这是三处替身之外的第四处调整，请评审确认。
+  (f) 权威拒绝里“吃掉余额”由测试进程在收到 Jev 请求后、作答前做（经 `World.production_intent/3` action 5，以该 NPC 的 cid 提交），不在 Jev 替身函数里。
+  (g) T-A4 进食用例的计划时限写 `23:59`，游戏钟取墙钟，开始前若已过游戏 23:30 先等到下一游戏日（至多约 75 秒），避免跨日不记账。
+  (h) S1-R8 规划金标：每个带候选表的形态的系统提示词在工作列表末尾多出 eat / craft 两行，`npc_life_day_plan_integration_test` 的期望改为“金标 + 生成种类行”
+  （`plan_system/1`），模板与 `npc_life_day_plan_prompt_test` / `_round_test` 的金标不变。
+  测试（先写、改前红、改后绿；`cd apps/npc_server && mix test --no-start <文件>`，WSL、本机 PostgreSQL 每 VM 独占库、跑完删除）：
+  `npc_offers_test`（T-A1 / T-A2）改前 14 红 / 24、改后 24 绿；`npc_selector_test`（T-A2：ask 冻结候选、eat 经历、纯树 eat / craft 分支与拒绝）改前 8 红 / 26、
+  改后 26 绿（1 条 `live_jev` 按标签排除）；`npc_life_day_plan_test`（T-A3：plan_kinds 次序、`{:unknown_object, "eat", "x"}`、eat 记账）改前 3 红 / 72、改后 72 绿；
+  `npc_offers_integration_test`（T-A4，新文件：eat 4 种只列前 3 + 进食账 + 经历 + 计划记账 + observe 的 candidate；craft 合成账 + 下一轮消失；权威拒绝）
+  改前 3 红 / 3、改后 3 绿；`npc_registry_test` 撞名用例加 eat / craft 改前 1 红、改后全文件 23 绿。适配改动的回归文件在旧代码上：
+  `npc_life_day_plan_integration_test` 21 红 / 22、`npc_spend_life_test` 1 红 / 1（都因 `experience/1` 未定义，金标差异被它盖住），改后 22 绿、1 绿。
+  扩大回归（每轮多读 World、改名触及说话链路与计划词表）：`npc_life_day_plan_round_test` 10、`_prompt_test` 13、`npc_mind_test` 24（1 排除）、`npc_dialogue_test` 8、
+  `npc_speak_test` 1、`npc_dialogue_life_test` 11、`npc_life_test` 27、`npc_tree_test` 10、`npc_body_world_test:2238`（read_catalog，验 `Perception.materials/2` 拆分）1，全绿。
+  `mix compile --warnings-as-errors` 与改动文件的 `mix format --check-formatted` 通过。
+  遗留：T-A5（Test-only 部署放宽生产材料、作者供给）未做；X-1 定 k / C；选择快照无饥饿信号；规划提示词新增两行未离线测。
+- 2026-11-19：**批 1 评审修正**（实施子会话，按统筹会话定的修法 8 条；未提交、待统筹复审；未调真实模型、未起 release）。
+  ① 【阻塞】`Selector.ask` 去掉退回 `profile.activities` 后仍走那条路的测试：`npc_jev_test:254/262`、`npc_selection_lane_test:89`
+  （默认运行，批 1 代码上各 1 红，`KeyError :candidates`）、`npc_mind_test:978`、`npc_selector_test:1889`（`:live_jev`，编译期
+  “incompatible types given to `Selector.ask/3`”类型警告）→ 都补上产品生成器 `Offers.registered/2` 给出的 `candidates`。顺带删掉
+  `Selector.chose/4` 在 `asked` 为 nil 时退回 `profile.activities` 的退路：生产唯一调用方是 Runtime 的 `finish_select`，发问 worker
+  （常规与对话回合两条）都在应答前先报 `{:select_asked, _}`，`asked` 一定在；改为 `chose/3`（`state` 必带 `asked`，日志的候选与
+  `inventory_ms` 取自它），不再用 `profile`。`Selector.body/2` 文档写明它只是登记表拼出的请求体、不是发问时的请求体。
+  测试编译警告清零（`npc_offers_test` 原 :401 的未用默认参数随库存夹具重写消失），核对方式见下。
+  ② 【SSOT】进食 / 合成门槛只由 World 定义一次：`VoxelRegion.World.Production.consumable/3`、`craftable/3` 抽成纯函数，`consume/3`、
+  `craft/3` 提交与新只读查询 `Production.feasible/2` 共用；公共接口 `World.production_options(server, cid, timeout \\ 5_000)` →
+  `%{seq:, eat: [%{material:, name:, units:}], craft: [%{material:, name:, inputs: [%{material:, units:}], units:}]}`（生产材料按材料号
+  升序过两道门；`name` = 目录 `display_name` 或 nil；内存只读、不装页，`Access` 登记为 `:read`、`Closure` 登记为无页）。
+  `Offers` 每轮调这一个接口（取代余额 + 目录两读与 NPC 侧镜像过滤），`eat/2` / `craft/2` 只把 World 列出的投影成候选（次序仍按材料号，
+  是 NPC 的策略）；`Perception.materials/2` 收回（`perception.ex` 回到批 1 前，`read_catalog` 行为不变）。读取有界、显式失败：
+  `Offers` 给 5000 ms 时限——依据是 World 其它内存只读目录入口（`material_catalog/1` 等）经 `PageLoad.call/3` 的缺省时限，即 OTP
+  `GenServer.call/3` 的缺省 5000 ms；作为 NPC 选择的时延预算是**原创取值**（没有实测，实跑看 `inventory_ms` 再定），它短于同一次
+  发问里 Life 召回的 10 秒上限。路由失败、World 不在（`:noproc`）、超时（`:timeout`）、调用中途退出 → `{:inventory_unavailable, 原因}`，
+  发问 worker 不再跟着退出；`npc_select` 行末加 `inventory_ms=`，`asked` 带 `inventory_ms`。两处偏差以 World 为准：(a) 配方输入不是
+  生产材料时 World 按真实余额判（NPC 原来只看生产材料的余额行、当 0）——反例由产品路径做出：铜作为生产材料时经作者入口供给，部署收窄
+  生产材料后重启、余额随日志恢复，World 列出开关、提交也接受；(b) 配方输入重复时 World 逐条比较（NPC 原来 `Map.new` 合并）——但
+  `Damage.load/1` 拒绝重复输入（`damage.ex:250`），产品做不出这样的目录，不拿手写数据下结论，只锁“加载即拒绝”这一前提。
+  ③ T-A4 用真实目录数据（核实 Voxim `Published/e6db8dee…json`，2026-11-10 最新一份：有 `food` 的只有 Fern 34 / Dandelion 36 /
+  Allium 39）：进食用例只用这三种，**当前目录下进食一类的前 3 截断不可达**（写进 Offers 文档与用例 moduledoc）；截断改在合成用例里用
+  真实配方证明：Switch 41、灰褐砌石 46（石）、石质饰面 47 与太湖石 56（石灰石）四个都够时只列 41 / 46 / 47，合成 46 后石不够、
+  56 补进前 3，再合成 41 后只剩 47 / 56。原 20 号浆果行、47 号去名行删去（浆果不在真实目录）。
+  ④ `{:inventory_unavailable, _}` 经 `Selector.question/4` 透传：新用例（同一 NPC 的真实 Body 先问过一次，证明 Life 心智可读；再直接调
+  `question/4`，路由换成只返回失败的模块）→ `{:error, {:inventory_unavailable, :scene_unavailable}}`。行为在批 1 已有，所以改前改后都绿；
+  临时删掉 `question_with_candidates` 的透传分支即红（变成 `{:mind_unavailable, {:inventory_unavailable, …}}`），已还原。
+  ⑤ 文档：README 的 `select` 字段表补 `candidate`（及 `asked` 的 `candidates` / `inventory_ms`）、日志行补 `inventory_ms=`；`life.ex` 起
+  规划的注释（计划种类含 eat / craft，profile 带 `activities` 键即规划、空候选表也有这两类）与 `planning?/1` 注释；`npc_offers_test`
+  moduledoc 不再声称锁定日志，改由合成用例真的断言两行 `npc_select … candidates=… inventory_ms=\d+`。
+  ⑥ T-A4 照生产组合根：保留生产注入的 `spend`，每个用例起真实 `SpendBudget`（真实账本，`SpendFixtures.env/1` 的 65 美元上限，
+  `poll_ms: :manual`，读回对端 `HttpStub` 没有任何库，`sync/0` 后 `:open`）；Jev 替身应答没有用量，不进额度账。替身仍是三处外部依赖，
+  对组合根的调整只剩“`Registry.brain/2` 之后换替身、不经 `put/2`”这一处（moduledoc 如实列出）。
+  ⑦ 游戏钟跨日：没有现成的缝（Runtime 写进观察的 `world_time` 直接取墙钟），按用例总时限算余量：进食用例运行预算 `@run_ms` 20 s
+  （原创取值，本机实测该用例约 1.8 s），开始前到游戏日末的现实余量不足 20 s 就等到下一游戏日（等日号变化这个条件，至多 20 s，原来最坏约 75 s），
+  之后每一步都在截止时刻前完成、否则显式失败，用例活不到日末；ExUnit 时限 50 s = 至多一次等待 + 预算 + 10 s。
+  ⑧ 背包候选的冻结命令换独立键名 `action: {动作名, %{"material" => 号}}`（不再与登记项的分支规格 `run` 共用一个键），`Runtime.frozen/1`
+  （`%{action: _}` → done 的 data 带 `action`）与 `Trees.npc/1` 的守卫 / 取参随之改。
+  测试（WSL、每个文件一个 VM 与独占 PostgreSQL 库、跑完删除；`mix test --no-start <文件>`）：改前红在“新测试 + 批 1 未修代码”上跑
+  （临时把 npc_server 的 offers / perception / runtime / selector / trees 还原成批 1 版本，跑完换回；voxel_region 同法还原 World 四个文件）：
+  voxel_region `production_options_test` 改前 2 红 / 3（加载前提那条两边都绿）、改后 3 绿；`npc_offers_test` 8 红 / 25 → 25 绿；
+  `npc_offers_integration_test` 2 红 / 4（进食：`action`；合成：日志无 `inventory_ms`）→ 4 绿；`npc_selector_test` 9 红 / 26 → 26 绿
+  （1 条 `live_jev` 排除）；`npc_life_day_plan_integration_test` 21 红 / 22 → 22 绿、`npc_spend_life_test` 1 红 / 1 → 1 绿（都因
+  `chose/3`）；①的两条默认运行用例在原测试上各 1 红 → 改后 `npc_jev_test` 14 绿（3 排除）、`npc_selection_lane_test` 1 绿。
+  回归（改后）：`npc_registry_test` 23、`npc_life_day_plan_test` 72、`_round_test` 10、`_prompt_test` 13、`npc_dialogue_test` 8、
+  `npc_dialogue_life_test` 11、`npc_dialogue_world_test` 5、`npc_speak_test` 1、`npc_tree_test` 10、`npc_mind_test` 24（1 排除）、
+  `npc_life_test` 27，全绿；voxel_region `production_options_test`、`closure_entries_test`、`access_test`、`switch_material_test`（合成）、
+  `damage_world_test`（进食）共 109 绿；`npc_body_world_test` 的 craft / eat / read_catalog 三条（`:2064:2091:2238`）3 绿。
+  编译与格式：`mix compile --force --warnings-as-errors`（voxel_region、npc_server，test 环境）通过；npc_server **全部**测试文件编译无警告
+  （`mix test --no-start --warnings-as-errors --only <不存在的标签>`：742 项全部编译、0 项执行，没有“因警告中止”）——为此另清了 7 个无关
+  测试文件里本来就有的编译警告（`npc_attention_test` / `npc_brain_llm_test` / `npc_body_test` 模式里的 `0.0` → `+0.0`、
+  `npc_memory_test` 的 `9..2` → `9..2//-1`、`npc_skill_brain_test` 编译期已知 status 的恒假比较、`npc_life_test` 未用的别名、
+  `npc_body_world_test` 未用的 `require Logger`），这几个文件改后 85 绿。改动的 npc_server 文件与新测试文件 `mix format --check-formatted`
+  通过；voxel_region 的 `access.ex`、`world.ex`、`world/closure.ex`、`world/production.ex` 在 HEAD 就不是 `mix format` 格式，只按原有写法改、
+  没有整文件重排。
+  遗留：T-A5 仍未做；X-1 定 k / C；选择快照无饥饿信号；`inventory_ms` 与 5 秒时限待实跑数据再定；当前目录只有 3 种可食植物，进食截断要等
+  目录加可食材料才有实测意义。
+- 2026-11-19：**批 1 收回外围兜底**（实施子会话；未提交）。按用户 2026-11-19 方向（原话：“记得专注happy path，其他外围兜底保护措施可以随着实验根据设计慢慢加”，
+  与 AGENTS §2.2.7 一致）收回上一条评审修正里的兜底，留待实验暴露失败再按设计加：① `Offers` 读库存不再捕获超时 / 退出 / World 不在、
+  不再转成 `{:inventory_unavailable, 原因}`，去掉 `@inventory_timeout_ms`；`World.production_options/3` 的 `timeout` 参数只为这层兜底而加、
+  没有别的调用方，一并去掉，改为 `production_options/2`，用 `PageLoad.call/3` 的缺省时限（同 `material_catalog/1` 等只读入口）。
+  路由沿用批 0：说话一路失败照旧 `{:dialogue_unavailable, 原因}`；库存一路不另设失败形状，路由或 World 调用失败照常退出，由发问 worker
+  已有的失败路径处理（Runtime 的 `{:select_worker_failed, _}`）。`inventory_unavailable` 由此没有产生点，`Selector` 的透传分支删去、回到批 0 写法。
+  ② 删掉 `npc_select` 行末与 `asked` 里的 `inventory_ms`（及计时代码；`Offers.candidates/4` 回到 `{:ok, 候选}`），README / moduledoc 同步，
+  合成用例的日志断言只留 `candidates=` 起的部分。③ 删掉只测兜底的用例：`npc_offers_test` 的路由失败 / World 不在 / World 不应答三条（及替身模块）、
+  `npc_offers_integration_test` 经 `Selector.question/4` 的透传一条、voxel_region `production_options_test` 的读取时限一条；
+  World 权威拒绝（`insufficient_material` → 活动失败 → 下一次发问带原因）是产品主流程，保留。保留：`Production.consumable/3` / `craftable/3`
+  共用判定、`World.production_options` 只读接口、Offers 每轮调它、真实目录数据的 T-A4、真实 `SpendBudget`、`action:` 键名、游戏钟的最小处理、
+  上一轮清掉的 7 个无关测试文件的编译警告。上一条遗留里“`inventory_ms` 与 5 秒时限待实跑数据再定”随之作废。

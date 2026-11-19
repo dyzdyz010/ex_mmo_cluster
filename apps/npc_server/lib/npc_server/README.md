@@ -71,9 +71,11 @@
   最近选过什么、最近一次问了什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
 - `Offers` 是统一形态的候选来源（稿 A [`2026-11-18-npc-full-capability-coverage-decision.md`](../../../../docs/10-active/cross-cutting/2026-11-18-npc-full-capability-coverage-decision.md)）：
   覆盖登记 `coverage/0` 把 `Abilities` 的每个条目归且只归一类——`offer`（有生成器，成为候选）、`inside`（只作某些技能内部的原语）、
-  `withheld`（不给 NPC，写理由），覆盖测试保证能力库新增条目不登记即红；生成器 `registered/2`（作者登记项按建筑条件过滤）、
-  `speak_to/2`（说话范围内的人）与对话回合的 `reply/2` 产出带 `kind` / `object` 的候选，`candidates/4` 再与 Scene 的新话题资格取交集，
-  `Selector` 只调它。`Abilities` 保持后端中立，“统一形态怎么用每项能力”只在这里。
+  `withheld`（不给 NPC，写理由），覆盖测试保证能力库新增条目不登记即红；生成器按显式次序 `[:registered, :speak_to, :eat, :craft]`
+  连成一轮候选：`registered/2`（作者登记项按建筑条件过滤）、`speak_to/2`（说话范围内的人，再与 Scene 的新话题资格取交集）、
+  `eat/2` / `craft/2`（批 1：这一刻现读 `World.production_options/2`，World 列出的能吃一份 / 能合成一次的材料，每类前 k 项，`Offers` 的 `@per_kind`）与对话回合的 `reply/2`，
+  都产出带 `kind` / `object` 的候选（背包项另带冻结的世界动作 `action`）。`Selector` 只调它。`Abilities` 保持后端中立，
+  “统一形态怎么用每项能力”只在这里。
 - 旧的 `NpcServer.DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）已删除，Runtime 里对应的挂接也一并没了
   （它们读的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、注册参数 `daily` 与写死的轮换台词早已随 S1-A 删除，此前没有任何注册表入口会启动它们）。
   新的日计划是 `Life.DayPlan`（意图持有者，在 Life 里，不是 Runtime 的挂接），见下文“日计划”。
@@ -262,8 +264,11 @@ brain: {NpcServer.Brain.Routine, %{
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
   含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
-  `activity`、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；`result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
-  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟）；
+  `activity`、`candidate`（选中的那一份候选整份：`kind`、`object`、`criterion`、`place_name`，登记项另有分支规格 `run`、说话项 `target`、
+  进食 / 合成项世界动作 `action`；批 1 前叫 `topic`、只有说话项才有）、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；
+  `result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
+  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_queries` 各路召回的描述、`recall_ms` 并行召回的墙钟、
+  `candidates` 本轮候选）；
   `dialogue_turn` 是在途的对话回合（nil 或 `%{phase: :deciding | :speaking, conversation_id:, turn:, speaker_id:, speaker_epoch:, started_ms:}`，见下文“统一形态”的“对话通道”）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）、`npc_dialogue_turn`（对话回合）。日计划的日志是 `npc_plan cid=<cid> event=…`（`start` / `end` / `landed` / `persist_failed` / `crashed` / `skipped`，见下文“日计划”）。
 
@@ -441,6 +446,18 @@ flowchart LR
   复用 Travel 走近它，由 `NPC_REFLECT_*` 写作端点按同一份心智写一句。Scene 在提交当刻重新裁决代次、范围、冷却与文本，接纳后沿既有
   Speech 链路送达目标及同场旁听者；Life 依据本人权威回声记忆。CLI 可从 `Body.observe/1` 查目标、选择与技能终态，从 Scene 的
   `dialogue.result` 及客户端 `Voxim.Dialogue.Status` 对账。日计划的词表里说话是一类 `speak_to`（可点名一个人），说完话按种类 + 对象记账（见下文“日计划”）。
+- **进食与合成（稿 A 批 1，`Offers.eat/2` / `craft/2`）**：每次发问现读一次 World 的只读接口 `World.production_options/2`，
+  它用与提交同一组判定列出此刻能吃一份的材料与能合成一次的产物——可行性门槛只在 World 写一次，NPC 不镜像。
+  能吃的（`eat:<材料号>`，判据 `Eat one serving of <名字> (material <号>) from my inventory.`）与能合成的（`craft:<材料号>`，
+  判据 `Craft <名字> (material <号>) from materials in my inventory.`）成为候选，每类按材料号升序只取前 k 项（`@per_kind`，现为 3，原创取值，待离线实验
+  X-1；当前目录只有 3 种可食植物，进食一类的截断不可达），排在登记项与说话之后。选中后参数原样冻结（`action: {"eat" | "craft", %{"material" => 号}}`，
+  与登记项的分支规格 `run` 分开），树发一条世界动作，
+  World 仍做最后裁决：执行时余额已不够就 `failed (eat: insufficient_material)`，下一次发问带这个原因、候选里也不再有它。
+  读库存只走 happy path（用户 2026-11-19 方向）：按 World 的缺省调用，路由或 World 失败照常退出，由发问 worker 已有的失败路径处理
+  （`{:select_worker_failed, _}`），超时转换等兜底留待实验暴露失败再按设计加。日计划的词表里进食与合成各是一类（不可点名材料），
+  吃完一份按种类记到没点名的 `eat` 意图上。CLI：`npc_select … candidates= …` 一行列出本轮候选，`Body.observe/1` 的
+  `select.activities[].candidate` 是选中的那一份候选（批 1 前叫 `topic`），World 日志 `voxel_consume` / `voxel_craft` 是权威结果。
+  已知不覆盖：选择快照里没有饥饿信号，选不选进食没有驱动力依据（后续议题）。
 - **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
   `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
   只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；
@@ -535,7 +552,7 @@ flowchart LR
   debug 级别的 `State:` 带出在途请求与编码表。详见 `NpcServer.Http` moduledoc 的“密钥”；部署侧关闭或限制 crash dump
   （见 `deploy/README.md` 的“NPC 常驻应用”）。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
-  它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
+  它结束时调 `Life.activity/2`（`%{text:, place:, kind:, object:, …}`，`Selector.experience/1`，取自选中时冻结的候选）记一条
   `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
   观察就记下自己以外每个人到我的最小距离（不加新观察通道），结束时写 `During it: nobody came near.`，或
   `During it: <名字> (actor <cid>) came within <N> m and then moved away.` / `… and was still there at the end.`
@@ -621,7 +638,8 @@ flowchart LR
   HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
   记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
   新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）每 10 秒失败一次，属于这一条。
-- **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_queries`（各路召回的描述，按优先级）、`recall_ms`（并行墙钟）；
+- **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_queries`（各路召回的描述，按优先级）、`recall_ms`（并行墙钟）、
+  `candidates`（本轮候选）；
   在 Jev 请求发出前记下，Jev 随后失败或 worker 崩溃也留着；心智读不到的那次没有发问，仍是上一次的。
   `Life.observe(cid)` 照旧给出情绪原值与衰减值、`pending_episodes`、`pending_fragments`、`retained`、认识缓存、最近一次召回的成败与耗时。
 - **日志**：每次选择一行
@@ -970,11 +988,13 @@ flowchart LR
 
 **是什么**：NPC 每个游戏日开头（以及遇到一件事之后）规划一次“今天我打算做几件事”：每条**意图**是词表里的一个种类 + 可选对象 + 次数 + 时限
 （日内分钟），计划不新增任何动作；词表写不出的想法记为 `wants`（想做而现在做不到的事）。**词表**（稿 A 批 0b）是“种类 + 可选对象”：
-种类取 `Offers.plan_kinds/1`——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象），配了说话（统一形态总配）再加 `speak_to`，
-它的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），
+种类取 `Offers.plan_kinds/1`（按生成器次序）——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象），配了说话（统一形态总配）再加 `speak_to`，
+再是进食 `eat` 与合成 `craft`（批 1，每个带候选表的形态都有；判据 `Eat one serving of something edible from my inventory.` /
+`Craft something from materials in my inventory.` 是原创措辞；对象是材料但计划里不可点名，吃哪种都记到没点名的 eat 意图上）。
+说话的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），
 系统提示词里这一行在判据后接 `Optionally add "object": exactly one of "<显示名>", ….`（静态种类各行与 S1-R8 逐字节相同；这句措辞是原创、没测过）。
 意图的 `object` 可缺 / 为 null（没点名），写了就必须是列出的显示名之一，存成对象 `%{"actor" => cid}`；逐轮变的候选名 `speak_to:<cid>` 不是种类，写不进计划。
-活动完成按 `{种类, 对象}` 记账：种类相同的意图里，**点名的就是这个人的优先**，没有才记到没点名的（混在一起按时限取会让点名那条白白落空）。登记名与生成种类同名（如登记一个叫 `speak_to` 的候选）在登记时被拒。
+活动完成按 `{种类, 对象}` 记账：种类相同的意图里，**点名的就是这个人的优先**，没有才记到没点名的（混在一起按时限取会让点名那条白白落空）。登记名与生成种类同名（如登记一个叫 `speak_to`、`eat` 或 `craft` 的候选）在登记时被拒。
 意图被做了几次由代码按活动结果记账，不是模型说了算；计划与账作为 `Plans and promises` 一栏交给选择。
 **为什么**：经历与反思给出的都是“已经发生的 / 我怎么看”，选择里没有“我答应过自己今天要做什么、做了没有”；这一栏把它放进 state，
 让选择看得见承诺与进度，而不是靠一句反思的收尾句去推。是否真的改变选择还没测过（见“当前状态”）。设计与取舍在

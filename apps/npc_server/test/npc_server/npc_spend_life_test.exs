@@ -288,9 +288,12 @@ defmodule NpcServer.NpcSpendLifeTest do
   end
 
   # 一项活动结束时 Runtime 交给 Life 的经历：经 Selector 的产品函数做出（选定 → 结局 → 经历）。
+  # 选中的候选是登记项生成器（`Offers.registered/2`）给出的那一份（`Selector.ask/4` 把它整份冻结进选择）。
   defp finished(profile, name, result) do
     selection = %{
       activity: name,
+      candidate:
+        Enum.find(NpcServer.Offers.registered(profile.activities, []), &(&1.name == name)),
       trigger: "start",
       confidence: 0.6,
       latency_ms: 1,
@@ -298,10 +301,21 @@ defmodule NpcServer.NpcSpendLifeTest do
       model: "test"
     }
 
-    {_trigger, state} =
-      Selector.new() |> Selector.chose(selection, profile, 0) |> Selector.ended(result)
+    # Runtime 在应答之前一定先记下这次所问的内容（`Selector.asked/2`，`chose/3` 的日志从它取候选）。
+    asked = %{
+      state: "",
+      recall_queries: [],
+      recall_ms: 1,
+      candidates: NpcServer.Offers.registered(profile.activities, [])
+    }
 
-    Selector.experience(state, profile)
+    {_trigger, state} =
+      Selector.new()
+      |> Selector.asked(asked)
+      |> Selector.chose(selection, 0)
+      |> Selector.ended(result)
+
+    Selector.experience(state)
   end
 
   # 词表：S1-R7 的候选（同 `npc_life_day_plan_integration_test.exs`）。

@@ -107,7 +107,7 @@ defmodule NpcServer.Life do
   触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，写作接口与人格卡共用）且有候选表；
   其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` 为 nil。
 
-  - **词表**（稿 A 批 0b）：种类取 `NpcServer.Offers.plan_kinds/1`（登记的候选各一个静态种类，配了说话再加 `speak_to`），
+  - **词表**（稿 A 批 0b）：种类取 `NpcServer.Offers.plan_kinds/1`（按生成器次序：登记的候选各一个静态种类，配了说话加 `speak_to`，批 1 起再加不可点名对象的 `eat` 与 `craft`），
     起槽那一刻展开对象交进快照的 `vocabulary`：说话能点名的人是关系里的人 ∪ 此刻观察里的他人，显示名用名字层
     `State.person/2`（`名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），对象 `%{"actor" => cid}`。
 
@@ -440,7 +440,7 @@ defmodule NpcServer.Life do
 
   @doc """
   接纳一项已结束的活动作为主观经历：`%{text: 做了什么、结果如何（一句英文）, place: 活动的地名 | nil, activity: 候选名,
-  kind: 种类, object: 对象 | nil, completed: 是否完成}`（`NpcServer.Selector.experience/2`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
+  kind: 种类, object: 对象 | nil, completed: 是否完成}`（`NpcServer.Selector.experience/1`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
   原文末尾加一句期间事实（见 moduledoc；没有开始信号或期间没有观察则不加）；tags 是 `kind:activity`、期间进过 6 米内的
   每个人 `actor:<cid>`、有地名时 `place:<地名>`。规划的形态在同一次保存里给日计划记账（完成的才记，见 moduledoc 的“日计划”）；
   不规划的形态只读 `text` 与 `place`。由 Runtime 的选择 worker 在活动结束时调用一次。
@@ -539,7 +539,9 @@ defmodule NpcServer.Life do
   # 写日记所需：profile 有写日记的接口（`reflect`）才有。写日记的函数可经 `profile.write_journal` 注入
   # （同 Selector 经 `profile.request` 注入 Jev 发送函数的做法），缺省是 `Writer.write(profile.reflect, …)`。
   # 反思库的 config 是经历库的换一个 bank。日计划共用写日记的接口与人格卡，可计划的种类取 `Offers.plan_kinds/1`
-  # （登记项各一个静态种类，配了说话再加说话一类；没有候选表的形态为 []，不规划）。种类的对象在起规划槽时展开（`vocabulary/1`）。
+  # （按生成器次序：登记项各一个静态种类，配了说话再加说话一类，批 1 起再加进食 `eat` 与合成 `craft`——所以 profile 带
+  # `activities` 键就会规划，候选表为空也有这两类；profile 没有 `activities` 键的形态为 []，不规划）。
+  # 种类的对象在起规划槽时展开（`vocabulary/1`）。
   defp journaling(%{reflect: _} = profile, config, cid),
     do: %{
       write: journal_writer(profile, cid),
@@ -1604,7 +1606,7 @@ defmodule NpcServer.Life do
 
   # --- 日计划（规则在 `Life.DayPlan`，流程在 `Life.DayPlan.Round`；本节只做触发、起槽、记账与视图） ---
 
-  # 规划的形态：有写日记的接口，且有可计划的种类（候选表非空）。
+  # 规划的形态：有写日记的接口，且有可计划的种类（`Offers.plan_kinds/1` 非空：profile 带 `activities` 键即有进食与合成两类）。
   defp planning?(%{journaling: nil}), do: false
   defp planning?(%{journaling: %{kinds: kinds}}), do: kinds != []
 
@@ -1778,7 +1780,7 @@ defmodule NpcServer.Life do
 
   defp land_plan(s), do: s
 
-  # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类与对象由 `Selector.experience/2` 给出）。
+  # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类与对象由 `Selector.experience/1` 给出）。
   defp activity_progress(s, experience) do
     if planning?(s) do
       %{kind: kind, object: object, completed: completed} = experience

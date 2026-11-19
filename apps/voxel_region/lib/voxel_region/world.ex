@@ -256,6 +256,17 @@ defmodule VoxelRegion.World do
   def material_balances(server, cid),
     do: VoxelRegion.World.PageLoad.call(server, {:material_balances, cid}, 300_000)
 
+  @doc """
+  全局系统功能（只读）：角色此刻能吃一份、能合成一次的材料——进食（action 5）与合成（action 4）的可行性门槛由 World
+  只定义一次（`VoxelRegion.World.Production.consumable/3`、`craftable/3`），提交与本查询用同一组判定，调用方不再自己镜像。
+  返回 `%{seq:, eat: [%{material:, name:, units:}], craft: [%{material:, name:, inputs: [%{material:, units:}], units:}]}`
+  （材料号升序；`name` 是目录 `display_name` 或 nil；进食 `units` 是一份，合成 `inputs` 按配方原序、`units` 是一次的产物）。
+  只读内存里的余额与目录，不装页；等待时限同本模块其它只读目录入口（`PageLoad.call/3` 的缺省）。
+  执行时 World 仍按提交那一刻重新裁决。
+  """
+  def production_options(server, cid),
+    do: VoxelRegion.World.PageLoad.call(server, {:production_options, cid})
+
   @doc "全局系统功能：服务端授权供给材料，同角色/来源只记账一次；不经 Gate 暴露。"
   def material_supply(server, cid, supply_id, quantities),
     do: VoxelRegion.World.PageLoad.call(server, {:material_supply, cid, supply_id, quantities}, 300_000)
@@ -1298,6 +1309,8 @@ defmodule VoxelRegion.World do
 
   defp call({:material_balances, cid}, _, state),
     do: {:reply, Enum.map(state.production_materials, &balance_state(state, cid, &1)), state}
+
+  defp call({:production_options, cid}, _, state), do: {:reply, feasible(state, cid), state}
 
   defp call({:material_supply, cid, supply_id, quantities}, _, state) do
     key = {cid, supply_id}

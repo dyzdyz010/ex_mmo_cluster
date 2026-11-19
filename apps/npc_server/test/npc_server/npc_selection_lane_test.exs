@@ -85,8 +85,14 @@ defmodule NpcServer.NpcSelectionLaneTest do
 
     started = System.monotonic_time(:millisecond)
 
-    assert {:ok, %{activity: "rest_at_home"}} =
-             Selector.ask(profile, %{state: "I am at home.", recall_ms: 0}, "idle")
+    # 候选同产品：登记项生成器（`Offers.registered/2`）给出的那一组。
+    question = %{
+      state: "I am at home.",
+      recall_ms: 0,
+      candidates: NpcServer.Offers.registered(profile.activities, [])
+    }
+
+    assert {:ok, %{activity: "rest_at_home"}} = Selector.ask(profile, question, "idle")
 
     elapsed = System.monotonic_time(:millisecond) - started
 

@@ -56,7 +56,7 @@ defmodule NpcServer.NpcMemoryTest do
     end
 
     failures = Memory.working_context(NpcMemory, 701).recent_failures
-    assert Enum.map(failures, & &1["command"]["arguments"]["x"]) == Enum.to_list(9..2)
+    assert Enum.map(failures, & &1["command"]["arguments"]["x"]) == Enum.to_list(9..2//-1)
 
     assert {:error, {:memory_unavailable, :write_denied}} =
              Memory.record_failure(RejectedWrite, 701, %{

@@ -156,7 +156,7 @@ defmodule NpcServer.NpcAttentionTest do
 
     world = %{{0, 0, 0} => :stone}
 
-    assert {:ok, :stone, 0.0, ^world} =
+    assert {:ok, :stone, +0.0, ^world} =
              VoxelRegion.Damage.trace({0.01, 0.01, 0.01}, {0.0, 1.0, 0.0}, 1.0, world, at)
 
     world = %{{1, 0, 0} => :edge_only, {1, 1, 1} => :corner}

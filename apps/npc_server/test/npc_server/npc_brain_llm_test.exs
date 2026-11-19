@@ -807,7 +807,7 @@ defmodule NpcServer.NpcBrainLlmTest do
                    incarnation: 3,
                    owner: {0, 0},
                    material: 11,
-                   direction: {1.0, 0.0, 0.0}
+                   direction: {1.0, +0.0, +0.0}
                  }
                }
              }

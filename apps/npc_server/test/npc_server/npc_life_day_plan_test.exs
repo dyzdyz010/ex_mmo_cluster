@@ -1015,7 +1015,20 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       }
     ]
 
-    test "登记项各是一个静态种类（判据原样、次序不变、不论建筑条件），配了 speak 再加说话一类（对象是人）" do
+    # 稿 A 批 1：种类按生成器次序派生（登记项、说话、进食、合成）；进食与合成进每个带候选表的形态（计划是一天的打算，
+    # 眼下背包里没有可吃 / 可合成的也可以先写下），它们的对象（材料）不可点名。
+    @eat %{
+      kind: "eat",
+      criterion: "Eat one serving of something edible from my inventory.",
+      objects: :none
+    }
+    @craft %{
+      kind: "craft",
+      criterion: "Craft something from materials in my inventory.",
+      objects: :none
+    }
+
+    test "按生成器次序：登记项各是一个静态种类（判据原样、次序不变、不论建筑条件），配了 speak 加说话一类（对象是人），再是进食与合成" do
       assert NpcServer.Offers.plan_kinds(%{
                activities: @activities,
                skills: %{gather: %{}, travel: %{}, speak: %{}}
@@ -1026,18 +1039,72 @@ defmodule NpcServer.NpcLifeDayPlanTest do
                  kind: "speak_to",
                  criterion: "Walk up to someone and say one thing to them.",
                  objects: :people
-               }
+               },
+               @eat,
+               @craft
              ]
     end
 
-    test "没配 speak：只有登记项；没有候选表的形态（不在选择层选活动）：没有任何种类" do
+    test "没配 speak：登记项、进食、合成；候选表为空仍有进食与合成；没有候选表的形态（不在选择层选活动）：没有任何种类" do
       assert Enum.map(NpcServer.Offers.plan_kinds(%{activities: @activities}), & &1.kind) == [
                "gather_stone",
-               "guard_hut"
+               "guard_hut",
+               "eat",
+               "craft"
              ]
 
+      assert NpcServer.Offers.plan_kinds(%{activities: []}) == [@eat, @craft]
       assert NpcServer.Offers.plan_kinds(%{skills: %{speak: %{}}}) == []
-      assert NpcServer.Offers.plan_kinds(%{activities: []}) == []
+    end
+
+    # 计划里进食 / 合成不点名材料：词表按 Life 的展开规则（`objects: :none` → 没有可选的显示名）给出，写了 object 就不合格。
+    test "进食与合成不接受对象：{\"activity\": \"eat\", \"object\": \"x\"} → {:unknown_object, \"eat\", \"x\"}" do
+      vocabulary =
+        for %{kind: kind, objects: :none} <-
+              NpcServer.Offers.plan_kinds(%{activities: @activities}),
+            into: %{},
+            do: {kind, %{}}
+
+      eat = %{"activity" => "eat", "times" => 1, "by" => "23:00", "why" => "I am hungry."}
+
+      assert DayPlan.check(
+               Jason.encode!(%{"intents" => [eat], "cannot_yet" => []}),
+               vocabulary,
+               600
+             ) ==
+               {:ok,
+                %{
+                  intents: [
+                    %{
+                      "activity" => "eat",
+                      "object" => nil,
+                      "times" => 1,
+                      "by" => 1380,
+                      "why" => "I am hungry."
+                    }
+                  ],
+                  wants: []
+                }}
+
+      for kind <- ["eat", "craft"] do
+        text =
+          Jason.encode!(%{
+            "intents" => [%{eat | "activity" => kind} |> Map.put("object", "x")],
+            "cannot_yet" => []
+          })
+
+        assert DayPlan.check(text, vocabulary, 600) == {:error, {:unknown_object, kind, "x"}}
+      end
+
+      # 吃完一份（经历给出的种类 eat、对象是材料号）：记到没点名的 eat 意图上；合成不算进食。
+      {:ok, checked} =
+        DayPlan.check(Jason.encode!(%{"intents" => [eat], "cannot_yet" => []}), vocabulary, 600)
+
+      plan = DayPlan.adopt(DayPlan.new(), 4, 600, checked, :day, 0)
+      crafted = DayPlan.record_activity(plan, {"craft", %{"material" => 41}}, 4, 700)
+      assert [%{"done" => 0}] = crafted["intents"]
+      eaten = DayPlan.record_activity(crafted, {"eat", %{"material" => 34}}, 4, 700)
+      assert [%{"activity" => "eat", "done" => 1}] = eaten["intents"]
     end
   end
 end

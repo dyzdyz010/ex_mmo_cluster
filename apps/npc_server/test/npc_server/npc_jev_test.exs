@@ -230,7 +230,7 @@ defmodule NpcServer.NpcJevTest do
       assert log =~ "unsupported_api"
     end
 
-    # 选择位置的真实调用路径：`Selector.ask/3` 用注入的发送函数，不访问网络。
+    # 选择位置的真实调用路径：`Selector.ask/4` 用注入的发送函数，不访问网络。
     test "Selector.ask goes through the injected sender and validates the choice against the candidates" do
       profile = %{
         activities: [
@@ -248,7 +248,13 @@ defmodule NpcServer.NpcJevTest do
         end
       }
 
-      question = %{state: "It is morning.", recall_queries: [], recall_ms: 3}
+      # 候选同产品：登记项生成器（`Offers.registered/2`）给出的那一组（`Selector.question/4` 交给 ask 的形状）。
+      question = %{
+        state: "It is morning.",
+        recall_queries: [],
+        recall_ms: 3,
+        candidates: NpcServer.Offers.registered(profile.activities, [])
+      }
 
       assert {:ok, %{activity: "visit_plaza", confidence: 0.62, trigger: "start"}} =
                NpcServer.Selector.ask(profile, question, "start")

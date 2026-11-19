@@ -975,7 +975,14 @@ defmodule NpcServer.NpcMindTest do
       for {label, expected, life} <- snapshots, repeat <- 1..2 do
         state = Mind.text(Mind.snapshot(profile, observation, history, life))
         if repeat == 1, do: IO.puts("live_jev mind snapshot=#{label} state:\n#{state}\n")
-        {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "completed")
+        # 候选同产品：登记项生成器（`Offers.registered/2`）给出的那一组。
+        question = %{
+          state: state,
+          recall_ms: 0,
+          candidates: NpcServer.Offers.registered(profile.activities, [])
+        }
+
+        {:ok, selection} = Selector.ask(profile, question, "completed")
 
         IO.puts(
           "live_jev mind snapshot=#{label} repeat=#{repeat} expected=#{expected} chosen=#{selection.activity} " <>

@@ -453,7 +453,7 @@ defmodule NpcServer.Life.DayPlan do
   end
 
   @doc """
-  一项活动**完成**（失败的不算，调用方不调）时记账。`done` 是完成的活动的 `{种类, 对象}`（`NpcServer.Selector.experience/2`
+  一项活动**完成**（失败的不算，调用方不调）时记账。`done` 是完成的活动的 `{种类, 对象}`（`NpcServer.Selector.experience/1`
   的 `kind` 与 `object`），只看今天、种类相同、`:open` 的意图：
 
   1. **点名优先**：先在点名的就是这个对象的意图里取；

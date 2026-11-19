@@ -34,7 +34,7 @@ defmodule NpcServer.Registry do
                   它只进记忆：活动结束时 Life 把它写成那条经历的 `place:<地名>` tag，召回按地点调取（`NpcServer.Life.activity/2`）；
                   不进给 Jev 的候选，也不决定去哪里。空串、非字符串被拒；不写就是没有地名（profile 里为 nil）。
                   只有 place 项可以另加 "requires_building"（非空发布名）。本轮有至少一座同名自有建筑站立时才列为即时选项。
-                  候选名不能等于生成的计划种类（`NpcServer.Offers.plan_kinds/1`，现在是说话的 "speak_to"）：日计划按种类
+                  候选名不能等于生成的计划种类（`NpcServer.Offers.plan_kinds/1`：说话 "speak_to"、进食 "eat"、合成 "craft"）：日计划按种类
                   记账，同名就分不清。
       tools       工具带（同 settler）。
       life        可省略。统一形态必带 Life：情绪与关系、近期经历、Hindsight 的认识与召回都经它进心智快照（`NpcServer.Mind`）。

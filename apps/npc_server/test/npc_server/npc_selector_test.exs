@@ -312,11 +312,41 @@ defmodule NpcServer.NpcSelectorTest do
     end
   end
 
+  # 稿 A 批 1：背包生成器做出的进食候选（`Offers.eat/2`；库存同 `World.production_options/2` 的结果，取值照真实目录的 Fern）。
+  defp fern(registered) do
+    [candidate] =
+      NpcServer.Offers.eat(registered, %{
+        seq: 3,
+        eat: [%{material: 34, name: "Fern", units: 262_144}],
+        craft: []
+      })
+
+    candidate
+  end
+
+  # 选择器状态里记下这次所问的内容（Runtime 在应答之前一定先记 `asked`，`Selector.chose/3` 的日志从它取候选）；
+  # 候选由产品生成器给出：登记项（`Offers.registered/2`）加 `extra`。
+  defp asked(profile, extra \\ []) do
+    Selector.asked(Selector.new(), %{
+      state: "Character: Lin.",
+      recall_queries: [],
+      recall_ms: 3,
+      candidates: NpcServer.Offers.registered(profile.activities, []) ++ extra
+    })
+  end
+
   describe "ask/3 (frozen Jev answers)" do
+    # 本轮候选：登记项（`Offers.registered/2`）加一个进食候选，同 `Offers.candidates/4` 给发问的形状。
     defp ask(profile, reply) do
       Selector.ask(
         Map.put(profile, :request, fn _endpoint, _body -> reply end),
-        %{state: "Character: Lin, a builder.", recall_queries: [%{query: "q"}], recall_ms: 41},
+        %{
+          state: "Character: Lin, a builder.",
+          recall_queries: [%{query: "q"}],
+          recall_ms: 41,
+          candidates:
+            NpcServer.Offers.registered(profile.activities, []) ++ [fern(profile.activities)]
+        },
         "start"
       )
     end
@@ -336,6 +366,19 @@ defmodule NpcServer.NpcSelectorTest do
       assert is_integer(ms) and ms >= 0
     end
 
+    # 批 1：选中的候选整份冻结进选择（`candidate`），不只是带目标的说话项——执行参数、种类、对象、判据都取自发问那一刻。
+    test "the chosen candidate is frozen into the selection, whatever its kind", %{
+      profile: profile
+    } do
+      fern = fern(profile.activities)
+      assert {:ok, %{activity: "eat:34", candidate: ^fern}} = ask(profile, answer("eat:34", 0.5))
+
+      assert {:ok, %{activity: "rest_at_home", candidate: rest}} =
+               ask(profile, answer("rest_at_home", 0.5))
+
+      assert %{kind: "rest_at_home", object: nil, place_name: "home"} = rest
+    end
+
     test "a choice outside the candidates is an explicit failure", %{profile: profile} do
       assert {:error, {:unknown_activity, "dance"}} == ask(profile, answer("dance", 0.99))
     end
@@ -351,9 +394,12 @@ defmodule NpcServer.NpcSelectorTest do
     test "an ended activity is recorded once; a re-ask after a failed selection is a retry", %{
       profile: profile
     } do
+      # 选择带着选中的候选（`Selector.ask/4` 冻结的那一份；登记项经 `Offers.registered/2`）。
       selection = fn name, trigger ->
         %{
           activity: name,
+          candidate:
+            Enum.find(NpcServer.Offers.registered(profile.activities, []), &(&1.name == name)),
           confidence: 0.6,
           latency_ms: 12,
           recall_ms: 3,
@@ -362,11 +408,11 @@ defmodule NpcServer.NpcSelectorTest do
         }
       end
 
-      state = Selector.new()
+      state = asked(profile)
       assert nil == Selector.current(state)
       assert {"start", state} = Selector.ended(state, nil)
 
-      state = Selector.chose(state, selection.("rest_at_home", "start"), profile, 7)
+      state = Selector.chose(state, selection.("rest_at_home", "start"), 7)
       assert "rest_at_home" == Selector.current(state)
       assert [] == Selector.history(state)
 
@@ -387,14 +433,14 @@ defmodule NpcServer.NpcSelectorTest do
                object: nil,
                completed: false
              } ==
-               Selector.experience(state, profile)
+               Selector.experience(state)
 
       # 发问失败后树带着同一份报告重问：不重复记账，trigger 是 retry。
       state = Selector.failed(state, {503, "busy"}, 7)
       assert %{failure: {503, "busy"}} = state
       assert {"retry", ^state} = Selector.ended(state, failure)
 
-      state = Selector.chose(state, selection.("zeta_build_north", "retry"), profile, 7)
+      state = Selector.chose(state, selection.("zeta_build_north", "retry"), 7)
       assert %{failure: nil} = state
       assert {"completed", state} = Selector.ended(state, :completed)
 
@@ -408,7 +454,7 @@ defmodule NpcServer.NpcSelectorTest do
                object: nil,
                completed: true
              } ==
-               Selector.experience(state, profile)
+               Selector.experience(state)
 
       assert [
                %{activity: "rest_at_home", result: ^failure},
@@ -416,14 +462,20 @@ defmodule NpcServer.NpcSelectorTest do
              ] = Selector.history(state)
 
       # 最近一次问 Jev 的内容原样留在状态里，供 observe 读。
-      question = %{state: "Character: Lin.", recall_queries: [%{query: "q"}], recall_ms: 3}
-      assert %{asked: nil} = state
+      question = %{
+        state: "Character: Lin.",
+        recall_queries: [%{query: "q"}],
+        recall_ms: 3,
+        candidates: NpcServer.Offers.registered(profile.activities, [])
+      }
+
+      assert %{asked: nil} = Selector.new()
       assert %{asked: ^question} = Selector.asked(state, question)
     end
 
     test "only the five most recent activities are kept", %{profile: profile} do
       state =
-        Enum.reduce(1..7, Selector.new(), fn n, state ->
+        Enum.reduce(1..7, asked(profile), fn n, state ->
           {_, state} = Selector.ended(state, :completed)
 
           Selector.chose(
@@ -436,7 +488,6 @@ defmodule NpcServer.NpcSelectorTest do
               trigger: "completed",
               model: "m"
             },
-            profile,
             7
           )
         end)
@@ -462,7 +513,7 @@ defmodule NpcServer.NpcSelectorTest do
 
       selection = %{
         activity: candidate.name,
-        topic: candidate,
+        candidate: candidate,
         confidence: 0.6,
         latency_ms: 12,
         recall_ms: 3,
@@ -471,7 +522,10 @@ defmodule NpcServer.NpcSelectorTest do
       }
 
       {_, state} =
-        Selector.new() |> Selector.chose(selection, profile, 7) |> Selector.ended(:completed)
+        profile
+        |> asked([candidate])
+        |> Selector.chose(selection, 7)
+        |> Selector.ended(:completed)
 
       assert %{
                text:
@@ -481,7 +535,41 @@ defmodule NpcServer.NpcSelectorTest do
                kind: "speak_to",
                object: %{"actor" => 21},
                completed: true
-             } == Selector.experience(state, profile)
+             } == Selector.experience(state)
+    end
+
+    # 稿 A 批 1：进食候选（`Offers.eat/2`）的经历直接取自冻结的候选——种类 eat、对象是材料号，判据写进句子；
+    # 不回查登记表（登记表里根本没有这一项）。
+    test "a finished eat activity yields its kind and material object from the frozen candidate",
+         %{profile: profile} do
+      candidate = fern(profile.activities)
+
+      selection = %{
+        activity: candidate.name,
+        candidate: candidate,
+        confidence: 0.6,
+        latency_ms: 12,
+        recall_ms: 3,
+        trigger: "start",
+        model: "m"
+      }
+
+      {_, state} =
+        profile
+        |> asked([candidate])
+        |> Selector.chose(selection, 7)
+        |> Selector.ended({:failed, "eat", "insufficient_material"})
+
+      assert %{
+               text:
+                 ~s|I did "eat:34" (Eat one serving of Fern (material 34) from my inventory.). | <>
+                   "Result: failed (eat: insufficient_material).",
+               place: nil,
+               activity: "eat:34",
+               kind: "eat",
+               object: %{"material" => 34},
+               completed: false
+             } == Selector.experience(state)
     end
   end
 
@@ -528,6 +616,32 @@ defmodule NpcServer.NpcSelectorTest do
         # 活动失败不终止树：下一次发问带失败的动作与原因。
         {rejected(4, :build, :occupied), []},
         {obs(123), [%{id: 5, verb: :choose_activity, ended: {:failed, "build", "occupied"}}]}
+      ])
+    end
+
+    # 稿 A 批 1：生成的背包候选不在登记表里，树按动作名建分支（`Offers.acts/0`），守卫读选择应答里冻结的执行参数
+    # （Runtime 的 `finish_select` 把候选的 `action` 放进 done 的 data；评审修正：不与登记项的分支规格 `run` 共用一个键），
+    # 原样发一条世界动作命令（`NpcServer.Brain` 的命令表）。
+    # 世界拒绝（如可行性过时：余额已被吃掉）→ 这一项失败，下一次发问带动作名与原因。
+    test "a generated inventory candidate runs its frozen world action; a World refusal is reported on the next ask",
+         %{profile: profile} do
+      Tree.init(profile)
+      |> script([
+        {obs(0), [%{id: 1, verb: :choose_activity, ended: nil}]},
+        {done(1, :choose_activity, %{
+           activity: "eat:34",
+           action: {"eat", %{"material" => 34}}
+         }), [%{id: 2, verb: :eat, material: 34}]},
+        {rejected(2, :eat, :insufficient_material), []},
+        {obs(1),
+         [%{id: 3, verb: :choose_activity, ended: {:failed, "eat", "insufficient_material"}}]},
+        # 合成成功：这一项完成，下一次发问报 completed。名字避让过的候选（`craft:41_`）照样按冻结的动作执行。
+        {done(3, :choose_activity, %{
+           activity: "craft:41_",
+           action: {"craft", %{"material" => 41}}
+         }), [%{id: 4, verb: :craft, material: 41}]},
+        {done(4, :craft, %{seq: 9}), []},
+        {obs(2), [%{id: 5, verb: :choose_activity, ended: :completed}]}
       ])
     end
 
@@ -1787,7 +1901,15 @@ What just happened: Nothing new.
         }
 
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))
-        {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "start")
+
+        # 候选同产品：登记项生成器（`Offers.registered/2`）给出的那一组（附近没人、背包为空，生产路径上也只有它们）。
+        question = %{
+          state: state,
+          recall_ms: 0,
+          candidates: NpcServer.Offers.registered(activities, [])
+        }
+
+        {:ok, selection} = Selector.ask(profile, question, "start")
 
         IO.puts(
           "live_jev select who=#{who} repeat=#{repeat} expected=#{expected} chosen=#{selection.activity} " <>

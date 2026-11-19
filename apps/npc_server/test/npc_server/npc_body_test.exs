@@ -101,17 +101,17 @@ defmodule NpcServer.NpcBodyTest do
     test "without dig it walks the route in a cycle, one move_to per arrival" do
       state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}]})
 
-      {[%{id: 1, verb: :move_to, position: {1.0, 0.0}}], state} =
+      {[%{id: 1, verb: :move_to, position: {1.0, +0.0}}], state} =
         Patrol.handle_event(obs(5), state)
 
       assert {[], state} = Patrol.handle_event(obs(6), state)
 
-      {[%{id: 2, verb: :move_to, position: {9.0, 0.0}}], state} =
+      {[%{id: 2, verb: :move_to, position: {9.0, +0.0}}], state} =
         Patrol.handle_event(done(1), state)
 
       # 不是自己在等的 id：忽略。
       assert {[], state} = Patrol.handle_event(done(1), state)
-      {[%{id: 3, verb: :move_to, position: {1.0, 0.0}}], _} = Patrol.handle_event(done(2), state)
+      {[%{id: 3, verb: :move_to, position: {1.0, +0.0}}], _} = Patrol.handle_event(done(2), state)
     end
 
     test "with dig: probe on arrival, attack the returned identity, cool down 36 ticks, re-probe, leave when it changed" do
@@ -119,7 +119,7 @@ defmodule NpcServer.NpcBodyTest do
       state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}], dig: dig})
       {[%{id: 1}], state} = Patrol.handle_event(obs(100), state)
 
-      {[%{id: 2, verb: :probe_toward, direction: {1.0, 0.0, 0.0}, tool_id: 1}], state} =
+      {[%{id: 2, verb: :probe_toward, direction: {1.0, +0.0, +0.0}, tool_id: 1}], state} =
         Patrol.handle_event(done(1), state)
 
       {[%{id: 3, verb: :use_tool, target: @target}], state} =
@@ -135,7 +135,7 @@ defmodule NpcServer.NpcBodyTest do
       {[], state} = Patrol.handle_event(done(5, %{seq: 10}), state)
       {[%{id: 6, verb: :probe_toward}], state} = Patrol.handle_event(obs(200), state)
       # 命中的是另一个身份 → 原目标没了，走向下一个路点。
-      {[%{id: 7, verb: :move_to, position: {9.0, 0.0}}], _} =
+      {[%{id: 7, verb: :move_to, position: {9.0, +0.0}}], _} =
         Patrol.handle_event(done(6, %{@target | incarnation: 8}), state)
     end
 
@@ -145,7 +145,9 @@ defmodule NpcServer.NpcBodyTest do
       {_, state} = Patrol.handle_event(obs(1), state)
       {[%{id: 2}], state} = Patrol.handle_event(done(1), state)
       rejected = {:outcome, %{id: 2, status: :rejected, reason: :no_target}}
-      {[%{id: 3, verb: :move_to, position: {9.0, 0.0}}], _} = Patrol.handle_event(rejected, state)
+
+      {[%{id: 3, verb: :move_to, position: {9.0, +0.0}}], _} =
+        Patrol.handle_event(rejected, state)
     end
   end
 

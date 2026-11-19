@@ -10,19 +10,31 @@ defmodule NpcServer.NpcOffersTest do
     **覆盖边界**：“全授予 profile”只拼得出现有的授予方式——工具带（`tools`）、法术带（`spells`）、创世（`genesis`）、技能（`skills`）
     与候选表（`activities`）。能力库若新增别的授予方式（profile 里一个新键才放出的条目），这里拼不出它，覆盖测试也就看不见；
     加授予方式时要同时把它加进 `full_profile/0`。
-  - **候选只从覆盖登记生成**：`Offers.generators/1` 取登记里 offer 一类的生成器（去重、按名字排序），`candidates/4` 只按它生成；
-    次序锁定为登记项在前、说话在后；把条目改成 withheld，它的生成器（没有别的 offer 共用时）就消失。用参数化的登记表测这个纯函数，
-    生产代码不为测试加开关。真实 Scene 求交后的整轮候选次序另由 `npc_selector_test` 的真实 Runtime 用例（`npc_select … candidates=…` 日志）锁定。
-  - **批 0 不改行为**：offer 只有 build / gather / expand / travel（登记项生成器 `registered/2`）与 speak（`speak_to/2`）。
+  - **候选只从覆盖登记生成**：`Offers.generators/1` 取登记里 offer 一类的生成器，按模块里显式写下的生成器次序排列（批 1 前置：
+    原来按名字排序，新增 `:eat` / `:craft` 会排到 `:registered` 之前、改变候选次序），`candidates/4` 只按它生成；次序锁定为
+    登记项、说话、进食、合成；登记里出现次序表没有的生成器是登记写错，直接 raise；把条目改成 withheld，它的生成器（没有别的
+    offer 共用时）就消失。用参数化的登记表测这个纯函数，生产代码不为测试加开关。真实 Scene 求交后的整轮候选次序另由
+    `npc_selector_test` 的真实 Runtime 用例锁定；带背包候选的整轮次序由 `npc_offers_integration_test` 读请求体里的有序候选锁定
+    （合成用例另断言 `npc_select … candidates=…` 这一行日志）。
+  - **批 1 的 offer**：build / gather / expand / travel（登记项生成器 `registered/2`）、speak（`speak_to/2`）、eat（`eat/2`）、
+    craft（`craft/2`）。
   - **生成器（T-A2）**：`registered/2` 按建筑条件保序过滤（从 `Selector` 迁来，期望照迁移前的输出手写）；`speak_to/2` 与 `reply/2`
     （从 `Dialogue.topic_candidates/2`、`Dialogue.reply_candidate/2` 迁来）的范围、自身排除、观察次序、目标冻结、`speak_to:<id>` 的避让。
     所有候选都带 `kind` 与 `object`（登记项 `kind` = 候选名、`object` = nil；说话项 `kind` = `"speak_to"`、`object` = `%{"actor" => cid}`），
     说话项保留 `target`（Runtime 交给 speak 技能的参数，`runtime.ex` 的 `finish_select/2` 读它）。
+    `eat/2` / `craft/2`（批 1，评审修正后）：可行性**不在这里判**——World 的 `production_options/2` 用与提交同一组判定列出能吃 /
+    能合成的材料（一致性由 voxel_region 的 `production_options_test` 证明），生成器只把列出的每一项投影成候选：按材料号升序
+    （与 World 给的次序无关）、生成器给完整列表（每类前 k 项由 `candidates/4` 截断，截断在 `npc_offers_integration_test` 里由真实
+    World 证明）、名字避让、判据的写法、冻结的世界动作 `action: {动作名, %{"material" => id}}`（与登记项的分支规格 `run` 分开，
+    背包候选没有 `run` 键）；`acts/0` 与生成器给出的动作名一致（`Trees.npc/1` 按它建分支）。
+    读库存只测 happy path（用户 2026-11-19 方向）：路由 / World 失败照常退出，不在这里预建失败用例。
 
   层次与替身：纯函数，直接构造输入（profile、观察、Life 的建筑视图与来话都按产品形状手写：观察同 `Body.observe/1`，
-  建筑同 `Life.mind/2` 的 `buildings`，来话同 Scene 交给 Runtime 的 Speech）。不启动 World、Scene、Life 或数据库。
+  建筑同 `Life.mind/2` 的 `buildings`，来话同 Scene 交给 Runtime 的 Speech；库存同 `World.production_options/2` 的结果，
+  取值照真实目录）。不启动 World、Scene、Life 或数据库。
   说话范围读 Scene 的唯一参数 `SceneServer.Dialogue.limits/0`，不在测试里另写一个数。
-  不证明：候选进请求体的字节（`npc_selector_test` 的 request body 用例）、Scene 新话题冷却的求交（`npc_registry_test` 的真实对话用例）。
+  不证明：候选进请求体的字节（`npc_selector_test` 的 request body 用例）、Scene 新话题冷却的求交（`npc_registry_test` 的真实对话用例）、
+  库存读自真实 World 与每类截断（`npc_offers_integration_test`）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -109,7 +121,7 @@ defmodule NpcServer.NpcOffersTest do
       end
     end
 
-    test "批 0 不改行为：offer 恰为四个登记技能（registered/2）与 speak（speak_to/2）" do
+    test "批 1：offer 恰为四个登记技能（registered/2）、speak（speak_to/2）、eat（eat/2）与 craft（craft/2）" do
       offers =
         for {name, {:offer, generator}} <- Offers.coverage(), into: %{}, do: {name, generator}
 
@@ -118,20 +130,23 @@ defmodule NpcServer.NpcOffersTest do
                "gather" => :registered,
                "expand" => :registered,
                "travel" => :registered,
-               "speak" => :speak_to
+               "speak" => :speak_to,
+               "eat" => :eat,
+               "craft" => :craft
              }
     end
   end
 
   # 评审修正：`candidates/4` 原来写死 `registered ++ speak`、不读 `coverage/0`，登记表与真实候选来源是两份互不约束的事实。
-  describe "generators/1：候选只从覆盖登记生成" do
-    test "现在的登记：[:registered, :speak_to]——登记项在前、说话在后；四个登记技能共用的生成器只出现一次" do
-      assert Offers.generators(Offers.coverage()) == [:registered, :speak_to]
+  # 批 1 前置：生成器次序改为显式声明（原来按名字排序：加上 eat / craft 会得 `[:craft, :eat, :registered, :speak_to]`）。
+  describe "generators/1：候选只从覆盖登记生成，按显式次序" do
+    test "现在的登记：[:registered, :speak_to, :eat, :craft]——登记项、说话、进食、合成；四个登记技能共用的生成器只出现一次" do
+      assert Offers.generators(Offers.coverage()) == [:registered, :speak_to, :eat, :craft]
     end
 
-    test "把 speak 改成 withheld：说话生成器消失，它的候选不再出现" do
+    test "把 speak 改成 withheld：说话生成器消失，它的候选不再出现；其余次序不变" do
       coverage = Map.put(Offers.coverage(), "speak", {:withheld, "只测试：不给说话。"})
-      assert Offers.generators(coverage) == [:registered]
+      assert Offers.generators(coverage) == [:registered, :eat, :craft]
     end
 
     test "登记项的生成器由四个条目共用：只改一个仍在（过渡形态），四个都改成 withheld 才消失" do
@@ -141,24 +156,34 @@ defmodule NpcServer.NpcOffersTest do
 
       assert Offers.generators(withhold.(Offers.coverage(), ["build"])) == [
                :registered,
-               :speak_to
+               :speak_to,
+               :eat,
+               :craft
              ]
 
       all_four = withhold.(Offers.coverage(), ["build", "gather", "expand", "travel"])
-      assert Offers.generators(all_four) == [:speak_to]
+      assert Offers.generators(all_four) == [:speak_to, :eat, :craft]
     end
 
-    test "次序与登记表的遍历次序无关；inside / withheld 条目不产生生成器" do
+    test "次序取显式次序表，与登记表的遍历次序、生成器名的字典序都无关；inside / withheld 条目不产生生成器" do
       coverage = [
+        {"craft", {:offer, :craft}},
         {"speak", {:offer, :speak_to}},
         {"say", {:inside, [:speak]}},
+        {"eat", {:offer, :eat}},
         {"travel", {:offer, :registered}},
-        {"eat", {:withheld, "只测试。"}},
+        {"dismantle", {:withheld, "只测试。"}},
         {"build", {:offer, :registered}}
       ]
 
-      assert Offers.generators(coverage) == [:registered, :speak_to]
-      assert Offers.generators(Enum.reverse(coverage)) == [:registered, :speak_to]
+      assert Offers.generators(coverage) == [:registered, :speak_to, :eat, :craft]
+      assert Offers.generators(Enum.reverse(coverage)) == [:registered, :speak_to, :eat, :craft]
+    end
+
+    test "登记里有、次序表里没有的生成器是登记写错：raise，不悄悄排到哪里" do
+      coverage = Map.put(Offers.coverage(), "dismantle", {:offer, :dismantle})
+
+      assert_raise ArgumentError, ~r/:dismantle/, fn -> Offers.generators(coverage) end
     end
   end
 
@@ -330,6 +355,110 @@ defmodule NpcServer.NpcOffersTest do
                criterion: "Stop what I am doing, go over to someone unnamed and talk with them.",
                target: %{"name" => "someone unnamed"}
              } = Offers.reply([], %{@speech | speaker_name: ""})
+    end
+  end
+
+  # —— 批 1：背包生成器（eat / craft） ——
+
+  # 库存：`World.production_options/2` 的结果（能不能吃 / 合成由 World 与提交同一处判定，生成器不再过滤）。
+  # 取值照真实目录（Voxim `Content/Voxel/Properties/Playable/Published/e6db8dee…json`，2026-11-10 最新一份）：可食只有
+  # Fern 34 / Dandelion 36 / Allium 39（一份 = place_units 262144）；Switch 41 = 铜 24 × 8192 + 石 11 × 4096 → 4096、
+  # 灰褐砌石 46 = 石 × 2097152、石质饰面 47 = 石灰石 10 × 2097152。另有一行没有显示名（World 对目录没有 `display_name`
+  # 的材料给 nil，如 npc_world 夹具的基础材料行），测 `material <id>` 的写法。
+  # 行的次序故意不是材料号序：输出的次序只能来自生成器自己的排序（候选次序是本模块的策略，不靠 World 的次序）。
+  @options %{
+    seq: 17,
+    eat: [
+      %{material: 39, name: "Allium", units: 262_144},
+      %{material: 34, name: "Fern", units: 262_144},
+      %{material: 36, name: "Dandelion", units: 262_144}
+    ],
+    craft: [
+      %{
+        material: 47,
+        name: "石质饰面",
+        inputs: [%{material: 10, units: 2_097_152}],
+        units: 2_097_152
+      },
+      %{
+        material: 41,
+        name: "Switch",
+        inputs: [%{material: 24, units: 8192}, %{material: 11, units: 4096}],
+        units: 4096
+      },
+      %{material: 46, name: nil, inputs: [%{material: 11, units: 2_097_152}], units: 2_097_152}
+    ]
+  }
+
+  defp eat_candidate(id, label, name \\ nil),
+    do: %{
+      name: name || "eat:#{id}",
+      kind: "eat",
+      object: %{"material" => id},
+      criterion: "Eat one serving of #{label} from my inventory.",
+      place_name: nil,
+      action: {"eat", %{"material" => id}}
+    }
+
+  defp craft_candidate(id, label, name \\ nil),
+    do: %{
+      name: name || "craft:#{id}",
+      kind: "craft",
+      object: %{"material" => id},
+      criterion: "Craft #{label} from materials in my inventory.",
+      place_name: nil,
+      action: {"craft", %{"material" => id}}
+    }
+
+  describe "eat/2（批 1）" do
+    test "World 列出的能吃一份的材料各成一个候选，按材料号升序；冻结的世界动作在 action（不占登记项的 run）" do
+      assert Offers.eat([@rest], @options) == [
+               eat_candidate(34, "Fern (material 34)"),
+               eat_candidate(36, "Dandelion (material 36)"),
+               eat_candidate(39, "Allium (material 39)")
+             ]
+
+      # 评审修正：背包候选的冻结命令与登记项的分支规格不共用一个键。
+      refute Enum.any?(Offers.eat([@rest], @options), &Map.has_key?(&1, :run))
+    end
+
+    test "登记名占了 eat:<id> 就往后加下划线避让；种类、对象与执行参数不变" do
+      registered = [%{@rest | name: "eat:39"}, %{@gather | name: "eat:39_"}]
+
+      assert [_, _, allium] = Offers.eat(registered, @options)
+      assert allium == eat_candidate(39, "Allium (material 39)", "eat:39__")
+    end
+
+    test "World 什么都没列：没有进食候选" do
+      assert Offers.eat([@rest], %{@options | eat: []}) == []
+    end
+  end
+
+  describe "craft/2（批 1）" do
+    test "World 列出的能合成一次的产物各成一个候选，按材料号升序；没有显示名写 material <id>；生成器给完整列表（截断在 candidates/4）" do
+      assert Offers.craft([@rest], @options) == [
+               craft_candidate(41, "Switch (material 41)"),
+               craft_candidate(46, "material 46"),
+               craft_candidate(47, "石质饰面 (material 47)")
+             ]
+    end
+
+    test "登记名占了 craft:<id> 就往后加下划线避让" do
+      assert [switch, _, _] = Offers.craft([%{@rest | name: "craft:41"}], @options)
+      assert switch == craft_candidate(41, "Switch (material 41)", "craft:41_")
+    end
+  end
+
+  describe "acts/0（批 1）" do
+    test "acts/0 恰是背包生成器冻结的动作名（Trees.npc 按它建分支，两边不能各写一份）" do
+      generated =
+        for candidate <- Offers.eat([], @options) ++ Offers.craft([], @options),
+            {act, %{"material" => _}} = candidate.action,
+            uniq: true,
+            do: act
+
+      assert Offers.acts() == ["eat", "craft"]
+      assert generated == Offers.acts()
     end
   end
 end
