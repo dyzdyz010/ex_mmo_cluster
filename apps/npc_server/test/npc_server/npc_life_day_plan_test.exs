@@ -5,7 +5,11 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   `check/3` 的合格 / 不合格样例是 S1-R8 离线测量里规划模型的真实应答（取出的 `text` 块；来源见
   `test/support/fixtures/day_plan/README.md`），期望取自 S1-R8 `results.json` 里记的检查结果；其余失败原因用对这些真实正文
   删减 / 换写法得到的变体来测。要进持久行的数据每步过一遍 JSON，证明是能原样存取的普通 map。
-  不证明：规划提示词、写作调用、Life 的接线与持久化（后续任务）。
+
+  稿 A 批 0b（`docs/10-active/cross-cutting/2026-11-18-npc-full-capability-coverage-decision.md` §4 A-5，T-A3）：词表从“候选名逐字”
+  改为“种类 + 可选对象”。`check/3` 的词表是 `%{种类 => %{显示名 => 对象}}`（S1-R8 的六个候选名各是静态种类，没有对象），
+  意图多一个可缺 / 可 null 的 `object`；`record_activity/4` 按 `{种类, 对象}` 记账；种类的来源 `Offers.plan_kinds/1` 也在这里测。
+  不证明：规划提示词、写作调用、Life 的接线与持久化（`npc_life_day_plan_round_test`、`npc_life_day_plan_integration_test`）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -16,16 +20,24 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   defp sample(name),
     do: Path.join(@fixtures, "s1r8-#{name}.json") |> File.read!() |> Jason.decode!()
 
+  # 词表（稿 A 批 0b）：`%{种类 => %{显示名 => 对象}}`。S1-R8 的六个候选名各是一个静态种类（没有对象可选）。
+  defp vocabulary(names), do: Map.new(names, &{&1, %{}})
+
   defp check_sample(name, now_minute \\ nil) do
     s = sample(name)
-    DayPlan.check(s["text"], s["activity_names"], now_minute || s["now_minute"])
+    DayPlan.check(s["text"], vocabulary(s["activity_names"]), now_minute || s["now_minute"])
   end
 
-  # 对真实正文做变体：解码 → 改 → 编码，再按同一份词表与此刻检查。
-  defp check_variant(name, fun, now_minute \\ nil) do
+  # 对真实正文做变体：解码 → 改 → 编码，再按同一份词表与此刻检查（`vocab` 缺省是 S1-R8 的静态词表）。
+  defp check_variant(name, fun, now_minute \\ nil, vocab \\ nil) do
     s = sample(name)
     text = s["text"] |> Jason.decode!() |> fun.() |> Jason.encode!()
-    DayPlan.check(text, s["activity_names"], now_minute || s["now_minute"])
+
+    DayPlan.check(
+      text,
+      vocab || vocabulary(s["activity_names"]),
+      now_minute || s["now_minute"]
+    )
   end
 
   defp checked!(name) do
@@ -54,7 +66,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       end
     end
 
-    test "合格结果的每条意图键恰为 activity / times / by / why，wants 键恰为 want / why，原文不改，且过 JSON 不变形" do
+    test "合格结果的每条意图键恰为 activity / object / times / by / why（没写对象为 nil），wants 键恰为 want / why，原文不改，且过 JSON 不变形" do
       {:ok, %{intents: intents, wants: wants} = checked} = check_sample("R3-r1")
       raw = sample("R3-r1")["text"] |> Jason.decode!()
 
@@ -62,6 +74,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
       assert first == %{
                "activity" => "guard_hut",
+               "object" => nil,
                "times" => 1,
                "by" => 13 * 60,
                "why" => hd(raw["intents"])["why"]
@@ -105,13 +118,14 @@ defmodule NpcServer.NpcLifeDayPlanTest do
             "```\n" <> s["text"] <> "\n```",
             "\n  ```json\n" <> s["text"] <> "\n```  \n"
           ] do
-        assert DayPlan.check(wrapped, s["activity_names"], s["now_minute"]) == expected
+        assert DayPlan.check(wrapped, vocabulary(s["activity_names"]), s["now_minute"]) ==
+                 expected
       end
     end
 
     test "围栏之外还有文字、两对围栏、围栏没闭合：都是 :not_json" do
       s = sample("R3-r1")
-      names = s["activity_names"]
+      names = vocabulary(s["activity_names"])
       now = s["now_minute"]
       fenced = "```json\n" <> s["text"] <> "\n```"
 
@@ -125,7 +139,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   describe "check/3：对真实正文做变体得到的失败原因" do
     test "不是 JSON：把正文截掉后半 → :not_json；正文前加一句话 → :not_json" do
       s = sample("R3-r1")
-      names = s["activity_names"]
+      names = vocabulary(s["activity_names"])
       now = s["now_minute"]
       half = binary_part(s["text"], 0, div(byte_size(s["text"]), 2))
 
@@ -137,7 +151,9 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     test "是 JSON 但不是对象：把正文里的 intents 列表单独当整段 → :not_object" do
       s = sample("R3-r1")
       list = s["text"] |> Jason.decode!() |> Map.fetch!("intents") |> Jason.encode!()
-      assert DayPlan.check(list, s["activity_names"], s["now_minute"]) == {:error, :not_object}
+
+      assert DayPlan.check(list, vocabulary(s["activity_names"]), s["now_minute"]) ==
+               {:error, :not_object}
     end
 
     test "顶层键：缺 cannot_yet、多出一个键、intents 不是列表" do
@@ -318,7 +334,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       plan =
         DayPlan.new()
         |> adopt!("R3-r1", 4, 731, :day, 1_000)
-        |> DayPlan.record_activity("guard_hut", 4, 740)
+        |> DayPlan.record_activity({"guard_hut", nil}, 4, 740)
         |> DayPlan.note_event()
         |> DayPlan.fail(:event, :rejected, {:by_not_after_now, "12:11"}, 2_000)
         |> DayPlan.fail(:day, :failed, :timeout, 3_000)
@@ -467,7 +483,10 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert Enum.map(plan["intents"], & &1["id"]) == ["4:1", "4:2", "4:3"]
       assert Enum.all?(plan["intents"], &(&1["done"] == 0))
 
-      assert Enum.map(plan["intents"], &Map.take(&1, ["activity", "times", "by", "why"])) ==
+      assert Enum.map(
+               plan["intents"],
+               &Map.take(&1, ["activity", "object", "times", "by", "why"])
+             ) ==
                intents
 
       assert plan["wants"] == wants
@@ -490,7 +509,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
 
       # 13:00 前做了一次守屋（done）；16:00 之后到 17:00 重排：第一条 visit_plaza（16:00）已 missed，21:00 那条仍 open。
-      plan = DayPlan.record_activity(plan, "guard_hut", 4, 750)
+      plan = DayPlan.record_activity(plan, {"guard_hut", nil}, 4, 750)
       assert [%{"done" => 1}, %{"done" => 0}, %{"done" => 0}] = plan["intents"]
 
       replanned = adopt!(plan, "R2-r1", 4, 17 * 60, :event, 99)
@@ -517,7 +536,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     test "跨日：整份换，旧意图（含已 done 的）都不留，id 从新日号起，wants 换成新的" do
       plan =
         adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
-        |> DayPlan.record_activity("guard_hut", 4, 750)
+        |> DayPlan.record_activity({"guard_hut", nil}, 4, 750)
 
       next = adopt!(plan, "R5-r1", 5, 102, :day, 10)
 
@@ -542,8 +561,8 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
       plan =
         plan
-        |> DayPlan.record_activity("gather_stone", 4, 800)
-        |> DayPlan.record_activity("build_hut", 4, 900)
+        |> DayPlan.record_activity({"gather_stone", nil}, 4, 800)
+        |> DayPlan.record_activity({"build_hut", nil}, 4, 900)
 
       assert Enum.map(plan["intents"], & &1["id"]) == ["4:1", "4:2", "4:3", "4:4", "4:5"]
 
@@ -583,7 +602,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     test "给同名、今天、open 的意图里 by 最早的一条加一；其他意图不动" do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
       # R3-r1：guard_hut 13:00、visit_plaza 16:00、visit_plaza 21:00。
-      plan = DayPlan.record_activity(plan, "visit_plaza", 4, 800)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 800)
       assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0]
     end
 
@@ -592,17 +611,17 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
       plan =
         plan
-        |> DayPlan.record_activity("visit_plaza", 4, 800)
-        |> DayPlan.record_activity("visit_plaza", 4, 810)
+        |> DayPlan.record_activity({"visit_plaza", nil}, 4, 800)
+        |> DayPlan.record_activity({"visit_plaza", nil}, 4, 810)
 
       assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 1]
-      assert DayPlan.record_activity(plan, "visit_plaza", 4, 820) == plan
+      assert DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 820) == plan
     end
 
     test "最早那条已 missed（此刻过了它的 by）就记到下一条仍 open 的" do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
       # 16:00 之后（16:30）：第一条 visit_plaza 已 missed，记到 21:00 那条。
-      plan = DayPlan.record_activity(plan, "visit_plaza", 4, 16 * 60 + 30)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 16 * 60 + 30)
       assert Enum.map(plan["intents"], & &1["done"]) == [0, 0, 1]
     end
 
@@ -615,31 +634,31 @@ defmodule NpcServer.NpcLifeDayPlanTest do
         end)
 
       plan = DayPlan.adopt(DayPlan.new(), 4, 731, tied, :day, 0)
-      plan = DayPlan.record_activity(plan, "visit_plaza", 4, 800)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 800)
       assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0]
     end
 
     test "by 恰等于此刻那一分钟仍算 open（minute <= by）" do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
-      plan = DayPlan.record_activity(plan, "guard_hut", 4, 13 * 60)
+      plan = DayPlan.record_activity(plan, {"guard_hut", nil}, 4, 13 * 60)
       assert hd(plan["intents"])["done"] == 1
     end
 
     test "没有同名意图、日号不是计划的那一天、活动名为空：原样返回，不报错" do
       plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
-      assert DayPlan.record_activity(plan, "build_hut", 4, 800) == plan
-      assert DayPlan.record_activity(plan, "visit_plaza", 5, 800) == plan
-      assert DayPlan.record_activity(plan, nil, 4, 800) == plan
-      assert DayPlan.record_activity(DayPlan.new(), "visit_plaza", 4, 800) == DayPlan.new()
+      assert DayPlan.record_activity(plan, {"build_hut", nil}, 4, 800) == plan
+      assert DayPlan.record_activity(plan, {"visit_plaza", nil}, 5, 800) == plan
+      assert DayPlan.record_activity(plan, {nil, nil}, 4, 800) == plan
+      assert DayPlan.record_activity(DayPlan.new(), {"visit_plaza", nil}, 4, 800) == DayPlan.new()
     end
 
     test "一条意图的 times 为 2：记两次才 done，第三次不再加" do
       plan = adopt!(DayPlan.new(), "R5-r1", 4, 102, :day, 0)
-      plan = plan |> DayPlan.record_activity("visit_plaza", 4, 200)
+      plan = plan |> DayPlan.record_activity({"visit_plaza", nil}, 4, 200)
       assert [_, %{"times" => 2, "done" => 1}] = plan["intents"]
-      plan = DayPlan.record_activity(plan, "visit_plaza", 4, 300)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 300)
       assert [_, %{"done" => 2}] = plan["intents"]
-      assert DayPlan.record_activity(plan, "visit_plaza", 4, 400) == plan
+      assert DayPlan.record_activity(plan, {"visit_plaza", nil}, 4, 400) == plan
     end
   end
 
@@ -729,16 +748,37 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     test "今天的各条 activity / times / done / by / status 与 wants；status 随此刻推出，不存" do
       plan =
         adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
-        |> DayPlan.record_activity("guard_hut", 4, 750)
+        |> DayPlan.record_activity({"guard_hut", nil}, 4, 750)
 
       %{wants: wants} = checked!("R3-r1")
 
       assert %{intents: intents, wants: ^wants} = DayPlan.column(plan, 4, 16 * 60 + 30)
 
       assert intents == [
-               %{activity: "guard_hut", times: 1, done: 1, by: 13 * 60, status: :done},
-               %{activity: "visit_plaza", times: 1, done: 0, by: 16 * 60, status: :missed},
-               %{activity: "visit_plaza", times: 1, done: 0, by: 21 * 60, status: :open}
+               %{
+                 activity: "guard_hut",
+                 object: nil,
+                 times: 1,
+                 done: 1,
+                 by: 13 * 60,
+                 status: :done
+               },
+               %{
+                 activity: "visit_plaza",
+                 object: nil,
+                 times: 1,
+                 done: 0,
+                 by: 16 * 60,
+                 status: :missed
+               },
+               %{
+                 activity: "visit_plaza",
+                 object: nil,
+                 times: 1,
+                 done: 0,
+                 by: 21 * 60,
+                 status: :open
+               }
              ]
 
       # 更早的此刻（11:40）：做完的仍是 :done，没做的两条都还没到时限，是 :open。
@@ -759,6 +799,199 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       {:ok, only_wants} = check_variant("R3-r1", &Map.put(&1, "intents", []))
       plan = DayPlan.adopt(DayPlan.new(), 4, 731, only_wants, :day, 0)
       assert %{wants: [_ | _], intents: []} = DayPlan.column(plan, 4, 731)
+    end
+  end
+
+  # —— 稿 A 批 0b：计划词表改为“种类 + 可选对象”（T-A3） ——
+  #
+  # 说话种类的对象是此刻能点名的人，显示名用名字层 `Life.State.person/2` 的写法 `名字 (actor <cid>)`；
+  # 两人取自 S1-X2 导出（`fixtures/reflection/s1x2-moments.json` 的 names：拆屋者 Corvin、访客 Tobin）。
+  # 模型应答没有说话种类的真实样本（批 0b 不调真实模型，离线重放另排），所以用 R3-r1 真实正文的变体：只把第一条意图
+  # 换成说话种类，其余键原样。
+  @corvin 1_011_812_929_538
+  @tobin 1_285_994_582_019
+  @corvin_name "Corvin (actor #{@corvin})"
+  @tobin_name "Tobin (actor #{@tobin})"
+
+  defp speaking_vocabulary do
+    sample("R3-r1")["activity_names"]
+    |> vocabulary()
+    |> Map.put("speak_to", %{
+      @corvin_name => %{"actor" => @corvin},
+      @tobin_name => %{"actor" => @tobin}
+    })
+  end
+
+  # R3-r1 的第一条意图（guard_hut 13:00 前一次）换成 `fields`（再删掉值为 :drop 的键）。
+  defp first_intent(fields) do
+    fn plan ->
+      update_in(plan["intents"], fn [first | rest] ->
+        changed = Map.merge(first, fields)
+        [Map.reject(changed, fn {_, value} -> value == :drop end) | rest]
+      end)
+    end
+  end
+
+  defp check_speaking(fields),
+    do: check_variant("R3-r1", first_intent(fields), nil, speaking_vocabulary())
+
+  describe "check/3：种类 + 可选对象" do
+    test "说话种类点名词表里的一人：object 换成该人的对象（%{\"actor\" => cid}），过 JSON 不变形" do
+      assert {:ok, %{intents: [first | _]} = checked} =
+               check_speaking(%{"activity" => "speak_to", "object" => @tobin_name})
+
+      assert first["activity"] == "speak_to"
+      assert first["object"] == %{"actor" => @tobin}
+      assert json(checked.intents) == checked.intents
+    end
+
+    test "object 可缺、可为 null：都是没点名（nil）" do
+      assert {:ok, %{intents: [%{"activity" => "speak_to", "object" => nil} | _]}} =
+               check_speaking(%{"activity" => "speak_to", "object" => :drop})
+
+      assert {:ok, %{intents: [%{"activity" => "speak_to", "object" => nil} | _]}} =
+               check_speaking(%{"activity" => "speak_to", "object" => nil})
+    end
+
+    test "object 不是该种类列出的显示名之一：{:unknown_object, 种类, 值}（逐字相等才算）" do
+      for bad <- [
+            "Mara (actor 5)",
+            "Tobin",
+            "tobin (actor #{@tobin})",
+            "",
+            @tobin,
+            %{"actor" => @tobin}
+          ] do
+        assert check_speaking(%{"activity" => "speak_to", "object" => bad}) ==
+                 {:error, {:unknown_object, "speak_to", bad}}
+      end
+    end
+
+    test "静态种类不接受对象" do
+      assert check_speaking(%{"activity" => "guard_hut", "object" => @tobin_name}) ==
+               {:error, {:unknown_object, "guard_hut", @tobin_name}}
+    end
+
+    test "候选名不是种类：逐轮变的 speak_to:<cid> 写进计划仍是 :unknown_activity" do
+      name = "speak_to:#{@tobin}"
+
+      assert check_speaking(%{"activity" => name}) == {:error, {:unknown_activity, name}}
+    end
+  end
+
+  # 当日计划：说话点名 Tobin（15:00 前）、说话不点名（16:00 前）、R3-r1 原有的两条 visit_plaza（16:00、21:00）。
+  defp speaking_plan do
+    {:ok, checked} =
+      check_variant(
+        "R3-r1",
+        fn plan ->
+          update_in(plan["intents"], fn [guard | rest] ->
+            [
+              %{guard | "activity" => "speak_to", "by" => "15:00"}
+              |> Map.put("object", @tobin_name),
+              %{guard | "activity" => "speak_to", "by" => "16:00"}
+              | rest
+            ]
+          end)
+          |> Map.put("cannot_yet", [])
+        end,
+        nil,
+        speaking_vocabulary()
+      )
+
+    DayPlan.adopt(DayPlan.new(), 4, 731, checked, :day, 0)
+  end
+
+  describe "record_activity/4：按种类 + 对象记账" do
+    test "对别人说完话：不记到点名 Tobin 的意图，记到不点名的那条" do
+      plan = DayPlan.record_activity(speaking_plan(), {"speak_to", %{"actor" => @corvin}}, 4, 800)
+      assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0, 0]
+    end
+
+    test "对 Tobin 说完话：点名与不点名的都匹配，记到 by 最早的那条（点名 Tobin 的 15:00）" do
+      plan = DayPlan.record_activity(speaking_plan(), {"speak_to", %{"actor" => @tobin}}, 4, 800)
+      assert Enum.map(plan["intents"], & &1["done"]) == [1, 0, 0, 0]
+
+      # 再说一次：点名那条已 done，记到不点名的那条。
+      plan = DayPlan.record_activity(plan, {"speak_to", %{"actor" => @tobin}}, 4, 810)
+      assert Enum.map(plan["intents"], & &1["done"]) == [1, 1, 0, 0]
+      assert json(plan) == plan
+    end
+
+    test "完成的活动没有对象：只匹配不点名的意图" do
+      plan = DayPlan.record_activity(speaking_plan(), {"speak_to", nil}, 4, 800)
+      assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0, 0]
+    end
+
+    test "种类不同不记：登记项 visit_plaza 完成不碰说话意图" do
+      plan = DayPlan.record_activity(speaking_plan(), {"visit_plaza", nil}, 4, 800)
+      assert Enum.map(plan["intents"], & &1["done"]) == [0, 0, 1, 0]
+    end
+
+    test "旧行（批 0b 之前存下的意图没有 object 键）照旧按种类记账，不迁移" do
+      old =
+        DayPlan.new()
+        |> adopt!("R3-r1", 4, 731, :day, 0)
+        |> Map.update!("intents", fn intents -> Enum.map(intents, &Map.delete(&1, "object")) end)
+
+      refute Enum.any?(old["intents"], &Map.has_key?(&1, "object"))
+      plan = DayPlan.record_activity(old, {"visit_plaza", nil}, 4, 800)
+      assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0]
+    end
+  end
+
+  describe "column/3：带出对象" do
+    test "每条意图带 object（点名的是对象，不点名为 nil）；怎么写成人名由 Mind 决定" do
+      assert [
+               %{activity: "speak_to", object: %{"actor" => @tobin}, by: 900, status: :open},
+               %{activity: "speak_to", object: nil, by: 960, status: :open}
+               | _
+             ] = DayPlan.column(speaking_plan(), 4, 800).intents
+    end
+  end
+
+  # Offers 拥有“统一形态有哪些可计划的种类”（`NpcServer.Offers.plan_kinds/1`），DayPlan 只按展开后的词表检查。
+  # profile 的候选形状同 `Registry.brain("npc", _)` 构造的；`"npc"` 登记总带 speak 技能。
+  describe "Offers.plan_kinds/1：规划词表的种类" do
+    @activities [
+      %{
+        name: "gather_stone",
+        criterion: "Cut stone at the quarry.",
+        run: {:skill, "gather", %{}},
+        place_name: nil
+      },
+      %{
+        name: "guard_hut",
+        criterion: "Stand beside the small hut.",
+        run: {:place, [25, 36], 600},
+        place_name: "the small hut",
+        requires_building: "small hut"
+      }
+    ]
+
+    test "登记项各是一个静态种类（判据原样、次序不变、不论建筑条件），配了 speak 再加说话一类（对象是人）" do
+      assert NpcServer.Offers.plan_kinds(%{
+               activities: @activities,
+               skills: %{gather: %{}, travel: %{}, speak: %{}}
+             }) == [
+               %{kind: "gather_stone", criterion: "Cut stone at the quarry.", objects: :none},
+               %{kind: "guard_hut", criterion: "Stand beside the small hut.", objects: :none},
+               %{
+                 kind: "speak_to",
+                 criterion: "Walk up to someone and say one thing to them.",
+                 objects: :people
+               }
+             ]
+    end
+
+    test "没配 speak：只有登记项；没有候选表的形态（不在选择层选活动）：没有任何种类" do
+      assert Enum.map(NpcServer.Offers.plan_kinds(%{activities: @activities}), & &1.kind) == [
+               "gather_stone",
+               "guard_hut"
+             ]
+
+      assert NpcServer.Offers.plan_kinds(%{skills: %{speak: %{}}}) == []
+      assert NpcServer.Offers.plan_kinds(%{activities: []}) == []
     end
   end
 end

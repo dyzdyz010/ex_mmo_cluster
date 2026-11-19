@@ -228,8 +228,11 @@ defmodule NpcServer.NpcMindTest do
     defp adopted(name) do
       sample = Path.join(@plan_fixtures, "s1r8-#{name}.json") |> File.read!() |> Jason.decode!()
 
+      # 词表 `%{种类 => %{显示名 => 对象}}`（稿 A 批 0b）：S1-R8 的六个候选名各是静态种类，没有对象。
+      vocabulary = Map.new(sample["activity_names"], &{&1, %{}})
+
       {:ok, checked} =
-        DayPlan.check(sample["text"], sample["activity_names"], sample["now_minute"])
+        DayPlan.check(sample["text"], vocabulary, sample["now_minute"])
 
       {DayPlan.adopt(DayPlan.new(), @plan_day, sample["now_minute"], checked, :day, 0),
        sample["now_minute"]}
@@ -256,7 +259,7 @@ defmodule NpcServer.NpcMindTest do
     # 13:20 完成一次 visit_plaza（记在最早的那条上）；14:00 时 guard_hut 已过 13:00 没做 → missed。三种状态各一条。
     test "plans and promises: after the thought, before the situation; one line per intent, then one per want" do
       {plan, _now_minute} = adopted("R3-r1")
-      plan = DayPlan.record_activity(plan, "visit_plaza", @plan_day, 13 * 60 + 20)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, @plan_day, 13 * 60 + 20)
       life = %{@empty | plan: DayPlan.column(plan, @plan_day, 14 * 60)}
 
       assert Enum.map(Mind.snapshot(profile(), alone(), [], life), &elem(&1, 0)) == [
@@ -296,7 +299,7 @@ defmodule NpcServer.NpcMindTest do
     # R5-r1（01:42）：两条意图（visit_plaza 要两次）、两条 cannot_yet；wants 的原文不改写、不去标点。
     test "plans and promises: several wants, each as written; an open intent shows its count" do
       {plan, now_minute} = adopted("R5-r1")
-      plan = DayPlan.record_activity(plan, "visit_plaza", @plan_day, now_minute + 60)
+      plan = DayPlan.record_activity(plan, {"visit_plaza", nil}, @plan_day, now_minute + 60)
       life = %{@empty | plan: DayPlan.column(plan, @plan_day, now_minute + 120)}
 
       assert {"Plans and promises",
@@ -306,6 +309,42 @@ defmodule NpcServer.NpcMindTest do
                 "but I cannot do that yet\n" <>
                 "I would like to Ask Tobin why they asked whether the hut was mine, but I cannot do that yet"} ==
                plan_column(life)
+    end
+
+    # 稿 A 批 0b：点名了人的意图在种类后写这个人，写法同名字层 `State.person/2`，名字取自此刻观察（Mara 在附近；
+    # actor 5 不在观察里，只写 `actor 5`）。计划经 `DayPlan.check/3` 从 R3-r1 真实正文的变体做出：前两条换成说话种类、
+    # 显示名取自 Life 展开词表的写法（`Mara (actor 21)`、`actor 5`），其余原样。
+    test "plans and promises: an intent naming a person writes that person after the kind; others unchanged" do
+      sample = Path.join(@plan_fixtures, "s1r8-R3-r1.json") |> File.read!() |> Jason.decode!()
+
+      vocabulary =
+        sample["activity_names"]
+        |> Map.new(&{&1, %{}})
+        |> Map.put("speak_to", %{
+          "Mara (actor 21)" => %{"actor" => 21},
+          "actor 5" => %{"actor" => 5}
+        })
+
+      text =
+        sample["text"]
+        |> Jason.decode!()
+        |> update_in(["intents"], fn [first, second | rest] ->
+          [
+            %{first | "activity" => "speak_to"} |> Map.put("object", "Mara (actor 21)"),
+            %{second | "activity" => "speak_to"} |> Map.put("object", "actor 5") | rest
+          ]
+        end)
+        |> Jason.encode!()
+
+      {:ok, checked} = DayPlan.check(text, vocabulary, sample["now_minute"])
+      plan = DayPlan.adopt(DayPlan.new(), @plan_day, sample["now_minute"], checked, :day, 0)
+      life = %{@empty | plan: DayPlan.column(plan, @plan_day, sample["now_minute"])}
+
+      assert "speak_to Mara (actor 21): 0 of 1 done, by 13:00\n" <>
+               "speak_to actor 5: 0 of 1 done, by 16:00\n" <>
+               "visit_plaza: 0 of 1 done, by 21:00\n" <>
+               "I would like to Find out why Corvin tore down my first hut and keep track of where they are, " <>
+               "but I cannot do that yet" == section(life, 5, observation())
     end
 
     # 只有 wants：计划不是今天的（R5-r1 的计划在第二天读）时意图为空列表而 wants 仍在，栏里只有 wants 行。

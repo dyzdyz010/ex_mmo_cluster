@@ -102,10 +102,14 @@ defmodule NpcServer.Life do
 
   ## 日计划（实现设计 `docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md` §1、§4）
 
-  一份计划是“今天我打算做几件事”：意图（词表里的活动 + 次数 + 时限）与 `wants`（想做而词表写不出的事）。规则（检查、额度、
+  一份计划是“今天我打算做几件事”：意图（词表里的种类 + 可选对象 + 次数 + 时限）与 `wants`（想做而词表写不出的事）。规则（检查、额度、
   触发判定、采用、记账、给 Mind 的数据）都在纯函数核心 `Life.DayPlan`，一次规划调用的流程在 `Life.DayPlan.Round`；本模块只做
-  触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，写作接口与人格卡共用）且有候选表
-  （词表 = `profile.activities` 的名字与判据）；其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` 为 nil。
+  触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，写作接口与人格卡共用）且有候选表；
+  其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` 为 nil。
+
+  - **词表**（稿 A 批 0b）：种类取 `NpcServer.Offers.plan_kinds/1`（登记的候选各一个静态种类，配了说话再加 `speak_to`），
+    起槽那一刻展开对象交进快照的 `vocabulary`：说话能点名的人是关系里的人 ∪ 此刻观察里的他人，显示名用名字层
+    `State.person/2`（`名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），对象 `%{"actor" => cid}`。
 
   - **持久行 `"plan"`**（形状见 `DayPlan.new/0`）与其它键同一次保存，重启后还在；日计划之前存下的行在加载边界补成空的一份。
   - **触发只在每帧观察上查**（`maybe_plan/1`，便宜：不到点不写库、不打日志）：行已加载、规划的形态、规划槽空着、这个 NPC
@@ -124,8 +128,8 @@ defmodule NpcServer.Life do
     按发出算、不退（防额度被反复崩溃绕过）。退回不动 `last_at_ms`，最小间隔照算。调用在途时又来的 `kind:event`
     照常记标记，落栏不清它，过了最小间隔再重排。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
     日号落栏，下一帧观察因日号变了再触发 `:day`（过了最小间隔）。
-  - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动按此刻观察里的游戏钟 `DayPlan.record_activity/4`；
-    失败的不计（`done` 只由代码按活动结果增）。
+  - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动按它的 `{种类, 对象}` 与此刻观察里的游戏钟
+    `DayPlan.record_activity/4`；失败的不计（`done` 只由代码按活动结果增）。
   - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果；`observe/1` 的 `plan` 是
     `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`。
   - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
@@ -146,7 +150,7 @@ defmodule NpcServer.Life do
   """
   use GenServer
   require Logger
-  alias NpcServer.{Dialogue, Memory, Persona, Life.State, Life.Hindsight, Life.Sight}
+  alias NpcServer.{Dialogue, Memory, Offers, Persona, Life.State, Life.Hindsight, Life.Sight}
   alias NpcServer.Life.{Appraisal, DayPlan, Reflection}
   alias NpcServer.Life.Reflection.{Round, Writer}
   @fragment_chars 3000
@@ -415,7 +419,7 @@ defmodule NpcServer.Life do
 
   @doc """
   接纳一项已结束的活动作为主观经历：`%{text: 做了什么、结果如何（一句英文）, place: 活动的地名 | nil, activity: 候选名,
-  completed: 是否完成}`（`NpcServer.Selector.experience/2`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
+  kind: 种类, object: 对象 | nil, completed: 是否完成}`（`NpcServer.Selector.experience/2`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
   原文末尾加一句期间事实（见 moduledoc；没有开始信号或期间没有观察则不加）；tags 是 `kind:activity`、期间进过 6 米内的
   每个人 `actor:<cid>`、有地名时 `place:<地名>`。规划的形态在同一次保存里给日计划记账（完成的才记，见 moduledoc 的“日计划”）；
   不规划的形态只读 `text` 与 `place`。由 Runtime 的选择 worker 在活动结束时调用一次。
@@ -509,19 +513,15 @@ defmodule NpcServer.Life do
 
   # 写日记所需：profile 有写日记的接口（`reflect`）才有。写日记的函数可经 `profile.write_journal` 注入
   # （同 Selector 经 `profile.request` 注入 Jev 发送函数的做法），缺省是 `Writer.write(profile.reflect, …)`。
-  # 反思库的 config 是经历库的换一个 bank。日计划共用写日记的接口与人格卡，词表是候选表的名字与判据（`profile.activities`，
-  # 次序不变；没有候选表的形态为 []，不规划）。
+  # 反思库的 config 是经历库的换一个 bank。日计划共用写日记的接口与人格卡，可计划的种类取 `Offers.plan_kinds/1`
+  # （登记项各一个静态种类，配了说话再加说话一类；没有候选表的形态为 []，不规划）。种类的对象在起规划槽时展开（`vocabulary/1`）。
   defp journaling(%{reflect: _} = profile, config, cid),
     do: %{
       write: journal_writer(profile, cid),
       character: Persona.describe(profile.who, profile.persona),
       archive: %{config | bank: "npc-reflect-#{cid}"},
       archive_name: "NPC #{cid} journal",
-      activities:
-        for(
-          activity <- Map.get(profile, :activities, []),
-          do: Map.take(activity, [:name, :criterion])
-        )
+      kinds: Offers.plan_kinds(profile)
     }
 
   defp journaling(_profile, _config, _cid), do: nil
@@ -1559,9 +1559,9 @@ defmodule NpcServer.Life do
 
   # --- 日计划（规则在 `Life.DayPlan`，流程在 `Life.DayPlan.Round`；本节只做触发、起槽、记账与视图） ---
 
-  # 规划的形态：有写日记的接口，且有候选表（词表非空）。
+  # 规划的形态：有写日记的接口，且有可计划的种类（候选表非空）。
   defp planning?(%{journaling: nil}), do: false
-  defp planning?(%{journaling: %{activities: activities}}), do: activities != []
+  defp planning?(%{journaling: %{kinds: kinds}}), do: kinds != []
 
   # 每帧观察上的触发检查（观察每秒 20 帧，所以这里要便宜：不到点不写库、不打日志）。条件依次：行已加载、规划的形态、
   # 规划槽空着、有过至少一条经历、观察里有游戏钟与身体状态、不在保存失败后的防抖期内、`DayPlan.due/3` 给出 `:day` 或 `:event`。
@@ -1618,17 +1618,19 @@ defmodule NpcServer.Life do
   # “今天已有的意图”各行只在计划是今天的时候有（`DayPlan.column/3`）；旧 wants 不论日号都交进去，由这一次规划留或撤。
   defp start_plan(s, kind, day, minute, now_ms) do
     plan = s.row["plan"]
+    names = names(s)
 
     today =
       case DayPlan.column(plan, day, minute) do
         nil -> []
-        %{intents: intents} -> Enum.map(intents, &NpcServer.Mind.plan_intent_line/1)
+        %{intents: intents} -> Enum.map(intents, &NpcServer.Mind.plan_intent_line(&1, names))
       end
 
     snapshot =
       Map.merge(s.journaling, %{
         cid: s.context.cid,
         write: write_for(s.journaling, :day_plan),
+        vocabulary: vocabulary(s, names),
         kind: kind,
         day: day,
         now_minute: minute,
@@ -1637,7 +1639,7 @@ defmodule NpcServer.Life do
         recent: recent(s.row),
         buildings: s.row["state"]["buildings"],
         people: Enum.map(State.relationships(s.row["state"]), & &1.actor),
-        names: names(s),
+        names: names,
         latest: s.row["reflection"]["latest"],
         adapter: s.adapter,
         # 每路召回的上限同心智快照（召回是串行发的）。
@@ -1658,6 +1660,28 @@ defmodule NpcServer.Life do
       | plan: Map.merge(s.plan, %{kind: kind, day: day, now_minute: minute, now_ms: now_ms}),
         plan_error: nil
     }
+  end
+
+  # 起槽这一刻的词表（稿 A 批 0b）：每个可计划的种类（`Offers.plan_kinds/1`）展开成 `%{kind, criterion, objects: %{显示名 => 对象}}`。
+  # 对象是人的种类（说话）能点名的人 = 关系里的人 ∪ 此刻观察里的他人（关系在前、按 cid；观察里的在后、按观察次序；去重），
+  # 显示名用名字层 `State.person/2`（名字取自此刻观察，取不到写 `actor <cid>`），对象是 `%{"actor" => cid}`。
+  # 显示名带 cid，所以不同的人不会撞名。没有对象的种类对象表为空。
+  defp vocabulary(s, names) do
+    people =
+      Enum.uniq(
+        Enum.map(State.relationships(s.row["state"]), & &1.actor) ++
+          Enum.map(State.others(s.observation), & &1.entity_id)
+      )
+
+    for %{kind: kind, criterion: criterion, objects: objects} <- s.journaling.kinds do
+      objects =
+        case objects do
+          :none -> %{}
+          :people -> Map.new(people, &{State.person(&1, names), %{"actor" => &1}})
+        end
+
+      %{kind: kind, criterion: criterion, objects: objects}
+    end
   end
 
   # 使用起槽时的日期与分钟，同时读取最新已入账的计划。写作未发出的轮次在同次保存内退额度。
@@ -1706,13 +1730,14 @@ defmodule NpcServer.Life do
 
   defp land_plan(s), do: s
 
+  # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类与对象由 `Selector.experience/2` 给出）。
   defp activity_progress(s, experience) do
     if planning?(s) do
-      %{activity: activity, completed: completed} = experience
+      %{kind: kind, object: object, completed: completed} = experience
 
       case s.observation do
         %{world_time: %{day: day, minute_of_day: minute}} when completed ->
-          {activity, day, minute}
+          {{kind, object}, day, minute}
 
         _ ->
           nil
@@ -1722,8 +1747,8 @@ defmodule NpcServer.Life do
 
   defp record_plan_activity(row, nil), do: row
 
-  defp record_plan_activity(row, {activity, day, minute}),
-    do: update_in(row["plan"], &DayPlan.record_activity(&1, activity, day, minute))
+  defp record_plan_activity(row, {done, day, minute}),
+    do: update_in(row["plan"], &DayPlan.record_activity(&1, done, day, minute))
 
   # 给选择的日计划数据（心智快照与 observe 共用）：`DayPlan.column/3` 对持久行与此刻观察里的游戏钟。调用方保证行已加载。
   defp plan_column(s) do

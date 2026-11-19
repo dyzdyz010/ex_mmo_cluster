@@ -6,6 +6,9 @@ defmodule NpcServer.Life.DayPlan.Round do
 
       write/1：此刻一块 → “自己”一问的材料（两次召回、之前的想法）→ 系统提示词 + 用户消息 → 写一次 → DayPlan.check/3
 
+  词表（稿 A 批 0b）是“种类 + 可选对象”：本模块把它渲染成系统提示词的工作列表（有对象的种类在判据后接一句可选对象，
+  见 `listed/1`），检查时交给 `DayPlan.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
+
   ## 为什么这样取材
 
   S1-R8 的材料就是反思“自己”一问的那份（同样的两次召回、同样的“之前的想法”）：测过的输入形状才有读数可依。所以取材
@@ -40,8 +43,10 @@ defmodule NpcServer.Life.DayPlan.Round do
       adapter      Hindsight 适配器；config 经历库的 config（单路超时已设好）
       context      现查 World 用（`Life.standing/2`）
       write        写作函数 `fn system, user -> {:ok, %{text:, usage:}} | {:error, 原因} end`（与反思共用写日记的接口）
-      character    人格卡一行；activities 词表 `[%{name:, criterion:}]`（`profile.activities` 的次序）
-      today        今天已有的意图各行（`Mind.plan_intent_line/1`），没有为 []
+      character    人格卡一行
+      vocabulary   词表 `[%{kind:, criterion:, objects: %{显示名 => 对象}}]`（`Offers.plan_kinds/1` 的次序，对象由 Life 展开；
+                   静态种类的 objects 为空）
+      today        今天已有的意图各行（`Mind.plan_intent_line/2`），没有为 []
       wants        旧 `wants` 各行（`want` 原文），没有为 []
 
   返回交回 Life 落栏的结果 `%{result:, checked:, elapsed_ms:, usage:, wrote:}`：
@@ -82,15 +87,15 @@ defmodule NpcServer.Life.DayPlan.Round do
     with {:ok, right_now} <- ReflectionRound.right_now(snapshot),
          {:ok, materials} <-
            ReflectionRound.materials(Reflection.self_question(), right_now, snapshot) do
-      system = Prompt.system_prompt(snapshot.character, snapshot.activities)
+      system = Prompt.system_prompt(snapshot.character, listed(snapshot.vocabulary))
       user = Prompt.user_message(materials, today: snapshot.today, wants: snapshot.wants)
 
       case snapshot.write.(system, user) do
         {:ok, %{text: text} = written} ->
           usage = Map.get(written, :usage)
-          names = Enum.map(snapshot.activities, & &1.name)
+          vocabulary = Map.new(snapshot.vocabulary, &{&1.kind, &1.objects})
 
-          case DayPlan.check(text, names, snapshot.now_minute) do
+          case DayPlan.check(text, vocabulary, snapshot.now_minute) do
             {:ok, checked} -> {:ok, checked, usage, true}
             {:error, reason} -> {{:rejected, reason}, nil, usage, true}
           end
@@ -101,6 +106,21 @@ defmodule NpcServer.Life.DayPlan.Round do
     else
       {:error, reason} -> {{:failed, reason}, nil, nil, false}
     end
+  end
+
+  # 词表 → 系统提示词的工作列表 `[%{name:, criterion:}]`（`Prompt.system_prompt/2` 的形状，模板一字不改）。有可点名对象的种类
+  # 在判据后接一句可选对象，显示名按字符串排序、各写成 JSON 字符串（模型照抄进 `"object"`）；没有对象的种类判据原样，
+  # 所以没配说话时与 S1-R8 逐字节相同。这句的措辞是原创取值，没有离线测过（批 0b 不调真实模型）。
+  defp listed(vocabulary) do
+    for %{kind: kind, criterion: criterion, objects: objects} <- vocabulary,
+        do: %{name: kind, criterion: criterion <> object_hint(objects)}
+  end
+
+  defp object_hint(objects) when map_size(objects) == 0, do: ""
+
+  defp object_hint(objects) do
+    names = objects |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &Jason.encode!/1)
+    ~s| Optionally add "object": exactly one of #{names}.|
   end
 
   defp outcome(:ok, checked),

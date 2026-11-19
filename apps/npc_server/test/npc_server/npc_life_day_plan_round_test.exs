@@ -3,7 +3,8 @@ Code.require_file("../support/reflection_fixtures.exs", __DIR__)
 defmodule NpcServer.NpcLifeDayPlanRoundTest do
   @moduledoc """
   只测试：规划槽的流程 `NpcServer.Life.DayPlan.Round`（不起 Life、不起 World、不连库）与规划用户消息里“今天的意图”各行的渲染
-  `Mind.plan_intent_line/1`。
+  `Mind.plan_intent_line/2`。稿 A 批 0b：快照的 `vocabulary`（种类 + 展开后的对象）由 Round 渲染进系统提示词，
+  有对象的种类在判据后接一句可选对象；没有对象的静态种类与 S1-R8 逐字节相同。
 
   输入是真实导出：“此刻”取 S1-X2 第 4 轮那一刻的原始观察，召回回放那一轮两次召回的真实条目，“之前的想法”是那一轮之前的真实日记
   （`test/support/fixtures/reflection/`）；词表是 S1-R7 的候选（`fixtures/day_plan/activities.json`），写作接口回放 S1-R8 规划模型的
@@ -104,6 +105,71 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
                "\n\nWhat I meant to do today, as it stands:\n#{Enum.join(today, "\n")}\n\nThings I wanted to do but could not yet:\nWalk back past the hut\n\nPlan the rest of today now."
     end
 
+    # 稿 A 批 0b：词表里有对象的种类（说话，对象是人）由 Round 渲染成给 `Prompt.system_prompt/2` 的一行：判据后接
+    # `Optionally add "object": exactly one of "<显示名>", ….`（显示名按字符串排序）；`@system_template` 一字不改，静态种类各行逐字节不变。
+    # 两人取自 S1-X2 导出（`s1x2-moments.json` 的 names）。没有说话种类的真实模型应答，应答是按提示词格式写的一份
+    # （批 0b 不调真实模型，离线重放另排）。
+    test "有对象的种类：判据后接可选对象一句，其余与 S1-R8 逐字节相同；检查认得点名的人；没有可点名的人时不接这一句" do
+      sample = plan_sample("R2-r1")
+      %{"names" => names} = json("s1x2-moments.json")
+      tobin_id = String.to_integer("1285994582019")
+      corvin_id = String.to_integer("1011812929538")
+      tobin = "#{names["1285994582019"]} (actor #{tobin_id})"
+      corvin = "#{names["1011812929538"]} (actor #{corvin_id})"
+      criterion = "Walk up to someone and say one thing to them."
+
+      speak = %{
+        kind: "speak_to",
+        criterion: criterion,
+        objects: %{tobin => %{"actor" => tobin_id}, corvin => %{"actor" => corvin_id}}
+      }
+
+      text =
+        Jason.encode!(%{
+          "intents" => [
+            %{
+              "activity" => "speak_to",
+              "object" => tobin,
+              "times" => 1,
+              "by" => "23:00",
+              "why" => "I want to answer Tobin about the hut."
+            }
+          ],
+          "cannot_yet" => []
+        })
+
+      snapshot = %{
+        snapshot(sample, {:ok, %{text: text, usage: nil}})
+        | vocabulary: vocabulary() ++ [speak]
+      }
+
+      capture_log(fn -> send(self(), {:result, Round.write(snapshot)}) end)
+      assert_received {:result, %{result: :ok, checked: %{intents: [intent], wants: []}}}
+      assert intent["object"] == %{"actor" => tobin_id}
+
+      assert_received {:write, system, _user}
+
+      line =
+        "\n- speak_to: #{criterion} " <>
+          ~s|Optionally add "object": exactly one of "#{corvin}", "#{tobin}".|
+
+      assert system =~ line <> "\n\nOr it is something you want to do"
+
+      assert String.replace(system, line, "") ==
+               Prompt.system_prompt(fixture("character.txt"), activities())
+
+      # 此刻没有可点名的人：种类照列，判据后不接可选对象一句。
+      empty = %{snapshot | vocabulary: vocabulary() ++ [%{speak | objects: %{}}]}
+      capture_log(fn -> Round.write(empty) end)
+      assert_received {:write, system, _user}
+
+      assert system ==
+               Prompt.system_prompt(
+                 fixture("character.txt"),
+                 activities() ++ [%{name: "speak_to", criterion: criterion}]
+               )
+    end
+
     test "检查不过（S1-R8 R1-r1：6 条）：被拒，checked 为 nil，usage 照给，不重问" do
       sample = plan_sample("R1-r1")
       snapshot = snapshot(sample, {:ok, %{text: sample["text"], usage: %{"output_tokens" => 1}}})
@@ -165,43 +231,69 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
     end
   end
 
-  describe "Mind.plan_intent_line/1" do
-    test "三种状态的写法；by 写成两位的 HH:MM" do
-      assert Mind.plan_intent_line(%{
-               activity: "visit_plaza",
-               times: 2,
-               done: 1,
-               by: 18 * 60,
-               status: :open
-             }) ==
+  describe "Mind.plan_intent_line/2" do
+    test "三种状态的写法；by 写成两位的 HH:MM；没有对象时与批 0b 之前逐字相同" do
+      assert Mind.plan_intent_line(
+               %{
+                 activity: "visit_plaza",
+                 object: nil,
+                 times: 2,
+                 done: 1,
+                 by: 18 * 60,
+                 status: :open
+               },
+               %{}
+             ) ==
                "visit_plaza: 1 of 2 done, by 18:00"
 
-      assert Mind.plan_intent_line(%{
-               activity: "guard_hut",
-               times: 1,
-               done: 1,
-               by: 8 * 60 + 5,
-               status: :done
-             }) ==
+      assert Mind.plan_intent_line(
+               %{
+                 activity: "guard_hut",
+                 object: nil,
+                 times: 1,
+                 done: 1,
+                 by: 8 * 60 + 5,
+                 status: :done
+               },
+               %{}
+             ) ==
                "guard_hut: 1 of 1 done — finished"
 
-      assert Mind.plan_intent_line(%{
-               activity: "guard_hut",
-               times: 3,
-               done: 0,
-               by: 7,
-               status: :missed
-             }) ==
+      assert Mind.plan_intent_line(
+               %{activity: "guard_hut", object: nil, times: 3, done: 0, by: 7, status: :missed},
+               %{}
+             ) ==
                "guard_hut: 0 of 3 done — not finished by 00:07"
+    end
+
+    # 稿 A 批 0b：点名的人按名字层 `Life.State.person/2` 写在种类之后（`names` 里有就是 `名字 (actor <cid>)`，没有就是
+    # `actor <cid>`），其余写法不变。这行的写法是原创取值，没有离线测过。
+    test "有对象：种类后接点名的人；names 里没有这个人时写 actor <cid>" do
+      intent = %{
+        activity: "speak_to",
+        object: %{"actor" => 9},
+        times: 1,
+        done: 0,
+        by: 15 * 60,
+        status: :open
+      }
+
+      assert Mind.plan_intent_line(intent, %{9 => "Tobin"}) ==
+               "speak_to Tobin (actor 9): 0 of 1 done, by 15:00"
+
+      assert Mind.plan_intent_line(intent, %{}) == "speak_to actor 9: 0 of 1 done, by 15:00"
+
+      assert Mind.plan_intent_line(%{intent | done: 1, status: :done}, %{9 => ""}) ==
+               "speak_to someone unnamed (actor 9): 1 of 1 done — finished"
     end
 
     test "DayPlan.column/3 的产物逐条渲染（S1-R8 R3-r1 的计划）" do
       sample = plan_sample("R3-r1")
       {:ok, checked} = DayPlan.check(sample["text"], names(), sample["now_minute"])
       plan = DayPlan.adopt(DayPlan.new(), 9, sample["now_minute"], checked, :day, 0)
-      plan = DayPlan.record_activity(plan, "guard_hut", 9, 770)
+      plan = DayPlan.record_activity(plan, {"guard_hut", nil}, 9, 770)
 
-      assert Enum.map(DayPlan.column(plan, 9, 1000).intents, &Mind.plan_intent_line/1) == [
+      assert Enum.map(DayPlan.column(plan, 9, 1000).intents, &Mind.plan_intent_line(&1, %{})) == [
                "guard_hut: 1 of 1 done — finished",
                "visit_plaza: 0 of 1 done — not finished by 16:00",
                "visit_plaza: 0 of 1 done, by 21:00"
@@ -239,7 +331,7 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
       config: %{owner: test, replay: :by_types},
       context: %{cid: cid},
       character: fixture("character.txt"),
-      activities: activities(),
+      vocabulary: vocabulary(),
       today: [],
       wants: [],
       write: fn system, user ->
@@ -258,7 +350,15 @@ defmodule NpcServer.NpcLifeDayPlanRoundTest do
         do: %{name: name, criterion: criterion}
   end
 
-  defp names, do: Enum.map(activities(), & &1.name)
+  # Life 起槽时交进快照的词表（稿 A 批 0b）：`Offers.plan_kinds/1` 的种类，对象已展开成 `%{显示名 => 对象}`、按种类次序。
+  # S1-R7 的六个候选各是一个静态种类（没有对象）。
+  defp vocabulary do
+    for %{name: name, criterion: criterion} <- activities(),
+        do: %{kind: name, criterion: criterion, objects: %{}}
+  end
+
+  # `DayPlan.check/3` 的词表：`%{种类 => %{显示名 => 对象}}`。
+  defp names, do: Map.new(vocabulary(), &{&1.kind, &1.objects})
 
   # 用户消息里之前的日记各压成一行（同 `Reflection.materials_blocks/1`）。
   defp one_line(text), do: text |> String.replace(~r/\s+/u, " ") |> String.trim()

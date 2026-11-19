@@ -34,6 +34,8 @@ defmodule NpcServer.Registry do
                   它只进记忆：活动结束时 Life 把它写成那条经历的 `place:<地名>` tag，召回按地点调取（`NpcServer.Life.activity/2`）；
                   不进给 Jev 的候选，也不决定去哪里。空串、非字符串被拒；不写就是没有地名（profile 里为 nil）。
                   只有 place 项可以另加 "requires_building"（非空发布名）。本轮有至少一座同名自有建筑站立时才列为即时选项。
+                  候选名不能等于生成的计划种类（`NpcServer.Offers.plan_kinds/1`，现在是说话的 "speak_to"）：日计划按种类
+                  记账，同名就分不清。
       tools       工具带（同 settler）。
       life        可省略。统一形态必带 Life：情绪与关系、近期经历、Hindsight 的认识与召回都经它进心智快照（`NpcServer.Mind`）。
                   省略或 true → Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`（没有即拒绝登记）；`{"url": 地址}` 显式给出；
@@ -51,7 +53,7 @@ defmodule NpcServer.Registry do
   """
   require Logger
   alias DataService.NpcSpecs
-  alias NpcServer.{Abilities, Body, Brain, Persona, Secret, Trees}
+  alias NpcServer.{Abilities, Body, Brain, Offers, Persona, Secret, Trees}
 
   @names NpcServer.Names
   # 注册表可登记的技能：build / gather / expand / travel 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
@@ -188,6 +190,17 @@ defmodule NpcServer.Registry do
       # 写作接口（`NpcServer.Life.Reflection.Writer`：反思、日计划、说话共用）：同 Jev，不入库，每次解析时取运行环境。
       reflect: reflect_endpoint()
     }
+
+    # 日计划的种类（`Offers.plan_kinds/1`）必须互不相同：登记名已唯一，撞上的只能是生成的种类（如说话 `speak_to`），
+    # 那样计划与记账分不清是哪一个。`speak_to:<cid>` 形状的登记名不是种类，照常登记（说话候选名由 `Offers.speak_to/2` 避让）。
+    kinds = Enum.map(Offers.plan_kinds(profile), & &1.kind)
+
+    if kinds != Enum.uniq(kinds),
+      do:
+        raise(
+          ArgumentError,
+          "activities 的 name 与生成的计划种类重名：#{inspect(Enum.uniq(kinds -- Enum.uniq(kinds)))}"
+        )
 
     # 建树即校验：能力名与节点形状（与 Body 起树同一个函数）。
     Brain.Tree.init(profile)

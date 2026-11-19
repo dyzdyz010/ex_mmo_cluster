@@ -437,7 +437,7 @@ flowchart LR
 - **主动说话**：从本轮身体观察与 Scene 此刻同场、可听、当前话题资格的对象交集中产生候选。Jev 选中后，`speak` 携带该角色的 ID 与实体代次，
   复用 Travel 走近它，由 `NPC_REFLECT_*` 写作端点按同一份心智写一句。Scene 在提交当刻重新裁决代次、范围、冷却与文本，接纳后沿既有
   Speech 链路送达目标及同场旁听者；Life 依据本人权威回声记忆。CLI 可从 `Body.observe/1` 查目标、选择与技能终态，从 Scene 的
-  `dialogue.result` 及客户端 `Voxim.Dialogue.Status` 对账。日计划仍按登记活动记账。
+  `dialogue.result` 及客户端 `Voxim.Dialogue.Status` 对账。日计划的词表里说话是一类 `speak_to`（可点名一个人），说完话按种类 + 对象记账（见下文“日计划”）。
 - **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
   `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
   只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；
@@ -468,7 +468,7 @@ flowchart LR
   | What just happened | Life 手里还没写进 Hindsight 的经历（已封存待写的片段 + 未封存的尾部，旧在前），每条句首按游戏时间写多久以前（`Just now, ` / `About <N> hours ago, ` / `About <N> days ago, `）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加分路召回合并后的清单（`- Recalled: [多久以前, ]<正文去掉 " \| When: …" 后缀>`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文（不加“多久以前”与 `I thought: `，R4b）；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
-  | Plans and promises（可缺） | 今天的各条意图一条一行（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`），再是想做而现在做不到的事各一行 `I would like to <want>, but I cannot do that yet`；不点名该选什么；Life 给 nil（不规划的形态、还没有计划、没有意图也没有 wants）时整栏不出现，state 与没有这一栏时逐字节相同。与上一栏先并存（决策稿 D-3） | Life 持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（见下文“日计划”） |
+  | Plans and promises（可缺） | 今天的各条意图一条一行（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；点名了人时 `<活动>` 写成 `<种类> <名字 (actor <cid>)>`），再是想做而现在做不到的事各一行 `I would like to <want>, but I cannot do that yet`；不点名该选什么；Life 给 nil（不规划的形态、还没有计划、没有意图也没有 wants）时整栏不出现，state 与没有这一栏时逐字节相同。与上一栏先并存（决策稿 D-3） | Life 持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（见下文“日计划”） |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
@@ -898,8 +898,13 @@ flowchart LR
 
 ### 日计划（`Life.DayPlan`，决策稿与实现设计）
 
-**是什么**：NPC 每个游戏日开头（以及遇到一件事之后）规划一次“今天我打算做几件事”：每条**意图**是词表里的一项活动 + 次数 + 时限
-（日内分钟），词表就是这个 NPC 登记的 `activities`，计划不新增任何动作；词表写不出的想法记为 `wants`（想做而现在做不到的事）。
+**是什么**：NPC 每个游戏日开头（以及遇到一件事之后）规划一次“今天我打算做几件事”：每条**意图**是词表里的一个种类 + 可选对象 + 次数 + 时限
+（日内分钟），计划不新增任何动作；词表写不出的想法记为 `wants`（想做而现在做不到的事）。**词表**（稿 A 批 0b）是“种类 + 可选对象”：
+种类取 `Offers.plan_kinds/1`——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象），配了说话（统一形态总配）再加 `speak_to`，
+它的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），
+系统提示词里这一行在判据后接 `Optionally add "object": exactly one of "<显示名>", ….`（静态种类各行与 S1-R8 逐字节相同；这句措辞是原创、没测过）。
+意图的 `object` 可缺 / 为 null（没点名），写了就必须是列出的显示名之一，存成对象 `%{"actor" => cid}`；逐轮变的候选名 `speak_to:<cid>` 不是种类，写不进计划。
+活动完成按 `{种类, 对象}` 记账：种类相同、且意图没点名或点名的就是这个人。登记名与生成种类同名（如登记一个叫 `speak_to` 的候选）在登记时被拒。
 意图被做了几次由代码按活动结果记账，不是模型说了算；计划与账作为 `Plans and promises` 一栏交给选择。
 **为什么**：经历与反思给出的都是“已经发生的 / 我怎么看”，选择里没有“我答应过自己今天要做什么、做了没有”；这一栏把它放进 state，
 让选择看得见承诺与进度，而不是靠一句反思的收尾句去推。是否真的改变选择还没测过（见“当前状态”）。设计与取舍在
@@ -910,11 +915,11 @@ flowchart LR
 flowchart LR
   T[触发<br/>每帧观察上查 有过经历<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 5<br/>两次至少隔 3 分钟]
   Q -->|通过并保存调用数| W[单独的规划槽<br/>第四个 worker 槽<br/>写一次 不重问]
-  W --> C[检查<br/>JSON 形状 活动在词表内<br/>by 晚于此刻 条数不超过 5]
+  W --> C[检查<br/>JSON 形状 种类在词表内 对象是列出的显示名<br/>by 晚于此刻 条数不超过 5]
   C -->|合格| A[(Life 持久行 plan<br/>采用 一次落栏 权威)]
   C -->|不合格或写作失败| F[记一笔计数与 last<br/>沿用上一份]
   W -->|写作之前就失败| R[记一笔计数与 last<br/>退回这一次额度]
-  X[活动完成<br/>Life.activity] --> B[活动记账<br/>同名 今天 未过时限的意图 done 加一<br/>与那条经历同一次保存]
+  X[活动完成<br/>Life.activity] --> B[活动记账<br/>种类相同 对象相符 今天 未过时限的意图 done 加一<br/>与那条经历同一次保存]
   B --> A
   A -->|DayPlan.column| M[心智快照新栏<br/>Plans and promises]
 ```
@@ -931,7 +936,7 @@ flowchart LR
 - **一次规划做什么**：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 系统提示词与用户消息（逐字照离线测量 S1-R8）→ 写一次 →
   `DayPlan.check/3`。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
 - **持久行 `"plan"`**（Life 是唯一 owner，字符串键、能原样过 JSON，形状见 [`life/day_plan.ex`](life/day_plan.ex) 的 `new/0`）：
-  `day`（意图属于哪个游戏日）、`intents`（`id` / `activity` / `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
+  `day`（意图属于哪个游戏日）、`intents`（`id` / `activity`（种类）/ `object`（对象或 nil；批 0b 之前的行没有这个键，读作 nil，不迁移）/ `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
   `calls`（当日发出了写作请求的调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
   意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
 - **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）。活动经历和计数由 Life 同次写盘。写盘失败时，`Life.observe/1` 的 `activity_pending` 为 true，Life 在轮询重投先前冻结的完成事实与时刻。下一次选择和已返回的重排等活动先落盘，`plan.waiting_for_activity` 表示重排在等。模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）

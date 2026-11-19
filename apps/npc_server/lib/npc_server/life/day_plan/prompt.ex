@@ -24,7 +24,7 @@ defmodule NpcServer.Life.DayPlan.Prompt do
   """
   alias NpcServer.Life.Reflection
 
-  # 系统提示词：S1-R8 plan.md 的原文。`<character>` 处代入人格卡一行，`<activities>` 处代入候选列表。
+  # 系统提示词：S1-R8 plan.md 的原文。`<character>` 处代入人格卡一行，`<activities>` 处代入工作种类列表。
   # heredoc 末尾多一个换行，在 `system_prompt/2` 里去掉（真实发出的系统提示词末尾没有换行）。
   @system_template ~S"""
   You are this person: <character>
@@ -51,9 +51,10 @@ defmodule NpcServer.Life.DayPlan.Prompt do
   @closing "Plan the rest of today now."
 
   @doc """
-  系统提示词。`character` 是人格卡一行（`You are this person: ` 之后的原文）；`activities` 是候选的有序列表，
-  每项至少有 `:name` 与 `:criterion`（来自 `profile.activities`，多余的键忽略），每个候选写成一行
-  `- <name>: <criterion>`，次序不变。
+  系统提示词。`character` 是人格卡一行（`You are this person: ` 之后的原文）；`activities` 是工作种类的有序列表，
+  每项至少有 `:name` 与 `:criterion`（多余的键忽略），每项写成一行 `- <name>: <criterion>`，次序不变。
+  列表由 `NpcServer.Life.DayPlan.Round` 从词表渲染（稿 A 批 0b：名字是种类；有可点名对象的种类，判据后已接好一句可选对象），
+  本函数只代入，模板一字不改。
   """
   def system_prompt(character, activities) do
     listed =

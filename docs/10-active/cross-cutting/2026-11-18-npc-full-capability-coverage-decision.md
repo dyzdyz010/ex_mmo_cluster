@@ -148,3 +148,13 @@ flowchart LR
   `stop` 归 inside [travel, gather]，但源码里它由 `Brain.Tree.halt/1` 放弃移动叶子时发出，不是技能自己调用。
   验证：`npc_offers_test.exs`（T-A1、T-A2）改前 11 红、改后绿；`npc_selector_test.exs` 全文件 23 绿；`npc_registry_test.exs` 三条真实对话用例与
   `npc_dialogue_test` / `npc_speak_test` 共 12 绿（候选搬家触及 Runtime 的说话链路，所以扩大到这几条）。
+- 2026-11-19：批 0b 实现（计划词表改为种类 + 对象；规划提示词有意多出说话一类）。`Offers.plan_kinds/1`（登记项各一个静态种类，配了 speak 加
+  `speak_to`，对象是人）；Life 起规划槽时把对象展开成 `%{显示名 => %{"actor" => cid}}`（关系里的人 ∪ 观察里的他人，名字层写法），快照
+  `activities` 改 `vocabulary`；`DayPlan.check/3` 词表改 `%{种类 => %{显示名 => 对象}}`，意图多可缺 / 可 null 的 `object`，新失败
+  `{:unknown_object, 种类, 值}`；`record_activity/4` 按 `{种类, 对象}` 记账（意图没点名或点名相同），旧行没有 `object` 读作 nil、不迁移；
+  `column/3` 带出 object；Round 把有对象的种类渲染成判据后接 `Optionally add "object": exactly one of "<显示名>", ….`（原创措辞，未离线测），
+  `@system_template` 与 S1-R8 金标不变；`Mind.plan_intent_line/2`（点名时写 `<种类> <名字 (actor cid)>`）；`Registry.brain("npc")` 遇登记名等于
+  生成种类时拒绝。未调真实模型。验证：0b 改动的五个测试文件改前 68 红（含 `npc_registry_test` 撞名 1 条），改后
+  `npc_life_day_plan_test` / `_round_test` / `_integration_test`（新增“配了说话”一条，真实 Life + World + PostgreSQL）/ `npc_mind_test` 125 绿、
+  撞名 1 绿；因 Life 的活动经历契约改为读 kind / object，另跑 `npc_selector_test`、`npc_registry_test`、`npc_life_test`、
+  `npc_dialogue_life_test`、`npc_offers_test` 共 95 绿。剩：说话种类的规划应答没有真实样本，提示词这一句的效果要离线重放或实跑再看。

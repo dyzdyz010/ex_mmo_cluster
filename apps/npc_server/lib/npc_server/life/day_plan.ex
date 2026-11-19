@@ -7,9 +7,21 @@ defmodule NpcServer.Life.DayPlan do
 
   ## 计划是什么
 
-  一份计划是“今天我打算做几件事”：每条**意图**是 `活动名 + 次数 + 时限`（`by` 是日内分钟），活动名只能取该 NPC 登记的词表
-  （`profile.activities` 的 `name`，逐字）；词表写不出的想法记在 `wants`（想做而现在做不到的事），由下一次规划的模型留或撤。
+  一份计划是“今天我打算做几件事”：每条**意图**是 `种类 + 可选对象 + 次数 + 时限`（`by` 是日内分钟）。种类只能取该 NPC 的
+  词表（稿 A §4 A-5，批 0b）：登记的候选各是一个**静态种类**（种类名就是候选名，没有对象），配了说话时另有生成的种类 `speak_to`
+  （对象是一个人）；种类的来源是 `NpcServer.Offers.plan_kinds/1`，对象由 Life 起规划槽时从关系与观察展开成
+  `%{显示名 => 对象}`（显示名用名字层 `Life.State.person/2`，对象如 `%{"actor" => cid}`）。逐轮变的候选名（`speak_to:<cid>`）
+  不是种类，写不进计划。词表写不出的想法记在 `wants`（想做而现在做不到的事），由下一次规划的模型留或撤。
   计划不新增任何动作，只是把“想做什么”记下来，让选择看得见。
+
+  ```mermaid
+  flowchart LR
+    K["Offers.plan_kinds/1<br/>种类 + objects: :none | :people"] --> V["Life 展开对象<br/>%{种类 => %{显示名 => 对象}}"]
+    V --> C["check/3<br/>意图：activity = 种类，object = 显示名 | 缺 | null"]
+    C --> P["持久行 intents<br/>object 存对象本身（或 nil）"]
+    E["活动经历 {种类, 对象}"] --> R["record_activity/4<br/>种类相同，且意图没点名或点名相同"]
+    R --> P
+  ```
 
   ## 谁写什么（不变量）
 
@@ -34,7 +46,9 @@ defmodule NpcServer.Life.DayPlan do
   ## 持久行 `"plan"`（`new/0`）
 
       "day"           当前意图属于哪个游戏日（nil 表示还没采用过）
-      "intents"       [%{"id", "activity", "times", "by", "why", "done"}]，by 为日内分钟（0..1439），id 为 "<日号>:<序号>"
+      "intents"       [%{"id", "activity", "object", "times", "by", "why", "done"}]，by 为日内分钟（0..1439），id 为 "<日号>:<序号>"；
+                      activity 是种类，object 是对象（如 %{"actor" => cid}）或 nil。批 0b 之前存下的意图没有 "object" 键，
+                      读作 nil（不迁移）
       "wants"         [%{"want", "why"}]
       "calls"         %{"day", "n"}：本游戏日发出了写作请求的规划调用数（起调用时 admit/3 先记；落栏时写作没有发出的
                       由 refund/1 退回；崩溃不退、不重置；跨日清零）
@@ -71,6 +85,8 @@ defmodule NpcServer.Life.DayPlan do
   @fence_pattern ~r/\A```(?:json)?\s*(.*?)\s*```\z/s
 
   @intent_keys ["activity", "times", "by", "why"]
+  # 意图里可缺的键：对象（可缺、可为 null，都是没点名）。
+  @intent_optional_keys ["object"]
   @want_keys ["want", "why"]
 
   @type plan :: %{required(String.t()) => term()}
@@ -106,29 +122,35 @@ defmodule NpcServer.Life.DayPlan do
   检查写作接口给的整段正文：至多去一对 ``` 围栏（可带 `json` 标记）外，整段必须就是一个 JSON 对象，只有 `intents` / `cannot_yet`
   两个键，都是列表。
 
-  - 每条意图的键恰为 `activity`、`times`、`by`、`why`：`activity` 是 `activity_names` 里的一个（逐字）；`times` 是 JSON 整数且 ≥ 1；
+  `vocabulary` 是展开后的词表 `%{种类 => %{显示名 => 对象}}`（静态种类的对象表为空）。
+
+  - 每条意图的键是 `activity`、`times`、`by`、`why`，另可有 `object`：`activity` 是 `vocabulary` 的一个种类（逐字）；`object`
+    缺、为 null 都是没点名，否则必须逐字是该种类列出的显示名之一（静态种类不接受对象）；`times` 是 JSON 整数且 ≥ 1；
     `by` 严格匹配 `HH:MM`（`00:00`–`23:59`）且**严格晚于** `now_minute`；`why` 是非空字符串。
   - 每条 `cannot_yet` 的键恰为 `want`、`why`，都是非空字符串。
   - 两张表合计至多 5 条；数条数在逐条检查之后（同离线检查 5 排在 3、4 之后）。
 
-  合格返回 `{:ok, %{intents: [...], wants: [...]}}`：意图是 `%{"activity", "times", "by", "why"}`，`by` 已换成日内分钟，
-  其余原样；wants 是 `%{"want", "why"}` 原样。不合格返回 `{:error, 原因}`，原因：
+  合格返回 `{:ok, %{intents: [...], wants: [...]}}`：意图是 `%{"activity", "object", "times", "by", "why"}`，`object` 已换成
+  显示名对应的对象（没点名为 nil），`by` 已换成日内分钟，其余原样；wants 是 `%{"want", "why"}` 原样。不合格返回
+  `{:error, 原因}`，原因：
 
       :not_json | :not_object
       {:missing_key, 键} | {:unknown_key, 键} | {:not_a_list, 键}
       :intent_not_object | {:intent_missing_key, 键} | {:intent_unknown_key, 键}
-      {:unknown_activity, 值} | {:bad_times, 值} | {:bad_by, 值} | {:by_not_after_now, "HH:MM"} | :bad_why
+      {:unknown_activity, 值} | {:unknown_object, 种类, 值}
+      {:bad_times, 值} | {:bad_by, 值} | {:by_not_after_now, "HH:MM"} | :bad_why
       :want_not_object | {:want_missing_key, 键} | {:want_unknown_key, 键} | :bad_want | :bad_want_why
       {:too_many_items, 总条数}
   """
-  @spec check(String.t(), [String.t()], non_neg_integer()) :: {:ok, checked()} | {:error, term()}
-  def check(text, activity_names, now_minute) when is_binary(text) do
+  @spec check(String.t(), %{String.t() => %{String.t() => term()}}, non_neg_integer()) ::
+          {:ok, checked()} | {:error, term()}
+  def check(text, vocabulary, now_minute) when is_binary(text) and is_map(vocabulary) do
     with {:ok, body} <- unfence(text),
          {:ok, object} <- decode_object(body),
          :ok <- check_keys(object, ["intents", "cannot_yet"], :missing_key, :unknown_key),
          {:ok, raw_intents} <- fetch_list(object, "intents"),
          {:ok, raw_wants} <- fetch_list(object, "cannot_yet"),
-         {:ok, intents} <- check_each(raw_intents, &check_intent(&1, activity_names, now_minute)),
+         {:ok, intents} <- check_each(raw_intents, &check_intent(&1, vocabulary, now_minute)),
          {:ok, wants} <- check_each(raw_wants, &check_want/1),
          :ok <- check_count(length(intents) + length(wants)) do
       {:ok, %{intents: intents, wants: wants}}
@@ -152,11 +174,11 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  # 键恰为 expected：先报缺的、再报多的（各按确定的次序）。
-  defp check_keys(map, expected, missing_reason, unknown_reason) do
+  # 键是 expected 加上可缺的 optional：先报缺的、再报多的（各按确定的次序）。
+  defp check_keys(map, expected, missing_reason, unknown_reason, optional \\ []) do
     keys = Map.keys(map)
 
-    case {expected -- keys, Enum.sort(keys -- expected)} do
+    case {expected -- keys, Enum.sort(keys -- (expected ++ optional))} do
       {[missing | _], _} -> {:error, {missing_reason, missing}}
       {[], [unknown | _]} -> {:error, {unknown_reason, unknown}}
       {[], []} -> :ok
@@ -183,23 +205,45 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  defp check_intent(%{} = intent, activity_names, now_minute) do
-    with :ok <- check_keys(intent, @intent_keys, :intent_missing_key, :intent_unknown_key),
-         :ok <- check_activity(intent["activity"], activity_names),
+  defp check_intent(%{} = intent, vocabulary, now_minute) do
+    with :ok <-
+           check_keys(
+             intent,
+             @intent_keys,
+             :intent_missing_key,
+             :intent_unknown_key,
+             @intent_optional_keys
+           ),
+         {:ok, objects} <- check_activity(intent["activity"], vocabulary),
+         {:ok, object} <- check_object(intent["activity"], intent["object"], objects),
          :ok <- check_times(intent["times"]),
          {:ok, by} <- check_by(intent["by"], now_minute),
          :ok <- check_text(intent["why"], :bad_why) do
-      {:ok, %{intent | "by" => by}}
+      {:ok, Map.merge(intent, %{"object" => object, "by" => by})}
     end
   end
 
-  defp check_intent(_not_object, _names, _now), do: {:error, :intent_not_object}
+  defp check_intent(_not_object, _vocabulary, _now), do: {:error, :intent_not_object}
 
-  defp check_activity(name, names) when is_binary(name) do
-    if name in names, do: :ok, else: {:error, {:unknown_activity, name}}
+  # 种类在词表里：给出它的对象表（显示名 → 对象）。
+  defp check_activity(kind, vocabulary) when is_binary(kind) do
+    case Map.fetch(vocabulary, kind) do
+      {:ok, objects} -> {:ok, objects}
+      :error -> {:error, {:unknown_activity, kind}}
+    end
   end
 
-  defp check_activity(other, _names), do: {:error, {:unknown_activity, other}}
+  defp check_activity(other, _vocabulary), do: {:error, {:unknown_activity, other}}
+
+  # 对象可缺、可为 null（都是没点名）；写了就必须逐字是该种类列出的显示名之一，换成它对应的对象。
+  defp check_object(_kind, nil, _objects), do: {:ok, nil}
+
+  defp check_object(kind, name, objects) do
+    case is_binary(name) && Map.fetch(objects, name) do
+      {:ok, object} -> {:ok, object}
+      _ -> {:error, {:unknown_object, kind, name}}
+    end
+  end
 
   defp check_times(times) when is_integer(times) and times >= 1, do: :ok
   defp check_times(other), do: {:error, {:bad_times, other}}
@@ -409,16 +453,19 @@ defmodule NpcServer.Life.DayPlan do
   end
 
   @doc """
-  一项活动**完成**（失败的不算，调用方不调）时记账：给同名、今天、`:open` 的意图里 `by` 最早的一条 `done + 1`
-  （`by` 并列取列表里靠前的）。找不到就原样返回，不报错。
+  一项活动**完成**（失败的不算，调用方不调）时记账。`done` 是完成的活动的 `{种类, 对象}`（`NpcServer.Selector.experience/2`
+  的 `kind` 与 `object`）：意图的种类相同、且意图没点名（`object` 为 nil 或旧行没有这个键）或点名的就是这个对象，才算匹配。
+  给匹配的、今天、`:open` 的意图里 `by` 最早的一条 `done + 1`（`by` 并列取列表里靠前的）。找不到就原样返回，不报错。
   """
-  @spec record_activity(plan(), String.t() | nil, integer(), non_neg_integer()) :: plan()
-  def record_activity(%{"day" => day} = plan, activity, day, minute) do
+  @spec record_activity(plan(), {String.t() | nil, term()}, integer(), non_neg_integer()) ::
+          plan()
+  def record_activity(%{"day" => day} = plan, {kind, object}, day, minute) do
     open =
       plan["intents"]
       |> Enum.with_index()
       |> Enum.filter(fn {intent, _index} ->
-        intent["activity"] == activity and status(plan, intent, {day, minute}) == :open
+        intent["activity"] == kind and intent["object"] in [nil, object] and
+          status(plan, intent, {day, minute}) == :open
       end)
 
     case open do
@@ -435,12 +482,13 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  def record_activity(plan, _activity, _other_day, _minute), do: plan
+  def record_activity(plan, _done, _other_day, _minute), do: plan
 
   # --- 给 Mind 的栏 ---
 
   @doc """
-  给 Mind 的数据：今天的各条意图 `%{activity, times, done, by, status}`（`by` 是日内分钟，`status` 此刻推出）与 `wants`
+  给 Mind 的数据：今天的各条意图 `%{activity, object, times, done, by, status}`（`activity` 是种类，`object` 是点名的对象或 nil，
+  `by` 是日内分钟，`status` 此刻推出）与 `wants`
   （`%{"want", "why"}`，直到下一次规划换掉才撤）。计划不是今天的则意图为空列表；没有意图也没有 `wants` 返回 nil。
   只给数据，怎么渲染、是否点名该选什么由 Mind 决定。
   """
@@ -453,6 +501,7 @@ defmodule NpcServer.Life.DayPlan do
             intent <- plan["intents"],
             do: %{
               activity: intent["activity"],
+              object: intent["object"],
               times: intent["times"],
               done: intent["done"],
               by: intent["by"],

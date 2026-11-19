@@ -123,6 +123,25 @@ defmodule NpcServer.NpcRegistryTest do
       end)
     end
 
+    # 稿 A 批 0b：日计划的词表 = 登记项（种类即候选名）+ 生成的种类（`Offers.plan_kinds/1`，现在只有说话 `speak_to`）。
+    # 登记名与生成种类相同时计划与记账分不清是哪一个，登记即拒；`speak_to:<cid>` 形状的登记名不是种类，照常可登记
+    # （与说话候选名的撞名由 `Offers.speak_to/2` 的避让处理）。
+    test "npc: a registered name equal to a generated plan kind is rejected; speak_to:<cid> stays allowed" do
+      [_gather, rest] = @npc["activities"]
+
+      with_env(@npc_env, fn ->
+        assert_raise ArgumentError, ~r/speak_to/, fn ->
+          NpcRegistry.brain("npc", %{@npc | "activities" => [%{rest | "name" => "speak_to"}]})
+        end
+
+        assert {Brain.Tree, %{activities: [%{name: "speak_to:21"}]}} =
+                 NpcRegistry.brain("npc", %{
+                   @npc
+                   | "activities" => [%{rest | "name" => "speak_to:21"}]
+                 })
+      end)
+    end
+
     test "settler: the row's JSON becomes the Settler tree profile; skills build / gather are fixed" do
       params = %{
         "definition" => @hex,

@@ -34,7 +34,8 @@ defmodule NpcServer.Mind do
   （计划是“想做什么”，处境是“现在有什么”，先让模型读到前者；位置本身没有离线对照过）。
   **可缺的理由**：Life 给 nil 时整栏不出现——这个形态不规划、持久行还没采用过计划、或今天没有意图而 `wants` 也空——
   此时 state 与没有这一栏时逐字节相同。正文多行（栏内换行同 `What I remember`），先今天的各条意图、一条一行，写法是
-  `plan_intent_line/1`（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`）；
+  `plan_intent_line/2`（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；
+  意图点名了人时 `<活动>` 写成 `<种类> <名字 (actor <cid>)>`，名字取自此刻观察）；
   再是 `wants`，每条一行 `I would like to <want>, but I cannot do that yet`，`<want>` 取模型原文，不改写、不去标点。
   意图的状态由 `Life.DayPlan.column/3` 在读时推出；计划不是今天的则只剩 `wants` 行。
   **不点名该选什么**：不写 `you should` / `next` / `remember` 之类的话，只陈述数目、时限与做不到的事（用户 2026-11-13 定“靠内容涌现”）。
@@ -133,7 +134,7 @@ defmodule NpcServer.Mind do
       {"What I remember", remembered(life)}
     ] ++
       thought(life) ++
-      plans(life) ++
+      plans(life, observation) ++
       [
         {"Current situation", situation(observation, life.buildings)},
         {"Recent activities", recent(history)}
@@ -142,12 +143,15 @@ defmodule NpcServer.Mind do
 
   # 日计划新栏：Life 给出 `plan`（`Life.DayPlan.column/3` 的结果）才有这一栏，nil 时整栏不出现（state 与没有这一栏时逐字节相同）。
   # 严格取键（同 `thought/1`）：手造 `life` 的测试只有三处，都补了 `plan: nil`，漏给的调用方会在这里立刻崩而不是悄悄少一栏。
-  # 正文多行：先今天的各条意图一条一行（`plan_intent_line/1`），再 wants 各一行；不点名该选什么，不写任何指令性的话。
-  defp plans(%{plan: nil}), do: []
+  # 正文多行：先今天的各条意图一条一行（`plan_intent_line/2`，点名的人按此刻观察里的名字写），再 wants 各一行；
+  # 不点名该选什么，不写任何指令性的话。
+  defp plans(%{plan: nil}, _observation), do: []
 
-  defp plans(%{plan: %{intents: intents, wants: wants}}) do
+  defp plans(%{plan: %{intents: intents, wants: wants}}, observation) do
+    names = Map.new(observation.entities, &{&1.entity_id, &1.name})
+
     lines =
-      Enum.map(intents, &plan_intent_line/1) ++
+      Enum.map(intents, &plan_intent_line(&1, names)) ++
         Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
 
     [{"Plans and promises", Enum.join(lines, "\n")}]
@@ -301,18 +305,28 @@ defmodule NpcServer.Mind do
       :done    <activity>: <done> of <times> done — finished
       :missed  <activity>: <done> of <times> done — not finished by HH:MM
 
-  规划的用户消息里 `What I meant to do today, as it stands:` 一块（`NpcServer.Life.DayPlan.Round`）用它；写法是原创取值，
-  S1-R8 没有测过这一块。只陈述数目与时限，不点名该做什么。
+  意图点名了一个人（`object` 为 `%{"actor" => cid}`，稿 A 批 0b）时 `<activity>` 写成 `<种类> <人>`，人按名字层
+  `Life.State.person/2`（`names` 是 `%{cid => 名字}`，取自此刻观察；有名字写 `名字 (actor <cid>)`，没有写 `actor <cid>`）；
+  没点名时与批 0b 之前逐字相同。这个写法也是原创取值，没有离线测过。
+  规划的用户消息里 `What I meant to do today, as it stands:` 一块（`NpcServer.Life.DayPlan.Round`）与心智快照的
+  `Plans and promises` 栏用它；写法是原创取值，S1-R8 没有测过这一块。只陈述数目与时限，不点名该做什么。
   """
-  @spec plan_intent_line(%{
-          activity: String.t(),
-          times: pos_integer(),
-          done: non_neg_integer(),
-          by: non_neg_integer(),
-          status: :open | :done | :missed
-        }) :: String.t()
-  def plan_intent_line(%{activity: activity, times: times, done: done, by: by, status: status}) do
-    count = "#{activity}: #{done} of #{times} done"
+  @spec plan_intent_line(
+          %{
+            activity: String.t(),
+            object: nil | %{String.t() => integer()},
+            times: pos_integer(),
+            done: non_neg_integer(),
+            by: non_neg_integer(),
+            status: :open | :done | :missed
+          },
+          %{integer() => String.t()}
+        ) :: String.t()
+  def plan_intent_line(
+        %{activity: activity, times: times, done: done, by: by, status: status} = intent,
+        names
+      ) do
+    count = "#{intended(activity, intent.object, names)}: #{done} of #{times} done"
 
     case status do
       :open -> "#{count}, by #{hh_mm(by)}"
@@ -320,6 +334,9 @@ defmodule NpcServer.Mind do
       :missed -> "#{count} — not finished by #{hh_mm(by)}"
     end
   end
+
+  defp intended(kind, nil, _names), do: kind
+  defp intended(kind, %{"actor" => cid}, names), do: "#{kind} #{State.person(cid, names)}"
 
   defp hh_mm(minute), do: "#{two_digits(div(minute, 60))}:#{two_digits(rem(minute, 60))}"
 

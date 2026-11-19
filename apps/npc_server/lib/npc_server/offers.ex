@@ -34,6 +34,12 @@ defmodule NpcServer.Offers do
   种类，`object` 是种类的对象（没有为 nil）。登记项 `kind` = 候选名、`object` = nil（`static/1`）；说话项 `kind` = `"speak_to"`、
   `object` = `%{"actor" => cid}`，另带 `target`（冻结的目标身份与代次，Runtime 原样交给 speak 技能）。
   给 Jev 的请求体只序列化 `name → criterion`（`NpcServer.Selector`），kind / object 不进请求。
+
+  ## 计划种类（`plan_kinds/1`，批 0b）
+
+  日计划的词表是“种类 + 可选对象”，不是候选名：候选名（`speak_to:<cid>`）逐轮变，计划写不出、记账也对不上。种类与候选的
+  `kind` 同一套名字：登记项各是一个静态种类（没有对象），说话是 `speak_to`（对象是人，由 Life 展开成可点名的显示名）。
+  活动结束时 `Selector.experience/2` 交出候选的 `{kind, object}`，`Life.DayPlan.record_activity/4` 按它记账。
   """
   alias NpcServer.Life.State
   alias SceneServer.Movement.Scene
@@ -208,6 +214,38 @@ defmodule NpcServer.Offers do
       }
     }
   end
+
+  @doc """
+  日计划可以写的种类（稿 A §4 A-5，批 0b），按次序：登记的每个候选各是一个静态种类（种类名 = 候选名，判据原样，不论建筑条件——
+  计划是一天的打算，眼下不可行也可以先写下），配了 speak 技能时再加说话一类（对象是人）：
+
+      [%{kind: 种类, criterion: 判据, objects: :none | :people}]
+
+  没有候选表的形态（不在选择层选活动）没有任何种类。具体能点名哪些人由 Life 起规划槽时展开（`NpcServer.Life` 的“日计划”）；
+  种类的名字必须互不相同，登记边界（`NpcServer.Registry.brain/2`）据此拒绝与生成种类同名的候选。
+  """
+  def plan_kinds(%{activities: activities} = profile) do
+    static =
+      for %{name: name, criterion: criterion} <- activities,
+          do: %{kind: name, criterion: criterion, objects: :none}
+
+    case profile do
+      %{skills: %{speak: _}} ->
+        static ++
+          [
+            %{
+              kind: @speak,
+              criterion: "Walk up to someone and say one thing to them.",
+              objects: :people
+            }
+          ]
+
+      _ ->
+        static
+    end
+  end
+
+  def plan_kinds(_profile), do: []
 
   defp vacant_name(name, names) do
     if MapSet.member?(names, name), do: vacant_name(name <> "_", names), else: name
