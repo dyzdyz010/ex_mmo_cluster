@@ -40,7 +40,7 @@
 - `due(plan, day, now_ms)`：此刻该不该起一次规划——`:day`（`plan["day"] != day`）或 `:event`（`plan["day"] == day` 且 `event_waiting`）或 nil；距 `last_at_ms` 不足 `@min_gap_ms`（3 分钟，原创取值，实跑后调）一律 nil。
 - `adopt(plan, day, now_minute, checked, kind, at_ms)`（实现里多了 `now_minute`：判断旧意图是否已结束要用它）：采用一份检查合格的计划：同日重排保留已 `done` 与已 `missed` 的旧意图、换掉 open 的；跨日整份换；新意图 `id = "<day>:<序号>"`、`done = 0`；`wants` 整份换成新的；记 `last`、`last_at_ms`、计数；**不碰 `event_waiting`**（调用在途时新来的 event 要留给下一次重排）。条目总数上限 8（超出丢最旧的保留项；新意图至多 5 条，丢不到）。
 - `fail(plan, kind, :failed | :rejected, reason, at_ms)`：写作失败 / 崩溃 / 检查不过：意图与 `wants` 不动，记 `last`、`last_at_ms`、计数；`:event` 失败把 `event_waiting` 恢复为真，`:day` 失败不恢复。`skip(plan)`：当日额度用完时 `counts.skipped + 1`。`status(plan, intent, {day, minute})`：`:done | :missed | :open`。
-- `record_activity(plan, activity, day, minute)`：一项活动 **completed**（失败不计）时调用：给同名、今天、`open`（`done < times` 且 `minute <= by`）的意图里 `by` 最早的一条 `done + 1`。
+- `record_activity(plan, {kind, object}, day, minute)`（稿 A 批 0b 起按种类 + 对象，原为候选名）：一项活动 **completed**（失败不计）时调用：在种类相同、今天、`open`（`done < times` 且 `minute <= by`）的意图里，**先取点名的就是这个对象的**，没有再取没点名的（`object` 为 nil 或旧行无此键），各取 `by` 最早的一条 `done + 1`。点名优先是稿 A 批 0 评审修正：混在一起按时限取会让点名那条白白落空。计划不是今天的原样返回；`done` 不是 `{种类, 对象}` 直接 `FunctionClauseError`。
 - `note_event(plan)`：`event_waiting = true`。
 - `column(plan, day, minute)`：给 Mind 的数据：今天的各条 `%{activity, times, done, by, status}` 与 `wants`；没有意图也没有 `wants` 为 nil。
 

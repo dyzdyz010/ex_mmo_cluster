@@ -244,6 +244,12 @@ defmodule NpcServer.Life.State do
   def person_name(name), do: name
 
   @doc """
+  一帧观察里的 `%{cid => 名字}`（`person/2` 的 `names`）：观察里的每个角色（含自己）的 Scene 原名，不改写。
+  Life 写经历、规划槽展开对象与 Mind 写计划栏里的人都从这里取，同一帧观察给出同一份名字。
+  """
+  def names(%{entities: entities}), do: Map.new(entities, &{&1.entity_id, &1.name})
+
+  @doc """
   记忆原文里一个人的写法：`names`（`%{cid => 名字}`，取自写经历那一刻的观察）里有这个人时写 `名字 (actor <cid>)`
   （名字按 `person_name/1`），没有时写 `actor <cid>`。心智快照写附近的人用同一个写法，记忆与处境栏由此对得上。
   """

@@ -19,7 +19,7 @@ defmodule NpcServer.Life.DayPlan do
     K["Offers.plan_kinds/1<br/>种类 + objects: :none | :people"] --> V["Life 展开对象<br/>%{种类 => %{显示名 => 对象}}"]
     V --> C["check/3<br/>意图：activity = 种类，object = 显示名 | 缺 | null"]
     C --> P["持久行 intents<br/>object 存对象本身（或 nil）"]
-    E["活动经历 {种类, 对象}"] --> R["record_activity/4<br/>种类相同，且意图没点名或点名相同"]
+    E["活动经历 {种类, 对象}"] --> R["record_activity/4<br/>种类相同：点名相同的优先，再没点名的"]
     R --> P
   ```
 
@@ -454,8 +454,15 @@ defmodule NpcServer.Life.DayPlan do
 
   @doc """
   一项活动**完成**（失败的不算，调用方不调）时记账。`done` 是完成的活动的 `{种类, 对象}`（`NpcServer.Selector.experience/2`
-  的 `kind` 与 `object`）：意图的种类相同、且意图没点名（`object` 为 nil 或旧行没有这个键）或点名的就是这个对象，才算匹配。
-  给匹配的、今天、`:open` 的意图里 `by` 最早的一条 `done + 1`（`by` 并列取列表里靠前的）。找不到就原样返回，不报错。
+  的 `kind` 与 `object`），只看今天、种类相同、`:open` 的意图：
+
+  1. **点名优先**：先在点名的就是这个对象的意图里取；
+  2. 没有，再在没点名的意图（`object` 为 nil，或旧行没有这个键）里取。
+
+  每一步都取 `by` 最早的一条 `done + 1`（`by` 并列取列表里靠前的）。点名优先是因为没点名的意图对谁都成立、点名的只对这个人
+  成立：混在一起按时限取，会把对这个人做的事记到时限更早的没点名意图上，点名那条就白白落空（稿 A 批 0 评审）。
+  找不到就原样返回，不报错；计划不是今天的（含还没采用过计划）也原样返回。`done` 不是 `{种类, 对象}` 是调用错误，
+  直接 `FunctionClauseError`。
   """
   @spec record_activity(plan(), {String.t() | nil, term()}, integer(), non_neg_integer()) ::
           plan()
@@ -464,12 +471,12 @@ defmodule NpcServer.Life.DayPlan do
       plan["intents"]
       |> Enum.with_index()
       |> Enum.filter(fn {intent, _index} ->
-        intent["activity"] == kind and intent["object"] in [nil, object] and
-          status(plan, intent, {day, minute}) == :open
+        intent["activity"] == kind and status(plan, intent, {day, minute}) == :open
       end)
 
-    case open do
-      [] ->
+    # 点名相同的先取，没有再取没点名的（对象为 nil 时两步是同一组）。
+    case Enum.find([naming(open, object), naming(open, nil)], &(&1 != [])) do
+      nil ->
         plan
 
       candidates ->
@@ -482,7 +489,11 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  def record_activity(plan, _done, _other_day, _minute), do: plan
+  def record_activity(plan, {_kind, _object}, _other_day, _minute), do: plan
+
+  # 意图里点名的就是 `object` 的那些（`object` 为 nil 即没点名的；旧行没有 "object" 键，读作 nil）。
+  defp naming(intents, object),
+    do: Enum.filter(intents, fn {intent, _index} -> intent["object"] == object end)
 
   # --- 给 Mind 的栏 ---
 

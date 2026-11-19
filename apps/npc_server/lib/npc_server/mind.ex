@@ -148,7 +148,7 @@ defmodule NpcServer.Mind do
   defp plans(%{plan: nil}, _observation), do: []
 
   defp plans(%{plan: %{intents: intents, wants: wants}}, observation) do
-    names = Map.new(observation.entities, &{&1.entity_id, &1.name})
+    names = State.names(observation)
 
     lines =
       Enum.map(intents, &plan_intent_line(&1, names)) ++

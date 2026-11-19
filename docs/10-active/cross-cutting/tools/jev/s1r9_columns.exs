@@ -2,18 +2,20 @@
 #
 # 是什么
 #   规格：.demo/observe/npc-slice1-20261112/s1r9/plan.md（唯一规格）、exec-brief.md。对每个样本：
-#     DayPlan.check/3（词表 = s1r7/export/request-template.json 的六个候选名；此刻分钟 = 该基准 state 自己 `Now:` 一行的钟点）
+#     DayPlan.check/3（词表 = s1r7/export/request-template.json 的六个候选名，各是一个静态种类、没有对象：
+#       `%{名 => %{}}`，稿 A 批 0b 的形状；此刻分钟 = 该基准 state 自己 `Now:` 一行的钟点）
 #       -> DayPlan.adopt/6（固定日号 @day，at_ms 任意）
 #       -> DayPlan.column/3（P：各意图 done 0，状态由代码按基准钟点推）
 #       -> 产品 Mind 的同一渲染得到栏正文
-#     PD：同 P，但对第一条意图的活动调 DayPlan.record_activity/4 恰好 times 次（钟点同上）再取栏。
+#     PD：同 P，但对第一条意图的活动（`{种类, nil}`，静态种类没有对象）调 DayPlan.record_activity/4 恰好 times 次（钟点同上）再取栏。
 #   不连库、不起节点：只用纯函数。运行（WSL，apps/npc_server 下）：
 #     .demo/observe/npc-slice1-20261112/s1r8/impl/run-nodb.sh <日志名> run --no-start <本脚本路径>
 #   输出：.demo/observe/npc-slice1-20261112/s1r9/columns/columns.json
 #
-# 渲染（同 Mind.plans/1）
-#   Mind.plans/1 是私有函数。栏正文的拼法在这里逐字照它写（见 render_body/1）：
-#       lines = Enum.map(intents, &Mind.plan_intent_line/1) ++ Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
+# 渲染（同 Mind.plans/2）
+#   Mind.plans/2 是私有函数。栏正文的拼法在这里逐字照它写（见 render_body/1）：
+#       names = State.names(observation)（本脚本的观察桩没有角色，为 %{}；意图都没点名，用不上）
+#       lines = Enum.map(intents, &Mind.plan_intent_line(&1, names)) ++ Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
 #       body  = Enum.join(lines, "\n")；栏 = [{"Plans and promises", body}]；整行文本 = Mind.text(栏)
 #   自检：对每个样本，用 Mind.snapshot/4 的真实调用（最小的 profile / observation / life 桩，只让计划栏有内容）产出的
 #   `Plans and promises` 栏，必须与上面拼出来的逐字相同；同时断言 snapshot 里该栏的位置在 Current situation 之前、
@@ -21,7 +23,7 @@
 #
 # 读数之外的判断一概不做：check/3 不过的样本只记录（by 不晚于此刻 = 钟点原因；别的原因立刻停）。
 
-alias NpcServer.Life.DayPlan
+alias NpcServer.Life.{DayPlan, State}
 alias NpcServer.Mind
 
 defmodule S1R9Columns do
@@ -59,6 +61,8 @@ defmodule S1R9Columns do
     File.mkdir_p!(out_dir)
 
     names = vocabulary(Path.join(root, "s1r7/export/request-template.json"))
+    # check/3 的词表：每个候选名是一个静态种类（没有对象可点名）。
+    kinds = Map.new(names, &{&1, %{}})
     clocks = base_clocks(Path.join(root, "s1r7/states"))
     rows = read_json(Path.join(r8, "results.json"))["rows"] |> Map.new(&{&1["name"], &1})
 
@@ -74,7 +78,7 @@ defmodule S1R9Columns do
 
     results =
       Enum.map(samples, fn {base, round, rep, row} ->
-        sample(base, round, rep, row, names, clocks[base], r8)
+        sample(base, round, rep, row, kinds, clocks[base], r8)
       end)
 
     ok = for {:ok, name, entry} <- results, do: {name, entry}
@@ -98,7 +102,10 @@ defmodule S1R9Columns do
     File.write!(Path.join(out_dir, "columns.json"), Jason.encode!(output, pretty: true))
 
     IO.puts("samples=#{length(samples)} ok=#{length(ok)} check_failed=#{length(failed)}")
-    IO.puts("self_check: Mind.snapshot/4 的栏与本脚本拼的栏逐字相同的样本 #{Enum.count(self_checked, & &1)} / #{length(self_checked)}")
+
+    IO.puts(
+      "self_check: Mind.snapshot/4 的栏与本脚本拼的栏逐字相同的样本 #{Enum.count(self_checked, & &1)} / #{length(self_checked)}"
+    )
 
     for f <- failed do
       IO.puts(
@@ -107,12 +114,12 @@ defmodule S1R9Columns do
     end
   end
 
-  defp sample(base, round, rep, row, names, clock, r8) do
+  defp sample(base, round, rep, row, kinds, clock, r8) do
     name = "#{base}_r#{rep}"
     text = response_text(Path.join(r8, "raw/#{row["raw_file"]}"))
     now = clock.minute
 
-    case DayPlan.check(text, names, now) do
+    case DayPlan.check(text, kinds, now) do
       {:ok, checked} ->
         {:ok, name, build(name, base, round, rep, checked, clock)}
 
@@ -141,7 +148,9 @@ defmodule S1R9Columns do
     times = first["times"]
 
     plan_done =
-      Enum.reduce(1..times, plan, fn _, acc -> DayPlan.record_activity(acc, a1, @day, now) end)
+      Enum.reduce(1..times, plan, fn _, acc ->
+        DayPlan.record_activity(acc, {a1, nil}, @day, now)
+      end)
 
     p = DayPlan.column(plan, @day, now)
     pd = DayPlan.column(plan_done, @day, now)
@@ -170,10 +179,12 @@ defmodule S1R9Columns do
     }
   end
 
-  # 同 Mind.plans/1：意图行（plan_intent_line/1）在前，wants 行在后，换行连起来。
+  # 同 Mind.plans/2：意图行（plan_intent_line/2，名字取自观察桩：没有角色，为 %{}）在前，wants 行在后，换行连起来。
   defp render_body(%{intents: intents, wants: wants}) do
+    names = State.names(observation(0))
+
     lines =
-      Enum.map(intents, &Mind.plan_intent_line/1) ++
+      Enum.map(intents, &Mind.plan_intent_line(&1, names)) ++
         Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
 
     Enum.join(lines, "\n")
@@ -248,7 +259,13 @@ defmodule S1R9Columns do
   end
 
   defp intent_json(i),
-    do: %{"id" => i["id"], "activity" => i["activity"], "times" => i["times"], "by" => i["by"], "done" => i["done"]}
+    do: %{
+      "id" => i["id"],
+      "activity" => i["activity"],
+      "times" => i["times"],
+      "by" => i["by"],
+      "done" => i["done"]
+    }
 
   defp column_json(c),
     do: %{

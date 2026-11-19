@@ -7,6 +7,12 @@ defmodule NpcServer.NpcOffersTest do
   - **覆盖登记完整（T-A1）**：`Offers.coverage/0` 的键恰是“全授予 profile”算出的 `Abilities.entries/1` 名字集合；每个条目只归一类
     （`{:offer, 生成器}` / `{:inside, [技能]}` / `{:withheld, 理由}`）；offer 的生成器是 `Offers` 导出的二元函数；withheld 理由非空；
     inside 点名的技能本身在集合里且是 offer。常驻反例：经现有 `skills:` 扩展点加一个测试技能，差集恰为它（新增能力不登记即红）。
+    **覆盖边界**：“全授予 profile”只拼得出现有的授予方式——工具带（`tools`）、法术带（`spells`）、创世（`genesis`）、技能（`skills`）
+    与候选表（`activities`）。能力库若新增别的授予方式（profile 里一个新键才放出的条目），这里拼不出它，覆盖测试也就看不见；
+    加授予方式时要同时把它加进 `full_profile/0`。
+  - **候选只从覆盖登记生成**：`Offers.generators/1` 取登记里 offer 一类的生成器（去重、按名字排序），`candidates/4` 只按它生成；
+    次序锁定为登记项在前、说话在后；把条目改成 withheld，它的生成器（没有别的 offer 共用时）就消失。用参数化的登记表测这个纯函数，
+    生产代码不为测试加开关。真实 Scene 求交后的整轮候选次序另由 `npc_selector_test` 的真实 Runtime 用例（`npc_select … candidates=…` 日志）锁定。
   - **批 0 不改行为**：offer 只有 build / gather / expand / travel（登记项生成器 `registered/2`）与 speak（`speak_to/2`）。
   - **生成器（T-A2）**：`registered/2` 按建筑条件保序过滤（从 `Selector` 迁来，期望照迁移前的输出手写）；`speak_to/2` 与 `reply/2`
     （从 `Dialogue.topic_candidates/2`、`Dialogue.reply_candidate/2` 迁来）的范围、自身排除、观察次序、目标冻结、`speak_to:<id>` 的避让。
@@ -114,6 +120,45 @@ defmodule NpcServer.NpcOffersTest do
                "travel" => :registered,
                "speak" => :speak_to
              }
+    end
+  end
+
+  # 评审修正：`candidates/4` 原来写死 `registered ++ speak`、不读 `coverage/0`，登记表与真实候选来源是两份互不约束的事实。
+  describe "generators/1：候选只从覆盖登记生成" do
+    test "现在的登记：[:registered, :speak_to]——登记项在前、说话在后；四个登记技能共用的生成器只出现一次" do
+      assert Offers.generators(Offers.coverage()) == [:registered, :speak_to]
+    end
+
+    test "把 speak 改成 withheld：说话生成器消失，它的候选不再出现" do
+      coverage = Map.put(Offers.coverage(), "speak", {:withheld, "只测试：不给说话。"})
+      assert Offers.generators(coverage) == [:registered]
+    end
+
+    test "登记项的生成器由四个条目共用：只改一个仍在（过渡形态），四个都改成 withheld 才消失" do
+      withhold = fn coverage, names ->
+        Enum.reduce(names, coverage, &Map.put(&2, &1, {:withheld, "只测试。"}))
+      end
+
+      assert Offers.generators(withhold.(Offers.coverage(), ["build"])) == [
+               :registered,
+               :speak_to
+             ]
+
+      all_four = withhold.(Offers.coverage(), ["build", "gather", "expand", "travel"])
+      assert Offers.generators(all_four) == [:speak_to]
+    end
+
+    test "次序与登记表的遍历次序无关；inside / withheld 条目不产生生成器" do
+      coverage = [
+        {"speak", {:offer, :speak_to}},
+        {"say", {:inside, [:speak]}},
+        {"travel", {:offer, :registered}},
+        {"eat", {:withheld, "只测试。"}},
+        {"build", {:offer, :registered}}
+      ]
+
+      assert Offers.generators(coverage) == [:registered, :speak_to]
+      assert Offers.generators(Enum.reverse(coverage)) == [:registered, :speak_to]
     end
   end
 

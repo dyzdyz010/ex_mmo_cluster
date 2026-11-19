@@ -652,6 +652,16 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert DayPlan.record_activity(DayPlan.new(), {"visit_plaza", nil}, 4, 800) == DayPlan.new()
     end
 
+    # 评审反例：兜底子句只为“不是计划的那一天”（含还没采用过计划）存在；完成的活动不是 `{种类, 对象}` 是调用错误，
+    # 不得被它静默吞掉（AGENTS §2.2-8）。旧形状（批 0b 之前的候选名字符串）同一天、别的日号都要崩。
+    test "完成的活动不是 {种类, 对象}：FunctionClauseError，不静默原样返回" do
+      plan = adopt!(DayPlan.new(), "R3-r1", 4, 731, :day, 0)
+
+      for done <- ["visit_plaza", nil, {"visit_plaza"}], day <- [4, 5] do
+        assert_raise FunctionClauseError, fn -> DayPlan.record_activity(plan, done, day, 800) end
+      end
+    end
+
     test "一条意图的 times 为 2：记两次才 done，第三次不再加" do
       plan = adopt!(DayPlan.new(), "R5-r1", 4, 102, :day, 0)
       plan = plan |> DayPlan.record_activity({"visit_plaza", nil}, 4, 200)
@@ -908,7 +918,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert Enum.map(plan["intents"], & &1["done"]) == [0, 1, 0, 0]
     end
 
-    test "对 Tobin 说完话：点名与不点名的都匹配，记到 by 最早的那条（点名 Tobin 的 15:00）" do
+    test "对 Tobin 说完话：点名 Tobin 的意图优先（15:00）；它 done 之后才落到不点名的那条" do
       plan = DayPlan.record_activity(speaking_plan(), {"speak_to", %{"actor" => @tobin}}, 4, 800)
       assert Enum.map(plan["intents"], & &1["done"]) == [1, 0, 0, 0]
 
@@ -916,6 +926,42 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       plan = DayPlan.record_activity(plan, {"speak_to", %{"actor" => @tobin}}, 4, 810)
       assert Enum.map(plan["intents"], & &1["done"]) == [1, 1, 0, 0]
       assert json(plan) == plan
+    end
+
+    # 评审反例：不点名的意图时限更早时，旧规则（点名与不点名混在一起按 by 取最早）把对 Tobin 说的话记到不点名那条，
+    # 之后对别人说的话两条都对不上，点名 Tobin 的意图白白落空。点名相同的意图先取，没有才取不点名的。
+    # （反例原稿第二次说话在 13:00；那时不点名那条已过 12:00 的时限、是 missed，两条都 done 不可能，所以改在 11:30。）
+    test "点名优先：不点名的时限更早，对 Tobin 说的话仍记到点名那条，对 Corvin 说的话记到不点名那条，两条都 done" do
+      {:ok, checked} =
+        check_variant(
+          "R3-r1",
+          fn plan ->
+            update_in(plan["intents"], fn [guard | _rest] ->
+              [
+                %{guard | "activity" => "speak_to", "by" => "12:00", "times" => 1},
+                %{guard | "activity" => "speak_to", "by" => "15:00", "times" => 1}
+                |> Map.put("object", @tobin_name)
+              ]
+            end)
+            |> Map.put("cannot_yet", [])
+          end,
+          # 此刻 10:00（R3-r1 原本的此刻是 12:11，12:00 的时限过不了检查）。
+          10 * 60,
+          speaking_vocabulary()
+        )
+
+      plan = DayPlan.adopt(DayPlan.new(), 4, 10 * 60, checked, :day, 0)
+
+      plan = DayPlan.record_activity(plan, {"speak_to", %{"actor" => @tobin}}, 4, 11 * 60)
+      assert Enum.map(plan["intents"], & &1["done"]) == [0, 1]
+
+      plan = DayPlan.record_activity(plan, {"speak_to", %{"actor" => @corvin}}, 4, 11 * 60 + 30)
+      assert Enum.map(plan["intents"], & &1["done"]) == [1, 1]
+
+      assert Enum.map(DayPlan.column(plan, 4, 11 * 60 + 30).intents, & &1.status) == [
+               :done,
+               :done
+             ]
     end
 
     test "完成的活动没有对象：只匹配不点名的意图" do

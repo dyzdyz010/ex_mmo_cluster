@@ -1279,7 +1279,7 @@ defmodule NpcServer.Life do
 
   # 写经历时人名的来源：本 owner 此刻持有的观察里的 `%{cid => 名字}`（还没收到观察时为空，人一律写 `actor <cid>`）。
   defp names(%{observation: nil}), do: %{}
-  defp names(%{observation: o}), do: Map.new(o.entities, &{&1.entity_id, &1.name})
+  defp names(%{observation: o}), do: State.names(o)
 
   # 活动进行中每帧观察更新最近距离账；没有开始信号（nil）时不记。
   defp approach(nil, _observation), do: nil

@@ -29,7 +29,9 @@ defmodule NpcServer.Offers do
 
   ## 候选（`candidates/4`）
 
-  一轮候选 = `registered/2`（登记项按建筑条件保序过滤）++ `speak_to/2`（与 Scene 此刻允许开新话题的目标取交集）。
+  候选只从覆盖登记生成（唯一来源）：`generators/1` 取登记里 offer 一类的生成器（去重、按名字排序），`candidates/4` 按这个次序
+  逐个生成再连起来；某个条目改成 inside / withheld，它的生成器（若没有别的 offer 条目共用）就不再出候选。现在一轮候选 =
+  `registered/2`（登记项按建筑条件保序过滤）++ `speak_to/2`（与 Scene 此刻允许开新话题的目标取交集）。
   每个候选是 `%{name, kind, object, criterion, place_name, …}`：`name` 是给 Jev 的选项名（本轮唯一），`kind` 是计划与记账用的
   种类，`object` 是种类的对象（没有为 nil）。登记项 `kind` = 候选名、`object` = nil（`static/1`）；说话项 `kind` = `"speak_to"`、
   `object` = `%{"actor" => cid}`，另带 `target`（冻结的目标身份与代次，Runtime 原样交给 speak 技能）。
@@ -74,6 +76,7 @@ defmodule NpcServer.Offers do
     "craft" => {:withheld, "批 1 前不开放：生成器（有料才列）与计划记账在批 1 一起做。"},
     "eat" => {:withheld, "批 1 前不开放：生成器（有可食余额才列）与计划记账在批 1 一起做。"},
     "dismantle" => {:withheld, "批 2 前不开放：对象（只列自己放的）要从 Life 的建筑栏生成。"},
+    # inspect 不随其它感知原语归 inside（稿 A §4 初稿的说法）：统一形态里没有任何技能调用它，归 inside 就是登记了一个不存在的用法。
     "inspect" => {:withheld, "批 2 前不开放：统一形态里还没有调用方，批 2 作为点火 / 加热等对象的来源接入。"},
     "scoop" => {:withheld, "批 3 前不开放：液体对象的空间参数要等生成器的缝稳定之后。"},
     "pour" => {:withheld, "批 3 前不开放：液体对象的空间参数要等生成器的缝稳定之后。"},
@@ -111,16 +114,36 @@ defmodule NpcServer.Offers do
   def coverage, do: @coverage
 
   @doc """
-  本轮候选（Selector 发问 worker 里调用）：`registered/2` 的结果 ++ 说话候选。profile 配了 speak 技能时，说话候选取
-  `speak_to/2` 与当前 Scene 此刻允许开新话题的目标（`Scene.dialogue_topic_targets/2`，按身份与代次）的交集。
-  `buildings` 是 Life 规范心智里的建筑（`Life.mind/2` 的 `buildings`）。返回 `{:ok, 候选}`；路由或 Scene 读不到时
-  `{:error, {:dialogue_unavailable, 原因}}`（显式失败，不当成“没有人可说”）。
+  本轮候选（Selector 发问 worker 里调用）：按 `generators/1` 对覆盖登记给出的生成器次序，逐个生成再连起来——现在是
+  `registered/2` 的结果 ++ 说话候选。说话候选只在 profile 配了 speak 技能时有，取 `speak_to/2` 与当前 Scene 此刻允许开新话题的目标
+  （`Scene.dialogue_topic_targets/2`，按身份与代次）的交集。`buildings` 是 Life 规范心智里的建筑（`Life.mind/2` 的 `buildings`）。
+  返回 `{:ok, 候选}`；路由或 Scene 读不到时 `{:error, {:dialogue_unavailable, 原因}}`（显式失败，不当成“没有人可说”）。
   """
   def candidates(profile, observation, context, buildings) do
-    with {:ok, topics} <- topics(profile, observation, context) do
-      {:ok, registered(profile.activities, buildings) ++ topics}
-    end
+    Enum.reduce_while(generators(@coverage), {:ok, []}, fn generator, {:ok, acc} ->
+      case offer(generator, profile, observation, context, buildings) do
+        {:ok, offered} -> {:cont, {:ok, acc ++ offered}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
+
+  @doc """
+  覆盖登记里 offer 一类的生成器：去重、按生成器名排序（确定次序，与登记表的遍历次序无关）。`candidates/4` 只按它生成，
+  所以某个条目改成 inside / withheld 后，只要没有别的 offer 条目还用同一个生成器，它的候选就不再出现。
+  现在是 `[:registered, :speak_to]`：登记项在前、说话在后。`registered/2` 一个生成器同时服务 build / gather / expand / travel
+  四个条目（过渡形态），只改其中一个不会让它消失；批 1 起各种类换成自己的生成器。
+  """
+  def generators(coverage) do
+    Enum.sort(for {_entry, {:offer, generator}} <- coverage, uniq: true, do: generator)
+  end
+
+  # 一个生成器本轮的候选。生成器名来自覆盖登记；这里没有的名字是登记写错，直接 FunctionClauseError。
+  defp offer(:registered, profile, _observation, _context, buildings),
+    do: {:ok, registered(profile.activities, buildings)}
+
+  defp offer(:speak_to, profile, observation, context, _buildings),
+    do: topics(profile, observation, context)
 
   defp topics(%{activities: registered, skills: %{speak: _}}, observation, context) do
     case speak_to(registered, observation) do
