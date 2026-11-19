@@ -17,6 +17,23 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第二十个统筹会话的进展（2026-11-18 起）——上面第十九 → 第二十交接里“下一步”各项的状态以这里为准
+
+- **① 驱动 UDP 守护放宽：完成**（Test-only，不在 git）。`npc-slice4-20261118/run.py` 的 `guard`：采样读不到（超时、进程失败、输出不成 JSON、
+  基线有 4266 记录号而本轮读成 0）连续 2 次（`settings.UDP_READ_FAILURES_TO_ABORT`）才停，单次记 `udp-read-failures.jsonl`（`udp.jsonl` 仍只放成功读数，
+  4 个读取方不受影响），成功一次清零；`resources()` 多报 `udp_read_failures`。`npc-active-speech-20261117/run.py` 的 PowerShell 采样超时 12 → 20 s
+  （`WIN_UDP_TIMEOUT_SECONDS`，共享给 active-speech / multi / causal / slice4 的采样；那几个旧守护仍一次失败即停）。总量（基线 + 32）、4266、beam.smp 增长、
+  内存、总时限不变。独立评审提 3 条，都是漏停方向，已按反例修：写失败记录抛 OSError 会让守护线程悄悄退出（新引入）；守护遇意外异常（读数缺字段）线程退出（旧）
+  → 改为立即停服；事件日志读不到时 4266 读成 0 被当成功读数（旧）→ 计入读取失败。另 abort 文件写不进也照样停服。反例 `test_scale.py` 的 `UdpGuardReadFailures`
+  11 项；扩人数单测 137 项全绿。
+- **② 花费额度决策稿：已写成，待用户定 §6**：[`2026-11-18-npc-spend-budget-decision.md`](2026-11-18-npc-spend-budget-decision.md)。关键事实：M-4 花费按操作拆分——
+  Hindsight 认识刷新 48%、巩固 26%、抽取 10%，产品选择 11%、说话 2.5%、**产品后台车道只占 2.5%**（只拒产品后台车道几乎拦不住）；Hindsight 0.10.3 没有花费上限，
+  刷新完全由产品触发、巩固可按库关；用量可读回但只留 24 h 且少计；DeepSeek 只有账户级余额（402）。建议：产品侧 `SpendBudget` 按自然日累计（回执 + Hindsight 读回），
+  到线停刷新、关自动巩固、拒反思 / 日计划，交互照常；retain 继续（经历不丢）。降本杠杆只评估：刷新间隔 10 → 30 min 估总花费 −32%（未实测）、选择提示词缓存命中。
+- **顺带发现（未处理）**：产品 `Life.Hindsight.status/1` 的用量只加 input + output，漏思考 token（`hindsight.ex:231-237`；驱动 `hindsight_usage.py` 口径正确）；
+  常驻 Hindsight 容器内有目录 `/app/api/C:/Program Files/Git/home/hindsight/.cache/huggingface`（建于容器启动时），像是当初用 Git Bash 启动容器时路径被 MSYS 转换，
+  嵌入模型缓存可能没落在预期位置，未动。
+
 ### 交接（2026-11-18，第十九个统筹会话 → 第二十个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-20-brief.md`
 
 **一句话**：CI 修绿；扩人数 M-1 / M-1b / M-2 通过；M-4 截断于 37.4 min、用户定采用其读数；每天花费上限用户定 **3 人 $50**；
