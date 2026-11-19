@@ -423,7 +423,8 @@ defmodule NpcServer.NpcSelectorTest do
       assert [%{activity: "rest_at_home", result: ^failure}] = Selector.history(state)
 
       # 刚结束的活动写成一句经历：候选名、它的判据、结局；候选登记的地名一并交给 Life（作 place: tag）；
-      # 候选名与“是否完成”交给 Life 给日计划记账（失败的不算完成）。登记项的种类就是候选名、没有对象（稿 A 批 0a）。
+      # 种类、对象与结构化结局交给 Life（任务层稿 K-2：结局原样带出失败的动作与原因，日计划记账由它推出“是否完成”）。
+      # 登记项的种类就是候选名、没有对象（稿 A 批 0a）。
       assert %{
                text:
                  ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|,
@@ -431,7 +432,7 @@ defmodule NpcServer.NpcSelectorTest do
                activity: "rest_at_home",
                kind: "rest_at_home",
                object: nil,
-               completed: false
+               outcome: {:failed, "travel", "no_path"}
              } ==
                Selector.experience(state)
 
@@ -452,7 +453,7 @@ defmodule NpcServer.NpcSelectorTest do
                activity: "zeta_build_north",
                kind: "zeta_build_north",
                object: nil,
-               completed: true
+               outcome: :completed
              } ==
                Selector.experience(state)
 
@@ -534,7 +535,7 @@ defmodule NpcServer.NpcSelectorTest do
                activity: "speak_to:21",
                kind: "speak_to",
                object: %{"actor" => 21},
-               completed: true
+               outcome: :completed
              } == Selector.experience(state)
     end
 
@@ -568,7 +569,41 @@ defmodule NpcServer.NpcSelectorTest do
                activity: "eat:34",
                kind: "eat",
                object: %{"material" => 34},
-               completed: false
+               outcome: {:failed, "eat", "insufficient_material"}
+             } == Selector.experience(state)
+    end
+
+    # 任务层稿 K-2：被对话回合打断的活动，经历带出 `{:interrupted, 原因文字}`，与失败分得开（句子不变）。
+    test "an interrupted activity yields the interrupted outcome, distinct from a failure",
+         %{profile: profile} do
+      selection = %{
+        activity: "rest_at_home",
+        candidate:
+          Enum.find(
+            NpcServer.Offers.registered(profile.activities, []),
+            &(&1.name == "rest_at_home")
+          ),
+        confidence: 0.6,
+        latency_ms: 12,
+        recall_ms: 3,
+        trigger: "start",
+        model: "m"
+      }
+
+      state =
+        profile
+        |> asked()
+        |> Selector.chose(selection, 7)
+        |> Selector.interrupted("to talk with Brann")
+
+      assert %{
+               text:
+                 ~s|I did "rest_at_home" (Go home and rest.). Result: interrupted (to talk with Brann).|,
+               place: "home",
+               activity: "rest_at_home",
+               kind: "rest_at_home",
+               object: nil,
+               outcome: {:interrupted, "to talk with Brann"}
              } == Selector.experience(state)
     end
   end
@@ -926,13 +961,20 @@ defmodule NpcServer.NpcSelectorTest do
           # 停下：等待中没有在途叶子，halt 不发命令；正在做的活动已记为 interrupted，回合结束。
           NpcWorld.await(fn -> settled(body, runtime).dialogue_turn == nil end)
 
+          # 任务层稿 K-2 / §5 K-4：Runtime 历史里是结构化的打断结局（不是“未完成”），交给 Life 的经历原样带出它。
           assert %{
-                   select: %{
-                     activities: [
-                       %{activity: "rest_at_home", result: {:interrupted, "to talk with Visitor"}}
-                     ]
-                   }
+                   select:
+                     %{
+                       activities: [
+                         %{
+                           activity: "rest_at_home",
+                           result: {:interrupted, "to talk with Visitor"}
+                         }
+                       ]
+                     } = select
                  } = settled(body, runtime)
+
+          assert %{outcome: {:interrupted, "to talk with Visitor"}} = Selector.experience(select)
 
           refute_received {:command, _}
           refute_received {:jev_request, _, _}

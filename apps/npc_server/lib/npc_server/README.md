@@ -552,8 +552,10 @@ flowchart LR
   debug 级别的 `State:` 带出在途请求与编码表。详见 `NpcServer.Http` moduledoc 的“密钥”；部署侧关闭或限制 crash dump
   （见 `deploy/README.md` 的“NPC 常驻应用”）。
 - **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
-  它结束时调 `Life.activity/2`（`%{text:, place:, kind:, object:, …}`，`Selector.experience/1`，取自选中时冻结的候选）记一条
-  `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
+  它结束时调 `Life.activity/2`（`%{text:, place:, activity:, kind:, object:, outcome:}`，`Selector.experience/1`，取自选中时冻结的候选
+  与 Selector 历史里的结局；`outcome` 是结构化结局 `:completed | {:failed, 动作, 原因} | {:interrupted, 原因}` 原样，任务层决策稿
+  `2026-11-19-npc-long-task-loop-decision.md` K-2；Life 不另存，结局归 Selector 的历史）记一条
+  `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>) | interrupted (<原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
   观察就记下自己以外每个人到我的最小距离（不加新观察通道），结束时写 `During it: nobody came near.`，或
   `During it: <名字> (actor <cid>) came within <N> m and then moved away.` / `… and was still there at the end.`
   （`<N>` = 最小距离向上取整、最小 1；多人近的在前、最多 3 人，用 `; ` 连成一句）。靠近半径 6 米是用户 2026-11-13 定的原创取值，
@@ -804,7 +806,7 @@ NpcServer.Registry.put("LifeBuilder", %{
 统一形态（`"npc"`）必带 Life，用法与上面两种都不同：大脑仍是原 Tree（不包 `Brain.Social`，不问决策模型），Life 按规则模式运行；
 Life 对它多给两个入口——`Life.mind(cid, queries)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历、
 缓存认识与各路并行召回合并后的清单，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity_started(pid)` 与
-`Life.activity(pid, %{text:, place:})` 标出一项活动的开始与结束，结束时接纳“做了什么、结果如何、期间谁来过”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
+`Life.activity(pid, Selector.experience(…))` 标出一项活动的开始与结束，结束时接纳“做了什么、结果如何、期间谁来过”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
 详见上文“统一形态”。
 
 ```mermaid
@@ -1029,7 +1031,7 @@ flowchart LR
   `day`（意图属于哪个游戏日）、`intents`（`id` / `activity`（种类）/ `object`（对象或 nil；批 0b 之前的行没有这个键，读作 nil，不迁移）/ `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
   `calls`（当日发出了写作请求的调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
   意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
-- **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计）。活动经历和计数由 Life 同次写盘。写盘失败时，`Life.observe/1` 的 `activity_pending` 为 true，Life 在轮询重投先前冻结的完成事实与时刻。下一次选择和已返回的重排等活动先落盘，`plan.waiting_for_activity` 表示重排在等。模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
+- **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计，打断也不计）。活动经历和计数由 Life 同次写盘。写盘失败时，`Life.observe/1` 的 `activity_pending` 为 true，Life 在轮询重投先前冻结的完成事实与时刻。下一次选择和已返回的重排等活动先落盘，`plan.waiting_for_activity` 表示重排在等。模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
   不挡选择，行里沿用上一份；同日重排保留已完成与已过时的旧意图、换掉未了的；计划不是今天的则栏里只剩 `wants`。
 - **原创取值（没有外部依据，实跑后调）**：每游戏日 5 次规划调用（规划加重排共计）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
   `by` 是日内分钟（0..1439）。

@@ -313,7 +313,7 @@ defmodule NpcServer.NpcOffersIntegrationTest do
 
   @tag timeout: 60_000
   test "authority refusal: the serving is eaten between asking and acting; World refuses, the activity fails and the next ask carries why" do
-    %{world: world, cid: cid} = start_npc(%{34 => @fern}, %{34 => @serving})
+    %{world: world, cid: cid, body: body} = start_npc(%{34 => @fern}, %{34 => @serving})
 
     {jev, request} = await_jev()
 
@@ -351,6 +351,17 @@ defmodule NpcServer.NpcOffersIntegrationTest do
 
     assert criteria(request) == [@rest]
     assert %{34 => @serving} == food_ledger(world)
+
+    # 任务层稿 K-2 / §5 K-4：Runtime 的选择历史里是结构化结局——失败的动作与 World 给的原因原样，交给 Life 的经历
+    # （`Selector.experience/1`）原样带出它，不只是一句英文。`Body.observe/1` 的 `select` 即 `Runtime.observe/1` 的。
+    assert %{select: %{activities: [%{activity: "eat:34", result: failure}]} = select} =
+             NpcServer.Body.observe(body)
+
+    assert {:failed, "eat", "insufficient_material"} == failure
+
+    assert %{kind: "eat", object: %{"material" => 34}, outcome: ^failure} =
+             Selector.experience(select)
+
     reply(jev, "rest_at_home")
   end
 

@@ -725,7 +725,15 @@ defmodule NpcServer.NpcLifeTest do
     s = %{life_state(cid, clock, Hindsight) | row: loaded, memory: ControlledStore}
 
     # 这一段经历触发一次封存与保存（尾部很短，不新增片段）；上限在 `save/2` 里守。
-    experience = %{text: "I built the hut.", place: nil, activity: "build_hut", completed: true}
+    # 形状同 `Selector.experience/1`（登记项：种类即候选名、没有对象）。
+    experience = %{
+      text: "I built the hut.",
+      place: nil,
+      activity: "build_hut",
+      kind: "build_hut",
+      object: nil,
+      outcome: :completed
+    }
 
     failed_log =
       ExUnit.CaptureLog.capture_log(fn ->

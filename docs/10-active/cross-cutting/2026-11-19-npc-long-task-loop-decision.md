@@ -29,7 +29,7 @@ flowchart LR
   R["日计划槽（每游戏日 1 次 + kind:event 重排，共 ≤ 5 次）"] -->|"意图：种类 + 对象 + 次数 + 时限"| P[("Life 持久行 plan")]
   P -->|Plans and promises 栏（内容）| J[Jev 选一项候选]
   J --> T[Trees.npc 执行] --> W[Body / World]
-  W -->|"Selector.experience/2：英文一句 + completed 布尔"| L[Life.activity/2]
+  W -->|"Selector.experience/1：英文一句 + outcome（结构化结局）"| L[Life.activity/2]
   L -->|"record_activity：只记完成的"| P
 ```
 
@@ -131,8 +131,8 @@ flowchart TB
   记账与 S1-R8 金标已稳定（见 §6 Q-1）。`wants` 改义为“连任务也写不出的事”（即学技能的来源之一）；“想问不在场的人”这类改由回顾开任务表达，S1-R8b 待定的 (a) / (b) 两个提示词改法都不再需要。
   **上限与过期**（原创取值）：开着的任务 ≤ 3；`expires_day = 开任务的日号 + 2`（游戏钟 ×24 下约现实 2 小时），到期由代码关为 `expired` 并写一条经历，不问模型；满了时回顾 / 推进再开新任务被校验拒绝（要先弃一个）。
 
-- **K-2 结构化步骤结局（执行层补经历结构）**。`Selector.experience/2` 多给 `outcome`：Selector 历史里已有的 `:completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}` 原样带出（不另造）；
-  `completed` 布尔改由 `outcome` 推出（DRY）。`Life.activity/2` 在接纳活动经历的**同一次保存**里调 `Tasks.record_step/4`（与 `DayPlan.record_activity/4` 并列）：按 `{种类, 对象}` 找开着的任务里**当头一步**相同的，最早开的那个记账——
+- **K-2 结构化步骤结局（执行层补经历结构）**。`Selector.experience/1` 给 `outcome`：Selector 历史里已有的 `:completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}` 原样带出（不另造）；
+  不另给 `completed` 布尔，“是否完成”由 `outcome` 推出（DRY）。`Life.activity/2` 在接纳活动经历的**同一次保存**里调 `Tasks.record_step/4`（与 `DayPlan.record_activity/4` 并列）：按 `{种类, 对象}` 找开着的任务里**当头一步**相同的，最早开的那个记账——
   不经 Selector 传任务 id（与意图记账同口径：碰巧做了同一件事也算数）。这一项无行为变化，先做（批 T-0）。
 
 - **K-3 推进的触发：代码分类，只在偏差或新信息时问**（规则在 `Tasks` 纯核心；每条都是 Life 已经拿到的结构化数据，不解析文字）：
@@ -253,3 +253,16 @@ flowchart LR
 
 - 2026-11-19：初稿（第二十二个统筹会话派写）；只读代码与原文（§3 写明核到 / 未核到），未改代码、未调模型、未实跑。等 §6 答复；稿 A A-5、稿 B B-4 与总纲回路图的对应改写在用户定后由统筹会话同步。
 - 2026-11-19：用户答 §6 全按建议（原话：“全按建议”）。实施顺序按 K-10：T-0 结构化结局（无行为变化）→ K-0 离线（开跑前报用量）→ T-1 / T-2（稿 A 批 1 之后）→ T-3（稿 B 按新定位）。稿 A A-5、稿 B B-4、总纲回路图由统筹会话同步改写。
+- 2026-11-19：**T-0 实现**（基于 `a934c670`，未提交，待统筹评审）。
+  - 改了什么：`Selector.experience/1` 去掉 `completed` 布尔，改给 `outcome`——Selector 历史里这一项的结局原样（`:completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}`），句子仍由同一份结局经 `Mind.result/1` 渲染；
+    `Life` 的日计划记账改为 `outcome == :completed` 才记（与原来 `completed` 为真同义：失败、打断都不记）。Life 不新增任何状态（见偏差②）。
+    经历句子、tags、计划记账、反思、Jev 请求体都没变。moduledoc（`Selector`、`Life`）与 `apps/npc_server/lib/npc_server/README.md` 同步。
+  - 与稿件偏差：① 稿件写 `experience/2`，代码里是 `experience/1`（只有 `state` 一个参数），按代码（§2.1 图与 K-2 已改成现状）；② K-2 的 `Tasks.record_step/4` 属 T-1（`Life.Tasks` 尚不存在），T-0 不建。
+    初版曾在 Life 加 `observe/1` 的 `last_activity` 与 `activity_pending.step`，按评审删除：它们复制了 Selector 历史已拥有的事实（K-9“最近活动归 Selector”），T-0 没有产品读者（AGENTS §2.2.1、§2.2.9）。
+    `prepare_activity` 只把 `outcome` 交给日计划记账；Life 侧可观测面留到 T-1 以持久行 `tasks.log` 断言（`Tasks.record_step/4` 届时在同一次保存里直接读 `experience` / `outcome`）；
+    ③ `completed` 不保留为派生字段，直接删（DRY：唯一读它的 Life 改读 `outcome`）。
+  - 测试：`Selector.experience/1` 单测覆盖三种 `outcome`（失败 `{:failed, "travel", "no_path"}` / `{:failed, "eat", "insufficient_material"}`、完成 `:completed`、新增的打断 `{:interrupted, "to talk with Brann"}`）；
+    集成用例读 `Runtime.observe/1`（`Body.observe/1` 同）的 `select` 历史 `result`，并断言对它求 `Selector.experience/1` 带出同一份 `outcome`：`npc_selector_test` 真实 Runtime + Tree + Life 的对话打断用例为 `{:interrupted, "to talk with Visitor"}`，`npc_offers_integration_test` 真实 World 拒绝进食用例为 `{:failed, "eat", "insufficient_material"}`。
+    两个直接构造经历的单测夹具（`npc_life_test`、`npc_dialogue_life_test`）改为 `Selector.experience/1` 的形状（后者原先的 `%{text, place}` 是产品产生不了的输入）。
+    评审修正后回归 `npc_selector` / `npc_offers_integration` / `npc_life` / `npc_dialogue_life` / `npc_life_day_plan_integration` / `npc_life_day_plan` / `npc_spend_life` / `npc_registry` 共 8 个文件 186 通过、1 排除、0 失败（WSL 本机 PostgreSQL 独占测试库，跑完删除）；
+    `MIX_ENV=test mix compile --warnings-as-errors --force` 无警告；改动的 `.ex` / `.exs` 过 `mix format --check-formatted`。

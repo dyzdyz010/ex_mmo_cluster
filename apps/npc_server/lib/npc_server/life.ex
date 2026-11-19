@@ -128,8 +128,8 @@ defmodule NpcServer.Life do
     按发出算、不退（防额度被反复崩溃绕过）。退回不动 `last_at_ms`，最小间隔照算。调用在途时又来的 `kind:event`
     照常记标记，落栏不清它，过了最小间隔再重排。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
     日号落栏，下一帧观察因日号变了再触发 `:day`（过了最小间隔）。
-  - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动按它的 `{种类, 对象}` 与此刻观察里的游戏钟
-    `DayPlan.record_activity/4`；失败的不计（`done` 只由代码按活动结果增）。
+  - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动（结构化结局为 `:completed`）按它的 `{种类, 对象}`
+    与此刻观察里的游戏钟 `DayPlan.record_activity/4`；失败与被打断的不计（`done` 只由代码按活动结果增）。
   - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果；`observe/1` 的 `plan` 是
     `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`。
   - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
@@ -440,10 +440,12 @@ defmodule NpcServer.Life do
 
   @doc """
   接纳一项已结束的活动作为主观经历：`%{text: 做了什么、结果如何（一句英文）, place: 活动的地名 | nil, activity: 候选名,
-  kind: 种类, object: 对象 | nil, completed: 是否完成}`（`NpcServer.Selector.experience/1`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
+  kind: 种类, object: 对象 | nil, outcome: :completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}}`
+  （`NpcServer.Selector.experience/1`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
   原文末尾加一句期间事实（见 moduledoc；没有开始信号或期间没有观察则不加）；tags 是 `kind:activity`、期间进过 6 米内的
-  每个人 `actor:<cid>`、有地名时 `place:<地名>`。规划的形态在同一次保存里给日计划记账（完成的才记，见 moduledoc 的“日计划”）；
-  不规划的形态只读 `text` 与 `place`。由 Runtime 的选择 worker 在活动结束时调用一次。
+  每个人 `actor:<cid>`、有地名时 `place:<地名>`。规划的形态在同一次保存里给日计划记账（结局为 `:completed` 的才记，见 moduledoc
+  的“日计划”）；不规划的形态只读 `text` 与 `place`。Life 不另存这份结局：活动的结局归 Selector 的历史（任务层决策稿
+  2026-11-19-npc-long-task-loop-decision.md K-9）。由 Runtime 的选择 worker 在活动结束时调用一次。
   保存后返回 `:ok`；写失败时返回诊断错误，Life 保留原经历并在轮询时重试，期间心智不能供下一次选择。
   待保存的经历只驻留于本 Life 进程；已经保存的经历与计划进度随持久行恢复。
   """
@@ -1780,13 +1782,14 @@ defmodule NpcServer.Life do
 
   defp land_plan(s), do: s
 
-  # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类与对象由 `Selector.experience/1` 给出）。
+  # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类、对象与结局由 `Selector.experience/1` 给出，
+  # “完成”即结局为 `:completed`，失败与被打断都不记）。
   defp activity_progress(s, experience) do
     if planning?(s) do
-      %{kind: kind, object: object, completed: completed} = experience
+      %{kind: kind, object: object, outcome: outcome} = experience
 
       case s.observation do
-        %{world_time: %{day: day, minute_of_day: minute}} when completed ->
+        %{world_time: %{day: day, minute_of_day: minute}} when outcome == :completed ->
           {{kind, object}, day, minute}
 
         _ ->

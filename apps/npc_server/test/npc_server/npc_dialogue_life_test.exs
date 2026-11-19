@@ -286,8 +286,18 @@ defmodule NpcServer.NpcDialogueLifeTest do
 
     done = ~s|I did "guard_hut" (Guard the hut.). Result: completed.|
 
+    # 经历形状同 `Selector.experience/1`（登记项：种类即候选名、没有对象）。
     finish = fn s, place ->
-      {:reply, :ok, s} = Life.handle_call({:activity, %{text: done, place: place}}, nil, s)
+      experience = %{
+        text: done,
+        place: place,
+        activity: "guard_hut",
+        kind: "guard_hut",
+        object: nil,
+        outcome: :completed
+      }
+
+      {:reply, :ok, s} = Life.handle_call({:activity, experience}, nil, s)
       Agent.update(clock, &(&1 + 1000))
       s
     end

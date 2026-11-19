@@ -45,8 +45,8 @@ defmodule NpcServer.Selector do
     读库存（`World.production_options/2`）失败照常退出，走发问 worker 已有的失败路径（Runtime 的 `select_worker_failed`）。
   - **过期应答**：命令与 Outcome 按 id 对应，由 `Brain.Tree` 与 Runtime 现有的编号机制丢弃。
   - **经历**：一项活动结束，`experience/1` 给出 Runtime 交给 Life 的那条经历（`Life.activity/2`）：一句英文、候选登记的地名、
-    候选名，以及种类、对象与是否完成——后三者是 Life 的日计划记账用的（“按活动结果计数”的唯一计数事件，只记完成的）。
-    全部取自选中时冻结的候选。
+    候选名，以及种类、对象与结构化结局（完成 / 失败的动作与原因 / 被打断，即下面 `result` 的原样）——后三者给 Life 记账
+    （日计划“按活动结果计数”的唯一计数事件，只记完成的）。判据、地名、种类、对象取自选中时冻结的候选，结局取自本模块的历史。
 
   本模块的状态（`new/0`）由 Runtime 持有，是总纲心智快照里“我正在做什么”一栏的 owner：
   `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, asked: 最近一次问 Jev 的内容 | nil}`，条目按选中次序排列
@@ -162,24 +162,26 @@ defmodule NpcServer.Selector do
   @doc """
   刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2`（或 `interrupted/2`）记完账的状态。返回
   `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil, activity: 候选名, kind: 种类, object: 对象 | nil,
-  completed: 是否完成}`。全部取自选中时冻结的候选（`chose/3` 记下的 `candidate`），不回查登记表——生成的候选（说话、进食、合成）
-  本来就不在登记表里。候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`
+  outcome: 结局}`。判据、地名、种类、对象取自选中时冻结的候选（`chose/3` 记下的 `candidate`），结局取自本模块的历史；
+  不回查登记表——生成的候选（说话、进食、合成）本来就不在登记表里。候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`
   （`NpcServer.Registry`），Life 把它写成这条经历的 `place:` tag。`kind` / `object` 是候选的种类与对象（`NpcServer.Offers`：
   登记项种类即候选名、没有对象；说话项种类 `speak_to`、对象 `%{"actor" => cid}`；背包项种类 `eat` / `craft`、对象
-  `%{"material" => 材料号}`），与 `completed`（结局是 `:completed` 为真，失败为假）一起给 Life 的日计划记账
-  （`NpcServer.Life.DayPlan.record_activity/4`：只记完成的）。
+  `%{"material" => 材料号}`）。`outcome` 是本模块历史里这一项的结局原样（`:completed | {:failed, 动作名, 原因文字} |
+  {:interrupted, 原因文字}`，任务层决策稿 2026-11-19-npc-long-task-loop-decision.md K-2）：Life 据此分得清失败与打断，
+  “是否完成”也由它推出（日计划记账 `NpcServer.Life.DayPlan.record_activity/4` 只记 `:completed`），不另给布尔。
+  句子里的结局用同一份 `outcome` 渲染（`Mind.result/1`），两者不会不一致。
   """
   def experience(state) do
-    %{activity: name, result: result, candidate: candidate} = List.last(history(state))
+    %{activity: name, result: outcome, candidate: candidate} = List.last(history(state))
     %{criterion: criterion, place_name: place, kind: kind, object: object} = candidate
 
     %{
-      text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|,
+      text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(outcome)}.|,
       place: place,
       activity: name,
       kind: kind,
       object: object,
-      completed: result == :completed
+      outcome: outcome
     }
   end
 
