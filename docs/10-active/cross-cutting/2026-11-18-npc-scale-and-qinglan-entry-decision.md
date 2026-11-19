@@ -61,7 +61,7 @@ flowchart LR
 |---|---|---|
 | E1 | 说话双端实机复验 | **已过**（`lane-01`，2026-11-18） |
 | E2 | N 人同场（N = §6 D-1 定的首批人数 + 余量）真实模型实跑，五题成立 | 4 人已过；本稿 M-1 / M-2 |
-| E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | 未测；M-3 |
+| E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | 3 人已测（`limits3-02`）：release 峰值 2070 MiB、tick 不掉速；**Hindsight 同挤 2 核时交互召回超时 11 次**，待 D-2 定放置后按其复测 |
 | E4 | 每 NPC 每小时的 token 与请求次数（含 Hindsight 自己的模型用量），按生产节奏外推成本，在 D-3 的预算内 | **读数已有**（`scale3-direct-02` 截断于 37.4 min，用户定采用）：每 NPC 每小时约 266 万 token、约 $0.71（高峰价）；3 人每天最坏约 $51，在 D-3 的 $50 档附近，进青岚前须由产品侧额度兜住，见 §7 |
 | E5 | 生产网络路径（HTTP/2 直连 DeepSeek）下 N 人同场无排队失败、无取消残留 | 未测（实跑都经本机明文代理，走 HTTP/1）；M-1 改一轮直连 |
 | E6 | 分支合并 master、CI 全绿 | PR #11 draft，181 提交 |
@@ -131,3 +131,4 @@ flowchart LR
   （超出即拒后台请求）——另写稿；Hindsight 的花费不经产品出站车道，额度要连它一起覆盖，是该稿的主要问题。
 - 残余：驱动 UDP 守护单次采样超时即停服（保守，正确方向），长窗口下误停概率不低；下次长跑前改成“连续两次读不到才停”（仍有界）。
 - 2026-11-18（第二十个统筹会话）：守护已改为连续 2 次读不到才停、PowerShell 采样超时 20 s，其余阈值不变（统筹页“第二十个统筹会话的进展”）。产品侧额度另写稿：[`2026-11-18-npc-spend-budget-decision.md`](2026-11-18-npc-spend-budget-decision.md)（待用户定）。
+- 2026-11-18（第二十个统筹会话）：M-3 驱动 `.demo/observe/npc-limits-20261118/` 实跑。偏离 §5 两处（理由见驱动 README）：原生 WSL release 套用户级 systemd scope（`MemoryMax=4600M`、无 swap）+ 钉 2 颗 vCPU，而非生产镜像 `docker run`；cpu 配额 1.8 设不了（无 root），改钉 SMT 兄弟 30,31，私有 Hindsight 与私有 PostgreSQL 同钉。`limits3-01` 准备阶段失败（烘焙拷贝超时，驱动缺陷，改为跨轮不可变缓存）；**`limits3-02`（3 人，2026-11-18，release `89b74a37`）：L1–L3 过、L4 不过 → 整体不通过（行为失败，保留原判，不重跑）**。L1 无 OOM（release 与私有 Hindsight 的 oom_kill 都是 0）；L2 release 峰值 2070 MiB（出在启动加载世界，窗口内 current ≤ 392 MiB、anon ≤ 304 MiB），低于告警线 3400；L3 tick 全窗 59.999 Hz、各段 ≥ 59.99；release CPU 中位 0.18 核。**L4 的 Q4 不过**：窗口内 11 次选择因召回超时失败（`{:mind_unavailable, :timeout}`，产品召回上限 10 s），另 3 条观察召回超时，全部落在第 493–603 s；同一段私有 Hindsight 吃满两颗核（1.8 核）、内存顶到 2048 MiB 限额（`memory.events max` +2468 次回收，anon 峰值 1540 MiB），召回的嵌入与重排要在 Hindsight 里用 CPU，排不上队。不限额对照 M-1b 召回失败 0。结论：**release 本身在生产限额内宽裕；Hindsight 与 release 同挤 2 核时，它的后台工作（巩固 / 刷新）会饿死交互召回**——指向 D-2 选 (b) Hindsight 另放，或给 Hindsight 的后台工作与交互召回做 CPU 隔离。读数：选择延迟中位 1396 ms（召回成功的那些召回中位 808 ms，不限额 150 ms）；花费 42 万 token（产品 5.9 万 + Hindsight 36.1 万），约 $0.15。资源：UDP 87 → 93，4266 记录号 127958 未变，私有库 / 容器 / 卷 / scope / ext4 目录全部回收，泄漏扫描 830 文件 0 命中。证据 `.demo/observe/npc-limits-20261118/runs/limits3-02/`（`verdict.json`、`resources.json`、`limits.jsonl`、`release.log`）。6 人一轮未跑：同一配置下必然同样失败，读数价值低于花费；改为请用户先定 D-2，再按选定的放置方式跑 N = 3 / 6。烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`（3.2 GiB，跨轮不可变，内容版本换了才删）建一次 441 s。
