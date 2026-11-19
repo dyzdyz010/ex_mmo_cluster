@@ -14,8 +14,10 @@ import time
 from email.message import EmailMessage
 
 # 阈值按原始 memory.current 判断，不扣文件缓存；参考工作集另记。
-WARN_MIB = 3400
-RESTART_MIB = 3900
+# 青岚专用主机（腾讯云 2 核 8G，2026-11-19 起）容器上限 5500m；沿用原 4600m 时的余量：
+# 告警 = 上限 - 1200 MiB，重启 = 上限 - 700 MiB。改容器上限时同步改这两个值。
+WARN_MIB = 4300
+RESTART_MIB = 4800
 HIGH_SECONDS = 180
 MAX_SAMPLE_GAP = 90
 COOLDOWN_SECONDS = 3600
@@ -150,11 +152,11 @@ def dry_run():
             actions.append(action)
         cases.append(dict(name=name, actions=actions,high_seconds=duration))
         return actions
-    assert evaluate('strict_threshold', [3900]*4, [10000,10060,10120,10180]) == ['observe']*4
-    assert evaluate('sustained_180s', [3901]*4, [10000,10060,10120,10180]) == ['observe']*3+['restart']
-    assert evaluate('sample_gap_resets', [3901]*3, [10000,10060,10240]) == ['observe']*3
-    assert evaluate('low_resets', [3901,3300,3901,3901], [10000,10060,10120,10180]) == ['observe']*4
-    assert evaluate('cooldown', [3901]*4, [10000,10060,10120,10180], {'last_restart_attempt':9990})[-1] == 'cooldown'
+    assert evaluate('strict_threshold', [RESTART_MIB]*4, [10000,10060,10120,10180]) == ['observe']*4
+    assert evaluate('sustained_180s', [RESTART_MIB+1]*4, [10000,10060,10120,10180]) == ['observe']*3+['restart']
+    assert evaluate('sample_gap_resets', [RESTART_MIB+1]*3, [10000,10060,10240]) == ['observe']*3
+    assert evaluate('low_resets', [RESTART_MIB+1,WARN_MIB-100,RESTART_MIB+1,RESTART_MIB+1], [10000,10060,10120,10180]) == ['observe']*4
+    assert evaluate('cooldown', [RESTART_MIB+1]*4, [10000,10060,10120,10180], {'last_restart_attempt':9990})[-1] == 'cooldown'
     assert evaluate('daily', [600], [10000], daily=True) == ['restart']
     assert evaluate('daily_cooldown', [600], [10000], {'last_restart_attempt':9990}, True) == ['cooldown']
     log('INFO','dry_run_passed',cases=cases)

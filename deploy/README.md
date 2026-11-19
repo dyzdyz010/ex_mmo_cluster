@@ -100,6 +100,8 @@ L1–L5 baseline before anything listens) → Scenes (topology) → Auth + Gate.
 
 - No swap + a runaway BEAM stalls the whole host: always set `VOXIM_MEM_LIMIT` below host RAM; two Scenes steady at
   1.4–1.7 GB, so 8 GB hosts use `4000m`; keep `VOXEL_REGION_PAYLOAD_CACHE_MB` and generation concurrency small.
+  Since 2026-11-19 Qinglan runs alone on a Tencent Cloud 2 vCPU / 8 GB host (7679 MiB visible) with `5500m`,
+  leaving about 2.1 GiB for Postgres, nginx, dockerd and the cloud agents.
 - Host networking is required when the host routes traffic through a TUN proxy (bridged container UDP replies are lost).
 - UE's default `HttpActivityTimeout` (30 s) is shorter than a cold region request; the client sets 120–180 s.
 
@@ -144,7 +146,7 @@ Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 en
 ### 青岚内存兜底
 
 `qinglan-memory-guard.py` 是青岚部署运维脚本，安装于 `/data/voxim_qinglan/ops/`，dyz cron每分钟调用。
-原始cgroup v2 memory.current >3400MiB告警，>3900MiB持续180秒受控重启；每日UTC21:00也请求重启，所有自动重启共用一小时冷却与flock。
+原始cgroup v2 memory.current >4300MiB告警，>4800MiB持续180秒受控重启（对应容器上限5500m，余量规则见脚本常量注释）；每日UTC21:00也请求重启，所有自动重启共用一小时冷却与flock。
 日志按UTC日轮转、14天/16MiB上限；SMTP复用现有release.env，收件人由ops/notify.json指定。
 `--dry-run` 不重启、不发邮件、不写状态，仅真实采样和验证判定；停用删除crontab中 `# qinglan-memory-guard` 行。
 阈值及完整部署记录见 `.demo/observe/qinglan-deploy-20261029/RUNBOOK.md` §8。
