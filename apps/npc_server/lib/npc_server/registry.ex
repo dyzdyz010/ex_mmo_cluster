@@ -77,6 +77,8 @@ defmodule NpcServer.Registry do
   @people %{"distrusted" => :distrusted}
   # 一次 Jev 请求的超时（毫秒）。选择是秒级决策（离线实验 4,076 次里最慢 3.12 秒），不沿用给 LLM 定的 60 秒缺省。
   @jev_timeout_ms 10_000
+  # 选择位置（Jev）每种入口形状的模型名在哪个运行环境变量里（`jev_model_env/1` 与 `jev_endpoint/0` 共用）。
+  @jev_model_env %{answers: "TYPESAFE_MODEL", openai: "NPC_JEV_MODEL"}
   @life_llm_limit 60
 
   @type spec :: %{
@@ -344,13 +346,42 @@ defmodule NpcServer.Registry do
     end
   end
 
-  defp life(url), do: %{url: life_url!(url), spend: &NpcServer.SpendBudget.background/0}
-
-  defp life_url!(url) when is_binary(url) do
-    uri = URI.parse(url)
-    true = uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.userinfo == nil
-    url
+  defp life(url) do
+    {:ok, url} = hindsight_url(url)
+    %{url: url, spend: &NpcServer.SpendBudget.background/0}
   end
+
+  @doc """
+  Hindsight 服务地址的唯一校验：`http` / `https`、主机非空、不带用户信息 → `{:ok, url}`，否则 `:error`。
+  登记时 Life 的地址（行里显式给的或运行环境 `NPC_LIFE_HINDSIGHT_URL`）与花费额度启动时读的同一个地址
+  （`NpcServer.SpendBudget.Config`）都经这里；失败怎么报由调用方按自己的边界定（登记转 `{:error, {:invalid_params, …}}`，
+  额度配置 raise 且只点变量名）。
+  """
+  @spec hindsight_url(term()) :: {:ok, String.t()} | :error
+  def hindsight_url(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    if uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != "" and
+         uri.userinfo == nil,
+       do: {:ok, url},
+       else: :error
+  end
+
+  def hindsight_url(_), do: :error
+
+  @doc """
+  选择位置（Jev）的模型名在哪个运行环境变量里，由 `NPC_JEV_API` 的值 `api` 定（`nil` 即没写）：不写、`answers`、`typesafe` →
+  `"TYPESAFE_MODEL"`；`openai`、`openai-completions` → `"NPC_JEV_MODEL"`；其余 raise `ArgumentError`（不猜、不退回 TypeSafe；
+  消息只点变量名与合法值，不带原值）。登记时建 Jev endpoint 与花费额度启动时核价目表都按这一份规则。
+  """
+  @spec jev_model_env(String.t() | nil) :: String.t()
+  def jev_model_env(api), do: Map.fetch!(@jev_model_env, jev_api(api))
+
+  defp jev_api(api) when api in [nil, "answers", "typesafe"], do: :answers
+  defp jev_api(api) when api in ["openai", "openai-completions"], do: :openai
+
+  defp jev_api(_),
+    do: raise(ArgumentError, "NPC_JEV_API 只接受 answers / openai（不猜，也不退回 TypeSafe）")
 
   defp restart(name, cid, scene_id, spawn, {module, profile}) do
     stop(cid)
@@ -465,19 +496,16 @@ defmodule NpcServer.Registry do
   end
 
   defp jev_endpoint do
-    case System.get_env("NPC_JEV_API") do
-      nil ->
+    case jev_api(System.get_env("NPC_JEV_API")) do
+      :answers ->
         typesafe_endpoint()
 
-      api when api in ["answers", "typesafe"] ->
-        typesafe_endpoint()
-
-      api when api in ["openai", "openai-completions"] ->
+      :openai ->
         endpoint = %{
           api: :openai,
           url: System.fetch_env!("NPC_JEV_URL"),
           key: secret_env!("NPC_JEV_KEY"),
-          model: System.fetch_env!("NPC_JEV_MODEL"),
+          model: System.fetch_env!(@jev_model_env.openai),
           reasoning_effort: System.get_env("NPC_JEV_EFFORT", "medium"),
           # 不写就不带这个键：缺省值只在 `NpcServer.Jev`（`@openai_max_tokens`）定义一次。
           timeout_ms: @jev_timeout_ms,
@@ -517,10 +545,6 @@ defmodule NpcServer.Registry do
         )
 
         endpoint
-
-      other ->
-        raise ArgumentError,
-              "NPC_JEV_API 只接受 answers / openai，收到 #{inspect(other)}（不猜，也不退回 TypeSafe）"
     end
   end
 
@@ -528,7 +552,7 @@ defmodule NpcServer.Registry do
     %{
       url: System.fetch_env!("TYPESAFE_API_URL"),
       key: secret_env!("TYPESAFE_API_KEY"),
-      model: System.fetch_env!("TYPESAFE_MODEL"),
+      model: System.fetch_env!(@jev_model_env.answers),
       timeout_ms: @jev_timeout_ms,
       lane: :interactive
     }

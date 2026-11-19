@@ -16,32 +16,49 @@ defmodule NpcServer.SpendBudget do
 
   ## 计量
 
-  - **产品**：`NpcServer.ModelUsage` 每次拿到用量就 `record/1`（cast）。完成时刻按本进程的时钟取回执到达的那一刻，开始时刻
-    往回推 `duration_ms`；`usage = nil` 的请求不计（残余少计，决策稿 §7）。
+  - **产品**：`NpcServer.ModelUsage` 每次拿到用量就 `record/1`（cast），按请求时配置的模型名计价；用量不合法（命中多于输入等，
+    `ModelUsage` 已按 `Price.tokens/1` 判过）的那一笔记为未定价。完成时刻按本进程的时钟取回执到达的那一刻，开始时刻往回推
+    `duration_ms`；`usage = nil` 的请求不计（残余少计，决策稿 §7）。
   - **Hindsight**：每 `poll_ms`（缺省 60 秒）起一个读回 worker：列 `npc-` 库（只读 `npc-life-*` 与 `npc-reflect-*`），每库读
     `started_at ∈ [游标 − 回看 10 分钟, 本轮开始)` 的全部追踪行（`Life.Hindsight.llm_requests/3`，分页到 `total`）。追踪行在调用结束后
     才写、`started_at` 是倒推的，所以每轮往回多读一段，靠账本的 `unique(source, source_id)` 去重——只把**真正新插入**的行计进总额。
     库不存在跳过（info）；读失败这个库的游标不动（warning），下一轮从原处接着读。
   - 一次调用的金额与归日在 `SpendBudget.Price`（按完成时刻定高峰档与北京日）；价目与上限在 `SpendBudget.Config`（`init` 时校验一次）。
-  - 账本（`DataService.NpcSpend`）是累计的唯一真值：重启时从账本恢复当日总额与各库游标（最晚一行的 `started_at`），不另存标志；
-    入库失败的行留在内存 `unsaved`，下一次入账时再写（这些行在写进账本之前不计入总额）。账本只留 7 天（原创取值）。
+  - 账本（`DataService.NpcSpend`）是累计的唯一真值：启动时从账本读当日总额与各库游标（最晚一行的 `started_at`），不另存标志。
+    入库失败的行留在内存 `unsaved`，下一次入账时再写；**这些行的金额照样计入当日总额**（花了就是花了，写不进账本时停止线照样管用），
+    写进之后按 `insert_new` 回报的新行转入已入账的总额，不重复。断档期间回看窗口里早已入账的行会再读到、再进 `unsaved`，
+    最多多计约一个回看窗口（10 分钟）的 Hindsight 花费，写回后回到准确值（多计，不少计）。账本只留 7 天（原创取值）。
 
   ## 判定（`SpendBudget.Price.verdict/1`）
 
-  当日总额 ≥ 停止线（上限 × 比例，用户定 $65 × 90%）→ `:limit`；当日有未定价的行 → `:unpriced`；Hindsight 用量连续 30 分钟没读全
-  （本轮列库失败或任一库读失败都算没读全）→ `:unmeasured`。后两条是“无法计量即停后台”（原创决策，已报用户）。北京零点换日：
-  总额从账本按新的一天重读，判定随之恢复（不广播，Life 在自己的下一次后台触发时读到）。
+  当日总额 ≥ 停止线（上限 × 比例，用户定 $65 × 90%）→ `:limit`；当日有未定价的行 → `:unpriced`；无法计量 → `:unmeasured`：
+  当日账本还没读到（启动或换日时读失败）、Hindsight 用量连续 30 分钟没读全（本轮列库失败或任一库读失败都算没读全）、
+  或有行连续 30 分钟写不进账本（同一个阈值 `@unmeasured_ms`）。后两条与“未定价”是“无法计量即停后台”（原创决策，已报用户）。
+  北京零点换日（定时器 `:day_roll`，读回、回执与 `sync/0` 时也查）：总额从账本按新的一天重读，判定随之恢复（不广播，Life 在自己的
+  下一次后台触发时读到）。
 
-  结论经 `:persistent_term` 发布（只在状态或日子变化时写一次）：`background/0` 给 `:open` 或
-  `{:paused, %{day:, reason:, total_usd:, stop_usd:}}`（金额是转入这个状态那一刻的；实时数见 `observe/0`）。
+  结论经 `:persistent_term` 发布（只在状态或日子变化时写一次），连同发布它的 owner 进程：`background/0` 给 `:open` 或
+  `{:paused, %{day:, reason:, total_usd:, stop_usd:}}`（金额是转入这个状态那一刻的，账本没读到时为 nil；实时数见 `observe/0`）。
+  owner 不在（还没起来、已停、崩溃后正在重启）时 `background/0` 一律是“无法计量”，不读上一个 owner 留下的结论。
   拒绝点不在这里：只有 Life 在自己的后台触发处读这个结论（刷新槽、反思、日计划）；选择、说话、召回不过闸门，
   `ModelUsage` 也不拦请求。
+
+  ## 故障与监督
+
+  账本读写失败（数据库断开、超时，`DataService.NpcSpend` 照常 raise / exit）在这里转成显式状态，不崩：启动或换日时读不到
+  当日总额 → `:unmeasured`（`npc_spend_ledger_failed op= reason=`），每个读回周期（与 `sync/0`）重试一次，读到即恢复；
+  写不进 → 行留在 `unsaved`（`npc_spend_unsaved rows= reason=`），照计入总额，持续 30 分钟 → `:unmeasured`。读回 worker 崩溃按
+  这一轮列库失败计。`init` 第一件事就是发布 `:unmeasured`，恢复读完账本后再发布真实结论。
+
+  在 NPC 监督树里排在 `NpcServer.Bootstrap` **之后**（`:rest_for_one` 的最后一个）：本进程崩溃重启只重启它自己，不带起任何 NPC；
+  它还没发布结论期间 Life 按 `background/0` 的约定读到“无法计量”，后台先停着。配置非法仍在 `init` raise（release 启动失败，
+  `Config.load!/1`），这是有意的：额度配置错就不该带着 NPC 起来。
 
   ## 自动巩固
 
   期望状态 = 后台没停。每轮读回对本轮列出、本进程还没确认过当前期望的库发 `PATCH …/config`（`Life.Hindsight.set_auto_consolidation/2`，
   幂等）；失败的下一轮再发（`consolidation=pending:N`）。期望一变（转停 / 转开）确认集清空并立即起一轮；重启时确认集为空，首轮即全量。
-  关掉之后已入队的巩固照跑（残余，T4 量）。
+  关掉之后已入队的巩固照跑（残余，T4 量）。账本读不到时后台停着，巩固同样关掉（启动时读不到游标的那几轮只开关巩固、不读用量）。
 
   ## 未启用
 
@@ -51,9 +68,10 @@ defmodule NpcServer.SpendBudget do
   ## 可观测
 
   一行 `npc_spend day= product_usd= hindsight_usd= total_usd= stop_usd= limit_usd= state= reason= hindsight_read= hindsight_age_ms=
-  unpriced= unsaved= consolidation=`：每轮读回结束一行；状态变化时另一行（转停为 warning）。另有 `npc_spend_read_failed`、
-  `npc_spend_bank_missing`、`npc_spend_unpriced`（每模型每天一行）、`npc_spend_unsaved`、`npc_spend_day_roll`。
-  CLI 经 release RPC 调 `observe/0`（同一组字段，另带 nano 整数）与 `sync/0`（立即读回一轮）。
+  unpriced= unsaved= unsaved_age_ms= consolidation= ledger=`：每轮读回结束一行；状态变化时另一行（转停为 warning）。金额含 `unsaved`
+  的行；账本没读到时金额为 `-`、`ledger=unloaded`。另有 `npc_spend_read_failed`、`npc_spend_bank_missing`、
+  `npc_spend_unpriced`（每日每模型每种原因一行，`reason=no_price | invalid_usage`）、`npc_spend_unsaved`、`npc_spend_ledger_failed`、
+  `npc_spend_day_roll`。CLI 经 release RPC 调 `observe/0`（同一组字段，另带 nano 整数）与 `sync/0`（立即读回一轮）。
   """
   use GenServer
   require Logger
@@ -63,7 +81,7 @@ defmodule NpcServer.SpendBudget do
   @poll_ms 60_000
   # 每轮往回多读一段（原创取值：Hindsight 单次调用上限 120 秒，追踪行在调用结束后才写）。
   @lookback_ms 600_000
-  # 连续多久没读全 Hindsight 用量就按“无法计量”停后台（原创决策，已报用户）。
+  # 无法计量的阈值：Hindsight 用量连续多久没读全、或有行连续多久写不进账本，就按“无法计量”停后台（原创决策，已报用户）。
   @unmeasured_ms 1_800_000
   # 账本保留天数（原创取值）。
   @retention_days 7
@@ -79,12 +97,12 @@ defmodule NpcServer.SpendBudget do
              %{
                day: Date.t() | nil,
                reason: :limit | :unpriced | :unmeasured,
-               total_usd: float(),
+               total_usd: float() | nil,
                stop_usd: float() | nil
              }}
 
   @doc """
-  由 NPC 监督树启动（在 `NpcServer.BodySupervisor` 之后、`NpcServer.Bootstrap` 之前：任何 NPC 起来之前结论已发布）。
+  由 NPC 监督树启动（排在 `NpcServer.Bootstrap` 之后，崩溃只重启自己）。
   选项只给测试：`config`（缺省 `Config.load!/0`）、`clock`（Unix 毫秒）、`poll_ms`（正整数或 `:manual`——不起定时器，
   只靠 `sync/0` 与状态变化驱动读回）、`ledger`（缺省 `DataService.NpcSpend`）、`hindsight`（缺省 `NpcServer.Life.Hindsight`）。
   """
@@ -93,25 +111,32 @@ defmodule NpcServer.SpendBudget do
   @doc """
   此刻后台开还是停（读 `:persistent_term`，不进本进程邮箱，Life 每次后台触发都可以调）：`:open` 或
   `{:paused, %{day:, reason:, total_usd:, stop_usd:}}`，`reason` ∈ `:limit | :unpriced | :unmeasured`。
-  本节点上从没发布过结论（本进程还没启动过）时同未启用：`{:paused, %{reason: :unmeasured, day: nil, …}}`——没有 owner 就无法计量。
+  发布这份结论的 owner 不在了（还没启动、已停、崩溃后正在重启）或从没发布过时同未启用：`{:paused, %{reason: :unmeasured, day: nil, …}}`
+  ——没有活着的 owner 就无法计量。
   """
   @spec background() :: background()
-  def background, do: :persistent_term.get(@published, paused(nil, :unmeasured, 0, nil))
+  def background do
+    case :persistent_term.get(@published, nil) do
+      {owner, value} -> if Process.alive?(owner), do: value, else: unowned()
+      nil -> unowned()
+    end
+  end
 
   @doc """
   记一次产品模型请求的回执（cast，由 `NpcServer.ModelUsage` 在拿到用量时调用）：
-  `%{request_id:, cid:, operation:, model:, usage:, duration_ms:}`，`usage` 是 `ModelUsage` 规范化后的用量
-  （`input_tokens` 含命中、`output_tokens` 含推理、可选 `cache_read_input_tokens`）。本进程不在时什么也不做。
+  `%{request_id:, cid:, operation:, model:, tokens:, duration_ms:}`。`model` 是请求时配置的模型名；`tokens` 是
+  `{:ok, Price.tokens()}`（`ModelUsage` 已校验）或 `{:invalid, 原样四项}`（不合法，记为未定价）。本进程不在时什么也不做。
   """
   def record(receipt), do: GenServer.cast(__MODULE__, {:record, receipt})
 
-  @doc "立即读回一轮（在途的那一轮之后再起一轮），等这一轮入账后返回 `observe/0` 的视图。CLI 与测试用。"
+  @doc "立即读回一轮（在途的那一轮之后再起一轮；账本没读到时先重试读账本），等这一轮入账后返回 `observe/0` 的视图。CLI 与测试用。"
   def sync(timeout \\ @sync_timeout_ms), do: GenServer.call(__MODULE__, :sync, timeout)
 
   @doc """
-  当前视图：`npc_spend` 日志行的各字段（`day`、`product_usd` 等金额串、`state`、`reason`、`hindsight_read`（`:none` 还没读过 /
-  `:ok` / `{:failed, 失败库数或 :list}`）、`hindsight_age_ms`、`unpriced`、`unsaved`、`consolidation`（`:unknown` / `:ok` /
-  `{:pending, 库数}`））另加 `banks`（上一轮列到的计量库数）、`running`（读回在途）与 `nano`（各金额的 nano-USD 整数）。
+  当前视图：`npc_spend` 日志行的各字段（`day`、`product_usd` 等金额串（含 `unsaved` 的行；账本没读到为 `"-"`）、`state`、`reason`、
+  `hindsight_read`（`:none` 还没读过 / `:ok` / `{:failed, 失败库数或 :list | :ledger}`）、`hindsight_age_ms`、`unpriced`、`unsaved`、
+  `unsaved_age_ms`、`consolidation`（`:unknown` / `:ok` / `{:pending, 库数}`）、`ledger`（`:ok` / `:unloaded`））另加
+  `banks`（上一轮列到的计量库数）、`running`（读回在途）与 `nano`（各金额的 nano-USD 整数，账本没读到为 nil）。
   未启用时为 `%{enabled: false, state: :paused, reason: :unmeasured}`。
   """
   def observe, do: GenServer.call(__MODULE__, :observe)
@@ -120,10 +145,11 @@ defmodule NpcServer.SpendBudget do
 
   @impl true
   def init(opts) do
+    # 第一件事：以本进程为 owner 挂上“无法计量”，读账本期间 Life 读到的是它，而不是上一个 owner 留下的结论。
+    publish(unowned())
+
     case Keyword.get_lazy(opts, :config, &Config.load!/0) do
       :disabled ->
-        publish(paused(nil, :unmeasured, 0, nil))
-
         Logger.warning(
           "npc_spend state=paused reason=unmeasured detail=disabled_no_hindsight_url"
         )
@@ -131,37 +157,36 @@ defmodule NpcServer.SpendBudget do
         {:ok, :disabled}
 
       %Config{} = config ->
-        {:ok, restore(config, opts)}
+        {:ok, boot(config, opts)}
     end
   end
 
-  # 从账本恢复当日总额与各库游标，发布第一份结论；定时模式下立即读回一轮（确认集为空 → 全量打一轮巩固开关）并排好零点。
-  defp restore(config, opts) do
+  # 读账本恢复当日总额与各库游标（读不到即“账本未读到”，由读回周期重试），发布第一份结论；定时模式下立即读回一轮
+  # （确认集为空 → 全量打一轮巩固开关）并排好零点。
+  defp boot(config, opts) do
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
-    ledger = Keyword.get(opts, :ledger, DataService.NpcSpend)
     now = clock.()
-    day = Price.day(now)
-    ledger.prune(Date.add(day, -@retention_days))
-    totals = ledger.day_totals(day)
 
     s = %{
       config: config,
       clock: clock,
-      ledger: ledger,
+      ledger: Keyword.get(opts, :ledger, DataService.NpcSpend),
       hindsight: Keyword.get(opts, :hindsight, NpcServer.Life.Hindsight),
       poll_ms: Keyword.get(opts, :poll_ms, @poll_ms),
       # 产品回执的 source_id 前缀：ModelUsage 的请求号只在一次启动内唯一。
       boot: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false),
-      day: day,
-      product: totals.product,
-      hindsight_nano: totals.hindsight,
-      unpriced: totals.unpriced,
-      unpriced_models: MapSet.new(),
-      cursors: ledger.bank_watermarks(Date.add(day, -1)),
+      # 已入账的当日总额 `%{day:, product:, hindsight:, unpriced:}`（nano-USD）；nil = 当日账本还没读到。
+      booked: nil,
+      # 各库读回游标；nil = 启动时还没从账本读到（这期间只开关巩固、不读用量）。
+      cursors: nil,
+      # 已打过 `npc_spend_unpriced` 的 {北京日, 模型, 原因}，换日时清空。
+      unpriced_logged: MapSet.new(),
       # 最近一轮读全 Hindsight 用量的时刻（本轮开始的时刻）；启动时按“刚读过”算。
       read_ok_ms: now,
       read: :none,
       unsaved: %{},
+      # `unsaved` 从空变成非空的时刻；写回成功清 nil。
+      unsaved_since_ms: nil,
       banks: [],
       desired: nil,
       confirmed: MapSet.new(),
@@ -173,7 +198,7 @@ defmodule NpcServer.SpendBudget do
       state: nil
     }
 
-    s = evaluate(s)
+    s = s |> load() |> evaluate()
 
     if is_integer(s.poll_ms) do
       send(self(), :poll)
@@ -189,16 +214,8 @@ defmodule NpcServer.SpendBudget do
   def handle_cast({:record, receipt}, s) do
     s = roll(s)
     now = s.clock.()
-    usage = receipt.usage
 
-    tokens = %{
-      input: usage.input_tokens,
-      cached: Map.get(usage, :cache_read_input_tokens, 0),
-      output: usage.output_tokens,
-      thoughts: 0
-    }
-
-    row =
+    entry =
       ledger_row(s.config, %{
         source: "product",
         source_id: "#{s.boot}-#{receipt.request_id}",
@@ -207,10 +224,10 @@ defmodule NpcServer.SpendBudget do
         model: receipt.model,
         started_ms: now - receipt.duration_ms,
         ended_ms: now,
-        tokens: tokens
+        tokens: receipt.tokens
       })
 
-    {:noreply, s |> stash([row]) |> flush() |> evaluate()}
+    {:noreply, s |> stash([entry]) |> flush() |> evaluate()}
   end
 
   @impl true
@@ -222,7 +239,7 @@ defmodule NpcServer.SpendBudget do
   # 已有一轮在途时，调用方等下一轮（那一轮开始在这次调用之前，不算“立即读回”）；换日引起的转开会当场起一轮，调用方就等它。
   def handle_call(:sync, from, s) do
     before = s.worker
-    s = s |> roll() |> evaluate()
+    s = s |> reload() |> evaluate()
 
     if s.worker != nil and s.worker != before,
       do: {:noreply, update_in(s.worker.waiters, &[from | &1])},
@@ -234,11 +251,11 @@ defmodule NpcServer.SpendBudget do
 
   def handle_info(:poll, s) do
     s = %{s | poll_timer: nil}
-    if s.worker, do: {:noreply, s}, else: {:noreply, s |> roll() |> start_cycle([])}
+    if s.worker, do: {:noreply, s}, else: {:noreply, s |> reload() |> start_cycle([])}
   end
 
   def handle_info(:day_roll, s) do
-    s = s |> roll() |> evaluate()
+    s = s |> reload() |> evaluate()
     schedule_day_roll(s, s.clock.())
     {:noreply, s}
   end
@@ -285,6 +302,7 @@ defmodule NpcServer.SpendBudget do
     %{s | worker: worker, next: nil}
   end
 
+  # 游标还没从账本读到（启动时读失败）：这一轮只列库、开关巩固，不读用量（`reads: :skipped`）。
   defp cycle(s, now) do
     %{hindsight: adapter, cursors: cursors, desired: desired, confirmed: confirmed} = s
     base = %{url: s.config.hindsight_url, timeout_ms: @read_timeout_ms}
@@ -296,10 +314,13 @@ defmodule NpcServer.SpendBudget do
           banks = ids |> Enum.filter(&metered?/1) |> Enum.uniq()
 
           reads =
-            Map.new(banks, fn bank ->
-              from = Map.get(cursors, bank, day_start) - @lookback_ms
-              {bank, adapter.llm_requests(Map.put(base, :bank, bank), from, now)}
-            end)
+            if cursors == nil,
+              do: :skipped,
+              else:
+                Map.new(banks, fn bank ->
+                  from = Map.get(cursors, bank, day_start) - @lookback_ms
+                  {bank, adapter.llm_requests(Map.put(base, :bank, bank), from, now)}
+                end)
 
           patches =
             for bank <- banks,
@@ -327,6 +348,9 @@ defmodule NpcServer.SpendBudget do
         {:error, reason} ->
           Logger.warning("npc_spend_read_failed bank=- reason=#{inspect(reason)}")
           {s, {:failed, :list}}
+
+        {:ok, banks} when result.reads == :skipped ->
+          {%{s | banks: banks}, {:failed, :ledger}}
 
         {:ok, banks} ->
           {s, failed} =
@@ -356,8 +380,8 @@ defmodule NpcServer.SpendBudget do
   end
 
   defp read_bank({bank, {:ok, rows}}, {s, failed}, now) do
-    rows = Enum.map(rows, &hindsight_row(s.config, bank, &1))
-    {%{stash(s, rows) | cursors: Map.put(s.cursors, bank, now)}, failed}
+    entries = Enum.map(rows, &hindsight_row(s.config, bank, &1))
+    {%{stash(s, entries) | cursors: Map.put(s.cursors, bank, now)}, failed}
   end
 
   defp read_bank({bank, {:error, :not_found}}, acc, _now) do
@@ -400,11 +424,89 @@ defmodule NpcServer.SpendBudget do
   defp schedule_day_roll(_s, now),
     do: Process.send_after(self(), :day_roll, Price.next_day_ms(now) - now)
 
+  # --- 账本 ---
+
+  # 读当日（按此刻的北京日）已入账的总额；启动时另读各库游标。读不到 → `booked: nil`（无法计量），由下一个读回周期重试。
+  # 读到之后把积压的 `unsaved` 写进去（先读总额再写，新插入的行只计一次）。删保留期以外的行只是清理，失败不影响计量。
+  defp load(s) do
+    day = Price.day(s.clock.())
+
+    with {:ok, totals} <- ledger_call(s, :day_totals, [day]),
+         {:ok, cursors} <- cursors(s, day) do
+      case ledger_call(s, :prune, [Date.add(day, -@retention_days)]) do
+        {:ok, _deleted} -> :ok
+        {:error, failure} -> log_ledger_failed(failure)
+      end
+
+      flush(%{s | booked: Map.put(totals, :day, day), cursors: cursors})
+    else
+      {:error, failure} ->
+        log_ledger_failed(failure)
+        %{s | booked: nil}
+    end
+  end
+
+  defp cursors(%{cursors: nil} = s, day),
+    do: ledger_call(s, :bank_watermarks, [Date.add(day, -1)])
+
+  defp cursors(s, _day), do: {:ok, s.cursors}
+
+  # 北京零点换日：已读到当日账本且日子变了 → 按新的一天重读。账本没读到时不在这里重试（回执一来就打一次库，断库时太密），
+  # 只在读回周期、`sync/0` 与零点定时器里重试（`reload/1`）。
+  defp roll(%{booked: nil} = s), do: s
+
+  defp roll(%{booked: %{day: day}} = s) do
+    today = Price.day(s.clock.())
+
+    if today == day do
+      s
+    else
+      Logger.info("npc_spend_day_roll from=#{day} to=#{today}")
+      load(%{s | unpriced_logged: MapSet.new()})
+    end
+  end
+
+  defp reload(%{booked: nil} = s), do: load(s)
+  defp reload(s), do: roll(s)
+
+  # 调一次账本：数据库失败（raise 或 exit）转成 `{:error, {操作, 原因}}`，原因只取异常模块名 / 退出类别，不带内容。
+  defp ledger_call(s, op, args) do
+    {:ok, apply(s.ledger, op, args)}
+  rescue
+    error -> {:error, {op, error.__struct__}}
+  catch
+    :exit, reason -> {:error, {op, {:exit, ledger_exit(reason)}}}
+  end
+
+  # 账本调用的退出原因只留类别（如 `:noproc`、`:timeout`），不带调用参数。
+  defp ledger_exit(reason) when is_atom(reason), do: reason
+  defp ledger_exit({reason, _detail}) when is_atom(reason), do: reason
+  defp ledger_exit(_), do: :other
+
+  defp log_ledger_failed({op, reason}),
+    do: Logger.warning("npc_spend_ledger_failed op=#{op} reason=#{inspect(reason)}")
+
+  # 写账本：只把真正新插入的行转进已入账的总额；失败的整批留在 unsaved，下一次入账再写。当日账本没读到时不写
+  # （读到时会先读总额再写，见 `load/1`）。
+  defp flush(%{unsaved: unsaved} = s) when map_size(unsaved) == 0, do: s
+  defp flush(%{booked: nil} = s), do: s
+
+  defp flush(s) do
+    case ledger_call(s, :insert_new, [Map.values(s.unsaved)]) do
+      {:ok, inserted} ->
+        booked = Enum.reduce(inserted, s.booked, &add(&2, &1))
+        %{s | booked: booked, unsaved: %{}, unsaved_since_ms: nil}
+
+      {:error, {_op, reason}} ->
+        Logger.warning("npc_spend_unsaved rows=#{map_size(s.unsaved)} reason=#{inspect(reason)}")
+
+        s
+    end
+  end
+
   # --- 入账与判定 ---
 
   defp hindsight_row(config, bank, row) do
-    t = row.tokens
-
     ledger_row(config, %{
       source: "hindsight",
       source_id: row.id,
@@ -413,23 +515,26 @@ defmodule NpcServer.SpendBudget do
       model: row.model,
       started_ms: row.started_at_ms,
       ended_ms: row.ended_at_ms,
-      tokens: %{
-        input: t.input_tokens,
-        cached: t.cached_tokens,
-        output: t.output_tokens,
-        thoughts: t.thoughts_tokens
-      }
+      tokens: {:ok, row.tokens}
     })
   end
 
+  # 一次调用 → `{账本行, 未定价的原因或 nil}`：模型不在价目表里为 `:no_price`，用量不合法为 `:invalid_usage`（`nano_usd` 都为空）。
   defp ledger_row(config, call) do
-    nano =
-      case Price.charge(config, call.model, call.tokens, call.ended_ms) do
-        {:ok, nano} -> nano
-        :unpriced -> nil
+    {tokens, priced} =
+      case call.tokens do
+        {:ok, tokens} -> {tokens, Price.charge(config, call.model, tokens, call.ended_ms)}
+        {:invalid, raw} -> {raw, :invalid_usage}
       end
 
-    %{
+    {nano, unpriced} =
+      case priced do
+        {:ok, nano} -> {nano, nil}
+        :unpriced -> {nil, :no_price}
+        :invalid_usage -> {nil, :invalid_usage}
+      end
+
+    row = %{
       source: call.source,
       source_id: call.source_id,
       bank: call.bank,
@@ -438,101 +543,97 @@ defmodule NpcServer.SpendBudget do
       day: Price.day(call.ended_ms),
       started_at: DateTime.from_unix!(call.started_ms, :millisecond),
       ended_at: DateTime.from_unix!(call.ended_ms, :millisecond),
-      input_tokens: call.tokens.input,
-      cached_tokens: call.tokens.cached,
-      output_tokens: call.tokens.output,
-      thoughts_tokens: call.tokens.thoughts,
+      input_tokens: tokens.input,
+      cached_tokens: tokens.cached,
+      output_tokens: tokens.output,
+      thoughts_tokens: tokens.thoughts,
       nano_usd: nano
     }
+
+    {row, unpriced}
   end
 
-  # 待入账的行按 {source, source_id} 去重（回看会把同一行再读到）。
-  defp stash(s, rows) do
-    unsaved = Enum.reduce(rows, s.unsaved, &Map.put_new(&2, {&1.source, &1.source_id}, &1))
-    %{s | unsaved: unsaved}
+  # 待入账的行按 {source, source_id} 去重（回看会把同一行再读到）；未定价的行每日每模型每种原因打一行日志。
+  defp stash(s, entries) do
+    s =
+      Enum.reduce(entries, s, fn {row, unpriced}, s ->
+        key = {row.source, row.source_id}
+
+        if Map.has_key?(s.unsaved, key),
+          do: s,
+          else: note_unpriced(%{s | unsaved: Map.put(s.unsaved, key, row)}, row, unpriced)
+      end)
+
+    if s.unsaved_since_ms == nil and map_size(s.unsaved) > 0,
+      do: %{s | unsaved_since_ms: s.clock.()},
+      else: s
   end
 
-  # 写账本：只把真正新插入的行计进总额；失败的整批留在 unsaved，下一次入账再写。
-  defp flush(%{unsaved: unsaved} = s) when map_size(unsaved) == 0, do: s
+  defp note_unpriced(s, _row, nil), do: s
 
-  defp flush(s) do
-    case insert(s.ledger, Map.values(s.unsaved)) do
-      {:ok, inserted} ->
-        Enum.reduce(inserted, %{s | unsaved: %{}}, &count/2)
+  defp note_unpriced(s, row, reason) do
+    key = {row.day, row.model, reason}
 
-      {:error, reason} ->
-        Logger.warning("npc_spend_unsaved rows=#{map_size(s.unsaved)} reason=#{inspect(reason)}")
-
-        s
-    end
-  end
-
-  defp insert(ledger, rows) do
-    {:ok, ledger.insert_new(rows)}
-  rescue
-    error -> {:error, error.__struct__}
-  end
-
-  # 只累加当日的行；别的日子的行只落账（换日时总额从账本重读）。
-  defp count(%{day: day}, %{day: today} = s) when day != today, do: s
-
-  defp count(%{nano_usd: nil} = row, s) do
-    if not MapSet.member?(s.unpriced_models, row.model),
-      do:
-        Logger.warning(
-          "npc_spend_unpriced source=#{row.source} model=#{row.model} day=#{row.day}"
-        )
-
-    %{s | unpriced: s.unpriced + 1, unpriced_models: MapSet.put(s.unpriced_models, row.model)}
-  end
-
-  defp count(%{source: "product", nano_usd: nano}, s), do: %{s | product: s.product + nano}
-  defp count(%{nano_usd: nano}, s), do: %{s | hindsight_nano: s.hindsight_nano + nano}
-
-  # 北京零点换日：当日总额与未定价数从账本按新的一天重读，删掉保留期以外的行。
-  defp roll(s) do
-    day = Price.day(s.clock.())
-
-    if day == s.day do
+    if MapSet.member?(s.unpriced_logged, key) do
       s
     else
-      s.ledger.prune(Date.add(day, -@retention_days))
-      totals = s.ledger.day_totals(day)
-      Logger.info("npc_spend_day_roll from=#{s.day} to=#{day}")
+      Logger.warning(
+        "npc_spend_unpriced source=#{row.source} model=#{row.model} day=#{row.day} reason=#{reason}"
+      )
 
-      %{
-        s
-        | day: day,
-          product: totals.product,
-          hindsight_nano: totals.hindsight,
-          unpriced: totals.unpriced,
-          unpriced_models: MapSet.new()
-      }
+      %{s | unpriced_logged: MapSet.put(s.unpriced_logged, key)}
     end
   end
+
+  # 把一行加进某日的总额（别的日子的行只落账，不加）。
+  defp add(%{day: day} = totals, %{day: row_day}) when row_day != day, do: totals
+  defp add(totals, %{nano_usd: nil}), do: %{totals | unpriced: totals.unpriced + 1}
+
+  defp add(totals, %{source: "product", nano_usd: nano}),
+    do: %{totals | product: totals.product + nano}
+
+  defp add(totals, %{nano_usd: nano}), do: %{totals | hindsight: totals.hindsight + nano}
+
+  # 当日总额 = 已入账 + 还没写进账本的当日行（花了就是花了）；账本没读到为 nil。
+  defp totals(%{booked: nil}), do: nil
+  defp totals(s), do: s.unsaved |> Map.values() |> Enum.reduce(s.booked, &add(&2, &1))
+
+  defp total(nil), do: nil
+  defp total(totals), do: totals.product + totals.hindsight
+
+  # 此刻的北京日：账本读到了按账本的那一天，没读到按时钟。
+  defp today(%{booked: %{day: day}}), do: day
+  defp today(s), do: Price.day(s.clock.())
+
+  defp unsaved_age_ms(%{unsaved_since_ms: nil}), do: 0
+  defp unsaved_age_ms(s), do: s.clock.() - s.unsaved_since_ms
 
   # 判定并在变化时发布；后台开 / 停翻转时期望的巩固状态随之翻转，确认集清空并立即起一轮（启动时那一次不算翻转）。
   defp evaluate(s) do
+    totals = totals(s)
+    day = today(s)
+
     verdict =
       Price.verdict(%{
-        total: total(s),
+        total: total(totals),
         stop: s.config.stop_nano,
-        unpriced: s.unpriced,
+        unpriced: if(totals, do: totals.unpriced, else: 0),
         read_age_ms: s.clock.() - s.read_ok_ms,
+        unsaved_age_ms: unsaved_age_ms(s),
         unmeasured_ms: @unmeasured_ms
       })
 
-    if {verdict, s.day} == s.state do
+    if {verdict, day} == s.state do
       s
     else
       published =
         case verdict do
           :open -> :open
-          {:paused, reason} -> paused(s.day, reason, total(s), s.config.stop_nano)
+          {:paused, reason} -> paused(day, reason, total(totals), s.config.stop_nano)
         end
 
       publish(published)
-      s = %{s | state: {verdict, s.day}}
+      s = %{s | state: {verdict, day}}
       line = line(view(s))
       if verdict == :open, do: Logger.info(line), else: Logger.warning(line)
 
@@ -546,14 +647,19 @@ defmodule NpcServer.SpendBudget do
     end
   end
 
-  defp total(s), do: s.product + s.hindsight_nano
+  defp unowned, do: paused(nil, :unmeasured, nil, nil)
 
   defp paused(day, reason, total, stop),
     do:
       {:paused,
-       %{day: day, reason: reason, total_usd: total / 1.0e9, stop_usd: stop && stop / 1.0e9}}
+       %{
+         day: day,
+         reason: reason,
+         total_usd: total && total / 1.0e9,
+         stop_usd: stop && stop / 1.0e9
+       }}
 
-  defp publish(value), do: :persistent_term.put(@published, value)
+  defp publish(value), do: :persistent_term.put(@published, {self(), value})
 
   # --- 视图与日志 ---
 
@@ -564,12 +670,13 @@ defmodule NpcServer.SpendBudget do
         {{:paused, reason}, _} -> {:paused, reason}
       end
 
-    total = total(s)
+    totals = totals(s)
+    total = total(totals)
 
     %{
-      day: s.day,
-      product_usd: usd(s.product),
-      hindsight_usd: usd(s.hindsight_nano),
+      day: today(s),
+      product_usd: usd(totals && totals.product),
+      hindsight_usd: usd(totals && totals.hindsight),
       total_usd: usd(total),
       stop_usd: usd(s.config.stop_nano),
       limit_usd: usd(s.config.limit_nano),
@@ -577,19 +684,21 @@ defmodule NpcServer.SpendBudget do
       reason: reason,
       hindsight_read: s.read,
       hindsight_age_ms: s.clock.() - s.read_ok_ms,
-      unpriced: s.unpriced,
+      unpriced: totals && totals.unpriced,
       unsaved: map_size(s.unsaved),
+      unsaved_age_ms: unsaved_age_ms(s),
       consolidation:
         case s.pending do
           nil -> :unknown
           0 -> :ok
           n -> {:pending, n}
         end,
+      ledger: if(s.booked, do: :ok, else: :unloaded),
       banks: length(s.banks),
       running: s.worker != nil,
       nano: %{
-        product: s.product,
-        hindsight: s.hindsight_nano,
+        product: totals && totals.product,
+        hindsight: totals && totals.hindsight,
         total: total,
         stop: s.config.stop_nano,
         limit: s.config.limit_nano
@@ -601,14 +710,16 @@ defmodule NpcServer.SpendBudget do
     "npc_spend day=#{v.day} product_usd=#{v.product_usd} hindsight_usd=#{v.hindsight_usd} " <>
       "total_usd=#{v.total_usd} stop_usd=#{v.stop_usd} limit_usd=#{v.limit_usd} state=#{v.state} " <>
       "reason=#{v.reason || "none"} hindsight_read=#{field(v.hindsight_read)} " <>
-      "hindsight_age_ms=#{v.hindsight_age_ms} unpriced=#{v.unpriced} unsaved=#{v.unsaved} " <>
-      "consolidation=#{field(v.consolidation)}"
+      "hindsight_age_ms=#{v.hindsight_age_ms} unpriced=#{v.unpriced || "-"} unsaved=#{v.unsaved} " <>
+      "unsaved_age_ms=#{v.unsaved_age_ms} consolidation=#{field(v.consolidation)} ledger=#{v.ledger}"
   end
 
   defp field({kind, detail}), do: "#{kind}:#{detail}"
   defp field(value), do: to_string(value)
 
-  # nano-USD → 6 位小数的美元串（整数运算，不经浮点）。
+  # nano-USD → 6 位小数的美元串（整数运算，不经浮点）；未知（账本没读到）为 "-"。
+  defp usd(nil), do: "-"
+
   defp usd(nano) do
     micro = div(nano, 1000)
     "#{div(micro, 1_000_000)}." <> String.pad_leading("#{rem(micro, 1_000_000)}", 6, "0")

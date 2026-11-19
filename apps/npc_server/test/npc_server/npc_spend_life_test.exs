@@ -170,8 +170,22 @@ defmodule NpcServer.NpcSpendLifeTest do
     assert_received {:recall, "npc-life-" <> _, %{query: "Who is near?"}}
 
     # 拨过北京零点：读回一轮即换日，后台开，两库巩固打开，刷新与日计划恢复。
+    #
+    # 换日那一刻日志里会先出现一行 `state=paused reason=unmeasured hindsight_age_ms=3900000`：这是本例手动拨钟的假象，
+    # 不是产品缺陷——额度只在开头读回过一次（15:00），之后时钟被直接拨到 16:05、中间没有任何读回（`poll_ms: :manual`），
+    # 所以 `sync` 先换日、判定时“已 65 分钟没读全 Hindsight 用量”确实成立；紧接着这一轮读回读全，立刻转开。生产每 60 秒读回一轮，
+    # 换日时距上次读全不超过一个周期，换日本身不动“上次读全”的时刻（定时器换日见 `npc_spend_budget_test` 的零点一例）。
     Agent.update(clock, fn _ -> ms("2026-11-18T16:05:00Z") end)
-    assert %{state: :open, day: ~D[2026-11-19]} = SpendBudget.sync()
+
+    log =
+      capture_log(fn ->
+        assert %{state: :open, day: ~D[2026-11-19], hindsight_age_ms: 0} = SpendBudget.sync()
+      end)
+
+    assert log =~
+             ~r/npc_spend day=2026-11-19 .*state=paused reason=unmeasured hindsight_read=ok hindsight_age_ms=3900000 /
+
+    assert log =~ ~r/npc_spend day=2026-11-19 .*state=open reason=none .*hindsight_age_ms=0 /
     assert SpendBudget.background() == :open
     await_patches(banks, true)
 

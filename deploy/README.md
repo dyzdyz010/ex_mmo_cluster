@@ -126,7 +126,7 @@ Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 en
 启用 `"npc"` 登记之前要先在 `.env` 里填好。
 
 **每天花费额度（2026-11-19 起）**：配了 `NPC_LIFE_HINDSIGHT_URL` 即视为启用 NPC，此时 `NPC_SPEND_LIMIT_USD`、`NPC_SPEND_STOP_RATIO`、
-`NPC_SPEND_PRICES` 必填（`NPC_SPEND_OFF_PEAK` 可选），缺或非法 **release 启动失败**；没配 `NPC_LIFE_HINDSIGHT_URL` 时额度不读这些变量，
+`NPC_SPEND_PRICES` 必填（`NPC_SPEND_PEAK_UTC` 可选，按 UTC 星期与时段写高峰规则），缺或非法 **release 启动失败**；没配 `NPC_LIFE_HINDSIGHT_URL` 时额度不读这些变量，
 Life 的后台工作按“无法计量”一直停着（现状生产不受影响）。形状与取值见 `.env.example` 的花费额度一组，行为见
 [NPC 运行时说明](../apps/npc_server/lib/npc_server/README.md)“每天花费额度”。额度要读 Hindsight 自己的 LLM 追踪并按库开关自动巩固，
 所以 Hindsight 容器的 `HINDSIGHT_API_LLM_TRACE_ENABLED` 与 `ENABLE_BANK_CONFIG_API` **不得关**。账本表 `npc_spend_ledger` 随常规迁移建立。

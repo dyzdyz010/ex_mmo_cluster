@@ -65,6 +65,21 @@ defmodule NpcServer.NpcApplicationTest do
     [{body, _}] = Registry.lookup(NpcServer.Names, cid)
     NpcWorld.await(fn -> NpcServer.Body.observe(body).tick > 0 end)
 
+    # 花费额度排在 Bootstrap 之后（`:rest_for_one` 下它崩溃只重启它自己）：杀掉它，NPC 的 Body 与 Bootstrap 都不重起。
+    ids = NpcServer.Supervisor |> Supervisor.which_children() |> Enum.map(&elem(&1, 0))
+    assert Enum.take(ids, 2) == [NpcServer.SpendBudget, NpcServer.Bootstrap]
+    bootstrap = Process.whereis(NpcServer.Bootstrap)
+    budget = Process.whereis(NpcServer.SpendBudget)
+    Process.exit(budget, :kill)
+
+    NpcWorld.await(fn ->
+      Process.whereis(NpcServer.SpendBudget) not in [nil, budget]
+    end)
+
+    assert [{^body, _}] = Registry.lookup(NpcServer.Names, cid)
+    assert Process.alive?(body)
+    assert Process.whereis(NpcServer.Bootstrap) == bootstrap
+
     for owner <- [body, NpcServer.BodySupervisor, NpcServer.Names] do
       [{before, _}] = Registry.lookup(NpcServer.Names, cid)
       Process.exit(if(is_pid(owner), do: owner, else: Process.whereis(owner)), :kill)

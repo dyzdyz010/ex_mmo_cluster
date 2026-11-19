@@ -1,6 +1,6 @@
 # NPC 每天模型花费额度：产品侧怎样连 Hindsight 一起兜住（2026-11-18）
 
-分类：生产化入口的决策稿（只定计量口径、所有权、超额后的拒绝顺序与测试矩阵，不调取值）。状态：**用户已定（§6 Q-1–Q-6，2026-11-18）；T1–T3 已实施（2026-11-19，§7），T4 真实短场景待做。**
+分类：生产化入口的决策稿（只定计量口径、所有权、超额后的拒绝顺序与测试矩阵，不调取值）。状态：**用户已定（§6 Q-1–Q-6，2026-11-18）；T1–T3 已实施、独立评审修正已合入（2026-11-19，§7），T4 真实短场景待做。**
 上游：[`2026-11-18-npc-scale-and-qinglan-entry-decision.md`](2026-11-18-npc-scale-and-qinglan-entry-decision.md) §3（依据）、§7（D-3：进青岚首批 3 人，
 每天模型花费上限 **$50**，用户 2026-11-18 定；超出即拒后台请求，要连 Hindsight 自己的用量一起覆盖）。进度见
 [`2026-11-11-npc-coordination.md`](2026-11-11-npc-coordination.md)。
@@ -183,3 +183,25 @@ Hindsight 的用量是事后读到的：读回间隔内、以及到线那一刻�
   ③ `SpendBudget` 崩溃重启会经 `:rest_for_one` 带起 Bootstrap 重启，`Registry.start_all/0` 把全部 enabled NPC 停掉再起（结果同前，但不是无操作）。
   ④ 未定价的行留在账本里（`nano_usd` 为 null），当日一直 `:unpriced`，补价目重启也不重新计价，次日恢复。
   ⑤ 入库失败的行在写进账本之前不计入总额（只在 `unsaved=` 可见）。T4 未做。
+- 2026-11-19（实施子会话，独立评审修正）：按独立评审与统筹会话定下的 8 条修正（提交见统筹页），均先写反例跑红再改：
+  ① **故障不拖垮节点**：账本读写失败一律转成 `state=paused reason=unmeasured`（`npc_spend_ledger_failed op= reason=`），下个读回周期与
+  `sync/0` 重试，不崩；`init` 先以本进程为 owner 发布 `:unmeasured`。结论连同 owner 进程一起发布，owner 不在（启动中、已停、崩溃后重启中）时
+  `background/0` 一律给 `:unmeasured`，不读上一个 owner 留下的 `:open`。监督树改为 `[Http, Names, BodySupervisor, Bootstrap, SpendBudget]`：
+  它崩溃只重启它自己，不带起任何 NPC（取代上面 T1–T3 记录里的③）。
+  ② **写不进账本时停止线仍有效**：`unsaved` 的行照样计入当日总额；`unsaved` 非空持续 30 min（与读不回同一阈值）→ `:unmeasured`（取代⑤）。
+  断档期间回看窗口里已入账的行会再进 `unsaved`，最多多计约 10 min 的 Hindsight 花费，写回后回到准确值（多计，不少计）。
+  ③ 产品回执按**请求时配置的模型名**计价（`Config` 启动时核的就是它；供应商应答常回报带版本号的名字）。
+  ④ `llm-requests` 每页 500 → 100：Hindsight 0.10.3 的每一行带完整 `input` / `output`（`engine/llm_trace.py:339-366` 的 `LLMRequestEntry`，
+  2026-11-19 只读核对），页字节数随对话长度涨；实际页字节数留 T4 量。
+  ⑤ 四项 token 的合法性只定义一次（`SpendBudget.Price.tokens/1`：非负整数、命中不多于输入），产品回执在 `ModelUsage`、Hindsight 追踪行在
+  `Life.Hindsight.llm_requests/3` 各调一次；不合法的产品回执记为未定价（`npc_model_usage_invalid`、`npc_spend_unpriced … reason=invalid_usage`），
+  不合格的追踪行整库这一轮读失败，日志带库名与行 id、不带内容。
+  ⑥ Hindsight 地址的校验与“`NPC_JEV_API` → 选择位置模型名变量”的规则只留在 `NpcServer.Registry`（`hindsight_url/1`、`jev_model_env/1`），
+  `Config` 调用；取更严的一份（主机非空；`NPC_JEV_API` 认不出的值 raise）。
+  ⑦ **高峰按 UTC 工作日规则配置**：`NPC_SPEND_OFF_PEAK`（北京时间、每天相同）换成 `NPC_SPEND_PEAK_UTC`（如 `mon-fri 01:00-04:00,06:00-10:00`，
+  分号可写多条；不配即每一刻按高峰）。周末不再按高峰多计。**边界：中国法定节假日不建模**——官方节假日全天非高峰，这里节假日的工作日白天
+  仍按高峰计，最多把这些时段的花费算成两倍（多计，不少计）；要精确需另给节假日表，未做。
+  ⑧ 补测试：`unsaved` 写回后只计一次、读回 worker 崩溃（`:DOWN`）按列库失败计且不卡住、零点由真实定时器换日、账本启动 / 换日读失败、
+  owner 不在。T3 零点那一刻的瞬时 `state=paused reason=unmeasured hindsight_age_ms=3900000` 查明是**测试手动拨钟的假象**：用例只在 15:00 读回过一次，
+  之后把时钟直接拨到 16:05、中间没有读回，换日时“已 65 分钟没读全”确实成立；同一轮读回读全后立即转开。生产每 60 s 读回，换日不动“上次读全”
+  的时刻，不是产品缺陷；用例里已写明原因并断言恢复。

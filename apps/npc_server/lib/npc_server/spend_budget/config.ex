@@ -13,14 +13,21 @@ defmodule NpcServer.SpendBudget.Config do
   | `NPC_SPEND_LIMIT_USD` | 每天上限（美元，正的十进制数，至多 9 位小数） | `limit_nano` |
   | `NPC_SPEND_STOP_RATIO` | 后台停止线占上限的比例，`(0, 1]` | `stop_nano` = ⌊limit × ratio⌋ |
   | `NPC_SPEND_PRICES` | JSON：`{模型名: {"peak": {"miss", "hit", "out"}, "off_peak": {同}}}`，每百万 token 的美元价，≥ 0、至多 6 位小数 | `prices`（每 token 的 pico-USD） |
-  | `NPC_SPEND_OFF_PEAK` | 可缺省：北京时间的非高峰时段 `HH:MM-HH:MM[,…]`（左闭右开，可写到 `24:00`，不重叠）；缺省即全天高峰 | `off_peak`（日内分钟段） |
+  | `NPC_SPEND_PEAK_UTC` | 可缺省：按 UTC 的高峰规则（下述）；缺省即每一刻都按高峰（多计，安全侧） | `peak`（`Price.peak()`） |
 
-  另核产品经 `NpcServer.ModelUsage` 发出的模型都在价目表里：选择位置（`NPC_JEV_API=openai` 时 `NPC_JEV_MODEL`，否则
-  `TYPESAFE_MODEL`）与写作位置（`NPC_REFLECT_MODEL`），配了哪个核哪个。Hindsight 自己用的模型不在产品的运行环境里，
-  读回时遇到价目表没有的模型由 `SpendBudget` 按 `:unpriced` 停后台。
+  `NPC_SPEND_PEAK_UTC` 的形状：一条或多条规则，分号分隔；每条是 `星期 时段[,时段…]`。星期写一天（`mon` … `sun`）或一段
+  （`mon-fri`，起不晚于止，不跨周日到周一——要跨就拆成两条）；时段是 UTC 的 `HH:MM-HH:MM`（左闭右开，可写到 `24:00`，同一条里不重叠）。
+  命中任一条为高峰，其余为非高峰。DeepSeek 官方（决策稿 §7 原文）写作 `mon-fri 01:00-04:00,06:00-10:00`。
+  中国法定节假日不建模（节假日工作日的白天按高峰计：多计，不少计）。
+
+  Hindsight 地址的合法性与选择位置模型名所在的变量都按 `NpcServer.Registry` 的同一份规则（`Registry.hindsight_url/1`、
+  `Registry.jev_model_env/1`）：额度读的就是登记给 Life 的那一台 Hindsight，核的就是登记时 Jev endpoint 用的那个模型名。
+  另核产品经 `NpcServer.ModelUsage` 发出的模型都在价目表里：选择位置与写作位置（`NPC_REFLECT_MODEL`），配了哪个核哪个；
+  `ModelUsage` 按请求时配置的模型名计价（不按应答里回报的名字），所以这里核过的名字就是计价时查表的名字。
+  Hindsight 自己用的模型不在产品的运行环境里，读回时遇到价目表没有的模型由 `SpendBudget` 按 `:unpriced` 停后台。
   """
 
-  @enforce_keys [:hindsight_url, :limit_nano, :stop_nano, :prices, :off_peak]
+  @enforce_keys [:hindsight_url, :limit_nano, :stop_nano, :prices, :peak]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
@@ -28,13 +35,14 @@ defmodule NpcServer.SpendBudget.Config do
           limit_nano: pos_integer(),
           stop_nano: pos_integer(),
           prices: %{String.t() => %{peak: rates(), off_peak: rates()}},
-          off_peak: [{non_neg_integer(), pos_integer()}]
+          peak: NpcServer.SpendBudget.Price.peak()
         }
   @type rates :: NpcServer.SpendBudget.Price.rates()
 
   @nano 1_000_000_000
   # 每百万 token 的美元价 → 每 token 的 pico-USD：p / 10⁶ × 10¹² = p × 10⁶。
   @pico_per_usd_per_million 1_000_000
+  @weekdays %{"mon" => 1, "tue" => 2, "wed" => 3, "thu" => 4, "fri" => 5, "sat" => 6, "sun" => 7}
 
   @doc "读运行环境（缺省 `System.get_env/0`）构造配置；没配 `NPC_LIFE_HINDSIGHT_URL` 为 `:disabled`。非法即 raise `ArgumentError`。"
   @spec load!(%{String.t() => String.t()}) :: t() | :disabled
@@ -53,18 +61,16 @@ defmodule NpcServer.SpendBudget.Config do
           limit_nano: limit,
           stop_nano: stop!(env, limit),
           prices: prices,
-          off_peak: off_peak!(env)
+          peak: peak!(env)
         }
     end
   end
 
   defp url!(url) do
-    uri = URI.parse(url)
-
-    if uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != "" and
-         uri.userinfo == nil,
-       do: url,
-       else: invalid!("NPC_LIFE_HINDSIGHT_URL", "必须是不带用户信息的 http / https 地址")
+    case NpcServer.Registry.hindsight_url(url) do
+      {:ok, url} -> url
+      :error -> invalid!("NPC_LIFE_HINDSIGHT_URL", "必须是主机非空、不带用户信息的 http / https 地址")
+    end
   end
 
   defp limit!(env) do
@@ -124,12 +130,7 @@ defmodule NpcServer.SpendBudget.Config do
   end
 
   defp products!(env, prices) do
-    jev =
-      if env["NPC_JEV_API"] in ["openai", "openai-completions"],
-        do: "NPC_JEV_MODEL",
-        else: "TYPESAFE_MODEL"
-
-    for name <- [jev, "NPC_REFLECT_MODEL"],
+    for name <- [NpcServer.Registry.jev_model_env(env["NPC_JEV_API"]), "NPC_REFLECT_MODEL"],
         model = env[name],
         model != nil,
         not Map.has_key?(prices, model),
@@ -138,23 +139,47 @@ defmodule NpcServer.SpendBudget.Config do
     :ok
   end
 
-  defp off_peak!(env) do
-    case Map.fetch(env, "NPC_SPEND_OFF_PEAK") do
-      :error ->
-        []
-
-      {:ok, text} ->
-        segments = text |> String.split(",") |> Enum.map(&segment!/1) |> Enum.sort()
-
-        segments
-        |> Enum.chunk_every(2, 1, :discard)
-        |> Enum.each(fn [{_, to}, {from, _}] ->
-          if from < to, do: invalid!("NPC_SPEND_OFF_PEAK", "时段不能重叠")
-        end)
-
-        segments
+  defp peak!(env) do
+    case Map.fetch(env, "NPC_SPEND_PEAK_UTC") do
+      :error -> :always
+      {:ok, text} -> text |> String.split(";") |> Enum.map(&peak_rule!/1)
     end
   end
+
+  # 一条规则：`星期 时段[,时段…]`，时段按起点排序后不得重叠。
+  defp peak_rule!(text) do
+    with [days, segments] <- text |> String.trim() |> String.split(~r/\s+/, parts: 2),
+         {:ok, first, last} <- weekdays(days) do
+      segments = segments |> String.split(",") |> Enum.map(&segment!/1) |> Enum.sort()
+
+      segments
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.each(fn [{_, to}, {from, _}] ->
+        if from < to, do: invalid!("NPC_SPEND_PEAK_UTC", "同一条规则里的时段不能重叠")
+      end)
+
+      {first, last, segments}
+    else
+      _ ->
+        invalid!(
+          "NPC_SPEND_PEAK_UTC",
+          "每条规则是“星期 时段[,时段…]”，星期写 mon … sun 或 mon-fri 这样的一段（不跨周日到周一）"
+        )
+    end
+  end
+
+  defp weekdays(text) do
+    case String.split(text, "-") do
+      [day] -> weekday_range(@weekdays[day], @weekdays[day])
+      [first, last] -> weekday_range(@weekdays[first], @weekdays[last])
+      _ -> :error
+    end
+  end
+
+  defp weekday_range(first, last) when is_integer(first) and is_integer(last) and first <= last,
+    do: {:ok, first, last}
+
+  defp weekday_range(_, _), do: :error
 
   defp segment!(text) do
     with [_, h1, m1, h2, m2] <-
@@ -165,7 +190,7 @@ defmodule NpcServer.SpendBudget.Config do
       {from, to}
     else
       _ ->
-        invalid!("NPC_SPEND_OFF_PEAK", "北京时间段 HH:MM-HH:MM，逗号分隔，起点早于终点，终点至多 24:00")
+        invalid!("NPC_SPEND_PEAK_UTC", "时段是 UTC 的 HH:MM-HH:MM，逗号分隔，起点早于终点，终点至多 24:00")
     end
   end
 

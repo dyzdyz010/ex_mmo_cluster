@@ -19,7 +19,8 @@ config :auth_server, AuthServerWeb.Endpoint,
 # ---------------------------------------------------------------------------
 # NPC 每天模型花费额度（NPC_SPEND_*）不经这里：`NpcServer.SpendBudget` 启动时由 `NpcServer.SpendBudget.Config.load!/0`
 # 直接读运行环境并校验一次（配了 NPC_LIFE_HINDSIGHT_URL 时 NPC_SPEND_LIMIT_USD / NPC_SPEND_STOP_RATIO / NPC_SPEND_PRICES 必填，
-# 缺或非法即 NPC 应用起不来、release 启动失败）。变量说明见 deploy/.env.example 的 NPC 一组。
+# NPC_SPEND_PEAK_UTC 可选：按 UTC 星期与时段写高峰规则，如 "mon-fri 01:00-04:00,06:00-10:00"；缺或非法即 NPC 应用起不来、
+# release 启动失败）。变量说明见 deploy/.env.example 的 NPC 一组。
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

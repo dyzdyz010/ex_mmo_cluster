@@ -348,7 +348,9 @@ defmodule NpcServer.NpcRegistryTest do
               Map.delete(@npc, "tools"),
               # 统一形态不能关掉 Life；地址不是 http(s) URL。
               Map.put(@npc, "life", false),
-              Map.put(@npc, "life", %{"url" => "hindsight:8888"})
+              Map.put(@npc, "life", %{"url" => "hindsight:8888"}),
+              # 主机为空（与花费额度读同一个地址时的启动校验同一份规则，`Registry.hindsight_url/1`）。
+              Map.put(@npc, "life", %{"url" => "http://"})
             ] do
           assert_raise_any(fn -> NpcRegistry.brain("npc", bad) end, bad)
         end

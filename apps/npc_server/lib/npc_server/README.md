@@ -26,7 +26,7 @@
   `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）、`Genesis`（创世，只在 `profile.genesis` 为真时）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道），
   也是模型 key（`Secret`，`Registry` 读环境时包成闭包）唯一的取出处。
-- `SpendBudget` 是每天模型花费额度的唯一 owner（每节点一个，监督树在 Body 监督器之后、Bootstrap 之前）：产品回执与 Hindsight
+- `SpendBudget` 是每天模型花费额度的唯一 owner（每节点一个，监督树排在 Bootstrap 之后、最后一个：崩溃只重启它自己）：产品回执与 Hindsight
   用量读回按北京自然日落账（`DataService.NpcSpend`），到停止线或无法计量时发布“后台暂停”，并开关各库的自动巩固；
   价目与判定的纯函数在 `SpendBudget.Price`，运行配置在 `SpendBudget.Config`（见下文“每天花费额度”）。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
@@ -874,16 +874,32 @@ flowchart LR
 | `:open` | 当日总额低于停止线、没有未定价的行、Hindsight 用量 30 分钟内读全过 |
 | `{:paused, %{reason: :limit}}` | 当日总额 ≥ 停止线（恰等即停） |
 | `{:paused, %{reason: :unpriced}}` | 当日有价目表里没有的模型行（原创决策：宁停后台不少计） |
-| `{:paused, %{reason: :unmeasured}}` | Hindsight 用量连续 30 分钟没读全；或运行环境没配 `NPC_LIFE_HINDSIGHT_URL`（未启用） |
+| `{:paused, %{reason: :unmeasured}}` | 当日账本没读到（启动或换日时数据库失败）；Hindsight 用量连续 30 分钟没读全；有行连续 30 分钟写不进账本；owner 不在（启动中、崩溃后重启中）；或运行环境没配 `NPC_LIFE_HINDSIGHT_URL`（未启用） |
 
 停了之后：Life 的刷新槽不起、到点的反思按 `budget_exhausted` 跳过、日计划在扣当日额度之前拒（`npc_spend_refused cid= kind= day=`，
 每人每种每天一行；`Life.observe/1` 的 `spend_refused`），CLI `Life.refresh/1` / `Life.reflect/1` 回 `{:error, {:budget_exhausted, 北京日}}`；
 retain、选择、说话、召回照常（用户定 Q-2 (a)、Q-3 (b)）。各库自动巩固随之关掉（每轮对未确认的库补 PATCH，`consolidation=pending:N`），
 北京零点换日后自动恢复（不广播，Life 在各自下一次触发时读到）。
 
+**故障后果**（监督树 `[Http, Names, BodySupervisor, Bootstrap, SpendBudget]`，`:rest_for_one`）：
+
+```mermaid
+flowchart LR
+  DB[(账本读写失败)] -- 不崩 --> U[state=paused reason=unmeasured<br/>npc_spend_ledger_failed / npc_spend_unsaved]
+  U -- 下个读回周期重试读到 --> OK[恢复真实结论]
+  C[SpendBudget 崩溃] -- 只重启它自己 --> R[NPC 不受影响<br/>重启期间 background/0 = unmeasured]
+```
+
+- 数据库断开或超时：启动 / 换日时读不到当日总额 → `ledger=unloaded`、后台按无法计量停，每个读回周期（60 秒）与 `sync/0` 重试；
+  写不进 → 行留在 `unsaved`、**金额照样计入当日总额**（到停止线照停），连续 30 分钟写不进 → 无法计量。都不崩，不重启任何 NPC。
+- `SpendBudget` 自身崩溃：只重启它自己（它是最后一个子进程）。结论连同 owner 进程一起发布，owner 不在时 `background/0` 一律给无法计量，
+  不会读到崩溃前留下的 `:open`；重启后从账本恢复。
+
 **配置**（NPC 启用——即配了 `NPC_LIFE_HINDSIGHT_URL`——时必填，缺或非法 release 启动失败，错误只点变量名）：`NPC_SPEND_LIMIT_USD`、
 `NPC_SPEND_STOP_RATIO`、`NPC_SPEND_PRICES`（JSON：模型 → `peak` / `off_peak` 的 `miss` / `hit` / `out`，美元 / 百万 token）、
-`NPC_SPEND_OFF_PEAK`（可缺省 = 全天高峰），形状见 `SpendBudget.Config` 与 `deploy/.env.example`；启动时核产品的选择与写作模型都在价目表里。
+`NPC_SPEND_PEAK_UTC`（按 UTC 星期与时段的高峰规则，如 DeepSeek 的 `mon-fri 01:00-04:00,06:00-10:00`；可缺省 = 每一刻按高峰；
+中国法定节假日不建模，按高峰多计），形状见 `SpendBudget.Config` 与 `deploy/.env.example`；启动时按 `Registry` 的同一份规则核 Hindsight 地址与
+产品的选择、写作模型都在价目表里（产品回执按请求时配置的模型名计价）。
 Hindsight 侧 `HINDSIGHT_API_LLM_TRACE_ENABLED`（追踪，读回的来源）与 `ENABLE_BANK_CONFIG_API`（巩固开关）不得关。
 
 **可观测**：`npc_spend day= product_usd= hindsight_usd= total_usd= stop_usd= limit_usd= state= reason= hindsight_read= hindsight_age_ms=
@@ -897,7 +913,8 @@ bin/voxim_server rpc 'IO.inspect(NpcServer.SpendBudget.background())' # Life 读
 
 计量边界与残余（决策稿 §7）：只计 `ModelUsage` 发出的请求（绕过它的 `brain/llm.ex`、`builder.ex`、`skills.ex`、`skills/wilderness.ex`
 不在内）与部署配置的那一台 Hindsight；`usage=null` 的产品请求、Hindsight 追踪丢行与 JSON 重试只记最后一次都会少计；到线时在途的
-一次刷新与已入队的巩固照跑。测试：`npc_spend_price_test`（T1）、`npc_spend_budget_test`（T2）、`npc_spend_life_test`（T3）、
+一次刷新与已入队的巩固照跑。用量不合法（命中多于输入等，`Price.tokens/1`）：产品回执那一笔记为未定价（`npc_model_usage_invalid`），
+Hindsight 追踪行整库这一轮读失败（`npc_hindsight_failed … row=`，只带行 id）。读回每页 100 行（追踪行带完整对话，页字节数 T4 量）。测试：`npc_spend_price_test`（T1）、`npc_spend_budget_test`（T2）、`npc_spend_life_test`（T3）、
 `apps/data_service/test/data_service/npc_spend_test.exs`。
 
 ### 反思（`Life.Reflection`，内容规范 §10.11、§10.12）

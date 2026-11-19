@@ -19,7 +19,7 @@ defmodule NpcServer.Life.Hindsight do
   一个 Life 会用到不止一个 bank（经历库、反思库），失败日志 `npc_hindsight_failed` 因此带 `bank=`。
 
   花费额度（`NpcServer.SpendBudget`）的读回也只经本模块：`list_banks/2` 列库、`llm_requests/3` 按时间窗读 LLM 追踪行并在这里
-  规范化一次（四项 token 的读法是 `tokens/1`，`status/1` 的用量同一份读法）、`set_auto_consolidation/2` 按库开关自动巩固。
+  规范化一次（四项 token 按 `SpendBudget.Price.tokens/1` 校验——与产品回执同一份规则）、`set_auto_consolidation/2` 按库开关自动巩固。
 
   ## 交互召回与后台请求走不同的出站车道
 
@@ -271,15 +271,22 @@ defmodule NpcServer.Life.Hindsight do
     end
   end
 
+  # 读回的页大小：每行带完整对话（见 `llm_requests/3`），所以比 Hindsight 的上限 500 小。
+  @llm_page 100
+
   @doc """
-  读这个库（`config.bank`）`started_at` 落在 `[from_ms, to_ms)` 里的全部 LLM 追踪行：`GET …/llm-requests?start_date=&end_date=&limit=500&offset=k`
-  读到 `total` 为止（Hindsight 最新在前、`limit` 上限 500）。每行在这里规范化一次：
+  读这个库（`config.bank`）`started_at` 落在 `[from_ms, to_ms)` 里的全部 LLM 追踪行：`GET …/llm-requests?start_date=&end_date=&limit=100&offset=k`
+  读到 `total` 为止（Hindsight 最新在前）。每页 100 行（Hindsight 允许到 500）：0.10.3 的每一行都带这次调用完整的
+  `input`（消息列表）与 `output`（`engine/llm_trace.py:339-366` 的 `LLMRequestEntry`），一页的字节数随对话长度涨，
+  页取小些让单次应答有界；实际页字节数留 T4 量。每行在这里规范化一次（对话内容不取）：
 
-      %{id: 行 id, model: 模型名或 nil, operation: 操作名或 nil, started_at_ms:, ended_at_ms:, tokens: tokens/1 的四项}
+      %{id: 行 id, model: 模型名或 nil, operation: 操作名或 nil, started_at_ms:, ended_at_ms:,
+        tokens: %{input:, cached:, output:, thoughts:}}
 
-  行 id 必须是字符串、两个时刻必须是带时区的 ISO 8601、四项 token 必须是非负整数或 null、命中不多于输入；
-  任一行不合格整次读失败（`{:error, :invalid_response}`），不静默丢行。库不存在 → `{:error, :not_found}`（不打失败日志，
-  由调用方按“跳过”处理）；其余失败同本模块其它请求（打 `npc_hindsight_failed`）。
+  行 id 必须是字符串、两个时刻必须是带时区的 ISO 8601；四项 token 缺省（null）按 0，再经 `SpendBudget.Price.tokens/1`
+  校验（非负整数、命中不多于输入——与产品回执同一份规则）。任一行不合格整次读失败（`{:error, :invalid_response}`），不静默丢行；
+  日志带库名与行 id（`npc_hindsight_failed bank= reason=:invalid_response row=`，不打印行的内容）。库不存在 → `{:error, :not_found}`
+  （不打失败日志，由调用方按“跳过”处理）；其余失败同本模块其它请求（打 `npc_hindsight_failed`）。
   """
   def llm_requests(config, from_ms, to_ms) do
     query = URI.encode_query(%{start_date: iso_ms(from_ms), end_date: iso_ms(to_ms)})
@@ -291,7 +298,7 @@ defmodule NpcServer.Life.Hindsight do
       end
     end
 
-    with {:ok, rows} <- page(config, get, "/llm-requests?" <> query, "items", 500),
+    with {:ok, rows} <- page(config, get, "/llm-requests?" <> query, "items", @llm_page),
          do: collect(rows, &llm_row(config, &1))
   end
 
@@ -308,18 +315,21 @@ defmodule NpcServer.Life.Hindsight do
          do: {:ok, %{bank: config.bank, enabled: enabled}}
   end
 
-  @token_keys ~w(input_tokens cached_tokens output_tokens thoughts_tokens)
-
   defp llm_row(config, %{"id" => id, "started_at" => started, "ended_at" => ended} = row)
        when is_binary(id) do
+    t = tokens(row)
+
     with {:ok, started_ms} <- unix_ms(started),
          {:ok, ended_ms} <- unix_ms(ended),
          true <- is_binary(row["model"]) or row["model"] == nil,
          true <- is_binary(row["operation"]) or row["operation"] == nil,
-         true <-
-           Enum.all?(@token_keys, &(row[&1] == nil or (is_integer(row[&1]) and row[&1] >= 0))),
-         %{input_tokens: input, cached_tokens: cached} = tokens when cached <= input <-
-           tokens(row) do
+         {:ok, tokens} <-
+           NpcServer.SpendBudget.Price.tokens(%{
+             input: t.input_tokens,
+             cached: t.cached_tokens,
+             output: t.output_tokens,
+             thoughts: t.thoughts_tokens
+           }) do
       {:ok,
        %{
          id: id,
@@ -330,11 +340,22 @@ defmodule NpcServer.Life.Hindsight do
          tokens: tokens
        }}
     else
-      _ -> failure(config, :invalid_response)
+      _ -> invalid_row(config, row)
     end
   end
 
-  defp llm_row(config, _), do: failure(config, :invalid_response)
+  defp llm_row(config, row), do: invalid_row(config, row)
+
+  # 不合格的追踪行：日志带库名与行 id（id 不是字符串记 `-`；过长截到 64 个字符），不打印行的内容。
+  defp invalid_row(config, row) do
+    id =
+      case row do
+        %{"id" => id} when is_binary(id) -> inspect(String.slice(id, 0, 64))
+        _ -> "-"
+      end
+
+    failure(config, :invalid_response, " row=#{id}")
+  end
 
   defp unix_ms(iso) when is_binary(iso) do
     case DateTime.from_iso8601(iso) do
@@ -625,9 +646,11 @@ defmodule NpcServer.Life.Hindsight do
   end
 
   # 失败一律经这里：打一行带 bank 的日志（经历库与反思库要分得清；列库请求没有 bank，记 `-`），返回 `{:error, reason}`。
-  defp failure(config, reason) do
+  # `detail` 是附在行尾的可诊断字段（如不合格追踪行的 ` row=`），不放内容。
+  defp failure(config, reason, detail \\ "") do
     Logger.warning(
-      "npc_hindsight_failed bank=#{Map.get(config, :bank, "-")} reason=#{inspect(reason)}"
+      "npc_hindsight_failed bank=#{Map.get(config, :bank, "-")} reason=#{inspect(reason)}" <>
+        detail
     )
 
     {:error, reason}

@@ -14,7 +14,12 @@ defmodule NpcServer.ModelUsage do
   HTTP/2 连不上时为 `connection_unavailable`。
 
   用量不为 nil 时，结束记录同时交给花费额度（`NpcServer.SpendBudget.record/1`，cast）记账；`:answers` 形状没有缓存分项，
-  按命中 0 计。
+  按命中 0 计。计价用请求时配置的模型名（`request_model`，即 `SpendBudget.Config` 启动时核过在价目表里的那个名字），
+  不用应答里回报的名字（供应商常回报带版本号的名字，如配置 `jev-test`、应答 `jev-1.14.0`）。
+
+  这里是产品用量进花费额度的信任边界：四项计数按 `SpendBudget.Price.tokens/1`（与 Hindsight 追踪行同一份规则）校验一次。
+  不合法（如命中多于输入）时打 `npc_model_usage_invalid`（只带计数，不带内容），返回给调用方的用量为 nil，这一笔仍交给额度、
+  按未定价记账（`nano_usd` 为空，当日后台按 `:unpriced` 停）——不能算出负金额，也不能当没花过。
   """
   def request(
         endpoint,
@@ -47,11 +52,14 @@ defmodule NpcServer.ModelUsage do
       end)
 
     {outcome, usage} = response(result, api)
-    finish(fields, started_at, outcome, usage, queue_ms)
-    {result, usage}
+    {result, finish(fields, started_at, outcome, usage, queue_ms)}
   end
 
+  # 写结束记录并把用量交给花费额度；返回给调用方的用量（不合法的为 nil）。
   defp finish(fields, started_at, outcome, usage, queue_ms) do
+    tokens = tokens(usage)
+    usage = if match?({:invalid, _}, tokens), do: nil, else: usage
+
     finished =
       fields
       |> Map.merge(%{
@@ -64,18 +72,53 @@ defmodule NpcServer.ModelUsage do
       |> Map.merge(outcome)
 
     log(finished)
-    if usage != nil, do: spend(finished)
+
+    case tokens do
+      nil ->
+        :ok
+
+      {:invalid, raw} ->
+        Logger.warning(
+          "npc_model_usage_invalid request_id=#{finished.request_id} operation=#{finished.operation} " <>
+            "input_tokens=#{raw.input} cached_tokens=#{raw.cached} output_tokens=#{raw.output}"
+        )
+
+        spend(finished, tokens)
+
+      {:ok, _} ->
+        spend(finished, tokens)
+    end
+
+    usage
   end
 
-  # 有用量的回执交给花费额度（`NpcServer.SpendBudget`，按应答里的模型名计价，没有就用请求的模型名）；
-  # 没有用量的请求不计（决策稿 §7 的残余少计）。只记账，不拦请求——拒绝点在 Life 的后台触发处。
-  defp spend(finished) do
+  # 规范化用量 → 计价的四项（`input` 含命中，`output` 已含推理、`thoughts` 交 0），经 `Price.tokens/1` 校验：
+  # `{:ok, 四项}`、`{:invalid, 原样四项}` 或没有用量时 nil。
+  defp tokens(nil), do: nil
+
+  defp tokens(usage) do
+    raw = %{
+      input: usage.input_tokens,
+      cached: Map.get(usage, :cache_read_input_tokens, 0),
+      output: usage.output_tokens,
+      thoughts: 0
+    }
+
+    case NpcServer.SpendBudget.Price.tokens(raw) do
+      {:ok, tokens} -> {:ok, tokens}
+      :error -> {:invalid, raw}
+    end
+  end
+
+  # 有用量的回执交给花费额度（`NpcServer.SpendBudget`），按请求时配置的模型名计价；没有用量的请求不计（决策稿 §7 的残余少计）。
+  # 只记账，不拦请求——拒绝点在 Life 的后台触发处。
+  defp spend(finished, tokens) do
     NpcServer.SpendBudget.record(%{
       request_id: finished.request_id,
       cid: finished[:cid],
       operation: finished.operation,
-      model: finished.response_model || finished.request_model,
-      usage: finished.usage,
+      model: finished.request_model,
+      tokens: tokens,
       duration_ms: finished.duration_ms
     })
   end

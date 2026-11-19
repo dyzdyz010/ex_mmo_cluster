@@ -3,8 +3,8 @@ defmodule NpcServer.SpendFixtures do
   只测试：花费额度用例共用的运行环境（`NpcServer.SpendBudget.Config.load!/1` 的输入）与时刻换算。
 
   价目是 DeepSeek 官方价目页 2026-11-19 核对的 deepseek-flash（每百万 token，美元）：高峰入未命中 0.3 / 命中 0.006 / 出 1.2，
-  非高峰各取一半。非高峰时段按北京时间写：官方高峰是 UTC 01:00–04:00 与 06:00–10:00（北京 09:00–12:00 与 14:00–18:00），
-  其余为非高峰。
+  非高峰各取一半。高峰时段照官方原文写成 UTC 工作日规则：周一至周五 UTC 01:00–04:00 与 06:00–10:00，其余（含周末）为非高峰；
+  中国法定节假日不建模（按高峰计，多计不少计）。
   """
 
   @prices %{
@@ -21,7 +21,7 @@ defmodule NpcServer.SpendFixtures do
       "NPC_SPEND_LIMIT_USD" => "65",
       "NPC_SPEND_STOP_RATIO" => "0.9",
       "NPC_SPEND_PRICES" => Jason.encode!(@prices),
-      "NPC_SPEND_OFF_PEAK" => "00:00-09:00,12:00-14:00,18:00-24:00",
+      "NPC_SPEND_PEAK_UTC" => "mon-fri 01:00-04:00,06:00-10:00",
       "NPC_JEV_API" => "openai",
       "NPC_JEV_MODEL" => "deepseek-flash",
       "NPC_REFLECT_MODEL" => "deepseek-flash"
