@@ -1307,7 +1307,13 @@ defmodule NpcServer.NpcRegistryTest do
 
         option = "speak_to:#{speaker}"
 
-        assert %{data: %{speech: %{"entity_id" => ^speaker, "conversation_id" => ^conversation}}} =
+        # 冻结的目标随种类交给树（说话与对人的登记项同一条路径：`kind` + `target`）。
+        assert %{
+                 data: %{
+                   kind: "speak_to",
+                   target: %{"entity_id" => ^speaker, "conversation_id" => ^conversation}
+                 }
+               } =
                  NpcWorld.await(fn ->
                    Enum.find(
                      Body.observe(body).outcomes,
@@ -1512,14 +1518,14 @@ defmodule NpcServer.NpcRegistryTest do
              } = model_request(requests, "activity_selection")
     end
 
-    # 走向一个角色（S1-F），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）：Jev 选中“去找我不信任的人”，
-    # 附近没有人、Life 里也没有关系 → 不发 travel，活动以 failed (travel: nobody_distrusted) 结束，下一次发问的
-    # “最近做过的事”与“刚发生的事”里都写着它。
+    # 对人的登记项（S1-F 起的“去找我不信任的人”），全链路同上一用例（替身仍只有 Jev 与 Hindsight 两个 HTTP 服务）。
+    # K-0 复测后用户定由生成器按人展开（`Offers.people/2`）：附近没有人、Life 里也没有关系 → 这一项不成为候选，
+    # Jev 只看到其余的候选（原来是作为候选出现、被选中后以 failed (travel: nobody_distrusted) 结束）。
     @tag timeout: 120_000
-    test "an npc row choosing to face a distrusted person with nobody distrusted nearby reports nobody_distrusted" do
+    test "an npc row with a person registration and nobody distrusted nearby offers no candidate for it" do
       answer = %{
         "answers" => %{
-          "activity" => %{"type" => "choice", "choice" => "confront", "confidence" => 0.6}
+          "activity" => %{"type" => "choice", "choice" => "rest_at_home", "confidence" => 0.6}
         }
       }
 
@@ -1555,6 +1561,8 @@ defmodule NpcServer.NpcRegistryTest do
 
       name = "住民#{System.unique_integer([:positive])}"
 
+      [_gather, rest] = @npc["activities"]
+
       params = %{
         @npc
         | "activities" => [
@@ -1563,7 +1571,8 @@ defmodule NpcServer.NpcRegistryTest do
               "criterion" => "Face the person I distrust.",
               "person" => "distrusted",
               "stay_ticks" => 60
-            }
+            },
+            rest
           ]
       }
 
@@ -1581,17 +1590,9 @@ defmodule NpcServer.NpcRegistryTest do
           assert_receive {:jev_http, first}, 30_000
           assert first["state"] =~ "Recent activities: None yet."
 
-          assert_receive {:jev_http, %{"state" => again}}, 20_000
-
-          assert again =~
-                   "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
-
-          # 句首是按游戏时间写的多久以前（具体取整由 npc_mind_test 断言），不是 UTC。
-          assert again =~
-                   ~r/What just happened: Oldest first\. (?:Just now|About [\d.]+ (?:hour|hours|day|days) ago), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
-
-          # 没有发出过 travel：身体没有任何 travel 的终态。
-          refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))
+          # 新角色背包空、附近没有人：候选恰为去处一项，对人的登记项没有展开出任何人。
+          assert Map.keys(first["questions"]["activity"]["criteria"]) == ["rest_at_home"]
+          assert Process.alive?(pid)
 
           assert :ok = NpcRegistry.remove(name)
         end

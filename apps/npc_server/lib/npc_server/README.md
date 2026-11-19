@@ -71,8 +71,9 @@
   最近选过什么、最近一次问了什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
 - `Offers` 是统一形态的候选来源（稿 A [`2026-11-18-npc-full-capability-coverage-decision.md`](../../../../docs/10-active/cross-cutting/2026-11-18-npc-full-capability-coverage-decision.md)）：
   覆盖登记 `coverage/0` 把 `Abilities` 的每个条目归且只归一类——`offer`（有生成器，成为候选）、`inside`（只作某些技能内部的原语）、
-  `withheld`（不给 NPC，写理由），覆盖测试保证能力库新增条目不登记即红；生成器按显式次序 `[:registered, :speak_to, :eat, :craft]`
-  连成一轮候选：`registered/2`（作者登记项按建筑条件过滤）、`speak_to/2`（说话范围内的人，再与 Scene 的新话题资格取交集）、
+  `withheld`（不给 NPC，写理由），覆盖测试保证能力库新增条目不登记即红；生成器按显式次序 `[:registered, :people, :speak_to, :eat, :craft]`
+  连成一轮候选：`registered/2`（作者登记项按建筑条件过滤，不含对人的项）、`people/2`（对人的登记项，如 confront_wrecker：
+  此刻观察里满足作者条件的每个人各一个可点名的候选 `<登记名>:<cid>`，目标身份与说话项同样冻结在 `target`，K-0 复测后用户定）、`speak_to/2`（说话范围内的人，再与 Scene 的新话题资格取交集）、
   `eat/2` / `craft/2`（批 1：这一刻现读 `World.production_options/2`，World 列出的能吃一份 / 能合成一次的材料，每类前 k 项，`Offers` 的 `@per_kind`）与对话回合的 `reply/2`，
   都产出带 `kind` / `object` 的候选（背包项另带冻结的世界动作 `action`）。`Selector` 只调它。`Abilities` 保持后端中立，
   “统一形态怎么用每项能力”只在这里。
@@ -436,9 +437,10 @@ flowchart LR
   `{"traits": {高标记形容词: 1..9}, "personal": 英文自由文本}`，键只能取自 `Persona.pairs/0` 的 52 个高标记词）、`tools`、
   `activities`（有序、非空、名字唯一；次序即给 Jev 的次序）。每个候选有 `name`、`criterion`（给 Jev 当判据的一句英文）和“怎么做”：
   `{"skill": "build" | "gather" | "expand" | "travel", "args": 技能参数}`，或 `{"place": [x, z], "stay_ticks": n}`（travel 过去再待
-  n tick，60 Hz），或 `{"person": "distrusted", "stay_ticks": n}`（选中时从当时的观察与 Life 信任里选附近信任 ≤ −0.2 中最低的人，
-  `Mind.person/2`，travel 走到他身边再待 n tick；选不到人以 `failed (travel: nobody_distrusted)` 结束，Life 状态还没到是
-  `life_not_ready`）。每个候选还可以带可选的 `"place_name"`（这项活动在哪里的名字，非空字符串）：只进记忆——活动结束时成为
+  n tick，60 Hz），或 `{"person": "distrusted", "stay_ticks": n}`（对人的登记项：发问时 `Offers.people/2` 按作者条件——此刻观察里 Life 信任
+  ≤ −0.2 的人，`Mind.people/3`，与快照写 `Distrusts` 同一界限——把每个人展开成一个候选 `<登记名>:<cid>`，最不信任的在前，
+  判据是作者原句加 `That person is <名字> (actor <cid>).`；没有人满足就没有这项候选。选中后 travel 到冻结的那个人身边再待 n tick，
+  目标离开 / 走远以 travel 失败结束。计划里它是可点名的种类，同说话）。每个候选还可以带可选的 `"place_name"`（这项活动在哪里的名字，非空字符串）：只进记忆——活动结束时成为
   那条经历的 `place:<地名>` tag，召回按地点调取。工作技能表由登记候选推出，统一形态另外提供主动说话，无需另写 `skills`。
   地点活动也可声明非空发布名 `"requires_building"`。本轮已读回的自有建筑中至少有一座同名建筑仍站立时，该项才进入即时选择。
   坏人格卡、空候选表、重名候选、未知技能、未知选择器、place 与 person 同写、地名为空或不是字符串在 `put/2` 被拒并说明原因。
@@ -452,7 +454,7 @@ flowchart LR
   判据 `Craft <名字> (material <号>) from materials in my inventory.`）成为候选，每类按材料号升序只取前 k 项（`@per_kind`，现为 3，原创取值，待离线实验
   X-1；当前目录只有 3 种可食植物，进食一类的截断不可达），排在登记项与说话之后。选中后参数原样冻结（`action: {"eat" | "craft", %{"material" => 号}}`，
   与登记项的分支规格 `run` 分开），树发一条世界动作，
-  World 仍做最后裁决：执行时余额已不够就 `failed (eat: insufficient_material)`，下一次发问带这个原因、候选里也不再有它。
+  World 仍做最后裁决：执行时余额已不够就以 `{:failed, "eat", "insufficient_material"}` 结束（给模型读作 `failed (eat: I did not have enough material for it)`，见下文“经历”），下一次发问带这个原因、候选里也不再有它。
   读库存只走 happy path（用户 2026-11-19 方向）：按 World 的缺省调用，路由或 World 失败照常退出，由发问 worker 已有的失败路径处理
   （`{:select_worker_failed, _}`），超时转换等兜底留待实验暴露失败再按设计加。日计划的词表里进食与合成各是一类（不可点名材料），
   吃完一份按种类记到没点名的 `eat` 意图上。CLI：`npc_select … candidates= …` 一行列出本轮候选，`Body.observe/1` 的
@@ -490,7 +492,7 @@ flowchart LR
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文（不加“多久以前”与 `I thought: `，R4b）；最近一轮没写成“自己”（中止、失败、丢弃）、还没有过一轮或不反思时整栏不出现，不沿用上一轮的（只对留下了小结的一轮成立：一轮已起而没留下小结时仍是上一轮那句，边界见 `Life` moduledoc 的“已知”清单） | Life 持久行，规则在 `Life.Reflection.thought/1`（见下文“反思”） |
   | Plans and promises（可缺） | 今天的各条意图一条一行（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；点名了人时 `<活动>` 写成 `<种类> <名字 (actor <cid>)>`），再是想做而现在做不到的事各一行 `I would like to <want>, but I cannot do that yet`；不点名该选什么；Life 给 nil（不规划的形态、还没有计划、没有意图也没有 wants）时整栏不出现，state 与没有这一栏时逐字节相同。与上一栏先并存（决策稿 D-3） | Life 持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（见下文“日计划”） |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包里余额非零的材料（全为零写 `Inventory: empty.`） | World / Scene（Observation）；建筑在不在是发问时现查 World |
-  | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
+  | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因（写法同下文“经历”的 `Mind.result/1`） | 选择器 |
 
   “多久以前”= 两个真实时刻各经 `MmoContracts.WorldTime.game_us/1` 换成游戏时间后相减：不足 0.25 游戏小时 `Just now`，不足 48 小时
   按 0.5 小时四舍五入（`1 hour`、`0.5 hours`、`13.5 hours`），再往上按天四舍五入。句型与取整照离线测量 S1-K 的原文
@@ -555,7 +557,11 @@ flowchart LR
   它结束时调 `Life.activity/2`（`%{text:, place:, activity:, kind:, object:, outcome:}`，`Selector.experience/1`，取自选中时冻结的候选
   与 Selector 历史里的结局；`outcome` 是结构化结局 `:completed | {:failed, 动作, 原因} | {:interrupted, 原因}` 原样，任务层决策稿
   `2026-11-19-npc-long-task-loop-decision.md` K-2；Life 不另存，结局归 Selector 的历史）记一条
-  `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>) | interrupted (<原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
+  `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>) | interrupted (<原因>).`（结局文字只由 `Mind.result/1` 渲染，Jev 的
+  Recent activities 与任务推进的“已做步骤的结局”同一写法；实跑出现过的四个失败原因码写成一句直白英文——`exhausted` →
+  `there was nothing left there that I could cut, and I had less than I set out to gather`、`insufficient_material` → `I did not have enough material for it`、
+  `occupied` → `something else was already in the place where it had to go`、`no_path` → `there was no way for me to walk there`，其余码原样；
+  映射与依据见 `Mind` 的 `@reason_words`，离线对照见任务层决策稿 §7 “② 失败原因直白英文”），末尾加一句**期间事实**：活动期间 Life 每收到一帧
   观察就记下自己以外每个人到我的最小距离（不加新观察通道），结束时写 `During it: nobody came near.`，或
   `During it: <名字> (actor <cid>) came within <N> m and then moved away.` / `… and was still there at the end.`
   （`<N>` = 最小距离向上取整、最小 1；多人近的在前、最多 3 人，用 `; ` 连成一句）。靠近半径 6 米是用户 2026-11-13 定的原创取值，
@@ -990,7 +996,7 @@ flowchart LR
 
 **是什么**：NPC 每个游戏日开头（以及遇到一件事之后）规划一次“今天我打算做几件事”：每条**意图**是词表里的一个种类 + 可选对象 + 次数 + 时限
 （日内分钟），计划不新增任何动作；词表写不出的想法记为 `wants`（想做而现在做不到的事）。**词表**（稿 A 批 0b）是“种类 + 可选对象”：
-种类取 `Offers.plan_kinds/1`（按生成器次序）——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象），配了说话（统一形态总配）再加 `speak_to`，
+种类取 `Offers.plan_kinds/1`（按生成器次序）——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象；对人的登记项例外：种类名是登记名、对象是人、可点名，同说话），配了说话（统一形态总配）再加 `speak_to`，
 再是进食 `eat` 与合成 `craft`（批 1，每个带候选表的形态都有；判据 `Eat one serving of something edible from my inventory.` /
 `Craft something from materials in my inventory.` 是原创措辞；对象是材料但计划里不可点名，吃哪种都记到没点名的 eat 意图上）。
 说话的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），

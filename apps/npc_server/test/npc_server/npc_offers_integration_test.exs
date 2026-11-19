@@ -343,11 +343,11 @@ defmodule NpcServer.NpcOffersIntegrationTest do
     {jev, request} = await_jev()
 
     assert request.state =~
-             "Recent activities: Oldest first. eat:34: failed (eat: insufficient_material)."
+             "Recent activities: Oldest first. eat:34: failed (eat: I did not have enough material for it)."
 
     assert request.state =~
              ~s|I did "eat:34" (Eat one serving of Fern (material 34) from my inventory.). | <>
-               "Result: failed (eat: insufficient_material)."
+               "Result: failed (eat: I did not have enough material for it)."
 
     assert criteria(request) == [@rest]
     assert %{34 => @serving} == food_ledger(world)

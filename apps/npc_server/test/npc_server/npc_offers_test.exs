@@ -12,16 +12,20 @@ defmodule NpcServer.NpcOffersTest do
     加授予方式时要同时把它加进 `full_profile/0`。
   - **候选只从覆盖登记生成**：`Offers.generators/1` 取登记里 offer 一类的生成器，按模块里显式写下的生成器次序排列（批 1 前置：
     原来按名字排序，新增 `:eat` / `:craft` 会排到 `:registered` 之前、改变候选次序），`candidates/4` 只按它生成；次序锁定为
-    登记项、说话、进食、合成；登记里出现次序表没有的生成器是登记写错，直接 raise；把条目改成 withheld，它的生成器（没有别的
+    登记项、对人的登记项、说话、进食、合成；登记里出现次序表没有的生成器是登记写错，直接 raise；把条目改成 withheld，它的生成器（没有别的
     offer 共用时）就消失。用参数化的登记表测这个纯函数，生产代码不为测试加开关。真实 Scene 求交后的整轮候选次序另由
     `npc_selector_test` 的真实 Runtime 用例锁定；带背包候选的整轮次序由 `npc_offers_integration_test` 读请求体里的有序候选锁定
     （合成用例另断言 `npc_select … candidates=…` 这一行日志）。
-  - **批 1 的 offer**：build / gather / expand / travel（登记项生成器 `registered/2`）、speak（`speak_to/2`）、eat（`eat/2`）、
-    craft（`craft/2`）。
+  - **offer**：build / gather / expand / travel（登记项生成器 `registered/2`）、travel 另有对人的登记项（`people/2`，K-0 复测后
+    用户定：对人的登记活动由生成器展开、可点名）、speak（`speak_to/2`）、eat（`eat/2`）、craft（`craft/2`）。一个条目可由几个生成器给出
+    （`{:offer, [生成器]}`，现在只有 travel）。
   - **生成器（T-A2）**：`registered/2` 按建筑条件保序过滤（从 `Selector` 迁来，期望照迁移前的输出手写）；`speak_to/2` 与 `reply/2`
     （从 `Dialogue.topic_candidates/2`、`Dialogue.reply_candidate/2` 迁来）的范围、自身排除、观察次序、目标冻结、`speak_to:<id>` 的避让。
     所有候选都带 `kind` 与 `object`（登记项 `kind` = 候选名、`object` = nil；说话项 `kind` = `"speak_to"`、`object` = `%{"actor" => cid}`），
     说话项保留 `target`（Runtime 交给 speak 技能的参数，`runtime.ex` 的 `finish_select/2` 读它）。
+    `people/2`：对人的登记项按作者条件（选择器，`Mind.people/3` 判定）把此刻观察里满足条件的每个人展开成一个候选——`kind` = 登记名、
+    `object` = `%{"actor" => cid}`、名字 `<登记名>:<cid>`（同 `speak_to/2` 的避让）、判据是作者原句加一句写明对象、冻结的 `target`
+    与说话项同形（同一个冻结路径）；不满足条件的人、不在观察里的人没有候选；`registered/2` 不再列对人的登记项。
     `eat/2` / `craft/2`（批 1，评审修正后）：可行性**不在这里判**——World 的 `production_options/2` 用与提交同一组判定列出能吃 /
     能合成的材料（一致性由 voxel_region 的 `production_options_test` 证明），生成器只把列出的每一项投影成候选：按材料号升序
     （与 World 给的次序无关）、生成器给完整列表（每类前 k 项由 `candidates/4` 截断，截断在 `npc_offers_integration_test` 里由真实
@@ -30,7 +34,7 @@ defmodule NpcServer.NpcOffersTest do
     读库存只测 happy path（用户 2026-11-19 方向）：路由 / World 失败照常退出，不在这里预建失败用例。
 
   层次与替身：纯函数，直接构造输入（profile、观察、Life 的建筑视图与来话都按产品形状手写：观察同 `Body.observe/1`，
-  建筑同 `Life.mind/2` 的 `buildings`，来话同 Scene 交给 Runtime 的 Speech；库存同 `World.production_options/2` 的结果，
+  建筑与信任同 `Life.mind/2` 的 `buildings` / `relationships`，来话同 Scene 交给 Runtime 的 Speech；库存同 `World.production_options/2` 的结果，
   取值照真实目录）。不启动 World、Scene、Life 或数据库。
   说话范围读 Scene 的唯一参数 `SceneServer.Dialogue.limits/0`，不在测试里另写一个数。
   不证明：候选进请求体的字节（`npc_selector_test` 的 request body 用例）、Scene 新话题冷却的求交（`npc_registry_test` 的真实对话用例）、
@@ -102,9 +106,11 @@ defmodule NpcServer.NpcOffersTest do
 
       for {name, class} <- coverage do
         case class do
-          {:offer, generator} when is_atom(generator) ->
-            assert function_exported?(Offers, generator, 2),
-                   "#{name} 的生成器 Offers.#{generator}/2 没有导出"
+          {:offer, generators} when is_atom(generators) or is_list(generators) ->
+            for generator <- List.wrap(generators) do
+              assert function_exported?(Offers, generator, 2),
+                     "#{name} 的生成器 Offers.#{generator}/2 没有导出"
+            end
 
           {:withheld, reason} when is_binary(reason) ->
             assert String.trim(reason) != "", "#{name} 的不给理由为空"
@@ -121,7 +127,7 @@ defmodule NpcServer.NpcOffersTest do
       end
     end
 
-    test "批 1：offer 恰为四个登记技能（registered/2）、speak（speak_to/2）、eat（eat/2）与 craft（craft/2）" do
+    test "offer 恰为四个登记技能（registered/2；travel 另有对人的登记项 people/2）、speak（speak_to/2）、eat（eat/2）与 craft（craft/2）" do
       offers =
         for {name, {:offer, generator}} <- Offers.coverage(), into: %{}, do: {name, generator}
 
@@ -129,7 +135,7 @@ defmodule NpcServer.NpcOffersTest do
                "build" => :registered,
                "gather" => :registered,
                "expand" => :registered,
-               "travel" => :registered,
+               "travel" => [:registered, :people],
                "speak" => :speak_to,
                "eat" => :eat,
                "craft" => :craft
@@ -140,13 +146,19 @@ defmodule NpcServer.NpcOffersTest do
   # 评审修正：`candidates/4` 原来写死 `registered ++ speak`、不读 `coverage/0`，登记表与真实候选来源是两份互不约束的事实。
   # 批 1 前置：生成器次序改为显式声明（原来按名字排序：加上 eat / craft 会得 `[:craft, :eat, :registered, :speak_to]`）。
   describe "generators/1：候选只从覆盖登记生成，按显式次序" do
-    test "现在的登记：[:registered, :speak_to, :eat, :craft]——登记项、说话、进食、合成；四个登记技能共用的生成器只出现一次" do
-      assert Offers.generators(Offers.coverage()) == [:registered, :speak_to, :eat, :craft]
+    test "现在的登记：[:registered, :people, :speak_to, :eat, :craft]——登记项、对人的登记项、说话、进食、合成；共用的生成器只出现一次" do
+      assert Offers.generators(Offers.coverage()) == [
+               :registered,
+               :people,
+               :speak_to,
+               :eat,
+               :craft
+             ]
     end
 
     test "把 speak 改成 withheld：说话生成器消失，它的候选不再出现；其余次序不变" do
       coverage = Map.put(Offers.coverage(), "speak", {:withheld, "只测试：不给说话。"})
-      assert Offers.generators(coverage) == [:registered, :eat, :craft]
+      assert Offers.generators(coverage) == [:registered, :people, :eat, :craft]
     end
 
     test "登记项的生成器由四个条目共用：只改一个仍在（过渡形态），四个都改成 withheld 才消失" do
@@ -155,6 +167,15 @@ defmodule NpcServer.NpcOffersTest do
       end
 
       assert Offers.generators(withhold.(Offers.coverage(), ["build"])) == [
+               :registered,
+               :people,
+               :speak_to,
+               :eat,
+               :craft
+             ]
+
+      # travel 改成 withheld：对人的登记项只由它给出，随之消失；去处 / 技能项还由另外三个条目给出。
+      assert Offers.generators(withhold.(Offers.coverage(), ["travel"])) == [
                :registered,
                :speak_to,
                :eat,
@@ -171,13 +192,14 @@ defmodule NpcServer.NpcOffersTest do
         {"speak", {:offer, :speak_to}},
         {"say", {:inside, [:speak]}},
         {"eat", {:offer, :eat}},
-        {"travel", {:offer, :registered}},
+        {"travel", {:offer, [:people, :registered]}},
         {"dismantle", {:withheld, "只测试。"}},
         {"build", {:offer, :registered}}
       ]
 
-      assert Offers.generators(coverage) == [:registered, :speak_to, :eat, :craft]
-      assert Offers.generators(Enum.reverse(coverage)) == [:registered, :speak_to, :eat, :craft]
+      expected = [:registered, :people, :speak_to, :eat, :craft]
+      assert Offers.generators(coverage) == expected
+      assert Offers.generators(Enum.reverse(coverage)) == expected
     end
 
     test "登记里有、次序表里没有的生成器是登记写错：raise，不悄悄排到哪里" do
@@ -218,6 +240,15 @@ defmodule NpcServer.NpcOffersTest do
     run: {:place, [2, -3.5], 600},
     place_name: "home"
   }
+  # 对人的登记项（S1-R7 部署的 confront_wrecker 原样：判据原句、选择器 distrusted、停留 1800 tick）。
+  @confront %{
+    name: "confront_wrecker",
+    criterion:
+      "Walk over to the person standing nearby, stand in front of them and watch them closely, to make it plain I have not forgotten what they did. " <>
+        "Only do this when that person is someone who once destroyed or removed something I built; otherwise there is no reason to.",
+    run: {:person, :distrusted, 1800},
+    place_name: nil
+  }
 
   describe "registered/2" do
     test "保序筛掉建筑条件不满足的项；留下的原样加 kind（= 候选名）与 object（nil）" do
@@ -232,6 +263,13 @@ defmodule NpcServer.NpcOffersTest do
                Map.merge(@gather, %{kind: "gather_stone", object: nil}),
                Map.merge(@guard_hut, %{kind: "guard_hut", object: nil}),
                Map.merge(@rest, %{kind: "rest_at_home", object: nil})
+             ]
+    end
+
+    test "对人的登记项不在这里列（由 people/2 按人展开），其余保序" do
+      assert Enum.map(Offers.registered([@gather, @confront, @rest], []), & &1.name) == [
+               "gather_stone",
+               "rest_at_home"
              ]
     end
 
@@ -313,6 +351,74 @@ defmodule NpcServer.NpcOffersTest do
     test "观察里只有自己：没有说话候选" do
       alone = %{observation() | entities: [hd(observation().entities)]}
       assert Offers.speak_to([@rest], alone) == []
+    end
+  end
+
+  # —— 对人的登记项（K-0 复测后用户定：可点名） ——
+
+  # Life 视图的信任（`Life.mind/2` 的 `relationships`）：Brann 23 −0.35、Corvin 24 −0.70（在说话范围外也算：作者条件不看距离）、
+  # Mara 21 +0.25；99 −0.90 但不在观察里。
+  @relationships [
+    %{actor: 21, trust: 0.25},
+    %{actor: 23, trust: -0.35},
+    %{actor: 24, trust: -0.70},
+    %{actor: 99, trust: -0.90}
+  ]
+
+  defp sight(relationships \\ @relationships),
+    do: %{observation: observation(), relationships: relationships}
+
+  defp confront(id, epoch, name, candidate_name \\ nil) do
+    %{
+      name: candidate_name || "confront_wrecker:#{id}",
+      kind: "confront_wrecker",
+      object: %{"actor" => id},
+      criterion: @confront.criterion <> " That person is #{name} (actor #{id}).",
+      place_name: nil,
+      target: %{"entity_id" => id, "entity_epoch" => epoch, "name" => name}
+    }
+  end
+
+  describe "people/2" do
+    test "满足作者条件（distrusted）的每个在场的人各一个候选，最不信任的在前；目标身份冻结（与说话项同形），判据写明对象" do
+      assert Offers.people([@gather, @confront, @rest], sight()) == [
+               confront(24, 1, "Corvin"),
+               confront(23, 4, "Brann")
+             ]
+    end
+
+    test "条件不满足的人、不在观察里的人、自己都没有候选；没有一个人满足就整类没有" do
+      # 只剩 Mara（+0.25）与不在场的 99。
+      assert Offers.people(
+               [@confront],
+               sight([%{actor: 21, trust: 0.25}, %{actor: 99, trust: -0.90}])
+             ) == []
+
+      assert Offers.people([@confront], sight([])) == []
+      # 没有对人的登记项。
+      assert Offers.people([@gather, @rest], sight()) == []
+    end
+
+    test "登记名占了 <登记名>:<cid> 就往后加下划线避让；种类、对象与目标不变；登记的地名原样带上" do
+      registered = [%{@confront | place_name: "the plot"}, %{@rest | name: "confront_wrecker:24"}]
+
+      assert [corvin, _brann] = Offers.people(registered, sight())
+
+      assert corvin == %{
+               confront(24, 1, "Corvin", "confront_wrecker:24_")
+               | place_name: "the plot"
+             }
+    end
+
+    test "几项对人的登记按登记次序各自展开" do
+      watch = %{@confront | name: "watch_closely", criterion: "Keep an eye on them."}
+
+      assert Enum.map(Offers.people([watch, @rest, @confront], sight()), & &1.name) == [
+               "watch_closely:24",
+               "watch_closely:23",
+               "confront_wrecker:24",
+               "confront_wrecker:23"
+             ]
     end
   end
 

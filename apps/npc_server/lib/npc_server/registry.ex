@@ -28,8 +28,9 @@ defmodule NpcServer.Registry do
                     {"name": 候选名, "criterion": 同上, "place": [x, z], "stay_ticks": 待多久（tick，60 Hz，正整数）}
                     {"name": 候选名, "criterion": 同上, "person": 选择器, "stay_ticks": 同上}
                   技能只能是 build / gather / expand / travel（参数见 `NpcServer.Brain` 的共用技能命令）；去处由 travel 走过去。
-                  “去找某人”的选择器只有 "distrusted"（附近信任 ≤ −0.2 中最低的那个人，`NpcServer.Mind.person/2`），
-                  选中时由 travel 走到他身边再待 stay_ticks。每项有四个基本键，place 与 person 同写、未知选择器都被拒。
+                  “去找某人”的选择器只有 "distrusted"（此刻观察里 Life 信任 ≤ −0.2 的人，`NpcServer.Mind.people/3`）：
+                  发问时 `NpcServer.Offers.people/2` 把满足条件的每个人展开成一个候选 `<候选名>:<cid>`（计划里是可点名的种类），
+                  选中时由 travel 走到冻结的那个人身边再待 stay_ticks。每项有四个基本键，place 与 person 同写、未知选择器都被拒。
                   三种形状都可以另加 "place_name"：这项活动在哪里的名字（非空字符串，如 "the plaza"）。
                   它只进记忆：活动结束时 Life 把它写成那条经历的 `place:<地名>` tag，召回按地点调取（`NpcServer.Life.activity/2`）；
                   不进给 Jev 的候选，也不决定去哪里。空串、非字符串被拒；不写就是没有地名（profile 里为 nil）。
@@ -73,7 +74,7 @@ defmodule NpcServer.Registry do
     "expand" => :expand,
     "travel" => :travel
   }
-  # “去找某人”候选可用的选择器（`NpcServer.Mind.person/2`）：现在只有 confront_wrecker 要用的 distrusted。
+  # “去找某人”候选可用的选择器（作者条件，`NpcServer.Mind.people/3` 按人判定）：现在只有 confront_wrecker 要用的 distrusted。
   @people %{"distrusted" => :distrusted}
   # 一次 Jev 请求的超时（毫秒）。选择是秒级决策（离线实验 4,076 次里最慢 3.12 秒），不沿用给 LLM 定的 60 秒缺省。
   @jev_timeout_ms 10_000

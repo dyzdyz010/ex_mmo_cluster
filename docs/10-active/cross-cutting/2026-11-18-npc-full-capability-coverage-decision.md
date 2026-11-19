@@ -94,7 +94,8 @@ flowchart LR
 - **A-2 候选 = 技能 × 眼下可行对象**。每个 `offer` 一个纯函数生成器：输入本轮观察、Life 规范心智里已有的栏（如自己的建筑）与目录（`read_catalog` 已有），
   输出 `%{name, kind, criterion, args, place_name}`；名字 `种类:对象`（沿用 `speak_to:` 的避让规则），参数在本轮冻结、执行时原样用，World 仍裁决。
   需要额外 World 只读查询的种类每轮至多一次，并进发问 worker 已有的并行读取。（批 1 实际做法：召回之后顺序读一次 `World.production_options/2`，见 §7“批 1 开工”“批 1 评审修正”。）静态登记只保留作者写的地理（place / person 与地名），它们不是系统能力。
-  `speak_to:` 迁成第一个生成器，行为不变。
+  `speak_to:` 迁成第一个生成器，行为不变。（后续：对人的登记项（person）也改由生成器 `Offers.people/2` 按人展开、可点名，种类 = 登记名、对象 = 人，
+  见任务层稿 [`2026-11-19-npc-long-task-loop-decision.md`](2026-11-19-npc-long-task-loop-decision.md) §7 ①。）
 - **A-3 Jev 只在技能层选**，不逐原语组合。量级：一次 gather 在技能里是几十步原子动作（look / probe_toward / use_tool / query_balances），逐步问 Jev 按中位 3.7 s
   算是分钟级纯等待、几十倍 token；一次技能选择是 3.7 s / 约 1.1k。组合写在技能里——手写，或按稿 B 由 NPC 自己写成树。
 - **A-4 候选规模**：① 可行性过滤（没料不列 craft、没可食余额不列 eat、工具带没有对应动作不列……）；② 每类按代码可算的相关性取前 k（距离、是否被今日意图点名、

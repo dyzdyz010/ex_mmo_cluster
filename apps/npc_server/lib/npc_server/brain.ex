@@ -27,7 +27,7 @@ defmodule NpcServer.Brain do
       %{id:, verb: :choose_activity, ended: nil | :completed | {:failed, 动作名, 原因文字}}   # 只有带候选表的 profile（注册表 "npc"）
 
   `choose_activity` 由 Runtime 受理（`NpcServer.Selector`）：在独立 worker 里问 Jev，done 的 data 是 `%{activity: 候选名}`
-  （选中生成的候选时另带冻结的执行参数：说话 `speech: 目标`，进食 / 合成 `action: {动作名, %{"material" => 材料号}}`）；
+  （选中生成的候选时另带冻结的执行参数：说话与对人的登记项 `kind: 种类, target: 目标`，进食 / 合成 `action: {动作名, %{"material" => 材料号}}`）；
   发问失败（传输错误、应答不成形、选项不在候选里、worker 崩溃）是 rejected，原因原样。等应答期间不阻塞其他事件。
 
   参数契约由 `NpcServer.Abilities` 给出（技能条目的 schema 原样取自技能的 `definition/1`）；Skills 的每个模块实现 Skill behaviour。

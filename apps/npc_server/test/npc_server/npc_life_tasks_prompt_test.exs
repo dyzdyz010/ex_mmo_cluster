@@ -89,7 +89,7 @@ defmodule NpcServer.NpcLifeTasksPromptTest do
                Reflection.materials_blocks(@materials) ++
                  [
                    "The task I am working on: Rebuild my hut\nWhy: It is mine.",
-                   "What I have done for it so far:\n- build_hut: failed (build: insufficient_material)",
+                   "What I have done for it so far:\n- build_hut: failed (build: I did not have enough material for it)",
                    "Steps I still meant to take:\n- speak_to Corvin (actor 7) — Ask for stone.",
                    "Why I am thinking about it now: My last step did not work out.",
                    "Decide what to do next for this task now."

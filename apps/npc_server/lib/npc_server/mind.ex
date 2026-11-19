@@ -16,7 +16,7 @@ defmodule NpcServer.Mind do
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文，句首不加任何标注 | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
   | Plans and promises（可缺） | 今天打算做的几件事（活动、次数、时限、做了几次、此刻的状态）与想做而现在做不到的事 | Life 的持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（`Life.mind/2` 的 `plan`） |
   | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
-  | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
+  | Recent activities | 最近做过的几件事及结果（结局写法见 `result/1`：失败原因码写成一句直白英文） | 选择器（`NpcServer.Selector` 的历史） |
 
   **What I have come to think**（R4，内容规范 §10.11 末尾用户对第 1 条的答复；写法 R4b，用户 2026-11-14 定）：只有一条，
   正文就是那句收尾句的原文——不改写、不截断，句首不加“多久以前”、不加 `I thought: `。**撤下的规则**：Life 给出 nil 时整栏不出现——
@@ -91,14 +91,14 @@ defmodule NpcServer.Mind do
   （坐标是锚点所在宏格；`is gone.` 是离线对照实测过的原文，见 docs/10-active/cross-cutting/tools/jev/s1c_diag.py 的 `SIT_GONE`）。
   哪几座来自 Life 的记忆，在不在只认发问那一刻 World 的现查结果；没有这样的建筑就一句不写。“受损但还在”不写（没有便宜的逐格读法）。
 
-  `person/2` 按选择器从此刻的观察与 Life 的信任里选一个人（候选活动“去找某人”，`NpcServer.Trees.npc/1`）；
-  “不信任”的界限与快照里写 `Distrusts` 的界限是同一个值。
+  `people/3` 按对人登记项的选择器，从此刻的观察与 Life 的信任里列出满足作者条件的人（`NpcServer.Offers.people/2` 把每人展开成
+  一个可点名的候选）；“不信任”的界限与快照里写 `Distrusts` 的界限是同一个值。
   """
   alias MmoContracts.WorldTime
   alias NpcServer.Persona
   alias NpcServer.Life.State
 
-  # 信任不高于它即“不信任”：快照写 Distrusts 与 person(:distrusted, _) 选人共用。
+  # 信任不高于它即“不信任”：快照写 Distrusts 与 people(:distrusted, _, _) 的作者条件共用。
   @distrusts -0.2
 
   # 合并召回时每路最多取几条。原创取值（没有外部依据），在 S1-Q 的真实导出上量过一次（三种处境都留住了拆屋事实、
@@ -232,41 +232,63 @@ defmodule NpcServer.Mind do
   end
 
   @doc """
-  按选择器选一个人 → `{:ok, %{entity_id:, entity_epoch:}}`（与关注动词的目标同一身份形状）或 `{:error, 原因}`。
-  `:distrusted`：观察里除自己以外、Life 信任 ≤ −0.2 的人中信任最低者；同值取近的（与处境栏同一距离），再同取 entity_id 小的。
-  没有这样的人 → `:nobody_distrusted`；观察里还没有 Life 的规范状态（Runtime 还没收到）→ `:life_not_ready`。
+  对人的登记项的作者条件（选择器）按人判定：此刻观察里满足条件的他人，按优先次序排好（观察里的角色原样，带
+  `entity_id` / `entity_epoch` / `position` 等）。`NpcServer.Offers.people/2` 把其中每个人展开成一个候选。
+  `relationships` 是发问那一刻 Life 视图的信任（`Life.mind/2` 的 `relationships`，与快照写 `Distrusts` 同一份）。
+
+  `:distrusted`：观察里除自己以外、Life 信任 ≤ −0.2 的人（与快照写 `Distrusts` 同一界限），信任低的在前；同值近的在前
+  （与处境栏同一距离），再同 entity_id 小的在前。没有这样的人 → `[]`（这一项登记此刻没有候选）。
   """
-  @spec person(:distrusted, map()) ::
-          {:ok, map()} | {:error, :nobody_distrusted | :life_not_ready}
-  def person(:distrusted, %{life: %{state: state}, self: self} = observation) do
-    trust = Map.new(State.relationships(state), &{&1.actor, &1.trust})
+  @spec people(:distrusted, map(), [%{actor: integer(), trust: float()}]) :: [map()]
+  def people(:distrusted, %{self: self} = observation, relationships) do
+    trust = Map.new(relationships, &{&1.actor, &1.trust})
 
-    candidates =
-      for e <- State.others(observation),
-          value = Map.get(trust, e.entity_id),
-          value <= @distrusts,
-          do: {{value, State.distance(self.position, e.position), e.entity_id}, e}
-
-    case candidates do
-      [] ->
-        {:error, :nobody_distrusted}
-
-      _ ->
-        {_, e} = Enum.min_by(candidates, &elem(&1, 0))
-        {:ok, %{entity_id: e.entity_id, entity_epoch: e.entity_epoch}}
-    end
+    for(
+      e <- State.others(observation),
+      value = Map.get(trust, e.entity_id),
+      value <= @distrusts,
+      do: {{value, State.distance(self.position, e.position), e.entity_id}, e}
+    )
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
   end
 
-  def person(:distrusted, _observation), do: {:error, :life_not_ready}
+  # 失败原因码 → 一句直白英文（任务层稿 §7 “② 失败原因直白英文”）。为什么在这里：`result/1` 是结局文字唯一的渲染处——
+  # Jev 的“最近做过的事”一栏、写进 Life 的活动经历（`NpcServer.Selector.experience/1`）与任务推进的“已做步骤的结局”
+  # （`Life.Tasks.Prompt.user_message/4`）都经它，映射放在别处就会有一路漏掉或写法不一。原因码本身（树的 `:last_failure`、
+  # Selector 历史、Life 持久行里的结构化结局）不变，只换给模型读的那半句。
+  #
+  # 只收实跑导出里出现过的四个码（`.demo/observe/` 下 `failed (…)` 计数：build: insufficient_material 427、
+  # build: occupied 63、gather: exhausted 40、travel: no_path 36）。每个码在产品里只有一个含义，所以按码查、不按“动作 + 码”，
+  # 动作名照旧写在前面。措辞是原创的，依据各码在产品源码里的真实含义：
+  # - exhausted：采石候选用尽，余额增量仍不到 units（`skills/gather.ex:22`、`:195`），与身体无关——K-0 两轮把旧写法
+  #   读成“我累坏了”，这一句就是为它写的（离线对照见 `.demo/observe/npc-reason-wording-20261119/`）；
+  # - insufficient_material：放下 / 吃 / 合成要的材料余额不够（`apps/voxel_region/lib/voxel_region/world/prefabs.ex:214-218`、
+  #   同目录 `production.ex:160`、`:177-178`）；
+  # - occupied：要放的格或挂点已经有东西（同目录 `prefabs.ex:411`、`:423`、`:430`、`:451`）；
+  # - no_path：走不过去——段终点没有站得下的地面或现在没有路（`skills/travel.ex:9-10`、`:211`，`body.ex:559-560`）。
+  # 不在表里的码原样写（与以前相同）；新码在实跑里出现、需要时再加一句。
+  @reason_words %{
+    "exhausted" =>
+      "there was nothing left there that I could cut, and I had less than I set out to gather",
+    "insufficient_material" => "I did not have enough material for it",
+    "occupied" => "something else was already in the place where it had to go",
+    "no_path" => "there was no way for me to walk there"
+  }
 
   @doc """
-  一项活动的结局的英文写法（“最近做过的事”一栏与活动经历共用）：`completed`、`failed (动作: 原因)`，
-  或被对话回合打断的 `interrupted (原因文字)`（`NpcServer.Selector.interrupted/2`）。
+  一项活动的结局的英文写法（“最近做过的事”一栏、活动经历与任务推进的“已做步骤的结局”共用）：`completed`、
+  `failed (动作: 原因)`，或被对话回合打断的 `interrupted (原因文字)`（`NpcServer.Selector.interrupted/2`）。
+  失败的原因在实跑里出现过的四个码（`exhausted`、`insufficient_material`、`occupied`、`no_path`）写成一句直白英文，
+  如 `failed (travel: there was no way for me to walk there)`；其余的码原样写，如 `failed (travel: stuck)`。
   """
   @spec result(:completed | {:failed, String.t(), String.t()} | {:interrupted, String.t()}) ::
           String.t()
   def result(:completed), do: "completed"
-  def result({:failed, act, reason}), do: "failed (#{act}: #{reason})"
+
+  def result({:failed, act, reason}),
+    do: "failed (#{act}: #{Map.get(@reason_words, reason, reason)})"
+
   def result({:interrupted, reason}), do: "interrupted (#{reason})"
 
   @doc """

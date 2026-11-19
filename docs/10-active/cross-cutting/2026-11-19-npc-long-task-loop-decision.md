@@ -297,3 +297,66 @@ flowchart LR
   - `DayPlan.Prompt` 公开 `fill_template/3`（模板 + 人格卡 + 词表 + `"object"` 一栏），回顾与推进共用；`Tasks.Prompt.system_prompt/2` 改用它，`object_slot/0` 随之收回为模块属性；
     `Tasks.Prompt.task_line/2` 没有外部调用方，改私有。`DayPlan.Prompt` 模块说明改成现状（本模块渲染词表、`review_system_prompt/2` 直接收词表）。
   - 评审第 8 条（推进时可点名的人 = 关系 ∪ 此刻观察，回顾时在场、不在关系里的人推进时会从词表消失）记在 K-8，T-1 / K-8 设计 `seen` 时定。
+- 2026-11-19（第二十二个统筹会话）：K-0 复测暴露的两项，用户定“都按建议做”（用户 2026-11-19 在对话里答复，原话：“都按建议做，开工”），排在 T-1 之前：
+  ① **对人的登记活动改由生成器展开、可点名**（如 `confront_wrecker`）：同 `speak_to` 的做法，候选 `种类:<cid>`、对象 `%{"actor" => cid}`，此刻观察里满足作者条件的人才成为候选；计划 / 任务词表里该种类 `objects: :people`。
+  ② **失败原因码改成直白英文**：执行结局的原因在给模型看的文字里（`Mind.result/1` 等，Jev 与规划 / 推进共用）改写成一句直白描述（如 `exhausted` → 这堆料采完了），改前后各做一次请求数封顶的离线对照。
+- 2026-11-19：**① 对人的登记活动改由生成器展开、可点名**（实施子会话，基于 `8f260bc1`，未提交，待统筹评审；未调模型、未起 release）。
+  - 源码事实：登记项 `{"person": "distrusted", "stay_ticks": n}` → `run: {:person, :distrusted, n}`（`registry.ex:673-684`，选择器表 `:77`）；作者条件**由代码判定**，就是
+    `Mind.person(:distrusted, _)`：观察里 Life 信任 ≤ −0.2 的人（与快照写 `Distrusts` 同一界限 `@distrusts`，`mind.ex` 原 `:239-260`），原来在执行时（树的 `person_args`，`trees.ex` 原 `:176-183`）
+    才选最低的一人、选不到以 `failed (travel: nobody_distrusted)` 结束；判据里“曾毁过我建的东西”只是作者写给 Jev 的英文（`s1r7/scripts/params-s1r7.exs:81-88`），代码的对应物是信任（规则模式一次破坏 −0.35）。
+    所以作者条件能在 Offers 侧按人判定，不需要发明规则。`Offers.registered/2` 原样列出它（`kind` = 登记名、对象 nil），`plan_kinds/1` 给它 `objects: :none`。
+  - 改法：`Mind.person/2` → `Mind.people/3`（选择器、观察、发问那一刻 Life 视图的 `relationships`；满足条件的人全列，信任低 → 近 → id 小在前，次序沿用原选人规则）；
+    新生成器 `Offers.people/2`：每项对人的登记 × 满足条件的每个人一个候选，名字 `<登记名>:<cid>`（`vacant_name` 避让）、`kind` = 登记名、`object` = `%{"actor" => cid}`、
+    判据 = 作者原句 + ` That person is <名字> (actor <cid>).`（**原创措辞**，未离线测）、登记的地名原样、冻结 `target` 与说话项同形（同一个 `person_target/1`）。
+    `registered/2` 与 `kinds(:registered)` 不再列对人的项；`kinds(:people)` 给 `objects: :people`（Life 起槽展开可点名的人，与说话同一套，`life.ex` 的 `vocabulary/2` 不用改）。
+    生成器次序 `[:registered, :people, :speak_to, :eat, :craft]`：`:people` **紧跟登记项**而不是追加在末尾——它展开的仍是作者登记的项，原来就排在登记项里；部署里 confront_wrecker
+    是最后一项登记，放这里请求体次序不变（只是名字与判据带上人），说话 / 背包的相对次序也不变（说明写在 `@generators` 旁）。
+    冻结路径：Runtime `frozen/1` 对带 `target` 的候选交 `%{kind:, target:}`（原来说话交 `speech: target`）；树的说话分支与对人分支共用守卫 `targeting?/3`（按冻结的 `kind` 分辨，种类名唯一由登记边界保证），
+    对人分支 `travel` 到 `Map.take(target, ["entity_id", "entity_epoch"])` 再待登记的停留；`Offers.speak_kind/0` 是说话种类名的唯一定义。`Offers.candidates/4` 第 4 个参数由 `buildings` 改为这次发问的 Life 视图（读 `buildings` 与 `relationships`）。
+  - 与要求的偏差（请统筹定）：(a) 覆盖登记 travel 改为 `{:offer, [:registered, :people]}`——一个条目由两个生成器给出，`{:offer, 生成器}` 允许写列表（`generators/1` 用 `List.wrap`），T-A1 用例随之放宽；
+    不这样做 `:people` 进不了 `generators/1`（候选只从覆盖登记生成）。(b) 执行时的 `nobody_distrusted` / `life_not_ready` 不再产生（没有人满足条件就没有候选）；`stale_target` / `target_moved` 仍由 travel 报。
+    (c) 对话回合里替换来话者说话候选的过滤原来按“有 `target` 且是来话者”，现在对人的候选也有 `target`，改为只换 `kind == speak_to` 的那一项（否则会误删 `confront:<来话者>`）。
+    (d) `speak_to/2` 的推导式仍按 `entity_epoch` / `name` 过滤观察里的角色（原行为；有两个集成用例的手写观察不带 `entity_epoch`，一度因此让发问 worker 崩溃，已恢复原过滤）；`people/2` 不加这层过滤（真实观察总带）。
+  - 测试（WSL；`cd apps/npc_server && mix test --no-start <文件>`；数据库 `npc-dev-pg-20261117`:55480，每个 VM 自建 `mmo_test_*` 独占库、跑完删；日志 `.demo/observe/npc-reason-wording-20261119/logs/p1-*.log`）：
+    先红：`npc_offers_test` / `npc_mind_test` / `npc_life_day_plan_test` 共 13 红（`people/2`、`Mind.people/3`、生成器次序、覆盖登记、`registered/2` 不列对人项、`plan_kinds` 可点名），
+    `npc_selector_test:731`（纯树：冻结目标 travel、说话目标不 travel）、`:1430`（新集成：真实 World 拆一格 → Life 信任 −0.35 → 下一问出现 `confront:<cid>`、判据写明对象、排在登记项之后；选中 → travel 参数恰为冻结身份；经历种类 / 对象）、
+    `npc_registry_test:1519`（改写：没有人满足条件 → 候选里没有它）共 3 红。后绿：四个核心文件 151 通过 / 2 排除；`npc_registry_test` 23（另改一条断言：对话回合预选的 done data 由 `speech:` 改为 `kind` + `target`）、
+    `npc_offers_integration_test` 3、`npc_life_day_plan_integration_test` 22、`npc_dialogue_world_test` 5，`npc_life_tasks` / `_tasks_prompt` / `_day_plan_prompt` / `_day_plan_round` / `npc_dialogue_life` / `npc_dialogue` / `npc_speak` / `npc_jev` / `npc_selection_lane` / `npc_spend_life` 共 88 通过 / 3 排除。
+    扩大的理由：说话的冻结键由 `speech` 改为 `kind` + `target`，触及说话与对话回合链路（registry / dialogue / speak / dialogue_world）。
+  - 文档：`Offers` / `Mind` / `Trees` / `Selector` / `Runtime` / `Brain` / `Registry` moduledoc 与 `apps/npc_server/lib/npc_server/README.md`（Offers 一段、统一形态参数、日计划种类）同步。
+  - 评审修正（实施子会话，同一工作区，未提交；未调模型、未起 release）：
+    (1) 偏差 (c) 的过滤原来没有测试证伪：`npc_selector_test` 的 `:1432` 集成用例（上文 `:1430`）末尾续写——Brann 来话起对话回合，候选里 `confront:<cid>` 仍在、
+    `speak_to:<cid>` 只有 reply 那一项且排最后（信任来自同一用例里真实拆一格）。把过滤改回旧写法 `&1[:target]["entity_id"] == speaker_id` 时红（`confront:<cid>` 被误删），还原后绿。
+    (2) 上文“经历种类 / 对象”原先只写在注释里、没有断言：同一用例在停留结束后的下一问补断言 `Selector.experience/1`（交给 Life 的那一份）为 `kind: "confront"`、`object: %{"actor" => cid}`。
+    (3) 纯树用例 `:731` 的候选名 `confront:2_` 改为生成器真会产出的 `confront:2`。
+    (4) 文档补现状：`life.ex` 日计划“词表”一条、`Life.DayPlan` moduledoc（对人的登记项是可点名人的种类，不再是静态种类）、`Selector.experience/1` 的 @doc（对人的登记项的种类与对象）、
+    稿 A A-2 加一句指向本条。
+- 2026-11-19：**② 失败原因直白英文**（实施子会话，接 ① 之后、同一工作区，未提交，待统筹评审；调了模型 12 次，未起 release）。
+  - 映射位置与理由：原因码 → 一句直白英文只定义一处，`NpcServer.Mind` 的 `@reason_words`，由 `Mind.result/1` 查。`result/1` 是结局文字唯一的渲染处——
+    Jev 的“最近做过的事”一栏、写进 Life 的活动经历（`Selector.experience/1`）、任务推进的“已做步骤的结局”（`Tasks.Prompt.user_message/4`）都经它；
+    放在别处就会有一路漏掉或写法不一。结构化结局（树的 `:last_failure`、Selector 历史、Life 持久行）里的原因码不变，只换给模型读的那半句；写法仍是 `failed (<动作>: <句子>)`。
+    按码查、不按“动作 + 码”：四个码在产品里各只有一个含义（下表的出处），同一句对任何报这个码的动作都成立。不在表里的码原样写（现有行为）。
+  - 覆盖的码 = `.demo/observe/` 下实跑导出里出现过的全部 `failed (…)`（只计实跑的 release.log / 选择历史，计划稿里手写的不算）。措辞**原创**：
+
+    | 码 | 实跑次数 | 句子 | 依据（产品源码里的含义） |
+    |---|---|---|---|
+    | `insufficient_material` | 427（build） | `I did not have enough material for it` | 放下 / 吃 / 合成要的余额不够：`apps/voxel_region/lib/voxel_region/world/prefabs.ex:214-218`、`production.ex:160`、`:177-178` |
+    | `occupied` | 63（build） | `something else was already in the place where it had to go` | 要放的格或挂点已有东西：`prefabs.ex:411`、`:423`、`:430`、`:451` |
+    | `exhausted` | 40（gather） | `there was nothing left there that I could cut, and I had less than I set out to gather` | 采石候选用尽、余额增量仍不到 units：`apps/npc_server/lib/npc_server/skills/gather.ex:22`、`:195` |
+    | `no_path` | 36（travel） | `there was no way for me to walk there` | 段终点没有站得下的地面或现在没有路：`skills/travel.ex:9-10`、`:211`，`body.ex:559-560` |
+
+    已存的历史经历原文（写入时的旧写法，如 `failed (build: insufficient_material)`）不改，那是已存的记忆。
+  - 测试（WSL；同 ① 的入口与数据库；日志 `.demo/observe/npc-reason-wording-20261119/logs/p2-*.log`）：先红 7（`npc_mind_test` 新 `describe "result"` 2 条——四个码的句子、
+    同一码跨动作同句 + 未登记码原样；快照全文 1 条；`npc_selector_test` 经历句 2 条与真实 Runtime 集成的 state 1 条；`npc_life_tasks_prompt_test` 用户消息 1 条），
+    `npc_offers_integration_test` 的两处 state 断言同改。后绿：上述三文件 59 通过 / 2 排除；回归 `npc_mind` / `npc_selector` / `npc_offers` / `npc_offers_integration` /
+    `npc_life_tasks*` / `npc_life_day_plan*` / `npc_registry` / `npc_dialogue_life` 共 265 通过 / 2 排除；`MIX_ENV=test mix compile --warnings-as-errors --force` 通过；改动文件 `mix format --check-formatted` 通过；
+    跑完 `npc-dev-pg-20261117` 的库表与跑前相同（`mmo_dev`、`postgres` 与跑前已有的 `npc_dev_*` / `npc_sel_*`，没有 `mmo_test_*`）。
+  - 离线对照（规格 `.demo/observe/npc-reason-wording-20261119/plan.md`，发问前写定未改；结果同目录 `results.md` / `results.json` / `raw/`）：K-0 复测带 `gather: exhausted` 的 3 个真实用例 × 旧 / 新 × 2 次 = 12 次，
+    旧版在改 `Mind.result/1` 前由产品渲染、与复测请求逐字节相同，新版只差结局那一行。12 / 12 HTTP 200、`stop`；用量 prompt 28,642（缓存命中 25,846）+ completion 25,734 = 54,376 token（非高峰）。
+    读数：合法 旧 6 / 6、新 6 / 6；读成疲劳 旧 1、新 **1**；读对 旧 3、新 4；不明 旧 2、新 1；`length` 都 0；出向 min / 中位 / max 旧 423 / 1,469 / 6,760、新 597 / 1,292 / 3,141。
+    按结论规则“新版读成疲劳 > 0 → 措辞仍有问题，交统筹”：唯一一份（new-A01-r1）命中的是 `\brest\b`，出处 `cannot.why` 的 “gather **the rest of** the stone”，同一份 `note` 写 “the stone pile worked out”；
+    判定不改，交统筹定。只记录：新当头步仍是 `gather_stone` 旧 2 / 6、新 0 / 6；思考里疲劳词旧 106 次、新 0 次。没测 build / travel 三个码的新句子、Jev 选择与回顾。
+  - 文档：`Mind` moduledoc / `result/1` @doc 与 `apps/npc_server/lib/npc_server/README.md` 同步。
+- 2026-11-19（第二十二个统筹会话，裁定 ②）：离线对照按发问前规则判“措辞仍有问题”（新版 1 份记为读成疲劳），**原判保留**；统筹会话读原文确认那份命中的是
+  `cannot.why` 里 “the rest of the stone” 的 `rest`（规则正则的词面误中，同份 note 写 “the stone pile worked out”、思考疲劳词 0），且思考疲劳词 106 → 0、当头步重复 `gather_stone` 2/6 → 0/6。
+  **裁定采用新措辞**。build / travel 三个码的新句子与对 Jev 的影响未离线测，按用户 happy path 方向留到下一次实跑观察；已存记忆的旧写法不迁移（新旧并存）。

@@ -3,7 +3,7 @@ Code.require_file("../support/reflection_fixtures.exs", __DIR__)
 defmodule NpcServer.NpcMindTest do
   @moduledoc """
   只测试：心智快照 `NpcServer.Mind` 的各栏英文转写（Now 栏、按游戏时间写的“多久以前”、背包去零、召回行去后缀、
-  反思新栏的位置与写法）、
+  反思新栏的位置与写法、活动结局的写法 `result/1`）、
   各路召回的描述（`recall_queries/2`）与合并（`merge_recalled/1`）、按选择器选人（`person/2`），以及 Life 给快照的只读投影
   （`Life.State.feelings/2`、`relationships/1`）。
 
@@ -168,7 +168,8 @@ defmodule NpcServer.NpcMindTest do
                   ~s|My building "small hut" at (25, 518, 37) is gone. My building "shed" at (-3, 64, -12) is standing. | <>
                   "Inventory: material 11: 512 units."},
                {"Recent activities",
-                "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
+                "Oldest first. build_north: completed. " <>
+                  "rest_at_home: failed (travel: there was no way for me to walk there)."}
              ] == Mind.snapshot(profile(), observation(), history, life)
     end
 
@@ -711,24 +712,20 @@ defmodule NpcServer.NpcMindTest do
     end
   end
 
-  # 走向一个角色（S1-F）：候选活动 `{"person": "distrusted"}` 被选中时，由此刻的观察与 Life 的信任选出一个人。
-  describe "person" do
+  # 对人的登记项（S1-F 起的 `{"person": "distrusted"}`）：作者条件由 Mind 按人判定，`NpcServer.Offers.people/2` 把满足条件的
+  # 每个人展开成一个候选（K-0 复测后用户定：可点名）。信任取发问那一刻 Life 视图的 `relationships`（与快照写 `Distrusts` 同一份）。
+  describe "people" do
     # 自己（7）在原点；2 在 (3, 0, 4) → 5 米，信任 −0.35；3 在 (0, 0, 9) → 9 米，−0.70；4 在 1 米，+0.25；5 没有关系。
     # 9 的信任 −0.90 最低，但不在观察里（不在附近）。
-    defp people(trust, entities) do
-      relationships =
-        Map.new(trust, fn {actor, value} ->
-          {to_string(actor), %{"trust" => value, "source_seq" => 1}}
-        end)
+    defp sight(entities),
+      do: %{self: %{entity_id: 7, position: {0.0, 64.0, 0.0}}, entities: entities}
 
-      state = put_in(State.new(7, "w1", 0, 0), ["relationships"], relationships)
-
-      %{
-        self: %{entity_id: 7, position: {0.0, 64.0, 0.0}},
-        entities: entities,
-        life: %{state: state, now_ms: 0, thanks: 0}
-      }
-    end
+    # Life 视图的形状（`Life.mind/2` 的 `relationships`，`Life.State.relationships/1`）。
+    defp relations(trust),
+      do:
+        trust
+        |> Enum.map(fn {actor, value} -> %{actor: actor, trust: value} end)
+        |> Enum.sort_by(& &1.actor)
 
     defp at(id, x, z), do: %{entity_id: id, entity_epoch: id + 10, position: {x, 64.0, z}}
 
@@ -737,43 +734,86 @@ defmodule NpcServer.NpcMindTest do
 
     defp trust, do: %{2 => -0.35, 3 => -0.70, 4 => 0.25, 9 => -0.90}
 
-    test "the least trusted person in sight, at −0.2 or below; nearer on a tie, then the smaller id" do
-      # 3（−0.70）比 2（−0.35）更不信任；9 更低但不在观察里。
-      assert {:ok, %{entity_id: 3, entity_epoch: 13}} ==
-               Mind.person(:distrusted, people(trust(), everyone()))
+    defp entity_ids(people), do: Enum.map(people, & &1.entity_id)
 
-      # 3 不在观察里 → 2。
-      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
-               Mind.person(:distrusted, people(trust(), List.delete(everyone(), at(3, 0.0, 9.0))))
+    test "everyone in sight at −0.2 or below, least trusted first; nearer on a tie, then the smaller id" do
+      # 3（−0.70）比 2（−0.35）更不信任，排前；9 更低但不在观察里；4（+0.25）、5（没有关系）与自己不在列。
+      assert [at(3, 0.0, 9.0), at(2, 3.0, 4.0)] ==
+               Mind.people(:distrusted, sight(everyone()), relations(trust()))
 
-      # 2 与 3 同为 −0.35：近的 2（5 米 < 9 米）。
-      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
-               Mind.person(:distrusted, people(%{trust() | 3 => -0.35}, everyone()))
+      # 3 不在观察里 → 只剩 2。
+      assert [2] ==
+               entity_ids(
+                 Mind.people(
+                   :distrusted,
+                   sight(List.delete(everyone(), at(3, 0.0, 9.0))),
+                   relations(trust())
+                 )
+               )
 
-      # 同信任、同距离（6 在 (−3, 0, −4) 也是 5 米）：id 小的 2，与列出的次序无关。
-      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
-               Mind.person(
-                 :distrusted,
-                 people(%{2 => -0.35, 6 => -0.35}, [at(6, -3.0, -4.0), at(2, 3.0, 4.0)])
+      # 2 与 3 同为 −0.35：近的 2（5 米 < 9 米）在前。
+      assert [2, 3] ==
+               entity_ids(
+                 Mind.people(:distrusted, sight(everyone()), relations(%{trust() | 3 => -0.35}))
+               )
+
+      # 同信任、同距离（6 在 (−3, 0, −4) 也是 5 米）：id 小的 2 在前，与观察次序无关。
+      assert [2, 6] ==
+               entity_ids(
+                 Mind.people(
+                   :distrusted,
+                   sight([at(6, -3.0, -4.0), at(2, 3.0, 4.0)]),
+                   relations(%{2 => -0.35, 6 => -0.35})
+                 )
                )
 
       # 界限 −0.2 本身入选（与快照写 Distrusts 同一界限）。
-      assert {:ok, %{entity_id: 2, entity_epoch: 12}} ==
-               Mind.person(:distrusted, people(%{2 => -0.2}, everyone()))
+      assert [2] ==
+               entity_ids(Mind.people(:distrusted, sight(everyone()), relations(%{2 => -0.2})))
     end
 
-    test "nobody distrusted in sight, or no Life state yet: an explicit reason" do
+    test "nobody distrusted in sight: an empty list (the registration offers no candidate)" do
       # 只有 −0.10（接近中立）与正的信任。
-      assert {:error, :nobody_distrusted} ==
-               Mind.person(:distrusted, people(%{2 => -0.10, 4 => 0.25}, everyone()))
+      assert [] ==
+               Mind.people(:distrusted, sight(everyone()), relations(%{2 => -0.10, 4 => 0.25}))
 
-      # 只有自己。
-      assert {:error, :nobody_distrusted} ==
-               Mind.person(:distrusted, people(%{7 => -1.0}, [at(7, 0.0, 0.0)]))
+      # 只有自己（对自己的“信任”不算）。
+      assert [] == Mind.people(:distrusted, sight([at(7, 0.0, 0.0)]), relations(%{7 => -1.0}))
 
-      # Runtime 还没收到 Life 的规范状态：观察里没有 life。
-      assert {:error, :life_not_ready} ==
-               Mind.person(:distrusted, Map.delete(people(trust(), everyone()), :life))
+      # 没有任何关系。
+      assert [] == Mind.people(:distrusted, sight(everyone()), [])
+    end
+  end
+
+  # 活动结局的英文写法（任务层稿 §7 “② 失败原因直白英文”）：实跑里出现过的四个失败原因码写成一句直白英文，
+  # 动作名照旧在前；没登记的原因码原样。期望全文手写（不从 Mind 里取映射）。
+  describe "result" do
+    test "completed and interrupted are unchanged" do
+      assert "completed" == Mind.result(:completed)
+      assert "interrupted (to talk with Mara)" == Mind.result({:interrupted, "to talk with Mara"})
+    end
+
+    test "the four failure codes seen in real runs read as one plain sentence, after the act" do
+      assert "failed (gather: there was nothing left there that I could cut, and I had less than I set out to gather)" ==
+               Mind.result({:failed, "gather", "exhausted"})
+
+      assert "failed (build: I did not have enough material for it)" ==
+               Mind.result({:failed, "build", "insufficient_material"})
+
+      assert "failed (build: something else was already in the place where it had to go)" ==
+               Mind.result({:failed, "build", "occupied"})
+
+      assert "failed (travel: there was no way for me to walk there)" ==
+               Mind.result({:failed, "travel", "no_path"})
+    end
+
+    test "the same code reads the same after any act; a code with no sentence stays as it is" do
+      # 进食被 World 拒绝也是余额不足（`VoxelRegion.World.Production.consumable/3`），同一句。
+      assert "failed (eat: I did not have enough material for it)" ==
+               Mind.result({:failed, "eat", "insufficient_material"})
+
+      assert "failed (travel: stuck)" == Mind.result({:failed, "travel", "stuck"})
+      assert "failed (build: body_timeout)" == Mind.result({:failed, "build", "body_timeout"})
     end
   end
 

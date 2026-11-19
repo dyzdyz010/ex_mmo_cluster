@@ -19,9 +19,10 @@ defmodule NpcServer.Offers do
     G --> J["Selector → Jev top1"]
   ```
 
-  - `offer`：有一个本模块导出的二元生成器，产出候选。现在四个：`registered/2`（作者登记的 build / gather / expand /
-    travel 项，过渡形态：参数仍是作者手写的）、`speak_to/2`（说话，对象是此刻说话范围内的人）、`eat/2` 与 `craft/2`
-    （批 1：背包里眼下能吃一份 / 能合成一次的材料）。
+  - `offer`：有本模块导出的二元生成器，产出候选（一个条目由几个生成器给出时登记写列表）。现在五个：`registered/2`（作者登记的
+    build / gather / expand / travel 项，过渡形态：参数仍是作者手写的）、`people/2`（作者登记的对人的项，如 confront_wrecker：
+    按作者条件把此刻满足条件的每个人展开成一个可点名的候选，K-0 复测后用户定；travel 条目由它与 `registered/2` 共同给出）、
+    `speak_to/2`（说话，对象是此刻说话范围内的人）、`eat/2` 与 `craft/2`（批 1：背包里眼下能吃一份 / 能合成一次的材料）。
   - `inside`：只在列出的技能内部当原语调用，技能本身是 offer。
   - `withheld`：不给统一形态，理由写在登记里（哪一批开放、或为什么永不开放）。
 
@@ -31,20 +32,23 @@ defmodule NpcServer.Offers do
   ## 候选（`candidates/4`）
 
   候选只从覆盖登记生成（唯一来源）：`generators/1` 取登记里 offer 一类的生成器，按本模块显式写下的生成器次序
-  `[:registered, :speak_to, :eat, :craft]` 排列（不按名字排序：新增生成器追加在末尾，不改变已有候选的次序；登记里出现次序表
-  没有的生成器即 raise），`candidates/4` 按这个次序逐个生成再连起来；某个条目改成 inside / withheld，它的生成器（若没有别的
-  offer 条目共用）就不再出候选。现在一轮候选 = `registered/2`（登记项按建筑条件保序过滤）++ `speak_to/2`（与 Scene 此刻允许
-  开新话题的目标取交集）++ `eat/2` ++ `craft/2`（各取前 k 项，`@per_kind` 现为 3，原创取值待 X-1）。
+  `[:registered, :people, :speak_to, :eat, :craft]` 排列（不按名字排序；新增生成器一般追加在末尾，`:people` 紧跟登记项的理由
+  写在 `@generators` 旁；登记里出现次序表没有的生成器即 raise），`candidates/4` 按这个次序逐个生成再连起来；某个条目改成
+  inside / withheld，它的生成器（若没有别的 offer 条目共用）就不再出候选。现在一轮候选 = `registered/2`（登记项按建筑条件保序
+  过滤，不含对人的项）++ `people/2`（对人的登记项 × 此刻满足作者条件的人）++ `speak_to/2`（与 Scene 此刻允许开新话题的目标
+  取交集）++ `eat/2` ++ `craft/2`（各取前 k 项，`@per_kind` 现为 3，原创取值待 X-1）。
 
   ```mermaid
   flowchart LR
-    O["本轮观察 + Life 的建筑"] --> REG["registered/2"]
+    O["本轮观察 + Life 视图<br/>（建筑、信任）"] --> REG["registered/2"]
+    O --> PE["people/2：对人的登记项 × 满足作者条件的人"]
     O --> SP["speak_to/2 ∩ Scene 新话题资格"]
     W["World.production_options/2<br/>（每轮一次）<br/>进食 / 合成门由 World 判定"] --> EAT["eat/2：能吃一份的"]
     W --> CR["craft/2：能合成一次的"]
     EAT --> K["每类按材料号升序取前 k"]
     CR --> K
     REG --> C["本轮候选（有序）"]
+    PE --> C
     SP --> C
     K --> C
   ```
@@ -52,6 +56,7 @@ defmodule NpcServer.Offers do
   每个候选是 `%{name, kind, object, criterion, place_name, …}`：`name` 是给 Jev 的选项名（本轮唯一），`kind` 是计划与记账用的
   种类，`object` 是种类的对象（没有为 nil）。登记项 `kind` = 候选名、`object` = nil（`static/1`），`run` 是登记时构造的分支规格；
   说话项 `kind` = `"speak_to"`、`object` = `%{"actor" => cid}`，另带 `target`（冻结的目标身份与代次，Runtime 原样交给 speak 技能）；
+  对人的登记项 `kind` = 登记名、`object` = `%{"actor" => cid}`，同样带 `target`（与说话项同形；树按 `kind` 分辨，travel 过去再待登记的停留）；
   背包项 `kind` = `"eat"` / `"craft"`、`object` = `%{"material" => 材料号}`，另带 `action` = `{动作名, %{"material" => 材料号}}`
   （冻结的世界动作，键名与登记项的 `run` 分开：两者含义不同；`Trees.npc/1` 按 `acts/0` 建的分支原样执行，World 仍做最后裁决）。
   被选中的候选整份冻结进选择（`NpcServer.Selector` 的 `candidate`），执行与经历都读这一份，不回查登记表。
@@ -66,8 +71,8 @@ defmodule NpcServer.Offers do
   ## 计划种类（`plan_kinds/1`，批 0b）
 
   日计划的词表是“种类 + 可选对象”，不是候选名：候选名（`speak_to:<cid>`、`eat:<材料号>`）逐轮变，计划写不出、记账也对不上。
-  种类与候选的 `kind` 同一套名字，按生成器次序：登记项各是一个静态种类（没有对象），说话是 `speak_to`（对象是人，由 Life 展开成
-  可点名的显示名），进食 `eat`、合成 `craft`（批 1，计划里不可点名材料）。活动结束时 `Selector.experience/1` 交出候选的
+  种类与候选的 `kind` 同一套名字，按生成器次序：登记项各是一个静态种类（没有对象），对人的登记项各是一个对象为人的种类（同说话），
+  说话是 `speak_to`（对象是人，由 Life 展开成可点名的显示名），进食 `eat`、合成 `craft`（批 1，计划里不可点名材料）。活动结束时 `Selector.experience/1` 交出候选的
   `{kind, object}`，`Life.DayPlan.record_activity/4` 按它记账（没点名的 eat 意图对吃哪种都成立）。
   """
   alias NpcServer.Life.State
@@ -79,8 +84,11 @@ defmodule NpcServer.Offers do
 
   # 生成器的次序（批 1 前置，统筹定）：一轮候选按它连起来，日计划的种类也按它排。显式写下而不按名字排序——按名字排
   # 新增的 `:craft` / `:eat` 会排到 `:registered` 之前，悄悄改变候选次序（请求体是有序对象，次序对 Jev 有意义）。
-  # 新生成器追加在末尾；覆盖登记里出现这里没有的生成器是登记写错，`generators/1` 直接 raise。
-  @generators [:registered, :speak_to, :eat, :craft]
+  # 新生成器一般追加在末尾；覆盖登记里出现这里没有的生成器是登记写错，`generators/1` 直接 raise。
+  # `:people`（对人的登记项，K-0 复测后用户定可点名）是例外，紧跟 `:registered`：它展开的仍是作者登记的项，原来就排在登记项
+  # 之中；放在这里，部署里排在最后一项登记的 confront_wrecker 在请求体里的位置不变（只是名字与判据带上了人），说话、进食、
+  # 合成的相对次序也不变。追加在末尾则会把它挪到生成的说话 / 背包候选之后，改变 Jev 已经实测过的次序。
+  @generators [:registered, :people, :speak_to, :eat, :craft]
 
   # 背包生成器：冻结的执行参数是一条世界动作 `action: {动作名, %{"material" => 材料号}}`，`Trees.npc/1` 按动作名建分支。
   # 动作名也是计划里这两类的种类名（`kinds/1`），候选的 `kind` 与计划记账靠它们相等。
@@ -97,7 +105,8 @@ defmodule NpcServer.Offers do
     "build" => {:offer, :registered},
     "gather" => {:offer, :registered},
     "expand" => {:offer, :registered},
-    "travel" => {:offer, :registered},
+    # travel 由两种作者登记项用到：去处 / 技能项（`registered/2`）与对人的登记项（`people/2`，按人展开）。
+    "travel" => {:offer, [:registered, :people]},
     "speak" => {:offer, :speak_to},
     "eat" => {:offer, :eat},
     "craft" => {:offer, :craft},
@@ -151,14 +160,15 @@ defmodule NpcServer.Offers do
   }
 
   @doc """
-  覆盖登记：`%{条目名 => {:offer, 生成器名} | {:inside, [技能原子]} | {:withheld, 理由}}`（三类见 moduledoc）。
-  `{:offer, 生成器}` 的生成器是本模块导出的二元函数。
+  覆盖登记：`%{条目名 => {:offer, 生成器名 | [生成器名]} | {:inside, [技能原子]} | {:withheld, 理由}}`（三类见 moduledoc）。
+  `{:offer, 生成器}` 的生成器是本模块导出的二元函数；一个条目由几个生成器给出时写列表（现在只有 travel）。
   """
   def coverage, do: @coverage
 
   @doc """
   本轮候选（Selector 发问 worker 里调用）：按 `generators/1` 对覆盖登记给出的生成器次序，逐个生成再连起来——现在是
-  登记项（`registered/2`）++ 说话 ++ 进食 ++ 合成。`buildings` 是 Life 规范心智里的建筑（`Life.mind/2` 的 `buildings`）。
+  登记项（`registered/2`）++ 对人的登记项（`people/2`）++ 说话 ++ 进食 ++ 合成。`life` 是这次发问的 Life 视图
+  （`Life.selection_mind/2` 的结果，与心智快照同一份）：读其中的 `buildings`（建筑条件）与 `relationships`（对人登记项的作者条件）。
 
   - 说话候选只在 profile 配了 speak 技能时有，取 `speak_to/2` 与当前 Scene 此刻允许开新话题的目标
     （`Scene.dialogue_topic_targets/2`，按身份与代次）的交集。
@@ -169,12 +179,16 @@ defmodule NpcServer.Offers do
   返回 `{:ok, 候选}`；说话这一路的路由或 Scene 读不到 → `{:error, {:dialogue_unavailable, 原因}}`（显式失败，不当成“没有人可说”）。
   库存这一路只走 happy path：路由或 World 调用失败照常退出，由发问 worker 已有的失败路径处理（Runtime 的 `select_worker_failed`）。
   """
-  def candidates(profile, observation, context, buildings) do
+  def candidates(profile, observation, context, %{
+        buildings: buildings,
+        relationships: relationships
+      }) do
     round = %{
       profile: profile,
       observation: observation,
       context: context,
       buildings: buildings,
+      relationships: relationships,
       route: nil,
       inventory: nil
     }
@@ -192,13 +206,17 @@ defmodule NpcServer.Offers do
   end
 
   @doc """
-  覆盖登记里 offer 一类的生成器，按模块里显式写下的生成器次序（现在 `[:registered, :speak_to, :eat, :craft]`），与登记表的
+  覆盖登记里 offer 一类的生成器，按模块里显式写下的生成器次序（现在 `[:registered, :people, :speak_to, :eat, :craft]`），与登记表的
   遍历次序无关；登记里出现次序表没有的生成器是登记写错，raise `ArgumentError`。`candidates/4` 与 `plan_kinds/1` 只按它生成，
   所以某个条目改成 inside / withheld 后，只要没有别的 offer 条目还用同一个生成器，它的候选与计划种类就不再出现。
   `registered/2` 一个生成器同时服务 build / gather / expand / travel 四个条目（过渡形态），只改其中一个不会让它消失。
   """
   def generators(coverage) do
-    offered = for {_entry, {:offer, generator}} <- coverage, into: MapSet.new(), do: generator
+    offered =
+      for {_entry, {:offer, generators}} <- coverage,
+          generator <- List.wrap(generators),
+          into: MapSet.new(),
+          do: generator
 
     case Enum.reject(offered, &(&1 in @generators)) do
       [] ->
@@ -223,6 +241,14 @@ defmodule NpcServer.Offers do
   # 一个生成器本轮的候选，连同更新过的本轮读取（路由、库存）。生成器名来自 `generators/1`，这里没有的名字直接 FunctionClauseError。
   defp offer(:registered, round),
     do: {:ok, registered(round.profile.activities, round.buildings), round}
+
+  defp offer(:people, round),
+    do:
+      {:ok,
+       people(round.profile.activities, %{
+         observation: round.observation,
+         relationships: round.relationships
+       }), round}
 
   defp offer(:speak_to, round), do: topics(round)
 
@@ -294,12 +320,14 @@ defmodule NpcServer.Offers do
   @doc """
   生成器（build / gather / expand / travel 的过渡形态）：作者登记的候选（`profile.activities`，`NpcServer.Registry` 构造）
   按建筑条件保序过滤——带 `requires_building` 的项只在 `buildings` 里有至少一座同名且站着时列出——每项经 `static/1`
-  加上种类与对象。参数仍是作者手写的；批 1 起由各种类自己的生成器替代。
+  加上种类与对象。参数仍是作者手写的；批 1 起由各种类自己的生成器替代。对人的登记项（`run: {:person, …}`）不在这里列，
+  由 `people/2` 按人展开。
   """
   def registered(activities, buildings) do
     standing = for %{name: name, standing: true} <- buildings, into: MapSet.new(), do: name
 
     for activity <- activities,
+        not person?(activity),
         not Map.has_key?(activity, :requires_building) or
           MapSet.member?(standing, activity.requires_building),
         do: static(activity)
@@ -307,6 +335,41 @@ defmodule NpcServer.Offers do
 
   @doc "登记项作为候选（静态种类）：原样加 `kind`（= 候选名）与 `object`（nil）。"
   def static(%{name: name} = activity), do: Map.merge(activity, %{kind: name, object: nil})
+
+  @doc """
+  生成器（对人的登记项，K-0 复测后用户定可点名）：每项 `run: {:person, 选择器, 停留}` 的登记，按作者条件（选择器，
+  `NpcServer.Mind.people/3` 判定）把此刻观察里满足条件的每个人展开成一个候选，登记次序在外、条件给的人序在内。
+  `sight` 是 `%{observation: 本轮观察, relationships: 这次发问的 Life 视图里的信任}`。
+
+  种类 = 登记名（计划与记账用它，`objects: :people`），对象 `%{"actor" => cid}`；候选名 `<登记名>:<cid>`，从已有登记名避让
+  （同 `speak_to/2`）；判据是作者原句后接一句 `That person is <名字> (actor <cid>).`（**原创措辞**，未离线测）；登记的地名原样带上。
+  目标身份与代次冻结在 `target`（与说话候选同形、同一条冻结路径：Runtime 交给树，树按种类 travel 过去、待登记的停留）；
+  执行时不再选人，目标离开或走远由 travel 失败报出（`stale_target` / `target_moved`）。没有一个人满足条件，这一项此刻就没有候选。
+  """
+  def people(registered, %{observation: observation, relationships: relationships}) do
+    names = MapSet.new(registered, & &1.name)
+
+    for %{run: {:person, selector, _ticks}} = activity <- registered,
+        entity <- NpcServer.Mind.people(selector, observation, relationships) do
+      %{"name" => name} = target = person_target(entity)
+
+      %{
+        name: vacant_name("#{activity.name}:#{entity.entity_id}", names),
+        kind: activity.name,
+        object: %{"actor" => entity.entity_id},
+        criterion: "#{activity.criterion} That person is #{name} (actor #{entity.entity_id}).",
+        place_name: activity.place_name,
+        target: target
+      }
+    end
+  end
+
+  defp person?(%{run: {:person, _selector, _ticks}}), do: true
+  defp person?(_activity), do: false
+
+  # 候选冻结的人（说话与对人的登记项共用）：身份与代次，加上给模型看、给 speak 技能用的名字（`State.person_name/1`）。
+  defp person_target(%{entity_id: id, entity_epoch: epoch, name: actor_name}),
+    do: %{"entity_id" => id, "entity_epoch" => epoch, "name" => State.person_name(actor_name)}
 
   @doc """
   生成器（speak）：把本轮观察里说话范围内（`SceneServer.Dialogue.limits/0` 的 `range_m`，含恰在范围上）、有位置的其他角色
@@ -317,10 +380,10 @@ defmodule NpcServer.Offers do
     %{range_m: range} = SceneServer.Dialogue.limits()
     names = MapSet.new(registered, & &1.name)
 
-    for %{entity_id: id, entity_epoch: epoch, name: actor_name, position: {_, _, _} = position} <-
+    for %{entity_id: id, entity_epoch: _, name: _, position: {_, _, _} = position} = entity <-
           State.others(observation),
         State.distance(self.position, position) <= range do
-      name = State.person_name(actor_name)
+      %{"name" => name} = target = person_target(entity)
 
       %{
         name: vacant_name("#{@speak}:#{id}", names),
@@ -328,10 +391,16 @@ defmodule NpcServer.Offers do
         object: %{"actor" => id},
         criterion: "Walk up to #{name} (actor #{id}) and say one thing to them.",
         place_name: nil,
-        target: %{"entity_id" => id, "entity_epoch" => epoch, "name" => name}
+        target: target
       }
     end
   end
+
+  @doc """
+  说话一类的种类名（`"speak_to"`）：`NpcServer.Trees.npc/1` 按选择应答里冻结的 `kind` 分辨说话与对人的登记项
+  （两者都冻结 `target`），这里是它唯一的定义。
+  """
+  def speak_kind, do: @speak
 
   @doc """
   对话回合里“放下手头的事去跟来话者谈”的说话候选（`NpcServer.Selector.turn_question/6`）：目标是来话者本人，带本次
@@ -415,6 +484,7 @@ defmodule NpcServer.Offers do
   日计划可以写的种类（稿 A §4 A-5，批 0b；批 1 加进食与合成），按生成器次序（`generators/1`）：
 
   - 登记的每个候选各是一个静态种类（种类名 = 候选名，判据原样，不论建筑条件——计划是一天的打算，眼下不可行也可以先写下）；
+  - 对人的登记项各是一个对象为人的种类（种类名 = 登记名，判据原样，`objects: :people`；此刻没有人满足条件也可以先写下）；
   - 配了 speak 技能时说话一类（对象是人）；
   - 进食、合成各一类（对象是材料，计划里**不可点名**——原创决策，统筹定：计划只说“吃点东西 / 做点东西”，背包里有什么由
     每轮的候选决定；眼下背包里没有可吃 / 可合成的也可以先写下）。
@@ -434,8 +504,18 @@ defmodule NpcServer.Offers do
   defp kinds(:registered, %{activities: activities}),
     do:
       for(
-        %{name: name, criterion: criterion} <- activities,
+        %{name: name, criterion: criterion} = activity <- activities,
+        not person?(activity),
         do: %{kind: name, criterion: criterion, objects: :none}
+      )
+
+  # 对人的登记项：种类名 = 登记名、判据是作者原句，对象是人（能点名哪些人由 Life 起槽时展开，同说话一类）。
+  defp kinds(:people, %{activities: activities}),
+    do:
+      for(
+        %{name: name, criterion: criterion} = activity <- activities,
+        person?(activity),
+        do: %{kind: name, criterion: criterion, objects: :people}
       )
 
   defp kinds(:speak_to, %{skills: %{speak: _}}),

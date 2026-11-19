@@ -20,7 +20,7 @@ defmodule NpcServer.Runtime do
 
   活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
   （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`，
-  选中的是生成的候选时另带它冻结的执行参数：说话 `speech: 目标`、进食 / 合成 `action: {动作名, 参数}`；心智或候选读不到、
+  选中的是生成的候选时另带它冻结的执行参数：说话与对人的登记项 `kind: 种类, target: 目标`、进食 / 合成 `action: {动作名, 参数}`；心智或候选读不到、
   发问失败或 worker 崩溃是 rejected）。选中的候选整份记进选择器状态（`select.activities[].candidate`），活动结束时的经历读它。等应答期间本进程照常处理观察与其他命令。
   选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
   一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
@@ -440,9 +440,10 @@ defmodule NpcServer.Runtime do
   end
 
   # 生成的候选在建树时还不存在，它在发问那一刻冻结的执行参数随应答（done 的 data）交给树（`Trees.npc/1`）：
-  # 说话候选的目标（`speech`，交给 speak 技能）、背包候选的世界动作（`action`，按动作名建的分支原样执行）。
+  # 冻结了一个人的候选（说话、对人的登记项）带种类与目标（`kind` + `target`；树按种类分辨：说话交给 speak 技能，
+  # 对人的登记项 travel 过去再待登记的停留），背包候选带世界动作（`action`，按动作名建的分支原样执行）。
   # 登记项的分支在建树时已按登记参数（候选的 `run`）静态生成，只按候选名选分支，这里不带任何参数。
-  defp frozen(%{target: target}), do: %{speech: target}
+  defp frozen(%{target: target, kind: kind}), do: %{kind: kind, target: target}
   defp frozen(%{action: action}), do: %{action: action}
   defp frozen(_candidate), do: %{}
 

@@ -145,6 +145,18 @@ defmodule NpcServer.NpcSelectorTest do
       do: {:ok, %{metrics: %{request_count: 0, jev_request_count: 0}}}
   end
 
+  defmodule TravelProbe do
+    @moduledoc "只测试：立刻到达的 travel 探针，把收到的参数交给 config 里的测试进程（看冻结的目标是否原样到了技能）。"
+    @behaviour NpcServer.Skill
+
+    def definition(profile), do: InstantTravel.definition(profile)
+
+    def run(_context, args, config) do
+      send(config.owner, {:travel_args, args})
+      {:ok, %{metrics: %{request_count: 0, jev_request_count: 0}}}
+    end
+  end
+
   # 只测试：Body 替身。命令转给测试进程；事件由测试手排后经真实 Runtime 入口投递。
   defmodule Body do
     use GenServer
@@ -427,7 +439,7 @@ defmodule NpcServer.NpcSelectorTest do
       # 登记项的种类就是候选名、没有对象（稿 A 批 0a）。
       assert %{
                text:
-                 ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|,
+                 ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: there was no way for me to walk there).|,
                place: "home",
                activity: "rest_at_home",
                kind: "rest_at_home",
@@ -564,7 +576,7 @@ defmodule NpcServer.NpcSelectorTest do
       assert %{
                text:
                  ~s|I did "eat:34" (Eat one serving of Fern (material 34) from my inventory.). | <>
-                   "Result: failed (eat: insufficient_material).",
+                   "Result: failed (eat: I did not have enough material for it).",
                place: nil,
                activity: "eat:34",
                kind: "eat",
@@ -702,7 +714,9 @@ defmodule NpcServer.NpcSelectorTest do
       assert state.finished == nil
     end
 
-    # 走向一个角色（S1-F）：选人发生在分支开始的那一刻，读树手里最新的观察与其中的 Life 规范状态。
+    # 对人的登记项（K-0 复测后用户定：由生成器 `Offers.people/2` 按人展开、可点名）：人在发问那一刻选定，目标身份冻结在候选的
+    # `target` 里，与说话候选同一条冻结路径（Runtime 的 `finish_select` 把 `kind` 与 `target` 放进 done 的 data）；树按种类
+    # （= 登记名）选分支，travel 到这个人，再待登记的 stay_ticks。执行时不再选人。
     defp confront_profile do
       confront = %{
         "name" => "confront",
@@ -714,50 +728,22 @@ defmodule NpcServer.NpcSelectorTest do
       stub_profile(%{@params | "activities" => [confront]})
     end
 
-    # 自己（7）在原点；2 在 5 米外，代次 5。trust：Life 关系表（角色 id => 信任）。
-    defp seen(tick, trust) do
-      state =
-        put_in(
-          NpcServer.Life.State.new(7, "w1", 0, 0),
-          ["relationships"],
-          Map.new(trust, fn {actor, value} ->
-            {to_string(actor), %{"trust" => value, "source_seq" => 1}}
-          end)
-        )
+    test "a person candidate travels to its frozen target by identity, then stays; a speak target does not travel" do
+      corvin = %{"entity_id" => 2, "entity_epoch" => 5, "name" => "Corvin"}
 
-      {:observation,
-       %{
-         self: %{entity_id: 7, tick: tick, position: {0.0, 64.0, 0.0}},
-         entities: [
-           %{entity_id: 7, entity_epoch: 1, position: {0.0, 64.0, 0.0}},
-           %{entity_id: 2, entity_epoch: 5, position: {3.0, 64.0, 4.0}}
-         ],
-         life: %{state: state, now_ms: 0, thanks: 0}
-       }}
-    end
-
-    test "a person candidate travels to the distrusted person by identity, then stays" do
       Tree.init(confront_profile())
       |> script([
-        {seen(0, %{2 => -0.35}), [%{id: 1, verb: :choose_activity, ended: nil}]},
-        # 选中：travel 的参数恰是那个人的身份（不是坐标）。
-        {done(1, :choose_activity, %{activity: "confront"}),
+        {obs(0), [%{id: 1, verb: :choose_activity, ended: nil}]},
+        # 选中：travel 的参数恰是冻结的那个人的身份（不是坐标）；候选名 `confront:2` 不是登记名，树按种类执行。
+        {done(1, :choose_activity, %{activity: "confront:2", kind: "confront", target: corvin}),
          [%{id: 2, verb: :skill, skill: :travel, args: %{"entity_id" => 2, "entity_epoch" => 5}}]},
         # 到了之后待 60 tick：从最近一次观察的 tick 0 起算，60 到期，下一个事件再问。
         {done(2, :travel, %{}), []},
-        {seen(60, %{2 => -0.35}), []},
-        {seen(61, %{2 => -0.35}), [%{id: 3, verb: :choose_activity, ended: :completed}]}
-      ])
-    end
-
-    test "nobody distrusted: no command; the next ask reports failed travel nobody_distrusted" do
-      Tree.init(confront_profile())
-      |> script([
-        # 2 的信任 −0.10：不算不信任。
-        {seen(0, %{2 => -0.10}), [%{id: 1, verb: :choose_activity, ended: nil}]},
-        {done(1, :choose_activity, %{activity: "confront"}), []},
-        {seen(1, %{2 => -0.10}),
-         [%{id: 2, verb: :choose_activity, ended: {:failed, "travel", "nobody_distrusted"}}]}
+        {obs(60), []},
+        {obs(61), [%{id: 3, verb: :choose_activity, ended: :completed}]},
+        # 同一个目标，种类是说话：走 speak 技能、参数是整份目标，不走 travel。
+        {done(3, :choose_activity, %{activity: "speak_to:2", kind: "speak_to", target: corvin}),
+         [%{id: 4, verb: :skill, skill: :speak, args: corvin}]}
       ])
     end
   end
@@ -1152,7 +1138,8 @@ defmodule NpcServer.NpcSelectorTest do
           assert_receive {:jev_request, worker, request}
 
           assert request.state =~
-                   "alpha_build_south: completed. zeta_build_north: failed (build: occupied)."
+                   "alpha_build_south: completed. zeta_build_north: " <>
+                     "failed (build: something else was already in the place where it had to go)."
 
           send(worker, {:jev_reply, answer("dance", 0.99)})
 
@@ -1192,7 +1179,7 @@ defmodule NpcServer.NpcSelectorTest do
           # 失败的活动只记了一次。
           assert request.state =~
                    "Recent activities: Oldest first. alpha_build_south: completed. " <>
-                     "zeta_build_north: failed (build: occupied)."
+                     "zeta_build_north: failed (build: something else was already in the place where it had to go)."
 
           send(worker, {:jev_reply, answer("alpha_build_south", 0.55)})
 
@@ -1434,6 +1421,111 @@ defmodule NpcServer.NpcSelectorTest do
 
       assert log =~
                ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=\d+ model=jev-test/
+    end
+
+    # K-0 复测后用户定：对人的登记项由生成器按人展开、可点名（`Offers.people/2`）。真实 World 里 Brann 拆了我放的一格 →
+    # Life 按规则把对他的信任降到 −0.35（Distrusts）→ 下一次发问时他成为 `confront:<cid>` 候选（排在登记项之后、判据写明是他），
+    # 之前没有；选中后 travel 的参数恰是发问那一刻冻结的身份与代次（Runtime → 树的冻结路径与说话项同一条），之后待登记的 60 tick；
+    # 交给 Life 的经历带种类与对象。他再来话时，对话回合的候选里 `confront:<cid>` 仍在，`speak_to:<cid>` 只有 reply 那一项。
+    # 不证明：真实身体走过去（travel 用只测试的探针替身，只记下参数）。
+    @tag timeout: 120_000
+    test "a real wrecking makes the wrecker a named person candidate; choosing it travels to the frozen identity",
+         %{cid: cid, fixture: fixture} do
+      confront = %{
+        "name" => "confront",
+        "criterion" => "Face the person I distrust.",
+        "person" => "distrusted",
+        "stay_ticks" => 60
+      }
+
+      profile =
+        stub_profile(%{@params | "activities" => @params["activities"] ++ [confront]})
+        |> put_in([:skills, :travel], %{module: TravelProbe, owner: self()})
+
+      {body, runtime, _recall} = start(profile, cid)
+      brann = cid + 10
+
+      # Brann 在 5 米外，代次 5（观察的形状同 `Body.observe/1`：每人带 entity_epoch）。
+      near = fn tick ->
+        Map.put(observation(tick, cid), :entities, [
+          %{entity_id: cid, entity_epoch: 1, kind: 1, name: "Lin", position: {1.0, 2.0, 3.0}},
+          %{entity_id: brann, entity_epoch: 5, kind: 0, name: "Brann", position: {4.0, 2.0, 7.0}}
+        ])
+      end
+
+      criteria = fn request ->
+        Jason.decode!(Jason.encode!(request), objects: :ordered_objects)["questions"]["activity"][
+          "criteria"
+        ].values
+      end
+
+      # —— 第 1 次：还没有人得罪过我，对人的登记项一个候选也没有（也没有不点名的 confront）。
+      event(body, {:observation, near.(1)})
+      assert_receive {:jev_request, worker, request}, 10_000
+      names = Enum.map(criteria.(request), &elem(&1, 0))
+      refute Enum.any?(names, &String.starts_with?(&1, "confront"))
+      send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
+      assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+      # —— Brann 拆了我放的一格（真实 World 事务），Life 按规则接纳。
+      ^brann = damage(fixture.world, cid, 1, {4, 64, 8})
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"evidence" => %{"damage_count" => 1}}}}, Life.observe(cid))
+      end)
+
+      # —— 第 2 次：他成为点名的候选，紧接在登记项之后。
+      skill_step(body, 2, :done, nil)
+      assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
+      event(body, {:observation, near.(3)})
+      assert_receive {:jev_request, worker, request}, 10_000
+      assert request.state =~ "Distrusts Brann (actor #{brann})."
+
+      assert [
+               {"zeta_build_north", _},
+               {"alpha_build_south", _},
+               {"rest_at_home", _},
+               {option, criterion} | _
+             ] = criteria.(request)
+
+      assert option == "confront:#{brann}"
+      assert criterion == "Face the person I distrust. That person is Brann (actor #{brann})."
+
+      send(worker, {:jev_reply, answer(option, 0.8)})
+      assert_receive {:travel_args, %{"entity_id" => ^brann, "entity_epoch" => 5} = args}, 5_000
+      assert map_size(args) == 2
+      assert_receive {:runtime_outcome, %{id: 4, verb: :travel, status: :done}}
+
+      # 停留到期（tick 200 已过 3 + 60），树在下一个事件从根重来、再问（停留的精确 tick 由纯树用例锁定）。
+      event(body, {:observation, near.(4)})
+      event(body, {:observation, near.(200)})
+      event(body, {:observation, near.(201)})
+      assert_receive {:jev_request, worker, request}, 10_000
+
+      assert request.state =~
+               "\nRecent activities: Oldest first. alpha_build_south: completed. confront:#{brann}: completed."
+
+      # 交给 Life 的活动经历（`Selector.experience/1`）：种类 = 登记名、对象 = 这个人（日计划按种类 + 对象记账的那一份）。
+      assert %{activity: ^option, kind: "confront", object: %{"actor" => ^brann}} =
+               Selector.experience(settled(body, runtime).select)
+
+      # —— Brann 来话（对话回合，决策稿 2026-11-18-npc-dialogue-lane-decision.md §3.2）：回合只换掉对他的说话候选
+      # （由 reply 代替，排最后），对他的 `confront:<cid>` 照样在列——两者都冻结了同一个 `target`，按种类分开。
+      send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
+      assert_receive {:command, %{verb: :prefab_place}}
+
+      event(body, {:heard, %{address(cid) | speaker_id: brann, speaker_name: "Brann"}})
+      assert_receive {:jev_request, turn, request}, 10_000
+      turn_options = criteria.(request)
+
+      assert {option, criterion} in turn_options
+      reply_option = "speak_to:#{brann}"
+
+      assert [{^reply_option, "Stop what I am doing, go over to Brann and talk with them."}] =
+               Enum.filter(turn_options, &String.starts_with?(elem(&1, 0), "speak_to:"))
+
+      assert {^reply_option, _} = List.last(turn_options)
+      send(turn, {:jev_reply, answer("keep_working_silently", 0.8)})
     end
 
     defp flush_recalls do

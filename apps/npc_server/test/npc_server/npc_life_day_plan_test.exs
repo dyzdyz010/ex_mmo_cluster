@@ -1045,6 +1045,38 @@ defmodule NpcServer.NpcLifeDayPlanTest do
              ]
     end
 
+    # K-0 复测后用户定：对人的登记项（`{"person": 选择器}`）由生成器 `Offers.people/2` 按人展开，计划里可点名——种类名 = 登记名，
+    # 判据是作者原句，`objects: :people`（能点名哪些人由 Life 起槽时展开，同说话一类）。按生成器次序排在其它登记项之后、说话之前，
+    # 所以部署里排在最后一项的 confront_wrecker 位置不变。
+    test "对人的登记项是可点名的种类（objects: :people），排在其它登记项之后、说话之前" do
+      confront = %{
+        name: "confront_wrecker",
+        criterion: "Walk over to the person standing nearby.",
+        run: {:person, :distrusted, 1800},
+        place_name: nil
+      }
+
+      assert NpcServer.Offers.plan_kinds(%{
+               activities: [hd(@activities), confront | tl(@activities)],
+               skills: %{gather: %{}, travel: %{}, speak: %{}}
+             }) == [
+               %{kind: "gather_stone", criterion: "Cut stone at the quarry.", objects: :none},
+               %{kind: "guard_hut", criterion: "Stand beside the small hut.", objects: :none},
+               %{
+                 kind: "confront_wrecker",
+                 criterion: "Walk over to the person standing nearby.",
+                 objects: :people
+               },
+               %{
+                 kind: "speak_to",
+                 criterion: "Walk up to someone and say one thing to them.",
+                 objects: :people
+               },
+               @eat,
+               @craft
+             ]
+    end
+
     test "没配 speak：登记项、进食、合成；候选表为空仍有进食与合成；没有候选表的形态（不在选择层选活动）：没有任何种类" do
       assert Enum.map(NpcServer.Offers.plan_kinds(%{activities: @activities}), & &1.kind) == [
                "gather_stone",

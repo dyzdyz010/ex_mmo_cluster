@@ -21,7 +21,7 @@ defmodule NpcServer.Brain.Tree do
 
   `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end` / `fn 黑板, 观察 -> map end`
   （tick 时求值；观察是树手里最新的 Observation）。参数函数可以返回 `{:error, 原因}`：这一步本地 FAILURE、不发给 Body，
-  `:last_failure` 记 `%{act: 名字, reason: 原因}`（如统一形态 NPC 选人失败 `nobody_distrusted`，见 `NpcServer.Trees.npc/1`）。
+  `:last_failure` 记 `%{act: 名字, reason: 原因}`（如统一形态 NPC 进食被 World 拒绝 `insufficient_material`，见 `NpcServer.Trees.npc/1`）。
   id 由树单调分配（1, 2, …）。done → SUCCESS（`store: 键` 时把 `data` 写进黑板；`append: {键, fun}` 时把 `fun.(data)` 追加到
   黑板 `键` 的列表末尾，如 Settler 把扩张出来的新工地加进工地列表）；rejected / superseded → FAILURE，
   并把 `%{act: 名字, reason: 原因}` 写进黑板 `:last_failure`（superseded 的原因记 `:superseded`）。构造结果是

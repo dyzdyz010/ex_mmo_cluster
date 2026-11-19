@@ -26,10 +26,11 @@ defmodule NpcServer.Selector do
 
   - **什么时候问**：一项活动结束（成功或失败）回到树根时。树发 `choose_activity` 命令（能力条目 `entries/1`），
     参数是上一项活动怎样结束。Runtime 在独立 worker 里发问，不阻塞权威帧；等应答期间树停在这一步，身体原地不动。
-  - **候选**：由 `NpcServer.Offers.candidates/4` 给出（统一形态的覆盖登记与各生成器都在那里）：先放 `profile.activities`
-    登记的有序列表（保序地筛掉不满足建筑条件的项），再从同一轮观察生成说话选项（与当前 Scene 允许开新话题的目标取交集），
+  - **候选**：由 `NpcServer.Offers.candidates/4` 给出（统一形态的覆盖登记与各生成器都在那里；读这次发问的同一份 Life 视图）：先放
+    `profile.activities` 登记的有序列表（保序地筛掉不满足建筑条件的项），再把对人的登记项按作者条件展开成点名的候选（满足条件的每个人一个），
+    再从同一轮观察生成说话选项（与当前 Scene 允许开新话题的目标取交集），
     再从这一刻现读的库存（`World.production_options/2`，可行性由 World 判定）生成进食、合成选项（各取前 k 项，`NpcServer.Offers` 的 `@per_kind`）。
-    每个候选带种类与对象（`kind` / `object`）；说话选项另带冻结的目标身份，
+    每个候选带种类与对象（`kind` / `object`）；说话选项与对人的登记项另带冻结的目标身份（`target`），
     进食 / 合成选项带冻结的世界动作 `action`。应答只能选本轮发出的项，选中的候选整份记进选择（`candidate`），执行与经历都读它；
     执行终态写入“最近做过的事”。请求体只序列化 `名字 → 判据`，种类、对象与执行参数不进请求。
   - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（七栏；最近一轮反思写成了“自己”时多一栏
@@ -163,10 +164,10 @@ defmodule NpcServer.Selector do
   刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2`（或 `interrupted/2`）记完账的状态。返回
   `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil, activity: 候选名, kind: 种类, object: 对象 | nil,
   outcome: 结局}`。判据、地名、种类、对象取自选中时冻结的候选（`chose/3` 记下的 `candidate`），结局取自本模块的历史；
-  不回查登记表——生成的候选（说话、进食、合成）本来就不在登记表里。候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`
+  不回查登记表——生成的候选（对人的登记项按人展开的、说话、进食、合成）本来就不在登记表里。候选的判据一并写进句子：候选名只是标识，判据才说得清做的是什么。地名来自注册参数的 `place_name`
   （`NpcServer.Registry`），Life 把它写成这条经历的 `place:` tag。`kind` / `object` 是候选的种类与对象（`NpcServer.Offers`：
-  登记项种类即候选名、没有对象；说话项种类 `speak_to`、对象 `%{"actor" => cid}`；背包项种类 `eat` / `craft`、对象
-  `%{"material" => 材料号}`）。`outcome` 是本模块历史里这一项的结局原样（`:completed | {:failed, 动作名, 原因文字} |
+  登记项种类即候选名、没有对象；对人的登记项种类 = 登记名、对象 `%{"actor" => cid}`；说话项种类 `speak_to`、对象 `%{"actor" => cid}`；
+  背包项种类 `eat` / `craft`、对象 `%{"material" => 材料号}`）。`outcome` 是本模块历史里这一项的结局原样（`:completed | {:failed, 动作名, 原因文字} |
   {:interrupted, 原因文字}`，任务层决策稿 2026-11-19-npc-long-task-loop-decision.md K-2）：Life 据此分得清失败与打断，
   “是否完成”也由它推出（日计划记账 `NpcServer.Life.DayPlan.record_activity/4` 只记 `:completed`），不另给布尔。
   句子里的结局用同一份 `outcome` 渲染（`Mind.result/1`），两者不会不一致。
@@ -195,8 +196,8 @@ defmodule NpcServer.Selector do
   这次确实没有可执行的候选则返回 `{:error, :no_feasible_activity}`。
   """
   def question(profile, observation, history, context) do
-    question_with_candidates(profile, observation, history, fn buildings ->
-      Offers.candidates(profile, observation, context, buildings)
+    question_with_candidates(profile, observation, history, fn life ->
+      Offers.candidates(profile, observation, context, life)
     end)
   end
 
@@ -212,9 +213,15 @@ defmodule NpcServer.Selector do
     reply = Offers.reply(profile.activities, speech)
 
     with {:ok, question} <-
-           question_with_candidates(profile, observation, history, fn buildings ->
-             with {:ok, regular} <- Offers.candidates(profile, observation, context, buildings) do
-               others = Enum.reject(regular, &(&1[:target]["entity_id"] == speech.speaker_id))
+           question_with_candidates(profile, observation, history, fn life ->
+             with {:ok, regular} <- Offers.candidates(profile, observation, context, life) do
+               # 只换掉对来话者的说话候选（由下面的 `reply` 代替）；对人的登记项也冻结 `target`，按种类分开，不受影响。
+               others =
+                 Enum.reject(
+                   regular,
+                   &(&1.kind == Offers.speak_kind() and
+                       &1.target["entity_id"] == speech.speaker_id)
+                 )
 
                {:ok,
                 [
@@ -247,7 +254,7 @@ defmodule NpcServer.Selector do
     query_builder = &Mind.recall_queries(observation, &1)
 
     with {:ok, life, queries} <- Life.selection_mind(observation.self.entity_id, query_builder),
-         {:ok, [_ | _] = candidates} <- candidates_fn.(life.buildings) do
+         {:ok, [_ | _] = candidates} <- candidates_fn.(life) do
       {:ok,
        %{
          state: Mind.text(Mind.snapshot(profile, observation, history, life)),

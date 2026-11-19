@@ -123,13 +123,14 @@ defmodule NpcServer.Trees do
   |---|---|
   | `{:skill, 能力名, 参数}` | 一次技能调用（参数是 JSON 形，原样透传给技能）；技能的终态就是这项活动的结局 |
   | `{:place, [x, z], ticks}` | `travel` 到该地点，再原地待 `ticks`（60 Hz）；走不到则失败 |
-  | `{:person, 选择器, ticks}` | 分支开始时按选择器从树手里最新的观察与 Life 关系选一个人（`NpcServer.Mind.person/2`），`travel` 到他身边（水平 2.0 米内），再原地待 `ticks`；选不到人（`nobody_distrusted`、`life_not_ready`）不发 travel，这一项以 travel 失败结束；目标离开（`stale_target`）或走远（`target_moved`）同样失败 |
+  | `{:person, 选择器, ticks}` | 对人的登记项：人不在这里选。`Offers.people/2` 在发问时把满足作者条件的每个人展开成候选（名字 `<登记名>:<cid>`，逐轮变），所以分支按种类（= 登记名）建、守卫读应答里冻结的 `kind`；`travel` 到冻结的那个人身边（参数是身份与代次，水平 2.0 米内），再原地待 `ticks`；目标离开（`stale_target`）或走远（`target_moved`）以 travel 失败结束 |
 
   生成的候选（`NpcServer.Offers`）建树时还不存在，分支按种类建，参数取选择应答里冻结的那一份（Runtime 放进 done 的 data）：
 
   | 应答带的 | 分支 |
   |---|---|
-  | `speech: 目标`（说话候选，配了 speak 技能才有这条分支） | 一次 `speak` 技能调用，参数就是这个目标 |
+  | `kind: "speak_to", target: 目标`（说话候选，配了 speak 技能才有这条分支；种类名取 `Offers.speak_kind/0`） | 一次 `speak` 技能调用，参数就是这个目标 |
+  | `kind: 登记名, target: 目标`（对人的登记项，见上表 `{:person, …}`） | `travel` 到这个人，再待登记的 `ticks` |
   | `action: {动作名, 参数}`（背包候选，每个 `Offers.acts/0` 的动作一条分支；键名与登记项的分支规格 `run` 分开） | 一条世界动作命令（`eat` / `craft`，参数 `%{"material" => 材料号}`）；World 的 done 就是完成，拒绝（如可行性过时 `insufficient_material`）就是这一项以该动作失败结束 |
 
   | 规则 | 内容 |
@@ -143,11 +144,23 @@ defmodule NpcServer.Trees do
   def npc(profile) do
     choose = {:act, "choose_activity", &ended_args/1, store: :choice}
 
-    # 根下各分支按黑板取用：只有守卫为真的那一条往下走（登记项按候选名，生成的候选按应答里冻结的参数）；
+    # 根下各分支按黑板取用：只有守卫为真的那一条往下走（登记项按候选名，对人的登记项按冻结的种类，生成的候选按应答里冻结的参数）；
     # 它失败时其余分支的守卫都为假，整段失败。
     registered =
       for activity <- profile.activities do
-        {:seq, [{:cond, &chosen?(&1, &2, activity.name)}, run(activity.run)]}
+        case activity.run do
+          # 对人的登记项（`Offers.people/2` 按人展开）：候选名逐轮变，按种类（= 登记名）选分支，travel 到冻结的那个人。
+          {:person, _selector, ticks} ->
+            {:seq,
+             [
+               {:cond, &targeting?(&1, &2, activity.name)},
+               {:act, "travel", &visit_args/1},
+               {:wait, ticks}
+             ]}
+
+          run ->
+            {:seq, [{:cond, &chosen?(&1, &2, activity.name)}, run(run)]}
+        end
       end
 
     # 背包候选（`Offers.eat/2` / `craft/2`）：每个世界动作一条分支，参数取应答里冻结的 `action`。
@@ -158,7 +171,12 @@ defmodule NpcServer.Trees do
 
     branches =
       if get_in(profile, [:skills, :speak]) do
-        [{:seq, [{:cond, &speaking?/2}, {:act, "speak", &speech_args/2}]} | registered ++ acts]
+        speak = NpcServer.Offers.speak_kind()
+
+        [
+          {:seq, [{:cond, &targeting?(&1, &2, speak)}, {:act, "speak", &speech_args/1}]}
+          | registered ++ acts
+        ]
       else
         registered ++ acts
       end
@@ -173,21 +191,18 @@ defmodule NpcServer.Trees do
   defp run({:place, [x, z], ticks}),
     do: {:seq, [{:act, "travel", %{"x" => x, "z" => z}}, {:wait, ticks}]}
 
-  defp run({:person, who, ticks}),
-    do: {:seq, [{:act, "travel", &person_args(&1, &2, who)}, {:wait, ticks}]}
-
-  # 选人失败原样返回 {:error, 原因}：树把这一步记为 travel 失败，不发命令。
-  defp person_args(_blackboard, observation, who) do
-    with {:ok, %{entity_id: id, entity_epoch: epoch}} <- NpcServer.Mind.person(who, observation),
-         do: %{"entity_id" => id, "entity_epoch" => epoch}
-  end
-
   defp chosen?(%{choice: %{activity: chosen}}, _observation, name), do: chosen == name
 
-  defp speaking?(%{choice: %{speech: _}}, _observation), do: true
-  defp speaking?(_blackboard, _observation), do: false
+  # 冻结了一个人的候选（说话、对人的登记项）：按应答里冻结的种类分辨（种类名互不相同，登记边界保证）。
+  defp targeting?(%{choice: %{kind: kind, target: _}}, _observation, kind), do: true
+  defp targeting?(_blackboard, _observation, _kind), do: false
 
-  defp speech_args(%{choice: %{speech: args}}, _observation), do: args
+  # 说话：整份目标交给 speak 技能（身份、代次、名字，回复时另有 conversation_id）。
+  defp speech_args(%{choice: %{target: target}}), do: target
+
+  # 对人的登记项：travel 到发问那一刻冻结的身份与代次（不是坐标；目标离开 / 走远由 travel 报 stale_target / target_moved）。
+  defp visit_args(%{choice: %{target: target}}),
+    do: Map.take(target, ["entity_id", "entity_epoch"])
 
   defp acting?(%{choice: %{action: {act, _args}}}, _observation, act), do: true
   defp acting?(_blackboard, _observation, _act), do: false
