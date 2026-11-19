@@ -2,56 +2,11 @@ defmodule NpcServer.Dialogue do
   @moduledoc """
   NPC 对话能力与已接收 Speech 的纯投影。权威接纳、文本约束和听众裁决只在 SceneServer.Dialogue。
   Runtime 拥有最近 24 句；Life 保存带来源的主观经历，原话不作为已验证世界事实。
+  统一形态的说话候选（主动开口 `speak_to:<cid>` 与对话回合里的回复）由 `NpcServer.Offers` 的 `speak_to/2`、`reply/2` 生成。
   """
   alias NpcServer.Life.State
 
   @history 24
-
-  @doc """
-  把当前观察中发言范围内、已有位置的其他角色投影成说话候选。从已有登记名避让重名，
-  保留原来的候选次序和 ID。最终接纳由 Scene 对着发言时刻的角色表裁决。
-  """
-  def topic_candidates(registered, %{self: self} = observation) do
-    %{range_m: range} = SceneServer.Dialogue.limits()
-    names = MapSet.new(registered, & &1.name)
-
-    for %{entity_id: id, entity_epoch: epoch, name: actor_name, position: {_, _, _} = position} <-
-          State.others(observation),
-        State.distance(self.position, position) <= range do
-      name = State.person_name(actor_name)
-
-      %{
-        name: vacant_name("speak_to:#{id}", names),
-        criterion: "Walk up to #{name} (actor #{id}) and say one thing to them.",
-        place_name: nil,
-        target: %{"entity_id" => id, "entity_epoch" => epoch, "name" => name}
-      }
-    end
-  end
-
-  @doc """
-  对话回合里“放下手头的事去跟来话者谈”的说话候选（`NpcServer.Selector.turn_question/6`）：目标是来话者本人，带本次
-  `conversation_id`（回复仍在同一会话里，不是新话题，所以不经 Scene 的新话题冷却）；候选名与 `topic_candidates/2` 同一避让规则。
-  """
-  def reply_candidate(registered, speech) do
-    name = State.person_name(speech.speaker_name)
-
-    %{
-      name: vacant_name("speak_to:#{speech.speaker_id}", MapSet.new(registered, & &1.name)),
-      criterion: "Stop what I am doing, go over to #{name} and talk with them.",
-      place_name: nil,
-      target: %{
-        "entity_id" => speech.speaker_id,
-        "entity_epoch" => speech.speaker_epoch,
-        "name" => name,
-        "conversation_id" => speech.conversation_id
-      }
-    }
-  end
-
-  defp vacant_name(name, names) do
-    if MapSet.member?(names, name), do: vacant_name(name <> "_", names), else: name
-  end
 
   @doc "说话能力；范围和频率直接引用 Scene 的唯一规则。"
   def entries do

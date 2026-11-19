@@ -376,12 +376,14 @@ defmodule NpcServer.NpcSelectorTest do
       assert [%{activity: "rest_at_home", result: ^failure}] = Selector.history(state)
 
       # 刚结束的活动写成一句经历：候选名、它的判据、结局；候选登记的地名一并交给 Life（作 place: tag）；
-      # 候选名与“是否完成”交给 Life 给日计划记账（失败的不算完成）。
+      # 候选名与“是否完成”交给 Life 给日计划记账（失败的不算完成）。登记项的种类就是候选名、没有对象（稿 A 批 0a）。
       assert %{
                text:
                  ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|,
                place: "home",
                activity: "rest_at_home",
+               kind: "rest_at_home",
+               object: nil,
                completed: false
              } ==
                Selector.experience(state, profile)
@@ -401,6 +403,8 @@ defmodule NpcServer.NpcSelectorTest do
                  ~s|I did "zeta_build_north" (Build the hut on the north plot.). Result: completed.|,
                place: nil,
                activity: "zeta_build_north",
+               kind: "zeta_build_north",
+               object: nil,
                completed: true
              } ==
                Selector.experience(state, profile)
@@ -437,6 +441,46 @@ defmodule NpcServer.NpcSelectorTest do
         end)
 
       assert ["a3", "a4", "a5", "a6", "a7"] == Enum.map(state.activities, & &1.activity)
+    end
+
+    # 稿 A 批 0a：说话候选由生成器 `Offers.speak_to/2` 从本轮观察做出（候选名逐轮变），经历带出它的种类与对象，
+    # Life 的日计划按种类 + 对象记账（批 0b）。观察形状同 `Body.observe/1`：Mara（21）在 5 米外。
+    test "a finished speak_to activity yields its kind and object alongside the candidate name",
+         %{
+           profile: profile
+         } do
+      seen = %{
+        observation()
+        | entities: [
+            %{entity_id: 7, entity_epoch: 1, kind: 1, name: "Lin", position: {1.0, 2.0, 3.0}},
+            %{entity_id: 21, entity_epoch: 2, kind: 0, name: "Mara", position: {4.0, 2.0, 7.0}}
+          ]
+      }
+
+      [candidate] = NpcServer.Offers.speak_to(profile.activities, seen)
+
+      selection = %{
+        activity: candidate.name,
+        topic: candidate,
+        confidence: 0.6,
+        latency_ms: 12,
+        recall_ms: 3,
+        trigger: "start",
+        model: "m"
+      }
+
+      {_, state} =
+        Selector.new() |> Selector.chose(selection, profile, 7) |> Selector.ended(:completed)
+
+      assert %{
+               text:
+                 ~s|I did "speak_to:21" (Walk up to Mara (actor 21) and say one thing to them.). Result: completed.|,
+               place: nil,
+               activity: "speak_to:21",
+               kind: "speak_to",
+               object: %{"actor" => 21},
+               completed: true
+             } == Selector.experience(state, profile)
     end
   end
 

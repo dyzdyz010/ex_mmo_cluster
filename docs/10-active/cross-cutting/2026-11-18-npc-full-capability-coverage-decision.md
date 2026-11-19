@@ -140,3 +140,11 @@ flowchart LR
 
 - 2026-11-18：初稿（第十九个统筹会话派写）；只读代码与原文，未改代码、未实跑。等 §6 答复。
 - 2026-11-18：用户答复 §6 全按建议（用户 2026-11-18 答复，经第十九个统筹会话转达，原话：“额度可以增加上限，其他都按你建议来。”）。实施排在扩人数 M-3 之后从批 0 开始（第二十个统筹会话按依赖与资源排定，见统筹页）；仍按先测后改 → 独立评审 → 提交。
+- 2026-11-19：批 0a 实现（无行为变化）。新模块 `NpcServer.Offers`：覆盖登记 `coverage/0`（48 个条目：offer 5 = build / gather / expand / travel →
+  `registered/2`、speak → `speak_to/2`；inside 12；withheld 31，理由逐条写明），生成器 `registered/2`（建筑过滤自 `Selector` 迁入）、`speak_to/2`、
+  `reply/2`（自 `Dialogue.topic_candidates/2`、`reply_candidate/2` 迁入，Dialogue 删去这两个）与 `candidates/4`（Scene 新话题资格求交一并迁入）；
+  候选加 `kind` / `object`，请求体仍只序列化 `名字 → 判据`；`Selector.experience/2` 带出 kind / object；`Skills.builtin_names/0`。
+  与 §4 初稿不同处（统筹裁定）：`cancel_cast` 归 withheld（随 cast_spell 批 4），`choose_activity`（48 个条目里多出的那个）归 withheld。
+  `stop` 归 inside [travel, gather]，但源码里它由 `Brain.Tree.halt/1` 放弃移动叶子时发出，不是技能自己调用。
+  验证：`npc_offers_test.exs`（T-A1、T-A2）改前 11 红、改后绿；`npc_selector_test.exs` 全文件 23 绿；`npc_registry_test.exs` 三条真实对话用例与
+  `npc_dialogue_test` / `npc_speak_test` 共 12 绿（候选搬家触及 Runtime 的说话链路，所以扩大到这几条）。

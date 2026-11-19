@@ -18,6 +18,12 @@ defmodule NpcServer.Skills do
   @metrics %{request_count: 0, jev_request_count: 0}
 
   @doc """
+  全部内置技能名（原子，按名字排序）。统一形态的覆盖测试用它拼“全授予 profile”（`NpcServer.Offers.coverage/0`），
+  新增内置技能自动进覆盖检查。
+  """
+  def builtin_names, do: @builtins |> Map.keys() |> Enum.sort()
+
+  @doc """
   已配置技能的能力条目（group :skill，按名字排序；形状见 `NpcServer.Abilities`）。参数 schema 原样取自技能的
   `definition/1`，参数透传给技能、由技能接纳；名字只取作者配置的原子，不把外部输入转成新原子。
   """

@@ -66,6 +66,11 @@
   情绪、经历、记忆三栏经 `Life.mind/2` 向 Life 这个 owner 现读）；`Selector` 是选择位置：一项活动结束时把快照与有序候选交给
   Jev，直接取 top1（不设置信度门槛，`Jev.top1/1`；0.85 门槛只留给中断与 harm 护栏的 `Jev.verdict/3`），并持有“正在做什么、
   最近选过什么、最近一次问了什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
+- `Offers` 是统一形态的候选来源（稿 A [`2026-11-18-npc-full-capability-coverage-decision.md`](../../../../docs/10-active/cross-cutting/2026-11-18-npc-full-capability-coverage-decision.md)）：
+  覆盖登记 `coverage/0` 把 `Abilities` 的每个条目归且只归一类——`offer`（有生成器，成为候选）、`inside`（只作某些技能内部的原语）、
+  `withheld`（不给 NPC，写理由），覆盖测试保证能力库新增条目不登记即红；生成器 `registered/2`（作者登记项按建筑条件过滤）、
+  `speak_to/2`（说话范围内的人）与对话回合的 `reply/2` 产出带 `kind` / `object` 的候选，`candidates/4` 再与 Scene 的新话题资格取交集，
+  `Selector` 只调它。`Abilities` 保持后端中立，“统一形态怎么用每项能力”只在这里。
 - 旧的 `NpcServer.DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）已删除，Runtime 里对应的挂接也一并没了
   （它们读的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、注册参数 `daily` 与写死的轮换台词早已随 S1-A 删除，此前没有任何注册表入口会启动它们）。
   新的日计划是 `Life.DayPlan`（意图持有者，在 Life 里，不是 Runtime 的挂接），见下文“日计划”。
@@ -627,7 +632,7 @@ flowchart LR
   在封闭候选里问 Jev（`Selector.turn_question/6`，trigger `addressed`，用量 operation `dialogue_turn_selection`）——
   `keep_working_and_answer`（继续做并边做边答：同一 worker 接着经写作端点写一句，`Speak.reply/4`，operation `dialogue_reply_write`，
   以 `{:dialogue, 会话号, 来话 turn}` 为号发 Body `say`、沿原会话）、`keep_working_silently`（只记日志），其后是本轮正常可行的
-  活动候选，其中来话者本人的 `speak_to:<cid>` 一定在列（目标带本次会话号，不经新话题冷却，`Dialogue.reply_candidate/2`）。
+  活动候选，其中来话者本人的 `speak_to:<cid>` 一定在列（目标带本次会话号，不经新话题冷却，`Offers.reply/2`）。
   Jev 选了任一活动项即**停下**：正在做的活动记为 `{:interrupted, "to talk with <名字>"}`（经历照常进 Life，`Mind.result/1` 写
   `interrupted (…)`），对树调 `Brain.Tree.halt/1`（在途技能取消、移动停下、世界事务不撤销），树从根重来的那次 `choose_activity`
   不问 Jev、直接以预选应答（`npc_select … trigger=addressed`）；预选的 `speak_to:` 由 `speak` 技能执行，带来话的 `conversation_id`。
