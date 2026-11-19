@@ -17,6 +17,22 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 交接（2026-11-19，第二十一个统筹会话 → 第二十二个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-22-brief.md`
+
+**一句话**：M-3c 完成，用户定 D-2 **同机部署、首批限 3 人**；稿 A 批 0 与花费额度 T1–T3 都已实现、独立评审、修正并推送（代码最后一个提交 `f7e74555`，之后只有文档提交）。明细见紧接着的“第二十一个统筹会话的进展”。
+
+**下一步（按此顺序）**
+1. **花费额度 T4**（真实 release 短场景，花费额度稿 §5）：复用扩人数 / M-3 驱动，正式 release（**先用 `npc-gather-reply-20261117/build-scale-release.sh` 在 HEAD 重建**，跑完前不提交）、3 人、直连 DeepSeek、窗口 ≤ 10 min、停止线设很低（如 $0.05）。判：到线时刻；到线后各库收到关巩固的 PATCH；刷新 / 反思 / 日计划被拒；选择与说话照常；Hindsight 新增用量只剩在途尾巴。顺带量：读回一页（100 行）的字节数；Hindsight `/metrics` 计数与读回合计的少计比例；`PUT` bank（`ensure_bank`）会不会清掉 `enable_auto_consolidation` 覆盖。驱动先离线（单测 + dry-run）→ 独立评审 → 实跑；UDP / 4266 守护同前。配置写法见 `deploy/.env.example`（`NPC_SPEND_*`、`NPC_SPEND_PEAK_UTC`）。
+2. **稿 A 0b 的离线重放**：规划提示词新增了说话一类与对象句（原创措辞，未测）。仿 S1-R8 用 `fixtures/day_plan/requests-*.json` + 真实 DeepSeek，请求数事先封顶，看计划是否合法、对象是否写对。
+3. **稿 A 批 1**（`eat`、`craft`）与稿 B 并行：批 1 开工前先把 `Offers.generators/1` 改为显式次序（现按名字排序）；X-1 定 k、C 与可点名对象上限。
+4. **扩人数前要处理（未排）**：产品首次建库同步等四份认识建好、首次选择只等 10 s（`limits6-01` 冷启动 5 次超时）；6 人同机刷新积压排不完。
+5. E7 部署说明：同机 Hindsight 带 M-3c 配置（扩人数稿 E7 行已列）；常驻 Hindsight 容器 flashrank 缓存路径被 MSYS 写坏，重建常驻容器时改正，不要擅自重建。
+
+**环境（交接时）**：没有在跑的 release、beam、私有库、私有 Hindsight、scope；UDP 最近读数 91，Tcpip 4266 记录号 127958 未变；常驻容器 `npc-s1g-hindsight-20261118`、`npc-dev-pg-20261117` 不动。
+release `/home/dyz/npc-scale-20261118/voxim_server` 指纹 `00670b93`（HEAD 已前进，用前重建）；烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144` 照旧。
+本会话留下、可删的：WSL 构建目录 `~/spend-fix-build-20261119`；批 0 子会话的 worktree `D:/hemifuture/ex_mmo_cluster/.claude/worktrees/agent-a77f2355620d07586`（分支 `worktree-agent-a77f2355620d07586`，提交已挑进本分支）。
+`.claude/worktrees/` 下的 worktree 编译会找不到 `../Voxim`（`voxel_region/spatial.ex`），子会话直接在本 worktree 里改更省事。
+
 ### 交接（2026-11-18，第二十个统筹会话 → 第二十一个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-21-brief.md`
 
 **一句话**：UDP 守护放宽完成；花费额度稿写成并由用户全部定下（$65、学习额度放宽）；稿 A / 稿 B §6 用户全按建议；M-3 驱动两轮评审后实跑 3 人：
