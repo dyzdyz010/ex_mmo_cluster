@@ -326,7 +326,7 @@ defmodule NpcServer.Mind do
         %{activity: activity, times: times, done: done, by: by, status: status} = intent,
         names
       ) do
-    count = "#{intended(activity, intent.object, names)}: #{done} of #{times} done"
+    count = "#{activity_label(activity, intent.object, names)}: #{done} of #{times} done"
 
     case status do
       :open -> "#{count}, by #{hh_mm(by)}"
@@ -335,8 +335,15 @@ defmodule NpcServer.Mind do
     end
   end
 
-  defp intended(kind, nil, _names), do: kind
-  defp intended(kind, %{"actor" => cid}, names), do: "#{kind} #{State.person(cid, names)}"
+  @doc """
+  一项“种类 + 可选对象”给模型读的写法：没点名写种类名；点名了一个人（`%{"actor" => cid}`）写 `<种类> <人>`，人按名字层
+  `Life.State.person/2`（`names` 取自此刻观察）。日计划的意图行（`plan_intent_line/2`）与任务推进的步骤行
+  （`NpcServer.Life.Tasks.Prompt`）共用。
+  """
+  @spec activity_label(String.t(), nil | %{String.t() => integer()}, %{integer() => String.t()}) ::
+          String.t()
+  def activity_label(kind, nil, _names), do: kind
+  def activity_label(kind, %{"actor" => cid}, names), do: "#{kind} #{State.person(cid, names)}"
 
   defp hh_mm(minute), do: "#{two_digits(div(minute, 60))}:#{two_digits(rem(minute, 60))}"
 

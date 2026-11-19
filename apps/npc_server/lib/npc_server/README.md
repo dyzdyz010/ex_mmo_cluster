@@ -1046,6 +1046,19 @@ flowchart LR
   ③ `wants` 目前只展示在栏里，不触发任何动作，也与 `What I have come to think` 并存（是否保留其一等离线对照后再定）；
   ④ 计划耗尽、被直呼等其它重排触发、`times` 作完成条件的校准、计划进 Hindsight 都在后期范围。
 
+### 任务层（`Life.Tasks`，任务层决策稿；**还没接线**）
+
+[任务层决策稿](../../../../docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md)：日计划将退化为每日回顾（开 / 弃任务），
+任务由 Life 持有、偏差时才问 LLM 推进、任务步只作为 Jev 的候选。**现在只有 K-0 离线探索要用的纯函数**，Life / Runtime 没有调用方（接线是 T-1 / T-2）：
+
+- `Life.Tasks.check/3`：推进应答（`:advance`）与每日回顾应答（`{:review, 此刻分钟, 开着的任务}`）里任务 / 步骤的唯一校验；单条种类与对象、
+  `cannot`、意图与 `cannot_yet` 的核对都复用 `DayPlan` 的同一函数（`check_kind/3`、`check_want/1`、`check_lists/3`），不复制。
+- `Life.DayPlan.Prompt.review_system_prompt/2`（回顾新模板）；`Life.Tasks.Prompt`（推进提示词）。回顾用户消息里“开着的 / 最近关掉的任务”两块与任务持久行的渲染同批在 T-1 加（届时每行带任务 id）。
+  词表渲染 `DayPlan.Prompt.activities/1` + `activity_list/1` 是日计划、回顾与推进共用的一处（从 `DayPlan.Round` 挪来，日计划请求逐字节不变）。
+  回顾与推进两份模板共用填充函数 `DayPlan.Prompt.fill_template/3`（人格卡、词表、答案格式行里的 `"object"` 一栏：默认 null，只在词表那一行列了名字的种类上写名字，K-0 发现 1 之后的改法）。
+- 任务词表：T-2 之前就是 `Offers.plan_kinds/1`；T-2 加 `look_for` 时再立任务词表入口（“去找某人”与它的生成器、执行树同批进词表，K-0 发现 3：没有生成器时它只会停滞）。
+- K-0 及其复测的读数见 `.demo/observe/npc-task-k0-20261119/results.md`、`retest-1/results.md` 与决策稿 §7。
+
 ## 附近对话（2026-10-11）
 
 `say` 已在统一函数库内，`life` 默认全部能力组同时包含对话、移动、材料与计划工具，不需要第二个聊天后端。

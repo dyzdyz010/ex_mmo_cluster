@@ -154,7 +154,7 @@ flowchart TB
 
 - **K-4 推进调用的输入输出契约（唯一信任边界）**。`Life.Tasks.Round.write/1`（同 `DayPlan.Round` 的结构：快照在起槽时取齐、worker 不回问 Life、写一次不重问、`wrote` 标记）。
   输入（英文）：人格卡；此刻一块与两路召回材料（复用规划的取材函数，不复制）；任务的目标与理由、已做步骤的结局（`Mind.result/1` 的写法，DRY）、这次为什么问（K-3 的原因）；任务对象是人时多一路按 `actor:<cid>` 的召回（`Mind.recall_queries` R1 同一问句）；
-  可写的种类与对象（**与回顾共用同一份词表渲染**，含 `look_for`）；其它开着的任务各一行。输出恰为一个 JSON 对象：
+  可写的种类与对象（**与回顾共用同一份词表渲染**；T-2 之前任务词表就是 `Offers.plan_kinds/1`，T-2 加 `look_for` 时再立任务词表入口，见 §7 K-0 复测与评审修正）；其它开着的任务各一行。输出恰为一个 JSON 对象：
 
   ```
   {"task": "continue" | "done" | "drop", "steps": [{"activity", "object", "why"}], "cannot": null | {"want", "why"}, "note": "<一句，第一人称>"}
@@ -164,7 +164,7 @@ flowchart TB
   合格 → 采用（替换待做步骤、记 `note` 进 log、清 `waiting`、`rejected_in_row = 0`）；`cannot` → 交学习（K-7）；不合格 → `rejected`，任务不动、`waiting` 留着、`rejected_in_row + 1`，满 3 次关为 `stuck` 并写经历（Voyager“卡住 4 轮换任务”的对应，3 是**原创取值**）；写作失败 → `failed`，同日计划的失败处理与额度退回规则。
   采用之后的步骤是可信结构：生成器只按种类 + 对象去匹配本轮候选，不再解析。
 
-- **K-5 每日回顾（原日计划退化）**。同一个规划槽、同一次 `:day` 触发；输出在 `intents` / `cannot_yet` 之外加 `tasks`：`{"open": [{"goal","why","steps"}], "drop": [任务 id]}`，材料加“开着的任务（含步骤与最近结局）”与“最近关掉的任务”。
+- **K-5 每日回顾（原日计划退化）**。同一个规划槽、同一次 `:day` 触发；输出在 `intents` / `cannot_yet` 之外加 `tasks`：`{"open": [{"goal","why","steps"}], "drop": [任务 id]}`，材料加“开着的任务（含步骤与最近结局）”与“最近关掉的任务”（这两块与持久行渲染同批在 T-1 写，每行须带任务 id，模型才能写 `drop`；见 §7 K-0 评审修正）。
   `:event` 重排的职责转给 K-3 的“新信息”，回顾的当日额度从 5 降到 2（1 次日界 + 1 次事件），**原创取值**。模板改动使 S1-R8 金标测试要重定，先离线测（K-0）。`cannot_yet` 定义改为“连开一个任务也表达不了的事”。
 
 - **K-6 任务步怎样进入 Jev（经稿 A 生成器缝，占 A-4 的 C）**。开着的任务各取当头一步 `{种类, 对象}`；`Offers.candidates/4` 生成本轮候选后，与当头步相同种类 + 对象的候选在 A-4 ③ 的总上限 C 里**先占位**（同“今日 open 意图点名的项”，至多 3 项）。
@@ -179,6 +179,8 @@ flowchart TB
   在相遇结束（`Life.Sight` 写出相遇条目）的那次保存里落库；至多 16 人、按最近见到淘汰（**原创取值**）。生成器 `Offers.look_for/2`：对 `seen` 里此刻不在观察中的人各生成 `look_for:<cid>`，参数冻结为那个旧位置（同 `speak_to:` 冻结目标），
   判据 `Go to where I last saw <名字 (actor cid)> (<多久以前>, near <最近的地名>) and look for them.`；执行 = `travel` 到那里再等至多 N tick，期间此人进入观察即 completed，否则 failed `not_found`（偏差，回推进）。
   **不新增任何服务端查询**：不问 World / Scene 某人现在在哪（HTN §12.7 同理：走到最后见到的地方，不作弊）。“在某处等某人”（`wait_for`）放后一批，需要时再加。
+  **待定（K-0 评审第 8 条）**：词表里可点名的人 = 关系 ∪ 此刻观察（Life 起槽时展开），所以回顾时在场、又不在关系里的人，到推进时若已离开，会从词表消失，
+  任务里点名他的步骤届时核不过 `Tasks.check/3`。T-1 / K-8 设计 `seen` 时一并定：`seen` 里的人是否进词表（进则推进时仍可点名，与 `look_for` 的来源同一份）。
 
 - **K-9 花费闸门与预算上界**。推进与回顾都是后台车道：Life 的 `background/2` 加一种 `:task`（回顾沿用 `:plan`），到线时在 `admit` 之前拒，`waiting` 留着，**已写好的步骤照样是候选**（执行不调模型），即“冻结推进、不冻结行动”。
   额度（原创取值）：**推进与学习写作共用每人每游戏日 12 次**（稿 B 放宽后已批准的 12 次写作，用户 2026-11-18 定），学习仍受“每任务 ≤ 4 轮”；推进两次至少隔 3 分钟（同日计划）。每次写作 `max_tokens` 4096（Writer 加按次参数，稿 B 规划 S-3 已列）。
@@ -266,3 +268,32 @@ flowchart LR
     两个直接构造经历的单测夹具（`npc_life_test`、`npc_dialogue_life_test`）改为 `Selector.experience/1` 的形状（后者原先的 `%{text, place}` 是产品产生不了的输入）。
     评审修正后回归 `npc_selector` / `npc_offers_integration` / `npc_life` / `npc_dialogue_life` / `npc_life_day_plan_integration` / `npc_life_day_plan` / `npc_spend_life` / `npc_registry` 共 8 个文件 186 通过、1 排除、0 失败（WSL 本机 PostgreSQL 独占测试库，跑完删除）；
     `MIX_ENV=test mix compile --warnings-as-errors --force` 无警告；改动的 `.ex` / `.exs` 过 `mix format --check-formatted`。
+- 2026-11-19：**K-0 离线探索**（基于 `f39047a7`，未提交，待统筹评审；规格 / 结果 `.demo/observe/npc-task-k0-20261119/plan.md`、`results.md`）。
+  - 产品纯函数（未接进 Life / Runtime）：`Life.Tasks.check/3`（推进 `:advance` 与回顾 `{:review, 此刻分钟, 开着的任务}` 的唯一校验；单条种类 / 对象、`cannot`、意图与 `cannot_yet` 复用
+    `DayPlan` 抽出的 `check_kind/3`、`check_want/1`、`check_lists/3` 等，`DayPlan.check/3` 行为不变）、`DayPlan.Prompt.review_system_prompt/2`（K-5 新模板）与 `user_message/2` 的任务两块、
+    `Life.Tasks.Prompt`（推进提示词）、`Offers.task_kinds/1`（= `plan_kinds/1` + `look_for`，只是种类名，生成器属 T-2）；词表渲染从 `DayPlan.Round` 挪到 `DayPlan.Prompt.activities/1`，三者共用。
+    单测：改前 27 项红，改后 6 个文件 147 通过、1 排除、0 失败。
+  - 真实 DeepSeek（生产写作位置）40 / 40 应答（回顾 S1-R8 六份材料 × 3、推进 22：任务取回顾的真实输出，结局只取 S1-R7 / S1-Z / spend3-01 select 历史里真实出现过的），
+    入 134,752（未命中 42,342）、出 39,109（思考 26,308），非高峰实价约 $0.03（全高峰约 $0.06）。
+  - 判定：**Q1 回顾整份合法 12 / 18，落空**——6 份被拒全是 `{:unknown_object, "confront_wrecker", "actor …"}`（任务步把 Corvin 写成静态种类的对象；新格式行的 `object` 引起）；
+    **Q2 成立**（R2–R7 合法 9 / 9 份都开了点名 Corvin 的任务，`look_for → speak_to` 一类；`cannot_yet` 不再以“人不在”为理由）；**Q3 推进合法 22 / 22、Q4 点名 0 错、Q5 出向 > 4096 为 0 / 40（最大 2,389）、Q6 入向最大 4,457，均成立**。
+  - 提示词问题与建议（只建议）：① 两份模板的格式行把 `object` 限定为“列有名单的种类，否则 null”，回顾复测一轮（或统筹议 `confront_wrecker` 这类对人候选在 Offers 里可点名）；
+    ② 失败原因是标识符会被误读（`gather: exhausted` = 候选用尽，2 / 2 被读成疲劳），建议 T-1 前单独议 `Mind.result/1` 的原因写法（同时影响 Jev，需另做对照）；
+    ③ `look_for` 在 T-2 前做不了，停滞推进 5 / 5 原样保留它，建议 `look_for` 进词表与 T-2 生成器同批上线；④ 列表外的人（Tobin）1 / 18、`cannot_yet` 与任务重复（4 份）、开放式目标按此刻状态判 done（4 份）只记录。
+    ⑤ K-9 的 4096 出向上限与“入 ≤ 6k”假设在本材料上成立；单次推进高峰价实测约 $0.0011。
+- 2026-11-19：**K-0 复测**（回顾；未提交，待统筹评审；规格 / 结果 `.demo/observe/npc-task-k0-20261119/retest-1/plan.md`、`results.md`）。
+  - 改法（统筹定）：回顾与推进格式行的 `"object"` 共用 `DayPlan.Prompt.object_slot/0`——`<null, unless the kind's line above lists names; then one of those names, in quotes>`，形状仍为“键在、值 null”（与 `Tasks.check/3` 一致），可点名范围不变；
+    `look_for` 移出 `Offers.task_kinds/1`（T-2 之前 = `plan_kinds/1`，与 T-2 生成器同批上线），K-4 “含 `look_for`”届时成立。单测先红（3 项）后绿（`npc_life_tasks*`、`npc_life_day_plan_prompt` / `_day_plan` / `_day_plan_round` 5 个文件 125 通过）。
+  - 真实 DeepSeek 24 / 24 发出（回顾 S1-R8 六份 × 3 = 18；推进格式行也变了，加抽测 6），入 79,081（未命中 30,191）、出 51,724（思考 42,825），非高峰实价约 $0.036（全高峰约 $0.071）。
+  - 读数：**Q1 回顾整份合法 17 / 18，成立**（K-0 12 / 18；静态种类点名 6 → 0；唯一被拒 `{:too_many_items, 6}`：5 条意图 + 1 条 `cannot_yet`）；**Q2 11 / 15，成立**（Corvin 任务 12 个里 9 个是 `confront_wrecker → speak_to Corvin`）。
+    另记：`cannot_yet` 17 条（11 条提 Corvin，0 条以“人不在”为理由）；任务与 `cannot_yet` 重复 6 份（K-0 同口径 3）；点名列表外的人 0（Tobin 进了 `cannot_yet`）。推进 5 / 5 应答合法，A02 `finish_reason=length`（8192 全是思考）。
+  - 新发现（只建议，交统筹）：① 不点名的 `confront_wrecker`（判据“附近的那个人”）代替 `look_for` 成了 Corvin 任务的第一步，长思考也集中在这里，是 K-0 建议①的另一条路（对人登记候选可点名）的又一证据；
+    ② `gather: exhausted` 误读仍在（推进 F 3 份里误读 2 份、读对 1 份），这次让 A02 思考跑满 8192，建议提前议 `Mind.result/1` 的原因写法；
+    ③ 出向 > 4096 有 3 / 24（K-0 0 / 40），按 K-9 的 4096 上限，回顾合法会降到 15 / 18；先解决①②再议上限。
+- 2026-11-19：**K-0 评审修正**（未提交，待统筹复核；方向按用户原话“记得专注happy path，其他外围兜底保护措施可以随着实验根据设计慢慢加”）。
+  - `Tasks.check/3` 回顾的 `drop` 按 id 去重后再数“开着的任务 ≤ 3”，结果里的 `drop` 也是去重后的（反例：已开 3、弃同一 id 两次、再开 2 → `{:too_many_open, 4}`；改前被放行）。
+  - 删 `Offers.task_kinds/1` 与其镜像单测（只有离线脚本一个调用方、恒等于 `plan_kinds/1`）：T-2 之前任务词表就是 `plan_kinds/1`，**T-2 加 `look_for` 时再立任务词表入口**；`task_k0.exs` 改调 `plan_kinds/1`。
+  - 删 `DayPlan.Prompt.user_message/2` 的 `open_tasks` / `closed_tasks` 两块与其单测（没有调用方，K-0 也没用到）：推到 T-1 与持久行渲染同批，届时每行须带任务 id（模型写 `drop` 要用）。
+  - `DayPlan.Prompt` 公开 `fill_template/3`（模板 + 人格卡 + 词表 + `"object"` 一栏），回顾与推进共用；`Tasks.Prompt.system_prompt/2` 改用它，`object_slot/0` 随之收回为模块属性；
+    `Tasks.Prompt.task_line/2` 没有外部调用方，改私有。`DayPlan.Prompt` 模块说明改成现状（本模块渲染词表、`review_system_prompt/2` 直接收词表）。
+  - 评审第 8 条（推进时可点名的人 = 关系 ∪ 此刻观察，回顾时在场、不在关系里的人推进时会从词表消失）记在 K-8，T-1 / K-8 设计 `seen` 时定。

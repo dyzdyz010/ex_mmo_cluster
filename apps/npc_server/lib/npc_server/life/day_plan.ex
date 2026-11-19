@@ -67,6 +67,9 @@ defmodule NpcServer.Life.DayPlan do
   ## 应答检查（`check/3`）
 
   检查 1–5 照离线测量 S1-R8（`.demo/observe/npc-slice1-20261112/s1r8/plan.md` 的“产品式检查”），`stop_reason` 的判断在调用方。
+  单条核对（`decode/1`、`check_keys/5`、`check_lists/3`、`check_kind/3`、`check_want/1`、`check_text/2` 等）是公开的：任务层的唯一校验点
+  `NpcServer.Life.Tasks.check/3` 调用它们核对任务步与回顾应答（任务层决策稿 K-4“抽出单条核对函数共用，不另写一份”），所以日计划意图与任务步的
+  种类 / 对象错误原因完全相同。
   `times` 必须是 JSON 整数（`2.0` 不算）、`by` 严格匹配 `HH:MM`，多余的键、缺的键、类型不对都不放行。
   失败原因是可直接写进日志的原子或元组，见 `check/3`。本模块只给检查结果，要不要重问由调用方决定。
   """
@@ -145,10 +148,31 @@ defmodule NpcServer.Life.DayPlan do
   @spec check(String.t(), %{String.t() => %{String.t() => term()}}, non_neg_integer()) ::
           {:ok, checked()} | {:error, term()}
   def check(text, vocabulary, now_minute) when is_binary(text) and is_map(vocabulary) do
-    with {:ok, body} <- unfence(text),
-         {:ok, object} <- decode_object(body),
-         :ok <- check_keys(object, ["intents", "cannot_yet"], :missing_key, :unknown_key),
-         {:ok, raw_intents} <- fetch_list(object, "intents"),
+    with {:ok, object} <- decode(text),
+         :ok <- check_keys(object, ["intents", "cannot_yet"], :missing_key, :unknown_key) do
+      check_lists(object, vocabulary, now_minute)
+    end
+  end
+
+  # --- 共用的单条核对（任务层 `NpcServer.Life.Tasks.check/3` 也用，不另写一份；任务层决策稿 K-4） ---
+
+  @doc """
+  应答正文 → JSON 对象：至多去一对 ``` 围栏（可带 `json` 标记），整段必须是一个 JSON 对象。
+  `{:ok, map}` 或 `{:error, :not_json | :not_object}`。
+  """
+  @spec decode(String.t()) :: {:ok, map()} | {:error, :not_json | :not_object}
+  def decode(text) do
+    with {:ok, body} <- unfence(text), do: decode_object(body)
+  end
+
+  @doc """
+  已解码的规划应答里的 `intents` 与 `cannot_yet` 两张表（顶层键已由调用方核过）：逐条核对、两张表合计至多 5 条，规则同 `check/3`。
+  `{:ok, %{intents:, wants:}}` 或 `{:error, 原因}`（原因同 `check/3`）。
+  """
+  @spec check_lists(map(), %{String.t() => map()}, non_neg_integer()) ::
+          {:ok, checked()} | {:error, term()}
+  def check_lists(object, vocabulary, now_minute) do
+    with {:ok, raw_intents} <- fetch_list(object, "intents"),
          {:ok, raw_wants} <- fetch_list(object, "cannot_yet"),
          {:ok, intents} <- check_each(raw_intents, &check_intent(&1, vocabulary, now_minute)),
          {:ok, wants} <- check_each(raw_wants, &check_want/1),
@@ -174,8 +198,12 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  # 键是 expected 加上可缺的 optional：先报缺的、再报多的（各按确定的次序）。
-  defp check_keys(map, expected, missing_reason, unknown_reason, optional \\ []) do
+  @doc """
+  一个 map 的键恰为 `expected` 加上可缺的 `optional`：先报缺的 `{missing_reason, 键}`、再报多的 `{unknown_reason, 键}`
+  （各按确定的次序），都齐返回 `:ok`。
+  """
+  @spec check_keys(map(), [String.t()], atom(), atom(), [String.t()]) :: :ok | {:error, term()}
+  def check_keys(map, expected, missing_reason, unknown_reason, optional \\ []) do
     keys = Map.keys(map)
 
     case {expected -- keys, Enum.sort(keys -- (expected ++ optional))} do
@@ -185,14 +213,19 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  defp fetch_list(object, key) do
+  @doc "取一个必定存在的键，值必须是列表：`{:ok, 列表}` 或 `{:error, {:not_a_list, 键}}`。"
+  @spec fetch_list(map(), String.t()) :: {:ok, list()} | {:error, {:not_a_list, String.t()}}
+  def fetch_list(object, key) do
     case Map.fetch!(object, key) do
       list when is_list(list) -> {:ok, list}
       _ -> {:error, {:not_a_list, key}}
     end
   end
 
-  defp check_each(items, fun) do
+  @doc "逐条核对，保序：全部 `{:ok, 结果}` 给 `{:ok, [结果]}`，否则给第一条的 `{:error, 原因}`。"
+  @spec check_each(list(), (term() -> {:ok, term()} | {:error, term()})) ::
+          {:ok, list()} | {:error, term()}
+  def check_each(items, fun) do
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
       case fun.(item) do
         {:ok, checked} -> {:cont, {:ok, [checked | acc]}}
@@ -214,8 +247,7 @@ defmodule NpcServer.Life.DayPlan do
              :intent_unknown_key,
              @intent_optional_keys
            ),
-         {:ok, objects} <- check_activity(intent["activity"], vocabulary),
-         {:ok, object} <- check_object(intent["activity"], intent["object"], objects),
+         {:ok, object} <- check_kind(intent["activity"], intent["object"], vocabulary),
          :ok <- check_times(intent["times"]),
          {:ok, by} <- check_by(intent["by"], now_minute),
          :ok <- check_text(intent["why"], :bad_why) do
@@ -224,6 +256,17 @@ defmodule NpcServer.Life.DayPlan do
   end
 
   defp check_intent(_not_object, _vocabulary, _now), do: {:error, :intent_not_object}
+
+  @doc """
+  一条“种类 + 可选对象”按词表 `%{种类 => %{显示名 => 对象}}` 核对（日计划的意图与任务的步骤共用）：种类逐字是词表的一个键，
+  否则 `{:unknown_activity, 值}`；对象缺（nil）即没点名，给 `{:ok, nil}`；写了就必须逐字是该种类列出的显示名之一，给
+  `{:ok, 对应的对象}`，否则 `{:unknown_object, 种类, 值}`（静态种类的对象表为空，所以写了任何对象都不过）。
+  """
+  @spec check_kind(term(), term(), %{String.t() => map()}) :: {:ok, term()} | {:error, term()}
+  def check_kind(kind, name, vocabulary) do
+    with {:ok, objects} <- check_activity(kind, vocabulary),
+         do: check_object(kind, name, objects)
+  end
 
   # 种类在词表里：给出它的对象表（显示名 → 对象）。
   defp check_activity(kind, vocabulary) when is_binary(kind) do
@@ -264,11 +307,18 @@ defmodule NpcServer.Life.DayPlan do
 
   defp check_by(other, _now_minute), do: {:error, {:bad_by, other}}
 
-  defp check_text(text, reason) do
+  @doc "非空字符串（去掉首尾空白后不空）给 `:ok`，否则 `{:error, reason}`。"
+  @spec check_text(term(), term()) :: :ok | {:error, term()}
+  def check_text(text, reason) do
     if is_binary(text) and String.trim(text) != "", do: :ok, else: {:error, reason}
   end
 
-  defp check_want(%{} = want) do
+  @doc """
+  一条“想做而写不出的事” `%{"want", "why"}`（日计划的 `cannot_yet`、任务推进的 `cannot` 同形）：键恰为这两个、都是非空字符串，
+  原样给出；否则 `:want_not_object | {:want_missing_key, 键} | {:want_unknown_key, 键} | :bad_want | :bad_want_why`。
+  """
+  @spec check_want(term()) :: {:ok, map()} | {:error, term()}
+  def check_want(%{} = want) do
     with :ok <- check_keys(want, @want_keys, :want_missing_key, :want_unknown_key),
          :ok <- check_text(want["want"], :bad_want),
          :ok <- check_text(want["why"], :bad_want_why) do
@@ -276,7 +326,7 @@ defmodule NpcServer.Life.DayPlan do
     end
   end
 
-  defp check_want(_not_object), do: {:error, :want_not_object}
+  def check_want(_not_object), do: {:error, :want_not_object}
 
   defp check_count(n) when n <= @cap, do: :ok
   defp check_count(n), do: {:error, {:too_many_items, n}}

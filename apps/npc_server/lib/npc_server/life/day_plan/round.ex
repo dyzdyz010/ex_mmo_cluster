@@ -6,8 +6,8 @@ defmodule NpcServer.Life.DayPlan.Round do
 
       write/1：此刻一块 → “自己”一问的材料（两次召回、之前的想法）→ 系统提示词 + 用户消息 → 写一次 → DayPlan.check/3
 
-  词表（稿 A 批 0b）是“种类 + 可选对象”：本模块把它渲染成系统提示词的工作列表（有对象的种类在判据后接一句可选对象，
-  见 `listed/1`），检查时交给 `DayPlan.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
+  词表（稿 A 批 0b）是“种类 + 可选对象”：渲染成系统提示词的工作列表由 `Prompt.activities/1` 做（有对象的种类在判据后接
+  一句可选对象；日计划、每日回顾与任务推进共用这一处），检查时交给 `DayPlan.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
 
   ## 为什么这样取材
 
@@ -87,7 +87,7 @@ defmodule NpcServer.Life.DayPlan.Round do
     with {:ok, right_now} <- ReflectionRound.right_now(snapshot),
          {:ok, materials} <-
            ReflectionRound.materials(Reflection.self_question(), right_now, snapshot) do
-      system = Prompt.system_prompt(snapshot.character, listed(snapshot.vocabulary))
+      system = Prompt.system_prompt(snapshot.character, Prompt.activities(snapshot.vocabulary))
       user = Prompt.user_message(materials, today: snapshot.today, wants: snapshot.wants)
 
       case snapshot.write.(system, user) do
@@ -106,21 +106,6 @@ defmodule NpcServer.Life.DayPlan.Round do
     else
       {:error, reason} -> {{:failed, reason}, nil, nil, false}
     end
-  end
-
-  # 词表 → 系统提示词的工作列表 `[%{name:, criterion:}]`（`Prompt.system_prompt/2` 的形状，模板一字不改）。有可点名对象的种类
-  # 在判据后接一句可选对象，显示名按字符串排序、各写成 JSON 字符串（模型照抄进 `"object"`）；没有对象的种类判据原样，
-  # 所以没配说话时与 S1-R8 逐字节相同。这句的措辞是原创取值，没有离线测过（批 0b 不调真实模型）。
-  defp listed(vocabulary) do
-    for %{kind: kind, criterion: criterion, objects: objects} <- vocabulary,
-        do: %{name: kind, criterion: criterion <> object_hint(objects)}
-  end
-
-  defp object_hint(objects) when map_size(objects) == 0, do: ""
-
-  defp object_hint(objects) do
-    names = objects |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &Jason.encode!/1)
-    ~s| Optionally add "object": exactly one of #{names}.|
   end
 
   defp outcome(:ok, checked),

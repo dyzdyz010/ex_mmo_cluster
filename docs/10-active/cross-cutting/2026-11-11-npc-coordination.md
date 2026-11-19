@@ -54,6 +54,14 @@ release `/home/dyz/npc-scale-20261118/voxim_server` 指纹 `00670b93`（HEAD 已
 - **② 稿 A 0b 离线重放（S1-R8b）：完成**。18/18 合法，`speak_to` 0 条（模型把“走过去说”读成“此刻要有人在旁边”）；问题并入任务层，见稿 A §7。
 - **任务层决策稿** `2026-11-19-npc-long-task-loop-decision.md`：用户 2026-11-19 答 §6 全按建议（原话：“全按建议”）；总纲回路图已改为“结局偏差 → 任务推进”。
   实施顺序 T-0 结构化结局 → K-0 离线 → T-1 / T-2（稿 A 批 1 之后）→ T-3（稿 B 按新定位）。
+- **③ 稿 A 批 1：完成**（`a934c670`）。eat / craft 生成器，可行性门槛由 World 一处定义（`Production.consumable/3` / `craftable/3` + 只读接口 `World.production_options/2`）；
+  T-A5 前提用户定“都可以”；按用户 happy path 方向收回了超时转换 / 耗时字段 / 兜底用例；两轮评审（首轮 1 阻塞 3 应修，复审无阻塞无应修）。T-A5 未做。
+- **任务层 T-0：完成**（`f39047a7`）。`Selector.experience/1` 交出结构化 `outcome`，Life 计划记账读它；评审后删掉多余的 `last_activity`（最近活动归 Selector）。
+- **任务层 K-0 离线：已跑**（40 次，约 $0.03，`.demo/observe/npc-task-k0-20261119/`）。Q2–Q6 成立（Corvin 不在场 9/9 开 `look_for → speak_to` 任务；推进 22/22 合法；点名 0 错；出向 ≤ 2,389）；
+  **Q1 落空** 12/18（格式行人人带 `object`，模型给静态 `confront_wrecker` 点名）。统筹定：格式行只在可点名种类写对象，`look_for` 推迟到 T-2 与生成器同批，复测回顾 18 次 + 推进抽测 6 次：**Q1 17/18、Q2 11/15 成立**（`retest-1/`，约 $0.036）；
+  `gather: exhausted` 被读成“累了”（`Mind.result/1` 措辞，Jev 也用）另议。K-0 新增产品纯函数（`Life.Tasks.check/3`、`Life.Tasks.Prompt`、DayPlan 若干校验改公开）评审无阻塞、3 应修（回顾 drop 去重、删无调用方的 `task_kinds/1` 与任务块、文档），已修并提交。
+  **待用户定（复测发现）**：① 对人的登记活动（如 `confront_wrecker`）是否改由生成器展开、可点名（Corvin 任务 12 个里 9 个首步是它，人不在场时落不了地）；② 失败原因码改成直白英文（`gather: exhausted` 多被读成“累了”，一份因此思考打满 8192）。
+- **子会话测试数据库（更正）**：npc_server 集成测试用专用测试库容器 `npc-dev-pg-20261117`（`MMO_DB_PORT=55480`），在里面建独占库、跑完删；“不动”指不删 / 不改容器与卷。WSL 的 `127.0.0.1:5432` 是**别的项目**的容器 `meeting_room-db-1`，不要用（本会话一度误指过去，已核无残留；其中旧库 `mmo_test_17624_…` 不是本线的，不动）。
 - 只读规划存档：批 1 `.demo/observe/npc-slice1-20261112/batch1-plan-20261119.md`（T-A5 前提待用户定：作者供给余额、放宽生产材料、只服务端判）；稿 B `skill-learning-plan-20261119.md`。
 
 ### 交接（2026-11-18，第二十个统筹会话 → 第二十一个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-21-brief.md`

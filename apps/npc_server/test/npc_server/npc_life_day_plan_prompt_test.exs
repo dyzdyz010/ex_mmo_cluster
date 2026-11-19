@@ -130,6 +130,65 @@ defmodule NpcServer.NpcLifeDayPlanPromptTest do
     refute String.ends_with?(prompt, "\n")
   end
 
+  describe "每日回顾的新模板（任务层决策稿 K-5；K-0 离线用，T-1 才接进 Life）" do
+    # 词表与 Round 交进来的同形：静态种类、说话（对象是人）。
+    @vocabulary [
+      %{kind: "guard_hut", criterion: "Stand beside the small hut for a while.", objects: %{}},
+      %{
+        kind: "speak_to",
+        criterion: "Walk up to someone and say one thing to them.",
+        objects: %{"actor 7" => %{"actor" => 7}}
+      }
+    ]
+
+    test "词表渲染一处定义：有对象的种类判据后接可选对象句，静态种类原样" do
+      assert Prompt.activity_list(Prompt.activities(@vocabulary)) ==
+               Enum.join(
+                 [
+                   "- guard_hut: Stand beside the small hut for a while.",
+                   ~s|- speak_to: Walk up to someone and say one thing to them. Optionally add "object": exactly one of "actor 7".|
+                 ],
+                 "\n"
+               )
+    end
+
+    test "系统提示词：人格卡、同一份词表渲染、三个键都讲到、答案格式里有 object 与 tasks，不留占位符" do
+      prompt = Prompt.review_system_prompt("Garen, a builder.", @vocabulary)
+
+      assert String.starts_with?(prompt, "You are this person: Garen, a builder.\n")
+      assert prompt =~ "\n" <> Prompt.activity_list(Prompt.activities(@vocabulary)) <> "\n"
+      assert prompt =~ ~s|{"intents": [{"activity": |
+      assert prompt =~ ~s|"tasks": {"open": [{"goal": |
+      assert prompt =~ ~s|"drop": [|
+      assert prompt =~ ~s|"cannot_yet": [{"want": |
+      assert prompt =~ ~s|"object": |
+      refute prompt =~ "<activities>"
+      refute prompt =~ "<character>"
+      refute String.ends_with?(prompt, "\n")
+    end
+
+    # K-0 复测前的改法（`.demo/observe/npc-task-k0-20261119/results.md` 发现 1）：K-0 的格式行在每条意图 / 步骤上都写
+    # “该种类列出的名字之一或 null”，模型给静态种类 `confront_wrecker` 也点了名（18 份里 6 份因此被拒）。
+    # 现在 `"object"` 默认 null，只有词表那一行列了名字的种类才写名字；意图与任务步同一句（与推进共用一处定义）。
+    test "答案格式行（金标）：object 默认 null，只在列了名字的种类上写名字" do
+      prompt = Prompt.review_system_prompt("Garen, a builder.", @vocabulary)
+
+      object =
+        ~s|"object": <null, unless the kind's line above lists names; then one of those names, in quotes>|
+
+      format =
+        ~s|{"intents": [{"activity": "<a name from the list>", #{object}, "times": <whole number, at least 1>, | <>
+          ~s|"by": "<HH:MM, 24-hour, later than now and before midnight>", "why": "<one sentence, first person>"}], | <>
+          ~s|"tasks": {"open": [{"goal": "<what you want to bring about, in your own words>", "why": "<one sentence, first person>", | <>
+          ~s|"steps": [{"activity": "<a name from the list>", #{object}, "why": "<one sentence, first person>"}]}], | <>
+          ~s|"drop": ["<the id of an open task you give up>"]}, | <>
+          ~s|"cannot_yet": [{"want": "<what you want to do, in your own words>", "why": "<one sentence, first person>"}]}|
+
+      assert prompt =~ "\n" <> format <> "\n"
+      refute prompt =~ "one of the names listed for that kind"
+    end
+  end
+
   # 用户消息 = 三块材料 + 末行：返回 {前面的全部, 末行}。
   defp split_last(message) do
     [last | rest] = message |> String.split("\n\n") |> Enum.reverse()
