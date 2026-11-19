@@ -17,6 +17,26 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 交接（2026-11-18，第二十个统筹会话 → 第二十一个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-21-brief.md`
+
+**一句话**：UDP 守护放宽完成；花费额度稿写成并由用户全部定下（$65、学习额度放宽）；稿 A / 稿 B §6 用户全按建议；M-3 驱动两轮评审后实跑 3 人：
+release 在生产限额内宽裕，但**私有 Hindsight 同挤 2 核时交互召回超时 11 次**（L4 不过）。用户 2026-11-18 定 D-2：**先调同机再定**。明细见紧接着的“第二十个统筹会话的进展”。
+
+**下一步（按此顺序）**
+1. **M-3c：同机调 Hindsight 后复测**（用户定）。先查证（AGENTS §2.2.8，读 Hindsight 0.10.3 容器内源码 / 官方文档）哪些配置能把 Hindsight 的后台工作与交互召回在 2 核内分开：
+   容器内 `os.cpu_count()` 是 32（线程按 32 核开、超订两核）→ ONNX / OMP / tokenizers 线程数按 2 设；后台任务槽 `WORKER_MAX_SLOTS`（默认 10）、巩固与刷新的 LLM 并发、
+   巩固批量下调；召回本身是否有独立的执行池。写成驱动 `npc-limits-20261118` 的一组私有 Hindsight 环境（只改测试侧，取值为原创初值并写依据），离线单测 → 独立评审 → 实跑 3 人与 6 人
+   （同一 release 指纹；**实跑前用 `npc-gather-reply-20261117/build-scale-release.sh` 在 HEAD 重建**，WSL 调用前加 `MSYS_NO_PATHCONV=1`，跑完前不提交）。
+   召回超时 0 → D-2 同机部署（再把这组配置写进部署说明 E7）；仍超时 → 报用户改为另放（≥4 核另机）并按“release 单独钉 2 核”复测。
+2. **稿 A 批 0**（用户已定，实施待排）：先测后改 → 独立评审 → 提交；稿 B 与稿 A 批 1–2 并行。
+3. **花费额度实施**（Q-1–Q-6 已定）：`SpendBudget`（T1–T3 先，T4 真实短场景）；排在批 0 之后或与批 1 并行，按依赖定。顺带修产品 `Life.Hindsight.status/1` 漏思考 token。
+4. 常驻 Hindsight 容器的 flashrank 缓存路径被 MSYS 转换写坏（`HINDSIGHT_API_RERANKER_FLASHRANK_CACHE_DIR=C:/Program Files/Git/home/...`），下次重建常驻容器时改正（`MSYS_NO_PATHCONV=1`）；不要擅自重建。
+
+**环境（交接时）**：没有在跑的 release、beam、私有库、私有 Hindsight、scope；UDP 88，Tcpip 4266 记录号 127958 未变；常驻容器 `npc-s1g-hindsight-20261118`（18933）、
+`npc-dev-pg-20261117`（55480）不动。跨轮不可变烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`（3.2 GiB，内容版本换了才删）。release `/home/dyz/npc-scale-20261118/voxim_server`
+指纹 `89b74a37`（HEAD 已前进，用前重建）。M-3 驱动 `.demo/observe/npc-limits-20261118/`（README、单测 89 项；启动用 PowerShell `Start-Process` 脱开工具会话，
+示例脚本见任务书）。Git Bash 的 `python` 是 WindowsApps 占位，用 `/c/ProgramData/miniconda3/python.exe`。
+
 ### 第二十个统筹会话的进展（2026-11-18 起）——上面第十九 → 第二十交接里“下一步”各项的状态以这里为准
 
 - **① 驱动 UDP 守护放宽：完成**（Test-only，不在 git）。`npc-slice4-20261118/run.py` 的 `guard`：采样读不到（超时、进程失败、输出不成 JSON、
