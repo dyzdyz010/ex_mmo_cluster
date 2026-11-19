@@ -61,11 +61,11 @@ flowchart LR
 |---|---|---|
 | E1 | 说话双端实机复验 | **已过**（`lane-01`，2026-11-18） |
 | E2 | N 人同场（N = §6 D-1 定的首批人数 + 余量）真实模型实跑，五题成立 | 4 人已过；本稿 M-1 / M-2 |
-| E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | 3 人已测（`limits3-02`）：release 峰值 2070 MiB、tick 不掉速；**Hindsight 同挤 2 核时交互召回超时 11 次**，待 D-2 定放置后按其复测 |
+| E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | **3 人同机已过**（`limits3-03`，带 M-3c 的 2 核配置）：release 峰值 1854 MiB（启动加载世界），窗口内两边同一时刻合计最大 2200 MiB，tick 不掉速，召回失败 0；6 人同机不过（`limits6-01`，召回失败 11）。D-2 定同机、首批限 3 人（§7） |
 | E4 | 每 NPC 每小时的 token 与请求次数（含 Hindsight 自己的模型用量），按生产节奏外推成本，在 D-3 的预算内 | **读数已有**（`scale3-direct-02` 截断于 37.4 min，用户定采用）：每 NPC 每小时约 266 万 token、约 $0.71（高峰价）；3 人每天最坏约 $51，在 D-3 的 $50 档附近，进青岚前须由产品侧额度兜住，见 §7 |
 | E5 | 生产网络路径（HTTP/2 直连 DeepSeek）下 N 人同场无排队失败、无取消残留 | 未测（实跑都经本机明文代理，走 HTTP/1）；M-1 改一轮直连 |
 | E6 | 分支合并 master、CI 全绿 | PR #11 draft，181 提交 |
-| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | 未做 |
+| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | 未做。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
 | E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | 未做；对话 UI 只在测试地图实跑过 |
 | E9 | 分发：冻结客户端 / 服务端 / 协议版本，镜像推送后本地同镜像 + 新打包客户端冒烟（含 NPC 说话主链路） | 按 Voxim 分发规则，未做 |
 
@@ -132,3 +132,10 @@ flowchart LR
 - 残余：驱动 UDP 守护单次采样超时即停服（保守，正确方向），长窗口下误停概率不低；下次长跑前改成“连续两次读不到才停”（仍有界）。
 - 2026-11-18（第二十个统筹会话）：守护已改为连续 2 次读不到才停、PowerShell 采样超时 20 s，其余阈值不变（统筹页“第二十个统筹会话的进展”）。产品侧额度另写稿：[`2026-11-18-npc-spend-budget-decision.md`](2026-11-18-npc-spend-budget-decision.md)（待用户定）。
 - 2026-11-18（第二十个统筹会话）：M-3 驱动 `.demo/observe/npc-limits-20261118/` 实跑。偏离 §5 两处（理由见驱动 README）：原生 WSL release 套用户级 systemd scope（`MemoryMax=4600M`、无 swap）+ 钉 2 颗 vCPU，而非生产镜像 `docker run`；cpu 配额 1.8 设不了（无 root），改钉 SMT 兄弟 30,31，私有 Hindsight 与私有 PostgreSQL 同钉。`limits3-01` 准备阶段失败（烘焙拷贝超时，驱动缺陷，改为跨轮不可变缓存）；**`limits3-02`（3 人，2026-11-18，release `89b74a37`）：L1–L3 过、L4 不过 → 整体不通过（行为失败，保留原判，不重跑）**。L1 无 OOM（release 与私有 Hindsight 的 oom_kill 都是 0）；L2 release 峰值 2070 MiB（出在启动加载世界，窗口内 current ≤ 392 MiB、anon ≤ 304 MiB），低于告警线 3400；L3 tick 全窗 59.999 Hz、各段 ≥ 59.99；release CPU 中位 0.18 核。**L4 的 Q4 不过**：窗口内 11 次选择因召回超时失败（`{:mind_unavailable, :timeout}`，产品召回上限 10 s），另 3 条观察召回超时，全部落在第 493–603 s；同一段私有 Hindsight 吃满两颗核（1.8 核）、内存顶到 2048 MiB 限额（`memory.events max` +2468 次回收，anon 峰值 1540 MiB），召回的嵌入与重排要在 Hindsight 里用 CPU，排不上队。不限额对照 M-1b 召回失败 0。结论：**release 本身在生产限额内宽裕；Hindsight 与 release 同挤 2 核时，它的后台工作（巩固 / 刷新）会饿死交互召回**——指向 D-2 选 (b) Hindsight 另放，或给 Hindsight 的后台工作与交互召回做 CPU 隔离。读数：选择延迟中位 1396 ms（召回成功的那些召回中位 808 ms，不限额 150 ms）；花费 42 万 token（产品 5.9 万 + Hindsight 36.1 万），约 $0.15。资源：UDP 87 → 93，4266 记录号 127958 未变，私有库 / 容器 / 卷 / scope / ext4 目录全部回收，泄漏扫描 830 文件 0 命中。证据 `.demo/observe/npc-limits-20261118/runs/limits3-02/`（`verdict.json`、`resources.json`、`limits.jsonl`、`release.log`）。6 人一轮未跑：同一配置下必然同样失败，读数价值低于花费；改为请用户先定 D-2，再按选定的放置方式跑 N = 3 / 6。烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`（3.2 GiB，跨轮不可变，内容版本换了才删）建一次 441 s。
+- 2026-11-19（第二十一个统筹会话）：**M-3c 同机 2 核配置**。查证（Hindsight 0.10.3 容器源码、上游 issue #5725 与修复 commit b18f425、ORT 线程文档）：
+  0.10.3 的 ONNX 会话（嵌入、flashrank）不设线程数，按宿主物理核数开且自旋，没有环境变量能改（`OMP_NUM_THREADS` 对 ORT 无效）；召回与后台任务同进程同事件循环、无优先级。
+  驱动给私有 Hindsight 加：移植 b18f425 语义的 `sitecustomize` 补丁（intra = `OMP_NUM_THREADS` = 2、inter 1、关自旋）、worker 名额 10 → 2（巩固保底 1）、嵌入与重排分批 32 → 8
+  （2 / 1 / 8 为原创初值）；独立评审后补了后台积压读数。实跑（release `00670b93`）：**`limits3-03`（3 人）通过**——召回失败 0、召回中位 151 ms / 最长 5.6 s、Hindsight CPU 平均 0.19 核 / 最高 1.14、
+  内存峰值 1838 MiB、积压能排空；**`limits6-01`（6 人）不通过**——召回失败 11：首次建库时 6 人 24 个建模操作挤在 2 个名额里，5 人首次选择 `life_initialization_timeout`（只在首次建库发生）；
+  认识刷新期间召回超时 6 次，窗口末刷新积压仍在涨（最老 253 s）。原判保留、不重跑。明细与证据：驱动 README“M-3c 实跑结果”、`runs/limits3-03/`、`runs/limits6-01/`。
+- **D-2 定**（用户 2026-11-19）：**Hindsight 与 voxim_server 同机部署，首批限 3 人**；部署时带 M-3c 配置（E7）。扩到 3 人以上前须先另放 Hindsight 或重新实测。
