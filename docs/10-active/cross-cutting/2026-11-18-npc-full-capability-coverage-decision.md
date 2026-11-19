@@ -170,3 +170,13 @@ flowchart LR
   改后九个文件（offers / day_plan / _round / _integration / mind / selector / registry / life / dialogue_life）226 绿、2 条按标签排除，
   s1r9 工具去掉末行 `run()` 后编译 0 诊断（未真跑），`mix compile --warnings-as-errors` 与改动文件的 `mix format --check-formatted` 通过。
 - 2026-11-19（第二十一个统筹会话）：批 0 已合入本分支（0a `4aae7a35`、0b `2a908ce1`、评审修正 `8bc5752c`）。**批 1 开工前要改**：`Offers.generators/1` 现按生成器名排序，新增生成器（如 `:eat`）会排到 `:registered` 之前、改变候选次序；改为在覆盖登记里显式声明生成器次序并以测试锁定。规划时可点名对象不设上限、0b 新增的提示词句子未离线测，留给 X-1 与离线重放。
+- 2026-11-19（第二十二个统筹会话，S1-R8b 离线重放，探索性、不是验收）：0b 规划提示词经产品 `Round.write/1` / `Prompt.user_message/1` 渲染（与 S1-R8 逐字节相同、只多 `speak_to` 一行），
+  S1-R8 的 6 份真实材料（Garen；可点名的人按产品展开 = 关系 ∪ 观察里的他人，只有 Corvin）× 3 次 = 18 次，生产写作位置（DeepSeek `deepseek-flash`，S1-R8 当时是 Sonnet，模型与句子两项变化混在一起），
+  用产品 `DayPlan.check/3` 判。结果：18/18 合法（S1-R8 17/18），52 条意图种类全合规、无自造种类名、静态种类无人写 `object`；**`speak_to` 0 条**——
+  15/18 份思考考虑过又放弃（R2–R7 把 “Walk up to someone” 读成“此刻旁边要有人”，Corvin 不在场就不写；R1 Corvin 在场但选了更贴切的静态种类），
+  8 条“问 Corvin / 当面说”全留在 `cannot_yet`，理由都是“人不在”而非“词表写不出”。所以“对象写得对不对”仍未回答。另：答案格式行没有 `object` 键（模型一开始写说话就可能漏写）。
+  用量 95,313 token（非高峰约 $0.025），UDP 97 → 96。待定（与批 1 一起报用户）：(a) 对象句明说可以给不在场的人做计划，或 (b) 把 `cannot_yet` 改成“现在做不到”；两者都要再离线测，改模板时 S1-R8 金标测试跟着重定。
+  证据 `.demo/observe/npc-slice1-20261112/s1r8b-0b/`（`plan.md` 发问前写、`results.md`、`raw/`）；脚本 `tools/jev/s1r8b_0b.exs`（渲染与判定只调产品函数；对象展开与正文提取照搬 Life / Writer 的私有函数）、`tools/jev/s1r8b_0b_replay.py`。
+- 2026-11-19（第二十二个统筹会话）：**A-5 的“不建目标层”被推翻**（用户 2026-11-19 在对话里认可，原话：“全部同意”）：多步固定套路仍放进技能，
+  但依赖执行反馈的长程任务要一层由 Life 持有的“任务”，LLM 在步骤有结果时推进下一步（种类 + 对象），任务步作为 Jev 的候选。五条概念见统筹页“第二十二个统筹会话的进展”，
+  正文待任务层决策稿。上一条 S1-R8b 的 (a) / (b) 二选一不再单独定，并入任务层稿件。批 1（eat / craft）不受影响。

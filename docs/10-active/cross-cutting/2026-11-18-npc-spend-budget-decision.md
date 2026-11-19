@@ -205,3 +205,16 @@ Hindsight 的用量是事后读到的：读回间隔内、以及到线那一刻�
   owner 不在。T3 零点那一刻的瞬时 `state=paused reason=unmeasured hindsight_age_ms=3900000` 查明是**测试手动拨钟的假象**：用例只在 15:00 读回过一次，
   之后把时钟直接拨到 16:05、中间没有读回，换日时“已 65 分钟没读全”确实成立；同一轮读回读全后立即转开。生产每 60 s 读回，换日不动“上次读全”
   的时刻，不是产品缺陷；用例里已写明原因并断言恢复。
+- 2026-11-19（第二十二个统筹会话）：**T4 通过**（`spend3-01`，release `abe56110` 在 HEAD 重建，3 人、M-3c 同机 2 核、直连 DeepSeek、窗口 600 s，UTC 12:06 起跑，非高峰）。
+  驱动 `.demo/observe/npc-spend-t4-20261119/`（M-3 驱动之上；离线单测 77 项、M-3 原单测 126 项、dry-run；独立评审 1 阻塞 + 4 应修 + 6 建议全部先写反例再修）。
+  停止线取 **$0.00018**（上限 $0.0002 × 0.9；统筹会话定，非稿件参考的 $0.05：后者约第 448 s 才到线，看不到刷新被拒）。判定全部 True：
+  - S1 到线：第 9.3 s `state=paused reason=limit`，产品自报 $0.000234，驱动独立真值 $0.00023445（三笔首轮选择回执；日志只到 1 µ$）。
+  - S2 关巩固：到线 +90 s 与窗口末直接 GET 三个 `npc-life-*` 库，`enable_auto_consolidation` 均为 false；产品在转停后 105 ms 即记 `consolidation=ok`。
+  - S3 后台被拒：日计划（三人 59–76 s）、反思（`npc_reflect … reason=budget_exhausted`，计数增量全部有拒绝日志解释）、认识刷新（三人 512–519 s，首次 retain 之后）都只记显式拒绝、到线后没有新起的这三类请求。
+  - S4 交互照常：到线后每人选择 8–10 次（阈值 3）、召回失败 0、说话 6 次全部成功、retain 照常。
+  - S5 尾巴：到线后 Hindsight 新增调用 44 次**全是 retain 抽取**（Q-3 (b) 本就继续 retain），无巩固、无刷新新建；$0.0181。
+  只记录的读数：**少计比例 0**（账本 = 路由逐条回执 = `/metrics` 增量，176,260 token）；`llm-requests` 每行约 21 KB（含完整 input / output），100 行一页外推约 2.1 MB（本轮最大页 15 行 318 KB）；
+  **产品同款 `PUT` bank 不会清掉 `enable_auto_consolidation=false` 的覆盖**（`put-probe.json`）；整轮花费产品 $0.0077 + Hindsight $0.0181 ≈ $0.026。
+  资源：UDP 起跑前 87、峰值 97、收尾 90，Tcpip 4266 记录号 127958 未变；私有库 / 私有 Hindsight 与两卷 / scope / ext4 目录全部回收，泄漏扫描 840 文件 0 命中，容器 key 为本轮令牌。
+  **遗留**（产品可观测性，评审第 6 条，未改）：转停发生在读回落栏（`land/3`）时清空了确认集但没重置 `pending`，可观测面会短暂报 `consolidation=ok` 而 PATCH 尚未发出；本轮转停经产品回执、PATCH 在 105 ms 内真实发出，未受影响。
+  证据 `runs/spend3-01/`（`verdict.json`、`resources.json`、`bank-config.jsonl`、`put-probe.json`、`ledger.json`、`hindsight-metrics.json`）与 README。
