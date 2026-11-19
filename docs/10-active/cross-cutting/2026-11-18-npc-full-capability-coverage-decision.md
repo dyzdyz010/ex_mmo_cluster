@@ -169,3 +169,4 @@ flowchart LR
   验证：改前 `npc_life_day_plan_test` 2 红（点名优先反例、形状反例）、`npc_offers_test` 4 红（`generators/1`）、s1r9 工具编译 2 条诊断；
   改后九个文件（offers / day_plan / _round / _integration / mind / selector / registry / life / dialogue_life）226 绿、2 条按标签排除，
   s1r9 工具去掉末行 `run()` 后编译 0 诊断（未真跑），`mix compile --warnings-as-errors` 与改动文件的 `mix format --check-formatted` 通过。
+- 2026-11-19（第二十一个统筹会话）：批 0 已合入本分支（0a `4aae7a35`、0b `2a908ce1`、评审修正 `8bc5752c`）。**批 1 开工前要改**：`Offers.generators/1` 现按生成器名排序，新增生成器（如 `:eat`）会排到 `:registered` 之前、改变候选次序；改为在覆盖登记里显式声明生成器次序并以测试锁定。规划时可点名对象不设上限、0b 新增的提示词句子未离线测，留给 X-1 与离线重放。
