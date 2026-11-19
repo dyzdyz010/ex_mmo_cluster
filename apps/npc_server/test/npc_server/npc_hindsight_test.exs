@@ -448,24 +448,43 @@ defmodule NpcServer.NpcHindsightTest do
           {200,
            %{
              "items" => [
+               # 真实追踪行的形状（`hindsight-llm.json` 的行）：思考与命中 token 是单列的，OpenAI 兼容通道的
+               # `output_tokens` 不含思考；缺省的分项是 null。
                %{
                  "scope" => "retain",
                  "input_tokens" => 120,
+                 "cached_tokens" => 30,
                  "output_tokens" => 10,
+                 "thoughts_tokens" => 7,
                  "status" => "success"
+               },
+               %{
+                 "scope" => "retain",
+                 "input_tokens" => 80,
+                 "cached_tokens" => nil,
+                 "output_tokens" => 5,
+                 "thoughts_tokens" => nil,
+                 "status" => "error"
                }
              ],
-             "total" => 1
+             "total" => 2
            }}
       end)
 
     assert {:ok, %{bank: "probe"}} = Hindsight.ensure(cfg, "Lin")
 
-    assert {:ok,
-            %{
-              stats: %{"total_nodes" => 2},
-              usage: %{"retain" => %{input_tokens: 120, output_tokens: 10, requests: 1}}
-            }} = Hindsight.status(cfg)
+    assert {:ok, %{stats: %{"total_nodes" => 2}, usage: usage}} = Hindsight.status(cfg)
+
+    assert usage == %{
+             "retain" => %{
+               requests: 2,
+               failed: 1,
+               input_tokens: 200,
+               cached_tokens: 30,
+               output_tokens: 15,
+               thoughts_tokens: 7
+             }
+           }
 
     assert Enum.count(requests(9), fn {method, _, _} -> method == :put end) == 1
   end

@@ -210,11 +210,14 @@ defmodule NpcServer.Life.Hindsight do
 
   def recall(config, _, _), do: failure(config, :invalid_query)
 
-  @doc "只读 facts、最近 100 个后台操作和按操作聚合的 token，用于 CLI/observe；不返回原始 trace。"
+  @doc """
+  只读 facts、最近 100 个后台操作和按操作聚合的 token，用于 CLI/observe；不返回原始 trace。
+  每个操作的用量是 `requests`、`failed` 与 `tokens/1` 的四项之和（思考与命中单列，与花费额度的计量口径同一份读法）。
+  """
   def status(config) do
     with {:ok, stats} <- request(config, :get, "/stats"),
          {:ok, operations} <- operations(config),
-         {:ok, usage} <- page(config, "/llm-requests", "items", 200) do
+         {:ok, usage} <- page(config, &request(config, :get, &1), "/llm-requests", "items", 200) do
       totals =
         Enum.reduce(usage, %{}, fn item, acc ->
           key = item["scope"] || item["operation"] || "unknown"
@@ -229,12 +232,117 @@ defmodule NpcServer.Life.Hindsight do
   end
 
   defp usage(item),
+    do:
+      Map.merge(tokens(item), %{
+        requests: 1,
+        failed: if(item["status"] in [nil, "success"], do: 0, else: 1)
+      })
+
+  @doc """
+  Hindsight 一条 LLM 追踪行（`GET …/llm-requests` 的 item）的四项 token：`input_tokens`（含命中）、`cached_tokens`（命中）、
+  `output_tokens`（OpenAI 兼容通道**不含**思考，Hindsight 0.10.3 `providers/openai_compatible_llm.py:467-476`）、
+  `thoughts_tokens`（思考）。追踪里缺省的分项是 null，按 0 计。只读计数，不校验——要当计量真值的读法见 `llm_requests/3`。
+  """
+  def tokens(row),
     do: %{
-      requests: 1,
-      input_tokens: item["input_tokens"] || 0,
-      output_tokens: item["output_tokens"] || 0,
-      failed: if(item["status"] in [nil, "success"], do: 0, else: 1)
+      input_tokens: row["input_tokens"] || 0,
+      cached_tokens: row["cached_tokens"] || 0,
+      output_tokens: row["output_tokens"] || 0,
+      thoughts_tokens: row["thoughts_tokens"] || 0
     }
+
+  @doc """
+  列出 bank id 含 `query`（大小写不敏感的子串，Hindsight 的 `q`）的全部库：`GET /v1/default/banks?q=&limit=100&offset=k`
+  读到 `total` 为止，返回 `{:ok, [bank_id]}`。`config` 只要 `url`（可带 `timeout_ms`），不用 `bank`。
+  Hindsight 按最近写入排序，翻页期间有写入时同一库可能出现两次或漏掉一次；调用方（花费额度的读回，每周期一轮）下一轮会再列。
+  """
+  def list_banks(config, query) do
+    get = fn path -> logged(config, fetch(config, :get, path, nil, :background)) end
+
+    with {:ok, rows} <-
+           page(config, get, "/v1/default/banks?" <> URI.encode_query(%{q: query}), "banks", 100) do
+      collect(rows, fn
+        %{"bank_id" => id} when is_binary(id) -> {:ok, id}
+        _ -> failure(config, :invalid_response)
+      end)
+    end
+  end
+
+  @doc """
+  读这个库（`config.bank`）`started_at` 落在 `[from_ms, to_ms)` 里的全部 LLM 追踪行：`GET …/llm-requests?start_date=&end_date=&limit=500&offset=k`
+  读到 `total` 为止（Hindsight 最新在前、`limit` 上限 500）。每行在这里规范化一次：
+
+      %{id: 行 id, model: 模型名或 nil, operation: 操作名或 nil, started_at_ms:, ended_at_ms:, tokens: tokens/1 的四项}
+
+  行 id 必须是字符串、两个时刻必须是带时区的 ISO 8601、四项 token 必须是非负整数或 null、命中不多于输入；
+  任一行不合格整次读失败（`{:error, :invalid_response}`），不静默丢行。库不存在 → `{:error, :not_found}`（不打失败日志，
+  由调用方按“跳过”处理）；其余失败同本模块其它请求（打 `npc_hindsight_failed`）。
+  """
+  def llm_requests(config, from_ms, to_ms) do
+    query = URI.encode_query(%{start_date: iso_ms(from_ms), end_date: iso_ms(to_ms)})
+
+    get = fn path ->
+      case fetch(config, :get, bank_path(config, path), nil, :background) do
+        {:error, {:http_status, 404}} -> {:error, :not_found}
+        result -> logged(config, result)
+      end
+    end
+
+    with {:ok, rows} <- page(config, get, "/llm-requests?" <> query, "items", 500),
+         do: collect(rows, &llm_row(config, &1))
+  end
+
+  @doc """
+  打开或关掉这个库（`config.bank`）的自动巩固：`PATCH /config` `{"updates": {"enable_auto_consolidation": enabled}}`，幂等
+  （Hindsight 按 jsonb 合并，不冲掉 `ensure/2` 写的两条 mission）。返回 `{:ok, %{bank:, enabled:}}`。关掉之后 retain 不再
+  把巩固入队、补漏扫描跳过这个库；已入队的巩固照跑（决策稿 §7）。
+  """
+  def set_auto_consolidation(config, enabled) when is_boolean(enabled) do
+    with {:ok, _} <-
+           request(config, :patch, "/config", %{
+             updates: %{enable_auto_consolidation: enabled}
+           }),
+         do: {:ok, %{bank: config.bank, enabled: enabled}}
+  end
+
+  @token_keys ~w(input_tokens cached_tokens output_tokens thoughts_tokens)
+
+  defp llm_row(config, %{"id" => id, "started_at" => started, "ended_at" => ended} = row)
+       when is_binary(id) do
+    with {:ok, started_ms} <- unix_ms(started),
+         {:ok, ended_ms} <- unix_ms(ended),
+         true <- is_binary(row["model"]) or row["model"] == nil,
+         true <- is_binary(row["operation"]) or row["operation"] == nil,
+         true <-
+           Enum.all?(@token_keys, &(row[&1] == nil or (is_integer(row[&1]) and row[&1] >= 0))),
+         %{input_tokens: input, cached_tokens: cached} = tokens when cached <= input <-
+           tokens(row) do
+      {:ok,
+       %{
+         id: id,
+         model: row["model"],
+         operation: row["operation"],
+         started_at_ms: started_ms,
+         ended_at_ms: ended_ms,
+         tokens: tokens
+       }}
+    else
+      _ -> failure(config, :invalid_response)
+    end
+  end
+
+  defp llm_row(config, _), do: failure(config, :invalid_response)
+
+  defp unix_ms(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, at, _offset} -> {:ok, DateTime.to_unix(at, :millisecond)}
+      _ -> :error
+    end
+  end
+
+  defp unix_ms(_), do: :error
+
+  defp iso_ms(ms), do: ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
 
   defp episode(config, %{"id" => id, "text" => text, "at_ms" => at} = episode)
        when is_binary(id) and id != "" and is_binary(text) and text != "" do
@@ -432,15 +540,18 @@ defmodule NpcServer.Life.Hindsight do
     end
   end
 
-  defp page(config, path, field, limit, offset \\ 0, acc \\ []) do
+  # 按 offset 翻页读到 `total`：`get` 发一页的 GET（参数是带查询串的路径），`path` 可以已带查询串。
+  defp page(config, get, path, field, limit, offset \\ 0, acc \\ []) do
+    separator = if String.contains?(path, "?"), do: "&", else: "?"
+
     with {:ok, %{^field => rows, "total" => total}} when is_list(rows) and is_integer(total) <-
-           request(config, :get, "#{path}?limit=#{limit}&offset=#{offset}") do
+           get.("#{path}#{separator}limit=#{limit}&offset=#{offset}") do
       next = offset + length(rows)
 
       cond do
         next >= total -> {:ok, acc ++ rows}
         rows == [] -> failure(config, :invalid_response)
-        true -> page(config, path, field, limit, next, acc ++ rows)
+        true -> page(config, get, path, field, limit, next, acc ++ rows)
       end
     else
       {:ok, _} -> failure(config, :invalid_response)
@@ -463,11 +574,19 @@ defmodule NpcServer.Life.Hindsight do
 
   defp segment(value), do: URI.encode(value, &URI.char_unreserved?/1)
 
-  # 发一次请求。召回给出所属车道（交互或后台），其余请求（建库、retain、刷新、状态）都是后台车道（原因见 moduledoc 末节）。
-  defp request(config, method, path, body \\ nil, lane \\ :background) do
-    url =
-      String.trim_trailing(config.url, "/") <>
-        "/v1/default/banks/" <> segment(config.bank) <> path
+  # 对这个库（`config.bank`）发一次请求，失败打日志。召回给出所属车道（交互或后台），其余请求（建库、retain、刷新、状态、
+  # 用量读回、巩固开关）都是后台车道（原因见 moduledoc 末节）。
+  defp request(config, method, path, body \\ nil, lane \\ :background),
+    do: logged(config, fetch(config, method, bank_path(config, path), body, lane))
+
+  defp bank_path(config, path), do: "/v1/default/banks/" <> segment(config.bank) <> path
+
+  defp logged(config, {:error, reason}), do: failure(config, reason)
+  defp logged(_config, result), do: result
+
+  # 发一次请求（`path` 是服务根之下的完整路径），不打日志：`{:ok, JSON 对象}` 或 `{:error, 原因}`。
+  defp fetch(config, method, path, body, lane) do
+    url = String.trim_trailing(config.url, "/") <> path
 
     {headers, body} =
       if body == nil,
@@ -488,23 +607,26 @@ defmodule NpcServer.Life.Hindsight do
       {:ok, status, response} when status in 200..299 ->
         case Jason.decode(response) do
           {:ok, map} when is_map(map) -> {:ok, map}
-          _ -> failure(config, :invalid_response)
+          _ -> {:error, :invalid_response}
         end
 
       {:ok, status, _} ->
-        failure(config, {:http_status, status})
+        {:error, {:http_status, status}}
 
       {:error, reason} when reason in [:timeout, :pool_timeout] ->
-        failure(config, reason)
+        {:error, reason}
 
       {:error, _} ->
-        failure(config, :transport_error)
+        {:error, :transport_error}
     end
   end
 
-  # 失败一律经这里：打一行带 bank 的日志（经历库与反思库要分得清），返回 `{:error, reason}`。
+  # 失败一律经这里：打一行带 bank 的日志（经历库与反思库要分得清；列库请求没有 bank，记 `-`），返回 `{:error, reason}`。
   defp failure(config, reason) do
-    Logger.warning("npc_hindsight_failed bank=#{config.bank} reason=#{inspect(reason)}")
+    Logger.warning(
+      "npc_hindsight_failed bank=#{Map.get(config, :bank, "-")} reason=#{inspect(reason)}"
+    )
+
     {:error, reason}
   end
 end
