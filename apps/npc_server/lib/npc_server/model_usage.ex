@@ -12,6 +12,9 @@ defmodule NpcServer.ModelUsage do
   两条记录都带出站车道 `lane`（`NpcServer.Http.lane/1`）；结束记录另带 `queue_ms`：从车道的 HTTP/1 池取连接等了多久
   （`NpcServer.Http.with_queue_ms/1`），HTTP/2 或注入的发送函数为 nil。取不到连接时 `status` 为 `pool_timeout`，
   HTTP/2 连不上时为 `connection_unavailable`。
+
+  用量不为 nil 时，结束记录同时交给花费额度（`NpcServer.SpendBudget.record/1`，cast）记账；`:answers` 形状没有缓存分项，
+  按命中 0 计。
   """
   def request(
         endpoint,
@@ -49,16 +52,32 @@ defmodule NpcServer.ModelUsage do
   end
 
   defp finish(fields, started_at, outcome, usage, queue_ms) do
-    fields
-    |> Map.merge(%{
-      event: :finished,
-      duration_ms: System.monotonic_time(:millisecond) - started_at,
-      queue_ms: queue_ms,
-      response_model: nil,
-      usage: usage
+    finished =
+      fields
+      |> Map.merge(%{
+        event: :finished,
+        duration_ms: System.monotonic_time(:millisecond) - started_at,
+        queue_ms: queue_ms,
+        response_model: nil,
+        usage: usage
+      })
+      |> Map.merge(outcome)
+
+    log(finished)
+    if usage != nil, do: spend(finished)
+  end
+
+  # 有用量的回执交给花费额度（`NpcServer.SpendBudget`，按应答里的模型名计价，没有就用请求的模型名）；
+  # 没有用量的请求不计（决策稿 §7 的残余少计）。只记账，不拦请求——拒绝点在 Life 的后台触发处。
+  defp spend(finished) do
+    NpcServer.SpendBudget.record(%{
+      request_id: finished.request_id,
+      cid: finished[:cid],
+      operation: finished.operation,
+      model: finished.response_model || finished.request_model,
+      usage: finished.usage,
+      duration_ms: finished.duration_ms
     })
-    |> Map.merge(outcome)
-    |> log()
   end
 
   defp log(fields), do: Logger.info(fn -> "npc_model_request " <> Jason.encode!(fields) end)
