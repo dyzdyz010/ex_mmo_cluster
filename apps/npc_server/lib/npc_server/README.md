@@ -26,6 +26,9 @@
   `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）、`Genesis`（创世，只在 `profile.genesis` 为真时）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道），
   也是模型 key（`Secret`，`Registry` 读环境时包成闭包）唯一的取出处。
+- `SpendBudget` 是每天模型花费额度的唯一 owner（每节点一个，监督树在 Body 监督器之后、Bootstrap 之前）：产品回执与 Hindsight
+  用量读回按北京自然日落账（`DataService.NpcSpend`），到停止线或无法计量时发布“后台暂停”，并开关各库的自动巩固；
+  价目与判定的纯函数在 `SpendBudget.Price`，运行配置在 `SpendBudget.Config`（见下文“每天花费额度”）。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
   注册表 JSON `cadence` 默认 `"automatic"`；显式 `"manual"` 后仅由
@@ -845,7 +848,57 @@ rg -o --no-filename 'npc_model_request \{.*\}$' release.log | cut -d' ' -f2-
 
 `finished` 提供请求耗时、响应状态、应答模型和用量。`usage.input_tokens` 含缓存，`usage.output_tokens` 为供应商报告的
 完整输出，缓存分项用于进一步对账。HTTP 成功后被业务拒绝的回执仍计入。`usage=null` 及窗口结束时尚未配对的请求用量未知。
-`Life.observe/1` 的 Hindsight 用量来自 Hindsight 自己的状态接口。各路货币金额以实际路由账单为准。
+`Life.observe/1` 的 Hindsight 用量来自 Hindsight 自己的状态接口（每个操作的 `input_tokens` / `cached_tokens` / `output_tokens` /
+`thoughts_tokens`，`Life.Hindsight.tokens/1`）。各路货币金额以实际路由账单为准。
+
+#### 每天花费额度（`SpendBudget`，决策稿 `docs/10-active/cross-cutting/2026-11-18-npc-spend-budget-decision.md`）
+
+**是什么**：一天（北京自然日）花在模型上的钱到了停止线（用户定上限 $65 × 90% = $58.5），就停掉“没人在等”的后台工作，
+NPC 仍能被看见、能动、能回话。**怎么量**：产品回执（`ModelUsage` 每次有用量就 `SpendBudget.record/1`）加 Hindsight 自己的
+LLM 追踪（每 60 秒读一轮 `npc-life-*` / `npc-reflect-*` 各库的 `llm-requests`，游标往回多读 10 分钟、按行 id 去重），按完成时刻
+定高峰档与归日，整数 nano-USD 落账（`npc_spend_ledger`）；重启从账本恢复。
+
+```mermaid
+flowchart LR
+  MU[ModelUsage 回执] -- record/1 --> SB[SpendBudget]
+  SB -- 每 60 s 读回 --> H[(Hindsight llm-requests)]
+  SB -- 去重落账 --> L[(npc_spend_ledger)]
+  SB -- background/0 --> LIFE[Life 的后台触发处]
+  SB -- PATCH enable_auto_consolidation --> H
+  LIFE -. 停 .-> X[刷新槽 · 反思 · 日计划]
+  LIFE -. 照常 .-> Y[retain · 读认识 · 选择 · 说话 · 召回]
+```
+
+| 结论（`SpendBudget.background/0`） | 何时 |
+|---|---|
+| `:open` | 当日总额低于停止线、没有未定价的行、Hindsight 用量 30 分钟内读全过 |
+| `{:paused, %{reason: :limit}}` | 当日总额 ≥ 停止线（恰等即停） |
+| `{:paused, %{reason: :unpriced}}` | 当日有价目表里没有的模型行（原创决策：宁停后台不少计） |
+| `{:paused, %{reason: :unmeasured}}` | Hindsight 用量连续 30 分钟没读全；或运行环境没配 `NPC_LIFE_HINDSIGHT_URL`（未启用） |
+
+停了之后：Life 的刷新槽不起、到点的反思按 `budget_exhausted` 跳过、日计划在扣当日额度之前拒（`npc_spend_refused cid= kind= day=`，
+每人每种每天一行；`Life.observe/1` 的 `spend_refused`），CLI `Life.refresh/1` / `Life.reflect/1` 回 `{:error, {:budget_exhausted, 北京日}}`；
+retain、选择、说话、召回照常（用户定 Q-2 (a)、Q-3 (b)）。各库自动巩固随之关掉（每轮对未确认的库补 PATCH，`consolidation=pending:N`），
+北京零点换日后自动恢复（不广播，Life 在各自下一次触发时读到）。
+
+**配置**（NPC 启用——即配了 `NPC_LIFE_HINDSIGHT_URL`——时必填，缺或非法 release 启动失败，错误只点变量名）：`NPC_SPEND_LIMIT_USD`、
+`NPC_SPEND_STOP_RATIO`、`NPC_SPEND_PRICES`（JSON：模型 → `peak` / `off_peak` 的 `miss` / `hit` / `out`，美元 / 百万 token）、
+`NPC_SPEND_OFF_PEAK`（可缺省 = 全天高峰），形状见 `SpendBudget.Config` 与 `deploy/.env.example`；启动时核产品的选择与写作模型都在价目表里。
+Hindsight 侧 `HINDSIGHT_API_LLM_TRACE_ENABLED`（追踪，读回的来源）与 `ENABLE_BANK_CONFIG_API`（巩固开关）不得关。
+
+**可观测**：`npc_spend day= product_usd= hindsight_usd= total_usd= stop_usd= limit_usd= state= reason= hindsight_read= hindsight_age_ms=
+unpriced= unsaved= consolidation=`（每轮读回一行，状态变化另一行）；CLI 经 release RPC：
+
+```sh
+bin/voxim_server rpc 'IO.inspect(NpcServer.SpendBudget.observe())'   # 当前视图（另带 nano 整数）
+bin/voxim_server rpc 'IO.inspect(NpcServer.SpendBudget.sync())'      # 立即读回一轮再看
+bin/voxim_server rpc 'IO.inspect(NpcServer.SpendBudget.background())' # Life 读到的结论
+```
+
+计量边界与残余（决策稿 §7）：只计 `ModelUsage` 发出的请求（绕过它的 `brain/llm.ex`、`builder.ex`、`skills.ex`、`skills/wilderness.ex`
+不在内）与部署配置的那一台 Hindsight；`usage=null` 的产品请求、Hindsight 追踪丢行与 JSON 重试只记最后一次都会少计；到线时在途的
+一次刷新与已入队的巩固照跑。测试：`npc_spend_price_test`（T1）、`npc_spend_budget_test`（T2）、`npc_spend_life_test`（T3）、
+`apps/data_service/test/data_service/npc_spend_test.exs`。
 
 ### 反思（`Life.Reflection`，内容规范 §10.11、§10.12）
 

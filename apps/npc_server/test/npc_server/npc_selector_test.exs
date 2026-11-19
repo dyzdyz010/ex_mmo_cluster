@@ -275,7 +275,8 @@ defmodule NpcServer.NpcSelectorTest do
            profile: profile
          } do
       # 省略 life：地址取运行环境。
-      assert %{url: "http://life.test.invalid"} == profile.life
+      assert %{url: "http://life.test.invalid", spend: &NpcServer.SpendBudget.background/0} ==
+               profile.life
 
       # 显式地址。
       assert %{life: %{url: "http://hindsight.example:8888"}} =

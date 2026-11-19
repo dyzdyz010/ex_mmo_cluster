@@ -18,6 +18,9 @@ defmodule NpcServer.Life.Hindsight do
 
   一个 Life 会用到不止一个 bank（经历库、反思库），失败日志 `npc_hindsight_failed` 因此带 `bank=`。
 
+  花费额度（`NpcServer.SpendBudget`）的读回也只经本模块：`list_banks/2` 列库、`llm_requests/3` 按时间窗读 LLM 追踪行并在这里
+  规范化一次（四项 token 的读法是 `tokens/1`，`status/1` 的用量同一份读法）、`set_auto_consolidation/2` 按库开关自动巩固。
+
   ## 交互召回与后台请求走不同的出站车道
 
   选择在等一路召回（交互式，10 秒预算），而 retain / refresh / status 是没人在等的后台请求（一次 11–49 秒）。

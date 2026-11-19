@@ -608,7 +608,10 @@ defmodule NpcServer.NpcLifeTest do
       appraise: false,
       observation: nil,
       experience_pending: [],
-      sight: Life.Sight.new()
+      sight: Life.Sight.new(),
+      # 花费额度开着（同不给 `spend` 时 Life 的缺省）：刷新义务照常。
+      spend: fn -> :open end,
+      spend_refused: %{}
     }
 
     {:noreply, s} =

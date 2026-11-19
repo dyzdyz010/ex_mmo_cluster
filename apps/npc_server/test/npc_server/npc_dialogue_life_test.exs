@@ -250,6 +250,9 @@ defmodule NpcServer.NpcDialogueLifeTest do
       plan_error: nil,
       plan_not_before_ms: nil,
       plan_exhausted_day: nil,
+      # 花费额度两字段，同 `Life.init/1` 不给 `spend` 时的取值。
+      spend: fn -> :open end,
+      spend_refused: %{},
       row: %{
         "state" => Life.State.new(7, "world", 6, 0),
         "pending" => [],

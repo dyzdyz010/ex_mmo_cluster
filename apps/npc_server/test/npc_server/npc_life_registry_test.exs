@@ -56,7 +56,12 @@ defmodule NpcServer.NpcLifeRegistryTest do
     params = %{"goal" => "继续生活", "tools" => %{}, "life" => %{"url" => "http://life.test.invalid"}}
 
     assert {Brain.Llm, profile} = Registry.brain("life", params)
-    assert profile.life == %{url: "http://life.test.invalid"}
+    # 登记构造 Life 时注入花费额度的结论（Life 只在后台触发处读它）。
+    assert profile.life == %{
+             url: "http://life.test.invalid",
+             spend: &NpcServer.SpendBudget.background/0
+           }
+
     assert profile.max_requests_per_hour == 60
     assert "set_plan" in Enum.map(NpcServer.Abilities.tools(profile), & &1.name)
     assert Registry.brain("llm", params) == {Brain.Llm, profile}
@@ -122,7 +127,11 @@ defmodule NpcServer.NpcLifeRegistryTest do
              )
 
     assert Map.delete(enabled, :life) == base
-    assert enabled.life == %{url: "http://life.test.invalid"}
+
+    assert enabled.life == %{
+             url: "http://life.test.invalid",
+             spend: &NpcServer.SpendBudget.background/0
+           }
 
     llm_env()
 

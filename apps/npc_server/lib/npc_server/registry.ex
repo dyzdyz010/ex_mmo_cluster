@@ -330,18 +330,21 @@ defmodule NpcServer.Registry do
   end
 
   # 缺省关闭；登记边界只接受正式可配置 URL，不把测试依赖写进 JSON 档案。
+  # 每个 Life 都带上花费额度的结论（`NpcServer.SpendBudget.background/0`）：Life 只在自己的后台触发处读它（见 Life moduledoc“花费额度”）。
   defp with_life(profile, params) do
     case Map.get(params, "life", false) do
       false ->
         profile
 
       true ->
-        Map.put(profile, :life, %{url: life_url!(System.fetch_env!("NPC_LIFE_HINDSIGHT_URL"))})
+        Map.put(profile, :life, life(System.fetch_env!("NPC_LIFE_HINDSIGHT_URL")))
 
       %{"url" => url} = options when map_size(options) == 1 ->
-        Map.put(profile, :life, %{url: life_url!(url)})
+        Map.put(profile, :life, life(url))
     end
   end
+
+  defp life(url), do: %{url: life_url!(url), spend: &NpcServer.SpendBudget.background/0}
 
   defp life_url!(url) when is_binary(url) do
     uri = URI.parse(url)

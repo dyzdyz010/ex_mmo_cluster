@@ -1,6 +1,6 @@
 # NPC 每天模型花费额度：产品侧怎样连 Hindsight 一起兜住（2026-11-18）
 
-分类：生产化入口的决策稿（只定计量口径、所有权、超额后的拒绝顺序与测试矩阵，不调取值）。状态：**用户已定（§6 Q-1–Q-6，2026-11-18），实施待排（统筹页）。**
+分类：生产化入口的决策稿（只定计量口径、所有权、超额后的拒绝顺序与测试矩阵，不调取值）。状态：**用户已定（§6 Q-1–Q-6，2026-11-18）；T1–T3 已实施（2026-11-19，§7），T4 真实短场景待做。**
 上游：[`2026-11-18-npc-scale-and-qinglan-entry-decision.md`](2026-11-18-npc-scale-and-qinglan-entry-decision.md) §3（依据）、§7（D-3：进青岚首批 3 人，
 每天模型花费上限 **$50**，用户 2026-11-18 定；超出即拒后台请求，要连 Hindsight 自己的用量一起覆盖）。进度见
 [`2026-11-11-npc-coordination.md`](2026-11-11-npc-coordination.md)。
@@ -166,3 +166,20 @@ Hindsight 的用量是事后读到的：读回间隔内、以及到线那一刻�
   - **关自动巩固**：`PATCH /v1/default/banks/{bank}/config` `{"updates":{"enable_auto_consolidation":false}}`（jsonb 合并，Life 写 mission 的 PATCH 不冲掉）；关后 retain 不再入队、补漏扫描跳过该库，**已入队的巩固照跑**（残余，T4 量）。由 `SpendBudget` 维护期望状态，每个读回周期对未确认的库补 PATCH（幂等）。
   - **原创决策（已报用户，2026-11-19）**：① 价目表没有的模型行、或 Hindsight 用量连续 30 min 读不回 → 后台按“无法计量”暂停（`state=paused reason=unpriced | unmeasured`），不只告警——额度是用户定的硬约束，宁停后台不少计；② NPC 启用时价目与上限配置必填，缺即 release 启动失败，不设“未配置即不限”的分支；③ 计量边界：首批只用统一形态（`"npc"`），绕过 `ModelUsage` 的旧调用方（`brain/llm.ex`、`builder.ex`、`skills.ex`、`skills/wilderness.ex`）不在计量内，只读部署配置的那一台 Hindsight（`NPC_LIFE_HINDSIGHT_URL`）；扩到这些之前须先补计量。
   - 拒绝点只在 Life 的后台触发处消费 `SpendBudget.background/0` 的类型化结论（刷新槽、反思 `cannot_start`、日计划在 `admit` 之前），不放进 `ModelUsage`；选择、说话、召回不过闸门。实施待稿 A 批 0 评审修正合入后开始，DeepSeek 非高峰时段规则实施前再核官方价目页。
+- 2026-11-19（实施子会话）：**DeepSeek 非高峰规则核对**（官方价目页 `api-docs.deepseek.com/quick_start/pricing`，2026-11-19 读）。原文要点：
+  “Off-peak rates are half of the peak rates.”；“Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese public holidays.”；
+  “All other hours are off-peak, including weekends and Chinese public holidays in full.”；计费 “expense = number of tokens × price”。deepseek-flash 每百万 token
+  高峰 入未命中 $0.3 / 命中 $0.006 / 出 $1.2，非高峰 $0.15 / $0.003 / $0.6（与 §2.1 一致）。页面**没写**按请求开始还是结束定档，按统筹会话所定以完成时刻
+  （`ended_at` / 回执到达）定档与归日。与方案的差异：官方高峰只在工作日、且不含中国法定节假日，`NPC_SPEND_OFF_PEAK` 只能写每天相同的北京时段
+  （`00:00-09:00,12:00-14:00,18:00-24:00`），周末与节假日白天会按高峰价计（多计、不少计，最多把这些时段的花费算成两倍）；要按星期 / 节假日精确折算需另定配置形状，
+  未做，待统筹定。
+- 2026-11-19（实施子会话）：T1–T3 实施完（提交见统筹页）。`SpendBudget`（`spend_budget.ex`）+ `Price` / `Config` 纯函数 + 账本 `npc_spend_ledger`
+  （`DataService.NpcSpend`）+ `ModelUsage.finish` 记账 + Life 三处拒绝点 + `Registry` 注入 + 监督树 `[Http, Names, BodySupervisor, SpendBudget, Bootstrap]`。
+  测试：T1 `npc_spend_price_test` 8 项、`npc_hindsight_test` 的 status 用量 1 项改写；T2 `npc_spend_budget_test` 7 项、`data_service/npc_spend_test` 3 项；
+  T3 `npc_spend_life_test` 1 项（到线 → 停后台 / 关巩固 → 零点恢复整条链路），均先红后绿。实施中按源码事实定下、待统筹确认的几处：
+  ① “NPC 启用”在源码里没有 release 级开关（只有登记行的 `enabled`），取“配了 `NPC_LIFE_HINDSIGHT_URL`”为判据（额度要读的就是它，统一形态的 Life 缺省也连它）；
+  没配时不读其余变量、后台按 `:unmeasured` 一直停（不设“未配置即不限”，现状生产照常启动）；本节点从未发布过结论时 `background/0` 同此。
+  ② CLI `Life.reflect/1` 有新经历时同样回 `{:error, {:budget_exhausted, 北京日}}`（与 CLI 刷新一致；方案只点名了刷新）。
+  ③ `SpendBudget` 崩溃重启会经 `:rest_for_one` 带起 Bootstrap 重启，`Registry.start_all/0` 把全部 enabled NPC 停掉再起（结果同前，但不是无操作）。
+  ④ 未定价的行留在账本里（`nano_usd` 为 null），当日一直 `:unpriced`，补价目重启也不重新计价，次日恢复。
+  ⑤ 入库失败的行在写进账本之前不计入总额（只在 `unsaved=` 可见）。T4 未做。

@@ -17,6 +17,12 @@ config :auth_server, AuthServerWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("AUTH_PORT", "20000"))]
 
 # ---------------------------------------------------------------------------
+# NPC 每天模型花费额度（NPC_SPEND_*）不经这里：`NpcServer.SpendBudget` 启动时由 `NpcServer.SpendBudget.Config.load!/0`
+# 直接读运行环境并校验一次（配了 NPC_LIFE_HINDSIGHT_URL 时 NPC_SPEND_LIMIT_USD / NPC_SPEND_STOP_RATIO / NPC_SPEND_PRICES 必填，
+# 缺或非法即 NPC 应用起不来、release 启动失败）。变量说明见 deploy/.env.example 的 NPC 一组。
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Demo auto-login endpoint (POST /ingame/auto_login)
 # ---------------------------------------------------------------------------
 # Set DEV_AUTO_LOGIN=true in local/dev/demo deployments to let the Voxim client

@@ -147,6 +147,24 @@ defmodule NpcServer.Life do
     这样的调用，每次 2 路 Hindsight 召回（Hindsight 停摆、或材料长期为空时就会这样）。这是用户 2026-11-16 定的额度规则
     （只扣发出了写作请求的调用）的直接结果，现在不另设上限。
   - 每帧都调一次 Life 的时钟与 `DayPlan.due/3`（都是常数时间）。
+
+  ## 花费额度（决策稿 `docs/10-active/cross-cutting/2026-11-18-npc-spend-budget-decision.md` §4.2、§7）
+
+  每天模型花费的 owner 是 `NpcServer.SpendBudget`；本模块只在**自己的后台触发处**读它的类型化结论
+  （`profile.life.spend`，生产由 `NpcServer.Registry` 注入 `&NpcServer.SpendBudget.background/0`；不给时恒为 `:open`——只有测试与
+  直接用代码起 Life 的地方不给）。停了（`{:paused, %{day: 北京日}}`）时：
+
+  | 后台工作 | 到线后 |
+  |---|---|
+  | 认识刷新槽（`automatic/1` 的刷新分支） | 不起（`dirty` 留着，恢复后下一次触发照常刷新） |
+  | CLI `refresh/1` / `reflect/1` | `{:error, {:budget_exhausted, 北京日}}` |
+  | 到点的反思 | 按 `cannot_start` 跳过：`skipped` 加一、`npc_reflect … event=skipped reason=budget_exhausted` |
+  | 日计划 | 在 `DayPlan.admit/3` 之前拒：不记调用、不扣当日额度，`event` 标记留着 |
+  | retain、读认识（`:models`）、选择、说话、召回 | 照常（Q-3 (b)：经历不丢；交互不过闸门） |
+
+  每种后台工作每个北京日只打一行 `npc_spend_refused cid= kind=refresh|reflect|plan day=`；`observe/1` 的 `spend_refused` 是
+  `%{种类 => 最近一次被拒的北京日}`（只在内存）。恢复不广播：次日结论变回 `:open` 后，由各自的下一次自然触发（下一条经历、
+  下一帧观察、下一次落栏）照常起。
   """
   use GenServer
   require Logger
@@ -199,7 +217,10 @@ defmodule NpcServer.Life do
   def observe(cid), do: call(cid, :observe)
   @doc "封存不足 3000 字的尾片段并后台批写；立即返回任务状态。"
   def flush(cid), do: call(cid, :flush)
-  @doc "后台刷新四份认识；立即返回任务状态，决策不会调用此入口。"
+
+  @doc """
+  后台刷新四份认识；立即返回任务状态，决策不会调用此入口。花费额度停了后台时 `{:error, {:budget_exhausted, 北京日}}`、不起槽。
+  """
   def refresh(cid), do: call(cid, :refresh)
 
   @doc """
@@ -207,7 +228,7 @@ defmodule NpcServer.Life do
   `{:error, :reflection_disabled}`；槽在途 → `{:ok, %{status: :busy}}`；还没收到观察 → `{:error, :no_observation}`（不动触发状态、
   不计 `skipped`）；自上一轮以来没有新经历 → `{:ok, %{status: :empty}}`；否则这一刻起一轮（`Reflection.manual/2`，
   `causes: [:manual]`；同到点的一轮一样 `Reflection.started/2`、`rounds` 加一，与之同一次保存）→ `{:ok, %{status: :started}}`；
-  那次保存失败 → `{:error, 原因}`，不起槽。
+  那次保存失败 → `{:error, 原因}`，不起槽。有新经历而花费额度停了后台 → `{:error, {:budget_exhausted, 北京日}}`，不起槽、不动行。
   """
   def reflect(cid), do: call(cid, :reflect)
 
@@ -507,7 +528,11 @@ defmodule NpcServer.Life do
        # 起槽之前那次保存失败后，这一刻之前不再试（内存里的防抖，不落库）。
        plan_not_before_ms: nil,
        # 当日额度用完那次已经记过一笔 skipped 的游戏日（每个游戏日只记一次；内存里，Life 重启即忘）。
-       plan_exhausted_day: nil
+       plan_exhausted_day: nil,
+       # 花费额度的结论（`NpcServer.SpendBudget.background/0` 的形状），只在后台触发处读，见 moduledoc“花费额度”。
+       spend: Map.get(options, :spend, fn -> :open end),
+       # 各种后台工作最近一次因额度被拒的北京日 `%{refresh | reflect | plan => Date}`（内存里；每种每天只打一行日志）。
+       spend_refused: %{}
      }}
   end
 
@@ -580,7 +605,8 @@ defmodule NpcServer.Life do
         sight_capped: s.sight.capped,
         emotion_owner: if(s.appraise, do: :model, else: :construction_rules),
         reflection: observe_reflection(s),
-        plan: observe_plan(s)
+        plan: observe_plan(s),
+        spend_refused: s.spend_refused
       }}, s}
   end
 
@@ -619,11 +645,17 @@ defmodule NpcServer.Life do
     if s.row["reflection"]["new"] == [] do
       {:reply, {:ok, %{status: :empty}}, s}
     else
-      round = Reflection.manual(s.row["reflection"]["trigger"], s.now.())
+      case background(s, :reflect) do
+        {:open, s} ->
+          round = Reflection.manual(s.row["reflection"]["trigger"], s.now.())
 
-      case save(s, mark_round_started(s.row, round)) do
-        {:ok, s} -> {:reply, {:ok, %{status: :started}}, start_round(s, round)}
-        {:error, s} -> {:reply, {:error, s.error}, s}
+          case save(s, mark_round_started(s.row, round)) do
+            {:ok, s} -> {:reply, {:ok, %{status: :started}}, start_round(s, round)}
+            {:error, s} -> {:reply, {:error, s.error}, s}
+          end
+
+        {refusal, s} ->
+          {:reply, {:error, refusal}, s}
       end
     end
   end
@@ -646,8 +678,12 @@ defmodule NpcServer.Life do
     end
   end
 
-  def handle_call(:refresh, _, s),
-    do: {:reply, {:ok, %{status: :started}}, start_job(s, :refresh)}
+  def handle_call(:refresh, _, s) do
+    case background(s, :refresh) do
+      {:open, s} -> {:reply, {:ok, %{status: :started}}, start_job(s, :refresh)}
+      {refusal, s} -> {:reply, {:error, refusal}, s}
+    end
+  end
 
   def handle_call({:appraise, _, _}, _, %{row: nil} = s),
     do: {:reply, {:error, :life_not_ready}, s}
@@ -1375,7 +1411,8 @@ defmodule NpcServer.Life do
   # 记进 "new"，并定下到点的一轮怎么办（一批里多条都到点只算一轮：直接取最后一条给出的那一轮——时刻、累计分与原因；
   # 一批之内触发状态不清零，后一条的原因必然包含前一条的）：
   #   起得了（槽空着、有观察）→ 同一份行里 `mark_round_started/2`（started/2、rounds 加一），下一步 `{:start, 一轮}`；
-  #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步 `{:skip, 一轮, :busy | :no_observation}`。
+  #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步
+  #   `{:skip, 一轮, :busy | :no_observation | {:budget_exhausted, 北京日}}`。
   # 规划的形态在这一批里有 `kind:event` 的经历时，同一份行里给日计划记下“有 event 在等着重排”（`DayPlan.note_event/1`；
   # 下一帧观察到点就起）；不规划的形态不动 `"plan"`。
   # 返回 `{新的行, nil | 下一步}`。只改行，不保存：调用方保存成功之后才 `follow_round/2`（保存失败行没变，什么也不做）。
@@ -1416,10 +1453,10 @@ defmodule NpcServer.Life do
     end
   end
 
-  # 到点却起不了一轮的原因；起得了为 nil。
+  # 到点却起不了一轮的原因；起得了为 nil。花费额度停了后台是 `{:budget_exhausted, 北京日}`（拒绝的日志在 `follow_round/2`）。
   defp cannot_start(%{reflect: slot}) when slot != nil, do: :busy
   defp cannot_start(%{observation: nil}), do: :no_observation
-  defp cannot_start(_s), do: nil
+  defp cannot_start(s), do: refusal(s)
 
   # 在行里记下起了一轮（只改行，不起 worker；保存成功后由 `start_round/2` 起槽）：触发状态 started/2（清零、记下这一轮的
   # 触发时刻）、rounds 加一。"new" 不动（落栏时才消耗）。
@@ -1440,14 +1477,22 @@ defmodule NpcServer.Life do
   defp follow_round(s, nil), do: s
   defp follow_round(s, {:start, round}), do: start_round(s, round)
 
-  defp follow_round(s, {:skip, round, reason}) do
-    Logger.info(
-      "npc_reflect cid=#{s.context.cid} event=skipped trigger_at_ms=#{round.at_ms} " <>
-        "causes=#{Enum.join(round.causes, ",")} reason=#{reason}"
-    )
+  defp follow_round(s, {:skip, round, {:budget_exhausted, day}}) do
+    log_skipped(s, round, :budget_exhausted)
+    refused(s, :reflect, day)
+  end
 
+  defp follow_round(s, {:skip, round, reason}) do
+    log_skipped(s, round, reason)
     s
   end
+
+  defp log_skipped(s, round, reason),
+    do:
+      Logger.info(
+        "npc_reflect cid=#{s.context.cid} event=skipped trigger_at_ms=#{round.at_ms} " <>
+          "causes=#{Enum.join(round.causes, ",")} reason=#{reason}"
+      )
 
   # 起反思槽的 worker（`mark_round_started/2` 那次保存已经成功）：快照在本进程里取齐，worker 不回头问 Life。当时的 "new" 整份交给这一轮，
   # 槽上记下取走了几条（taken，做完时从 "new" 头上删掉这几条）、这一轮的此刻（now_ms）与落栏了没有（landed：
@@ -1578,9 +1623,12 @@ defmodule NpcServer.Life do
          when body_state != nil <- s.observation,
          now_ms = s.now.(),
          true <- s.plan_not_before_ms == nil or now_ms >= s.plan_not_before_ms,
-         kind when kind != nil <- DayPlan.due(s.row["plan"], day, now_ms) do
+         kind when kind != nil <- DayPlan.due(s.row["plan"], day, now_ms),
+         {:open, s} <- background(s, :plan) do
       admit_plan(s, kind, day, minute, now_ms)
     else
+      # 花费额度停了后台：在 `DayPlan.admit/3` 之前拒，不记调用、不扣当日额度，event 标记留着。
+      {{:budget_exhausted, _day}, refused} -> refused
       _ -> s
     end
   end
@@ -1882,11 +1930,44 @@ defmodule NpcServer.Life do
 
         s.row["dirty"] and
             (s.row["refresh_at_ms"] == nil or s.now.() - s.row["refresh_at_ms"] >= @refresh_ms) ->
-          start_job(s, :refresh)
+          case background(s, :refresh) do
+            {:open, s} -> start_job(s, :refresh)
+            {_refusal, s} -> s
+          end
 
         true ->
           s
       end
+    end
+  end
+
+  # --- 花费额度（见 moduledoc“花费额度”）：只在后台触发处读结论，不拦 retain、读认识、选择、说话与召回 ---
+
+  # 此刻花费额度停没停后台：nil 或 `{:budget_exhausted, 北京日}`。
+  defp refusal(s) do
+    case s.spend.() do
+      :open -> nil
+      {:paused, %{day: day}} -> {:budget_exhausted, day}
+    end
+  end
+
+  # 某种后台工作此刻能不能起：`{:open, s}`，或 `{{:budget_exhausted, day}, s}`（已记下这次拒绝）。
+  defp background(s, kind) do
+    case refusal(s) do
+      nil -> {:open, s}
+      {:budget_exhausted, day} = refusal -> {refusal, refused(s, kind, day)}
+    end
+  end
+
+  # 记下一次拒绝：每种后台工作每个北京日只打一行 `npc_spend_refused`（触发在每帧观察、每次落栏上都会查，不逐次打）。
+  defp refused(s, kind, day) do
+    case Map.fetch(s.spend_refused, kind) do
+      {:ok, ^day} ->
+        s
+
+      _ ->
+        Logger.info("npc_spend_refused cid=#{s.context.cid} kind=#{kind} day=#{day}")
+        %{s | spend_refused: Map.put(s.spend_refused, kind, day)}
     end
   end
 

@@ -92,10 +92,11 @@ defmodule NpcServer.SpendBudget do
 
   @doc """
   此刻后台开还是停（读 `:persistent_term`，不进本进程邮箱，Life 每次后台触发都可以调）：`:open` 或
-  `{:paused, %{day:, reason:, total_usd:, stop_usd:}}`，`reason` ∈ `:limit | :unpriced | :unmeasured`。本进程从未启动过时 raise。
+  `{:paused, %{day:, reason:, total_usd:, stop_usd:}}`，`reason` ∈ `:limit | :unpriced | :unmeasured`。
+  本节点上从没发布过结论（本进程还没启动过）时同未启用：`{:paused, %{reason: :unmeasured, day: nil, …}}`——没有 owner 就无法计量。
   """
   @spec background() :: background()
-  def background, do: :persistent_term.get(@published)
+  def background, do: :persistent_term.get(@published, paused(nil, :unmeasured, 0, nil))
 
   @doc """
   记一次产品模型请求的回执（cast，由 `NpcServer.ModelUsage` 在拿到用量时调用）：

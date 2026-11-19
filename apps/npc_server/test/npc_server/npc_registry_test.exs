@@ -254,7 +254,10 @@ defmodule NpcServer.NpcRegistryTest do
                     model: "reflect-test"
                   },
                   # 必带 Life：行里没写 life，地址取运行环境。大脑仍是 Tree，不套 Social。
-                  life: %{url: "http://life.test.invalid"}
+                  life: %{
+                    url: "http://life.test.invalid",
+                    spend: &NpcServer.SpendBudget.background/0
+                  }
                 }} == NpcRegistry.brain("npc", @npc)
 
         # 行里显式给地址。
