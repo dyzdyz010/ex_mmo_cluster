@@ -14,7 +14,7 @@ defmodule NpcServer.Mind do
   | What just happened | 还没写进 Hindsight 的近期经历，每条前面写多久以前 | Life（`Life.mind/2` 的 `recent`、`now_ms`） |
   | What I remember | 缓存的认识（mental models）与按处境分路召回、合并后的记忆 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
   | What I have come to think（可缺） | 最近一轮反思写成的“自己”一问的收尾一句，只有原文，句首不加任何标注 | Life 的持久行，规则在 `Life.Reflection.thought/1`（`Life.mind/2` 的 `thought`） |
-  | Plans and promises（可缺） | 今天打算做的几件事（活动、次数、时限、做了几次、此刻的状态）与想做而现在做不到的事 | Life 的持久行 `"plan"`，规则在 `Life.DayPlan.column/3`（`Life.mind/2` 的 `plan`） |
+  | Plans and promises（可缺） | 今天打算做的几件事（活动、次数、时限、做了几次、此刻的状态）、开着的任务（目标、下一步、做完几步）与想做而现在做不到的事 | Life 的持久行 `"plan"` 与 `"tasks"`，规则在 `Life.DayPlan.column/3` 与 `Life.Tasks.column/1`（`Life.mind/2` 的 `plan`、`tasks`） |
   | Current situation | 位置、生命、附近的人、我的建筑在不在、背包里非零的材料 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果（结局写法见 `result/1`：失败原因码写成一句直白英文） | 选择器（`NpcServer.Selector` 的历史） |
 
@@ -32,13 +32,17 @@ defmodule NpcServer.Mind do
   **Plans and promises**（日计划，决策稿 `docs/10-active/cross-cutting/2026-11-14-npc-day-plan-decision.md` D-3，实现设计
   `2026-11-15-npc-day-plan-implementation.md` §5）：位置在 `What I have come to think` 之后、`Current situation` 之前
   （计划是“想做什么”，处境是“现在有什么”，先让模型读到前者；位置本身没有离线对照过）。
-  **可缺的理由**：Life 给 nil 时整栏不出现——这个形态不规划、持久行还没采用过计划、或今天没有意图而 `wants` 也空——
-  此时 state 与没有这一栏时逐字节相同。正文多行（栏内换行同 `What I remember`），先今天的各条意图、一条一行，写法是
-  `plan_intent_line/2`（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；
+  **可缺的理由**：Life 给的 `plan` 为 nil 且 `tasks` 为空时整栏不出现——这个形态不规划、持久行还没采用过计划、或今天没有意图而
+  `wants` 也空，又没有开着的任务——此时 state 与没有这一栏时逐字节相同。正文多行（栏内换行同 `What I remember`），先今天的各条意图、
+  一条一行，写法是 `plan_intent_line/2`（`<活动>: <做了几次> of <几次> done, by HH:MM` / `… — finished` / `… — not finished by HH:MM`；
   意图点名了人时 `<活动>` 写成 `<种类> <名字 (actor <cid>)>`，名字取自此刻观察）；
-  再是 `wants`，每条一行 `I would like to <want>, but I cannot do that yet`，`<want>` 取模型原文，不改写、不去标点。
+  再是开着的任务，每个一行（任务层决策稿 K-6，T-1a；**原创措辞**，没离线测过）：
+  `Task: <goal> — next: <种类 名字>; done so far: <n> step(s)`，没有待做步骤时 `Task: <goal> — no steps planned; done so far: …`，
+  `<goal>` 取模型原文，下一步的写法同意图（`activity_label/3`），`<n>` 是这个任务完成的步数；
+  最后是 `wants`，每条一行 `I would like to <want>, but I cannot do that yet`，`<want>` 取模型原文，不改写、不去标点。
   意图的状态由 `Life.DayPlan.column/3` 在读时推出；计划不是今天的则只剩 `wants` 行。
-  **不点名该选什么**：不写 `you should` / `next` / `remember` 之类的话，只陈述数目、时限与做不到的事（用户 2026-11-13 定“靠内容涌现”）。
+  **不点名该选什么**：不写 `you should` / `remember` 之类的话，只陈述数目、时限、任务的下一步与做不到的事（用户 2026-11-13 定“靠内容涌现”；
+  任务行的 `next:` 是陈述这个任务接下来的那一步，不说该不该选它）。
   与 `What I have come to think` **先并存**（决策稿 D-3：离线对照计划栏对选择的作用之后再定留哪个）；这一栏对选择的作用还没测过。
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
@@ -141,21 +145,32 @@ defmodule NpcServer.Mind do
       ]
   end
 
-  # 日计划新栏：Life 给出 `plan`（`Life.DayPlan.column/3` 的结果）才有这一栏，nil 时整栏不出现（state 与没有这一栏时逐字节相同）。
-  # 严格取键（同 `thought/1`）：手造 `life` 的测试只有三处，都补了 `plan: nil`，漏给的调用方会在这里立刻崩而不是悄悄少一栏。
-  # 正文多行：先今天的各条意图一条一行（`plan_intent_line/2`，点名的人按此刻观察里的名字写），再 wants 各一行；
-  # 不点名该选什么，不写任何指令性的话。
-  defp plans(%{plan: nil}, _observation), do: []
+  # 计划栏：Life 给出 `plan`（`Life.DayPlan.column/3` 的结果）或开着的任务（`Life.Tasks.column/1`）才有这一栏，两者都没有时整栏不出现
+  # （state 与没有这一栏时逐字节相同）。严格取键（同 `thought/1`）：手造 `life` 的测试都补了 `plan: nil`、`tasks: []`，漏给的调用方
+  # 会在这里立刻崩而不是悄悄少一栏。正文多行：先今天的各条意图一条一行（`plan_intent_line/2`），再开着的任务各一行（`task_line/2`），
+  # 再 wants 各一行；点名的人按此刻观察里的名字写。不点名该选什么，不写任何指令性的话。
+  defp plans(%{plan: nil, tasks: []}, _observation), do: []
 
-  defp plans(%{plan: %{intents: intents, wants: wants}}, observation) do
+  defp plans(%{plan: plan, tasks: tasks}, observation) do
     names = State.names(observation)
+    %{intents: intents, wants: wants} = plan || %{intents: [], wants: []}
 
     lines =
       Enum.map(intents, &plan_intent_line(&1, names)) ++
+        Enum.map(tasks, &task_line(&1, names)) ++
         Enum.map(wants, &"I would like to #{&1["want"]}, but I cannot do that yet")
 
     [{"Plans and promises", Enum.join(lines, "\n")}]
   end
+
+  # 一个开着的任务一行（任务层决策稿 K-6 的原文，原创措辞）：下一步写成种类与点名的人，做完几步用 `count/2` 的单复数。
+  defp task_line(%{goal: goal, next: nil, completed: n}, _names),
+    do: "Task: #{goal} — no steps planned; done so far: #{count(n, "step")}"
+
+  defp task_line(%{goal: goal, next: %{"kind" => kind} = next, completed: n}, names),
+    do:
+      "Task: #{goal} — next: #{activity_label(kind, next["object"], names)}; " <>
+        "done so far: #{count(n, "step")}"
 
   # 反思新栏：Life 给出那一句才有这一栏，没有就整栏不出现（state 与没有这一栏时逐字节相同）。
   # 正文只有收尾句原文，不加“多久以前”与 `I thought: `（R4b，依据见 moduledoc）；那一句的 `at_ms` 这里不读。

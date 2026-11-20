@@ -12,13 +12,21 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   的日号与分钟换成用例要的值。
 
   替身三处，同 `npc_life_test.exs` 的反思用例（`LifeFixtures`）：Hindsight 适配器（召回回放真实条目）、写日记的函数
-  （`profile.write_journal`：系统提示词与用户消息交给测试进程，由测试给出 S1-R8 规划模型的真实应答或写作接口真实形状的失败）、
+  （`profile.write_journal`：系统提示词与用户消息交给测试进程，由测试给出回顾模型的真实应答或写作接口真实形状的失败）、
   Life 的时钟（Agent，测试拨动以跨过两次规划调用的最小间隔）。活动的经历由 `Selector` 的产品函数做出（`chose/4` → `ended/2`
   → `experience/2`）。词表是 S1-R7 的候选（`fixtures/day_plan/activities.json`，只有 `name` 与 `criterion`；Life 与 Selector
   只读这两个键与 `place_name`）。配了说话的那条用例（稿 A 批 0b）另给 profile 配 speak 技能，词表多出 `speak_to` 一类，
-  对象由 Life 从关系与观察展开；它的规划应答是 R3-r1 真实正文的变体（没有说话种类的真实样本）。
+  对象由 Life 从关系与观察展开。
 
   `kind:event` 经历同时触发反思，反思的写作请求一律给写作接口真实形状的失败（`await_plan_write/0`），不影响规划。
+
+  任务层 T-1a：日计划退化为每日回顾（系统提示词是回顾模板，检查是 `Tasks.check/3` 的 `{:review, …}`，当日 2 次）。本文件仍证日计划
+  那一半（意图、记账、额度、触发、失败）：期望系统提示词取 K-0 复测真实发出的回顾请求（`review-request-R1.json`，去掉说话一行或换成
+  本用例的说话一行）；回放的应答逐字取自 K-0 复测里真实 DeepSeek 的回顾应答（`fixtures/day_plan/review-<名>.json`，来源见同目录
+  README）：没配说话的用例用不点名的几份（R1-r2 13:00、R4-r2 / R4-r3 19:45），被拒用 R1-r3（`{:too_many_items, 6}`），配说话用
+  R1-r1（Corvin 在观察里）；帧的分钟取那份材料的此刻。这些应答顺带开了任务（产品照常采用），本文件不断言任务——回顾开 / 弃任务那一半
+  在 `npc_life_tasks_integration_test.exs`。复测应答里没有点名的**意图**（点名只出现在任务步里），所以“点名的意图按种类 + 对象记账”
+  只由 `npc_life_day_plan_test` 的单测覆盖。
   保存失败的用例换用 `RefusingStore`（真实 NpcMemory 之上由测试控制的一次 `:write_denied`，同 `npc_life_test.exs` 的
   `ControlledStore`）；召回失败的用例由 `LifeFixtures.ReflectHindsight` 的同名 ETS 表让经历库的下一次召回返回 `:timeout`。
   规划要求有过经历，所以 `planning/1` 起好 Life 后先经 `Life.activity/2` 接纳一条活动经历（出生不触发的用例不给）。
@@ -27,10 +35,10 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
-  import NpcServer.LifeFixtures, only: [damage: 4, reflect_profile: 3]
+  import NpcServer.LifeFixtures, only: [damage: 4, ended: 3, reflect_profile: 3]
   import NpcServer.ReflectionFixtures, only: [rawobs: 1]
-  alias NpcServer.{HttpStub, Life, NpcWorld, Selector}
-  alias NpcServer.Life.DayPlan
+  alias NpcServer.{HttpStub, Life, NpcWorld}
+  alias NpcServer.Life.{DayPlan, Tasks}
   alias NpcServer.LifeFixtures.ReflectHindsight
 
   defmodule RefusingStore do
@@ -71,6 +79,9 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   # 两次规划调用的最小间隔（`DayPlan` 的 3 分钟）再多 1 毫秒。
   @gap_ms 3 * 60_000 + 1
   @day 1500
+  # K-0 复测 R1 材料里在场的 Corvin（回放的 R1-r1 应答点名的就是这个显示名）。
+  @corvin 1_906_495_721_474
+  @corvin_name "Corvin (actor 1906495721474)"
 
   setup_all do
     MmoTest.Database.start!()
@@ -123,17 +134,18 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   @tag timeout: 60_000
   test "有过一条经历后首帧带游戏钟：触发 :day，写作收到 Prompt 的产物，真实应答落进持久行；mind/2 与 observe/1 的 plan；重启后还在" do
     %{cid: cid, life: life, profile: profile} = planning()
-    sample = plan_sample("R3-r1")
+    sample = review("R1-r2")
     minute = sample["now_minute"]
 
     frame(life, @day, minute)
     {worker, user} = await_plan_write()
 
-    # 系统提示词与 S1-R8 真实发出的逐字节相同（同一人格卡、同一词表）；用户消息是三块材料加末行，“自己”之前没写过。
+    # 系统提示词与 K-0 复测真实发出的回顾请求逐字节相同（同一人格卡、同一词表，去掉说话一行）；用户消息是三块材料加末行，
+    # “自己”之前没写过。
     assert_received {:plan_system_checked, true}
 
     assert user =~
-             ~r/\ARight now:\nIt is afternoon, 12:11\. It is day #{@day}\.\n.+\n\nWhat happened:\n\[1\] /s
+             ~r/\ARight now:\nIt is afternoon, 13:00\. It is day #{@day}\.\n.+\n\nWhat happened:\n\[1\] /s
 
     assert String.ends_with?(
              user,
@@ -142,18 +154,18 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
            )
 
     assert {:ok, %{plan: %{running: true}}} = Life.observe(cid)
-    reply(worker, "R3-r1")
+    reply(worker, "R1-r2")
 
     plan = await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
-    {:ok, checked} = DayPlan.check(sample["text"], vocabulary(), minute)
+    {:ok, checked} = review_check(sample["text"], minute)
 
     assert plan.row["day"] == @day
 
     assert Enum.map(plan.row["intents"], &Map.take(&1, ~w(activity object times by why))) ==
              checked.intents
 
-    assert Enum.map(plan.row["intents"], & &1["done"]) == [0, 0, 0]
-    assert plan.row["wants"] == checked.wants
+    assert Enum.map(plan.row["intents"], & &1["done"]) == [0, 0, 0, 0]
+    assert plan.row["wants"] == checked.wants and length(checked.wants) == 1
     assert plan.row["calls"] == %{"day" => @day, "n" => 1}
     assert %{"kind" => "day", "result" => "adopted"} = plan.row["last"]
     assert plan.error == nil
@@ -179,10 +191,11 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   @tag timeout: 60_000
   test "活动记账：同名活动完成给 by 最早的 open 意图 done 加一；失败的不计；by 已过的不计" do
     %{cid: cid, life: life, profile: profile} = context = planning()
-    # 12:11 的计划：guard_hut 13:00 前一次、visit_plaza 16:00 与 21:00 前各一次。
-    plan_today(context, @day, "R3-r1")
 
-    frame(life, @day, 740)
+    # 19:45 的计划（R4-r2）：guard_hut 21:30 前两次、visit_plaza 22:30 前一次、guard_hut 23:45 前一次。
+    plan_today(context, @day, "R4-r2")
+
+    frame(life, @day, 1200)
     Life.activity(life, finished(profile, "guard_hut", :completed))
     Life.activity(life, finished(profile, "visit_plaza", {:failed, "travel", "no_path"}))
 
@@ -190,70 +203,66 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert {:ok, %{plan: plan}} = Life.observe(cid)
     assert dones(plan) == [1, 0, 0]
 
-    # 16:40：第一条 visit_plaza 的时限（16:00）已过，完成记给 21:00 那条。
-    frame(life, @day, 1000)
-    Life.activity(life, finished(profile, "visit_plaza", :completed))
+    # 21:40：第一条 guard_hut 的时限（21:30）已过，完成记给 23:45 那条。
+    frame(life, @day, 1300)
+    Life.activity(life, finished(profile, "guard_hut", :completed))
     assert {:ok, %{plan: plan}} = Life.observe(cid)
     assert dones(plan) == [1, 0, 1]
-    assert Enum.map(plan.column.intents, & &1.status) == [:done, :missed, :done]
+    assert Enum.map(plan.column.intents, & &1.status) == [:missed, :open, :done]
 
-    # 21:40：再完成一次 visit_plaza，没有 open 的同名意图，什么也不记。
-    frame(life, @day, 1300)
-    Life.activity(life, finished(profile, "visit_plaza", :completed))
+    # 23:50：再完成一次 guard_hut，没有 open 的同名意图，什么也不记。
+    frame(life, @day, 1430)
+    Life.activity(life, finished(profile, "guard_hut", :completed))
     assert {:ok, %{plan: after_all}} = Life.observe(cid)
     assert after_all.row["intents"] == plan.row["intents"]
 
-    # 四项活动都照常成了经历（失败的那项也是），加上起 Life 后的第一条经历（`planning/1`）。
-    assert {:ok, %{pending_episodes: 5}} = Life.observe(cid)
+    # 四项活动都照常成了经历（失败的那项也是），加上起 Life 后的第一条经历（`planning/1`）与回顾开任务的一句（`kind:task`）。
+    assert {:ok, %{pending_episodes: 6}} = Life.observe(cid)
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == after_all.row
   end
 
   # 稿 A 批 0b（T-A3 的 Life 接线）：配了说话时，规划词表多出 `speak_to` 一类，可点名的人 = 关系里的人（别人打了我放的东西，
-  # 规则模式记下对他的信任，`LifeFixtures.damage/4`）∪ 此刻观察里的他人（S1-X2 里来跟我说话的 Tobin，站在我身边 2 米）。
-  # 显示名用名字层：观察里有名字的写 `Tobin (actor <cid>)`，只在关系里的写 `actor <cid>`。规划模型的应答没有真实样本（批 0b
-  # 不调真实模型），用 R3-r1 真实正文的变体：第一条意图换成点名 Tobin 的说话。对他说完话的经历经产品路径做出
-  # （`Offers.speak_to/2` 的候选 → Selector 选定 → 结局 → `experience/2`），按种类 + 对象记到那条意图上。
+  # 规则模式记下对他的信任，`LifeFixtures.damage/4`）∪ 此刻观察里的他人（K-0 复测 R1 的材料：Corvin 站在 8.9 米外）。
+  # 显示名用名字层：观察里有名字的写 `Corvin (actor <cid>)`，只在关系里的写 `actor <cid>`。
+  # 回放 K-0 复测 R1-r1 的真实应答（那次请求的词表点名的正是 Corvin）：意图都不点名，任务步点名 Corvin——显示名换成对象
+  # `%{"actor" => cid}` 落行。点名的意图按种类 + 对象记账由 `npc_life_day_plan_test` 的单测覆盖（复测应答里没有点名的意图）。
   @tag timeout: 60_000
-  test "配了说话：词表多出 speak_to，对象是关系里的人与观察里的他人；点名的意图落行；对那人说完话按种类 + 对象记账" do
-    %{fixture: fixture, cid: cid, life: life, profile: profile} = planning(speak: true)
-    sample = plan_sample("R3-r1")
+  test "配了说话：词表多出 speak_to，对象是关系里的人与观察里的他人；真实应答点名的人换成对象落行" do
+    %{fixture: fixture, cid: cid, life: life} = planning(speak: true)
+    sample = review("R1-r1")
     minute = sample["now_minute"]
     attacker = cid + 10
 
     damage(fixture.world, cid, 1, {5, 64, 8})
     await_plan(cid, & &1.row["event_waiting"])
 
-    observation = with_tobin(rawobs(4))
-    [%{entity_id: tobin}] = observation.entities
-    tobin_name = "Tobin (actor #{tobin})"
-    Life.observation(life, at_time(observation, @day, minute))
+    Life.observation(life, at_time(with_corvin(rawobs(4)), @day, minute))
 
     line =
       "\n- speak_to: Walk up to someone and say one thing to them. " <>
-        ~s|Optionally add "object": exactly one of "#{tobin_name}", "actor #{attacker}".|
+        ~s|Optionally add "object": exactly one of "#{@corvin_name}", "actor #{attacker}".|
 
     {worker, _user} = await_plan_write(plan_system(line))
     assert_received {:plan_system_checked, true}
 
-    text =
-      sample["text"]
-      |> Jason.decode!()
-      |> update_in(["intents"], fn [first | rest] ->
-        [Map.merge(first, %{"activity" => "speak_to", "object" => tobin_name}) | rest]
-      end)
-      |> Jason.encode!()
-
-    send(worker, {:reply, {:ok, %{text: text, usage: %{}}}})
+    reply(worker, "R1-r1")
     plan = await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
 
-    assert [%{"activity" => "speak_to", "object" => %{"actor" => ^tobin}, "done" => 0} | _] =
-             plan.row["intents"]
+    speak = %{
+      "actor #{attacker}" => %{"actor" => attacker},
+      @corvin_name => %{"actor" => @corvin}
+    }
 
-    # 对 Tobin 说完话：记到点名他的那条；其余意图不动。
-    [candidate] = NpcServer.Offers.speak_to(profile.activities, observation)
-    Life.activity(life, finished_speaking(profile, candidate, :completed))
-    assert {:ok, %{plan: plan}} = Life.observe(cid)
-    assert dones(plan) == [1, 0, 0]
+    {:ok, checked} =
+      Tasks.check(sample["text"], Map.put(vocabulary(), "speak_to", speak), {:review, minute, []})
+
+    assert length(checked.intents) == 5
+
+    assert Enum.map(plan.row["intents"], &Map.take(&1, ~w(activity object times by why))) ==
+             checked.intents
+
+    assert {:ok, %{tasks: %{row: %{"open" => [_, %{"steps" => steps}]}}}} = Life.observe(cid)
+    assert %{"kind" => "speak_to", "object" => %{"actor" => @corvin}} = List.last(steps)
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == plan.row
   end
 
@@ -265,8 +274,9 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       context =
       planning(memory: RefusingStore)
 
-    plan_today(context, @day, "R3-r1")
-    frame(life, @day, 740)
+    # 19:45 的计划（R4-r2）：第一条 guard_hut 21:30 前。
+    plan_today(context, @day, "R4-r2")
+    frame(life, @day, 1200)
 
     at_ms = now(clock)
     experience = finished(profile, "guard_hut", :completed)
@@ -280,7 +290,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
     # 放行时守屋的时限已经过去。活动经历和进度仍应以完成时刻为准。
     advance(clock, 60_000)
-    frame(life, @day, 800)
+    frame(life, @day, 1300)
     assert {:ok, _} = Life.observe(cid)
     :ets.delete(RefusingStore, {:activity, cid})
 
@@ -294,7 +304,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
              Enum.filter(saved["pending"], &(&1["text"] == experience.text))
 
     assert Enum.map(saved["plan"]["intents"], & &1["done"]) == [1, 0, 0]
-    assert {:ok, %{activity_pending: false, pending_episodes: 2}} = Life.observe(cid)
+    # 起 Life 后的第一条经历、回顾开任务的一句、这项活动。
+    assert {:ok, %{activity_pending: false, pending_episodes: 3}} = Life.observe(cid)
   end
 
   @tag timeout: 90_000
@@ -304,18 +315,19 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     %{fixture: fixture, cid: cid, life: life, clock: clock, profile: profile} =
       context = planning(memory: RefusingStore)
 
-    plan_today(context, @day, "R3-r1")
+    # 13:00 的计划（R1-r2）：第一条 confront_wrecker 13:30 前一次；重排回放 R4-r3（时限都在 20:30 及之后）。
+    plan_today(context, @day, "R1-r2")
     damage(fixture.world, cid, 1, {5, 64, 8})
     await_plan(cid, & &1.row["event_waiting"])
     advance(clock, @gap_ms)
-    frame(life, @day, 740)
+    frame(life, @day, 790)
     {worker, _user} = await_plan_write()
 
-    experience = finished(profile, "guard_hut", :completed)
+    experience = finished(profile, "confront_wrecker", :completed)
     :ets.insert(RefusingStore, {{:activity, cid}, self(), experience.text})
     assert {:error, {:memory_unavailable, :write_denied}} = Life.activity(life, experience)
 
-    reply(worker, "R2-r1")
+    reply(worker, "R4-r3")
 
     before_recovery =
       await_plan(cid, fn plan ->
@@ -323,22 +335,22 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
       end)
 
     assert before_recovery.row["counts"]["replanned"] == 0
-    assert dones(before_recovery) == [0, 0, 0]
+    assert dones(before_recovery) == [0, 0, 0, 0]
     :ets.delete(RefusingStore, {:activity, cid})
 
     after_recovery = await_plan(cid, &(&1.row["counts"]["replanned"] == 1 and not &1.running))
 
-    assert [%{"activity" => "guard_hut", "done" => 1, "id" => id} | _] =
+    assert [%{"activity" => "confront_wrecker", "done" => 1, "id" => id} | _] =
              after_recovery.row["intents"]
 
     assert id == "#{@day}:1"
   end
 
   @tag timeout: 90_000
-  test "额度：最小间隔内不起第二次；同一游戏日第 6 次到点被拒，skipped 只加一、不随帧数增长；跨日恢复" do
+  test "额度：最小间隔内不起第二次；同一游戏日第 3 次到点被拒，skipped 只加一、不随帧数增长；跨日恢复" do
     %{cid: cid, life: life, clock: clock} = planning()
 
-    for n <- 1..5 do
+    for n <- 1..2 do
       frame(life, @day, 600)
       {worker, _user} = await_plan_write()
       send(worker, {:reply, {:error, :timeout}})
@@ -364,8 +376,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
     refute_receive {:write, _, _, _}, 300
     assert_received {:plan, plan}
-    assert plan.row["calls"] == %{"day" => @day, "n" => 5}
-    assert %{"failed" => 5, "skipped" => 1} = plan.row["counts"]
+    assert plan.row["calls"] == %{"day" => @day, "n" => 2}
+    assert %{"failed" => 2, "skipped" => 1} = plan.row["counts"]
     assert length(String.split(log, "event=skipped")) == 2
     assert log =~ "reason=day_budget_exhausted"
 
@@ -375,7 +387,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert {:ok, %{plan: %{running: true, row: %{"calls" => calls}}}} = Life.observe(cid)
     assert calls == %{"day" => @day + 1, "n" => 1}
     send(worker, {:reply, {:error, :timeout}})
-    await_plan(cid, &(&1.row["counts"]["failed"] == 6 and not &1.running))
+    await_plan(cid, &(&1.row["counts"]["failed"] == 3 and not &1.running))
   end
 
   @tag timeout: 90_000
@@ -383,11 +395,12 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     %{fixture: fixture, cid: cid, life: life, clock: clock, profile: profile} =
       context = planning()
 
-    first = plan_today(context, @day, "R3-r1")
+    # 13:00 的计划（R1-r2）：confront_wrecker 13:30、gather_stone 15:30、build_hut 17:00、guard_hut 18:30 前各一次，一条 wants。
+    first = plan_today(context, @day, "R1-r2")
     [%{"want" => old_want}] = first.row["wants"]
 
-    frame(life, @day, 740)
-    Life.activity(life, finished(profile, "guard_hut", :completed))
+    frame(life, @day, 790)
+    Life.activity(life, finished(profile, "confront_wrecker", :completed))
 
     # 别人打掉我放的一格（World 正式入口）：Life 读到它，接纳成 kind:event 经历，记下等着重排。
     damage(fixture.world, cid, 1, {5, 64, 8})
@@ -397,19 +410,22 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     frame(life, @day, 800)
     {worker, user} = await_plan_write()
 
+    # 今天的意图与旧 wants 两块；其后是 R1-r2 开的那个任务（任务一块的写法由任务集成测试断言）。
     assert user =~
-             "\n\nWhat I meant to do today, as it stands:\nguard_hut: 1 of 1 done — finished\n" <>
-               "visit_plaza: 0 of 1 done, by 16:00\nvisit_plaza: 0 of 1 done, by 21:00\n\n" <>
-               "Things I wanted to do but could not yet:\n#{old_want}\n\nPlan the rest of today now."
+             "\n\nWhat I meant to do today, as it stands:\nconfront_wrecker: 1 of 1 done — finished\n" <>
+               "gather_stone: 0 of 1 done, by 15:30\nbuild_hut: 0 of 1 done, by 17:00\n" <>
+               "guard_hut: 0 of 1 done, by 18:30\n\n" <>
+               "Things I wanted to do but could not yet:\n#{old_want}\n\n" <>
+               "My open tasks (by id):\n- t#{@day}:1: "
 
-    reply(worker, "R2-r1")
+    reply(worker, "R4-r3")
     plan = await_plan(cid, &(&1.row["counts"]["replanned"] == 1 and not &1.running))
-    {:ok, checked} = DayPlan.check(plan_sample("R2-r1")["text"], vocabulary(), 800)
+    {:ok, checked} = review_check(review("R4-r3")["text"], 800)
 
     [kept | fresh] = plan.row["intents"]
 
     assert Map.take(kept, ~w(id activity done)) ==
-             %{"id" => "#{@day}:1", "activity" => "guard_hut", "done" => 1}
+             %{"id" => "#{@day}:1", "activity" => "confront_wrecker", "done" => 1}
 
     assert Enum.map(fresh, &Map.take(&1, ~w(activity object times by why))) == checked.intents
     assert Enum.map(fresh, & &1["id"]) == ["#{@day}:2", "#{@day}:3"]
@@ -421,15 +437,15 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   @tag timeout: 90_000
-  test "检查不过（R1-r1：6 条）/ 写作失败：counts.rejected / failed，意图不动；选择照常读得到视图" do
+  test "检查不过（R1-r3：意图与 cannot_yet 共 6 条）/ 写作失败：counts.rejected / failed，意图不动；选择照常读得到视图" do
     %{cid: cid, life: life, clock: clock} = context = planning()
-    before = plan_today(context, @day, "R3-r1").row
+    before = plan_today(context, @day, "R4-r2").row
 
-    # 新的一日 13:00：本日还没有计划，到点 :day。
+    # 新的一日 13:00（R1-r3 那份材料的此刻）：本日还没有计划，到点 :day。
     advance(clock, @gap_ms)
-    frame(life, @day + 1, 780)
+    frame(life, @day + 1, review("R1-r3")["now_minute"])
     {worker, _user} = await_plan_write()
-    reply(worker, "R1-r1")
+    reply(worker, "R1-r3")
 
     plan = await_plan(cid, &(&1.row["counts"]["rejected"] == 1 and not &1.running))
     assert Map.take(plan.row, ~w(day intents wants)) == Map.take(before, ~w(day intents wants))
@@ -610,20 +626,20 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   end
 
   @tag timeout: 90_000
+  # 当日额度 2 次（1 次日界 + 1 次事件）：一条 event 先到，当日还没有计划时到点的是 :day（两者同时成立给 :day），
+  # 起调用即清标记；在途时又来的 event 留到落栏之后，过了间隔触发 :event。
   test "规划在途时到来的 event：起调用即清标记并记 last_at_ms；落栏后标记仍在，间隔过后触发 :event；:event 失败恢复标记" do
-    %{fixture: fixture, cid: cid, life: life, clock: clock} = context = planning()
-    plan_today(context, @day, "R3-r1")
+    %{fixture: fixture, cid: cid, life: life, clock: clock} = planning()
 
     damage(fixture.world, cid, 1, {5, 64, 8})
     await_plan(cid, & &1.row["event_waiting"])
-    advance(clock, @gap_ms)
     started_at = now(clock)
-    frame(life, @day, 800)
+    frame(life, @day, review("R1-r2")["now_minute"])
     {worker, _user} = await_plan_write()
 
     # 起调用那次保存已落库：调用数、起调用的时刻、清掉的标记（这次调用的材料里已有那条 event）。
     stored = DataService.NpcMemory.get(cid, "life", "state")["plan"]
-    assert stored["calls"] == %{"day" => @day, "n" => 2}
+    assert stored["calls"] == %{"day" => @day, "n" => 1}
     assert stored["last_at_ms"] == started_at
     refute stored["event_waiting"]
 
@@ -631,8 +647,8 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     damage(fixture.world, cid, 2, {4, 64, 8})
     await_plan(cid, &(&1.row["event_waiting"] and &1.running))
 
-    reply(worker, "R2-r1")
-    plan = await_plan(cid, &(&1.row["counts"]["replanned"] == 1 and not &1.running))
+    reply(worker, "R1-r2")
+    plan = await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
     assert plan.row["event_waiting"]
     assert plan.row["last_at_ms"] == started_at
 
@@ -648,6 +664,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     send(worker, {:reply, {:error, :timeout}})
     plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
     assert %{"kind" => "event", "result" => "failed"} = plan.row["last"]
+    assert plan.row["calls"] == %{"day" => @day, "n" => 2}
     assert plan.row["event_waiting"]
   end
 
@@ -717,13 +734,13 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
 
     log =
       capture_log(fn ->
-        frame(life, @day, plan_sample("R3-r1")["now_minute"])
+        frame(life, @day, review("R1-r2")["now_minute"])
         {worker, _user} = await_plan_write()
         :ets.insert(RefusingStore, {cid, self()})
-        reply(worker, "R3-r1")
+        reply(worker, "R1-r2")
 
         assert_receive {:save_refused, refused}, 5_000
-        assert length(refused["plan"]["intents"]) == 3
+        assert length(refused["plan"]["intents"]) == 4
         await_plan(cid, &(not &1.running))
       end)
 
@@ -734,11 +751,11 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     assert row["last_at_ms"] == started_at
     assert DataService.NpcMemory.get(cid, "life", "state")["plan"] == row
 
-    frame(life, @day, 740)
+    frame(life, @day, 790)
     refute_plan_write(300)
 
     advance(clock, @gap_ms)
-    frame(life, @day, 741)
+    frame(life, @day, 791)
     {worker, _user} = await_plan_write()
     send(worker, {:reply, {:error, :timeout}})
     plan = await_plan(cid, &(&1.row["counts"]["failed"] == 1 and not &1.running))
@@ -773,17 +790,20 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   @tag timeout: 60_000
   test "调用期间越过日界：按起槽那天的日号落栏，下一帧观察按新日触发 :day（间隔过后）" do
     %{cid: cid, life: life, clock: clock} = planning()
-    minute = plan_sample("R3-r1")["now_minute"]
+    minute = review("R1-r2")["now_minute"]
 
     frame(life, @day, minute)
     {worker, _user} = await_plan_write()
     # 调用在途时游戏钟进入下一日（槽在途，这一帧不触发）。
     frame(life, @day + 1, 5)
-    reply(worker, "R3-r1")
+    reply(worker, "R1-r2")
 
     plan = await_plan(cid, &(&1.row["counts"]["planned"] == 1 and not &1.running))
     assert plan.row["day"] == @day
-    assert Enum.map(plan.row["intents"], & &1["id"]) == ["#{@day}:1", "#{@day}:2", "#{@day}:3"]
+
+    assert Enum.map(plan.row["intents"], & &1["id"]) ==
+             ["#{@day}:1", "#{@day}:2", "#{@day}:3", "#{@day}:4"]
+
     # 栏按此刻（新日）给：昨天的意图不进，wants 仍给。
     assert %{intents: [], wants: [_]} = plan.column
 
@@ -802,7 +822,7 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   test "规划和反思通过真实 Writer 按同一角色分别记录模型请求" do
     Logger.put_module_level(NpcServer.ModelUsage, :info)
     on_exit(fn -> Logger.delete_module_level(NpcServer.ModelUsage) end)
-    sample = plan_sample("R3-r1")
+    sample = review("R1-r2")
     plan_system = plan_system()
 
     url =
@@ -923,35 +943,32 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   defp at_time(observation, day, minute),
     do: %{observation | world_time: %{observation.world_time | day: day, minute_of_day: minute}}
 
-  # 同一帧里多一个他人：S1-X2 第 4 轮来跟我说话的 Tobin（身份、代次、名字取自那一帧 heard 里的来话），站在我身边 2 米
-  # （形状同 `Body.observe/1` 的 entities）。导出的那一帧里他已不在视野，这里让他留在说话范围内。
-  defp with_tobin(observation) do
-    [%{speaker_id: id, speaker_epoch: epoch, speaker_kind: kind, speaker_name: name}] =
-      observation.heard
-
+  # 同一帧里多一个他人：K-0 复测 R1 那份材料里的 Corvin（8.9 米外；形状同 `Body.observe/1` 的 entities，
+  # 同 `npc_life_tasks_integration_test` 的帧）。
+  defp with_corvin(observation) do
     {x, y, z} = observation.self.position
 
-    tobin = %{
-      entity_id: id,
-      entity_epoch: epoch,
-      kind: kind,
-      name: name,
-      position: {x + 2.0, y, z}
+    corvin = %{
+      entity_id: @corvin,
+      entity_epoch: 1,
+      kind: 1,
+      name: "Corvin",
+      position: {x + 8.9, y, z}
     }
 
-    %{observation | entities: [tobin]}
+    %{observation | entities: [corvin]}
   end
 
-  # 采用一份当日计划：一帧观察（分钟取这份应答在 S1-R8 里的此刻）→ 等规划写作 → 给真实应答 → 等落栏。
+  # 采用一份当日计划：一帧观察（分钟取这份应答那份材料的此刻）→ 等规划写作 → 给真实应答 → 等落栏。
   defp plan_today(%{cid: cid, life: life}, day, name) do
-    frame(life, day, plan_sample(name)["now_minute"])
+    frame(life, day, review(name)["now_minute"])
     {worker, _user} = await_plan_write()
     reply(worker, name)
     await_plan(cid, &(&1.row["day"] == day and not &1.running))
   end
 
-  # 等下一次规划写作，返回 `{worker, 用户消息}`；顺带核对系统提示词与期望逐字节相同（结果放进邮箱）。期望缺省是 S1-R8 的
-  # 真实请求体（没配说话的词表）；配了说话的用例传入自己的期望。
+  # 等下一次规划写作，返回 `{worker, 用户消息}`；顺带核对系统提示词与期望逐字节相同（结果放进邮箱）。期望缺省是 K-0 复测的
+  # 真实回顾请求去掉说话一行（没配说话的词表）；配了说话的用例传入自己的期望。
   # 途中到来的反思写作（kind:event 也触发反思；系统提示词不同）一律给写作接口真实形状的失败（`Writer.write/3` 的 `:timeout`）。
   defp await_plan_write(plan_system \\ plan_system()) do
     receive do
@@ -976,8 +993,13 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     refute_receive {:write, _, ^plan_system, _}, ms
   end
 
+  # 给规划写作回放 K-0 复测的一份真实回顾应答（正文逐字）。
   defp reply(worker, name),
-    do: send(worker, {:reply, {:ok, %{text: plan_sample(name)["text"], usage: %{}}}})
+    do: send(worker, {:reply, {:ok, %{text: review(name)["text"], usage: %{}}}})
+
+  # Life 落栏用的同一个检查（回顾的唯一校验点；没配说话的词表；开着的任务只影响 drop 与上限，不影响意图）对应答正文的结果。
+  defp review_check(text, minute),
+    do: Tasks.check(text, vocabulary(), {:review, minute, []})
 
   defp await_plan(cid, ready) do
     NpcWorld.await(
@@ -991,53 +1013,15 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
     )
   end
 
-  # 一项活动结束时 Runtime 交给 Life 的经历：经 Selector 的产品函数做出（选定 → 结局 → 经历）。
-  # 选中的候选是登记项生成器（`Offers.registered/2`）给出的那一份（`Selector.ask/4` 把它整份冻结进选择）。
-  defp finished(profile, name, result) do
-    selection = %{
-      activity: name,
-      candidate:
+  # 一项活动结束时 Runtime 交给 Life 的经历：经 Selector 的产品函数做出（`LifeFixtures.ended/3`）。选中的候选是登记项
+  # 生成器（`Offers.registered/2`）给出的那一份。
+  defp finished(profile, name, result),
+    do:
+      ended(
+        profile,
         Enum.find(NpcServer.Offers.registered(profile.activities, []), &(&1.name == name)),
-      trigger: "start",
-      confidence: 0.6,
-      latency_ms: 1,
-      recall_ms: 1,
-      model: "test"
-    }
-
-    {_trigger, state} = profile |> chosen(selection) |> Selector.ended(result)
-    Selector.experience(state)
-  end
-
-  # 选定一项：Runtime 在应答之前一定先记下这次所问的内容（`Selector.asked/2`，`chose/3` 的日志从它取候选），
-  # 候选是登记项生成器给出的那一组再加上选中的这一份（说话候选由生成器另做）。
-  defp chosen(profile, selection) do
-    Selector.new()
-    |> Selector.asked(%{
-      state: "",
-      recall_queries: [],
-      recall_ms: 1,
-      candidates:
-        Enum.uniq(NpcServer.Offers.registered(profile.activities, []) ++ [selection.candidate])
-    })
-    |> Selector.chose(selection, 0)
-  end
-
-  # 一项说话活动结束时的经历：选定的是生成器做出的说话候选（Selector 把它记作 `candidate`，同 `Selector.ask/4` 选中的候选）。
-  defp finished_speaking(profile, candidate, result) do
-    selection = %{
-      activity: candidate.name,
-      candidate: candidate,
-      trigger: "start",
-      confidence: 0.6,
-      latency_ms: 1,
-      recall_ms: 1,
-      model: "test"
-    }
-
-    {_trigger, state} = profile |> chosen(selection) |> Selector.ended(result)
-    Selector.experience(state)
-  end
+        result
+      )
 
   defp dones(plan), do: Enum.map(plan.row["intents"], & &1["done"])
   defp advance(clock, ms), do: Agent.update(clock, &(&1 + ms))
@@ -1047,21 +1031,20 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
   defp with_activities(profile, nil), do: profile
   defp with_activities(profile, activities), do: Map.put(profile, :activities, activities)
 
-  # 产品拼出的规划系统提示词：S1-R8 金标（`requests-R1.json`，六个静态种类）的工作列表末尾多出生成的种类——
-  # `speak_line` 是配了说话时的那一行（稿 A 批 0b），其后是每个带候选表的形态都有的进食与合成（批 1，不可点名对象）；
+  # 产品拼出的回顾系统提示词：K-0 复测真实发出的 R1 回顾请求（`review-request-R1.json`：同一人格卡，词表是六个静态种类 +
+  # 点名 Corvin 的说话一类 + 进食 + 合成），把说话那一行换成 `speak_line`（没配说话时为空，配了说话的用例传自己那一行），
   # 其余逐字节不变。
-  @generated_kinds "\n- eat: Eat one serving of something edible from my inventory." <>
-                     "\n- craft: Craft something from materials in my inventory."
-  @after_kinds "\n\nOr it is something you want to do"
+  @corvin_speak_line "\n- speak_to: Walk up to someone and say one thing to them. " <>
+                       ~s|Optionally add "object": exactly one of "#{@corvin_name}".|
 
   defp plan_system(speak_line \\ "") do
-    golden = plan_request()["system"]
-    [_, _] = String.split(golden, @after_kinds)
-    String.replace(golden, @after_kinds, speak_line <> @generated_kinds <> @after_kinds)
+    golden = plan_fixture("review-request-R1.json")["system"]
+    [_, _] = String.split(golden, @corvin_speak_line)
+    String.replace(golden, @corvin_speak_line, speak_line)
   end
 
-  defp plan_sample(name), do: plan_fixture("s1r8-#{name}.json")
-  defp plan_request, do: plan_fixture("requests-R1.json")
+  # K-0 复测的一份真实回顾应答（`text` 正文、`now_minute` 那份材料的此刻；来源见 `fixtures/day_plan/README.md`）。
+  defp review(name), do: plan_fixture("review-#{name}.json")
   defp plan_fixture(name), do: Path.join(@plan_fixtures, name) |> File.read!() |> Jason.decode!()
 
   # 词表：S1-R7 的候选，形状同注册表构造的候选（Life 与 Selector 读 `name`、`criterion`、`place_name`）。
@@ -1070,6 +1053,6 @@ defmodule NpcServer.NpcLifeDayPlanIntegrationTest do
         do: %{name: name, criterion: criterion, place_name: nil}
   end
 
-  # `DayPlan.check/3` 的词表 `%{种类 => %{显示名 => 对象}}`：没配说话时只有这六个静态种类，都没有对象（稿 A 批 0b）。
+  # 检查的词表 `%{种类 => %{显示名 => 对象}}`：没配说话时只有这六个静态种类，都没有对象（稿 A 批 0b）。
   defp vocabulary, do: Map.new(activities(), &{&1.name, %{}})
 end

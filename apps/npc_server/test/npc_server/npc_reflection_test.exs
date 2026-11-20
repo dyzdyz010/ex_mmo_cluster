@@ -98,6 +98,23 @@ defmodule NpcServer.NpcReflectionTest do
     assert Reflection.score(first.(&("kind:activity" in &1 and not with_people.(&1)))) == 1
   end
 
+  # 任务层 T-1a：开 / 关任务的标准句经历（`Life.Tasks` 写出的那一条）计 1 分（原创取值，同独自的活动：自己定的打算，
+  # 不该自己催出一轮反思；带不带任务里的人都一样）。
+  test "计分表：任务经历（kind:task）计 1 分，带不带 actor 都一样" do
+    task = %{
+      "goal" => "Ask Corvin why",
+      "why" => "I want to know.",
+      "steps" => [%{"kind" => "speak_to", "object" => %{"actor" => 1}, "why" => "Ask."}]
+    }
+
+    {_tasks, [episode]} =
+      NpcServer.Life.Tasks.review(NpcServer.Life.Tasks.new(), %{open: [task], drop: []}, 3, 0)
+
+    assert episode["tags"] == ["kind:task", "actor:1"]
+    assert Reflection.score(episode) == 1
+    assert Reflection.score(%{episode | "tags" => ["kind:task"]}) == 1
+  end
+
   test "定问题：S1-X2 每一轮按“自上一轮以来的新经历”问的就是当时问的（第 2、3、5 轮 Corvin 没有新经历被跳过）" do
     %{"wrecker" => corvin, "rounds" => rounds} = moments()
 

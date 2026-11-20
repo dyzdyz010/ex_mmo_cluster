@@ -1,13 +1,15 @@
 defmodule NpcServer.Life.DayPlan.Round do
   @moduledoc """
-  一次规划调用的流程（实现设计 `docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md` §4）：在 Life 的规划槽
-  worker 里串行地取材料、写一次、检查。规则在 `NpcServer.Life.DayPlan`，提示词在 `NpcServer.Life.DayPlan.Prompt`，
-  给模型看的英文渲染在 `NpcServer.Mind`；这里只把它们按离线测量 S1-R8 的做法串起来。
+  一次规划调用（每日回顾，任务层决策稿 `2026-11-19-npc-long-task-loop-decision.md` K-5）的流程（实现设计
+  `docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md` §4）：在 Life 的规划槽 worker 里串行地取材料、写一次、检查。
+  规则在 `NpcServer.Life.DayPlan`（意图）与 `NpcServer.Life.Tasks`（任务），提示词在 `NpcServer.Life.DayPlan.Prompt`，
+  给模型看的英文渲染在 `NpcServer.Mind`；这里只把它们按离线测量 S1-R8 / K-0 的做法串起来。
 
-      write/1：此刻一块 → “自己”一问的材料（两次召回、之前的想法）→ 系统提示词 + 用户消息 → 写一次 → DayPlan.check/3
+      write/1：此刻一块 → “自己”一问的材料（两次召回、之前的想法）→ 回顾系统提示词 + 用户消息 → 写一次
+               → Tasks.check/3 {:review, now_minute, 开着的任务}
 
   词表（稿 A 批 0b）是“种类 + 可选对象”：渲染成系统提示词的工作列表由 `Prompt.activities/1` 做（有对象的种类在判据后接
-  一句可选对象；日计划、每日回顾与任务推进共用这一处），检查时交给 `DayPlan.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
+  一句可选对象；每日回顾与任务推进共用这一处），检查时交给 `Tasks.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
 
   ## 为什么这样取材
 
@@ -17,15 +19,15 @@ defmodule NpcServer.Life.DayPlan.Round do
   ## 不回头问 Life，不重问
 
   Life 起槽那一刻把需要的一切取齐成快照交进来（见 `write/1`），I/O 只经快照里的 Hindsight 适配器、写作函数与 World 路由。
-  只写一次：写作失败或检查不过都是这一次的结局，交回 Life 记一笔（`DayPlan.fail/5`），不重问——当日调用有额度
+  只写一次：写作失败或检查不过都是这一次的结局，交回 Life 记一笔（`DayPlan.fail/5`），不重问——当日调用有额度（2 次）
   （`DayPlan.admit/3`），重问只会把额度花在同一份材料上；下一次到点（跨日或新的 event）再规划。结果里带写作发出了没有
   （`wrote`），Life 落栏时对写作之前就失败的那次退回额度（`DayPlan.refund/1`）。
 
-  日志每一步一行 `npc_plan cid=<cid> event=start|end …`（`end` 带 `wrote=true|false`）；计划原文（意图的 `why`、`wants`）
-  不进日志，从 Life 的 observe 读。
+  日志每一步一行 `npc_plan cid=<cid> event=start|end …`（`end` 带 `wrote=true|false`，写成时带意图、wants、开 / 弃任务的条数）；
+  计划原文（意图的 `why`、`wants`、任务的 `goal`）不进日志，从 Life 的 observe 读。
   """
   require Logger
-  alias NpcServer.Life.{DayPlan, Reflection}
+  alias NpcServer.Life.{Reflection, Tasks}
   alias NpcServer.Life.DayPlan.Prompt
   alias NpcServer.Life.Reflection.Round, as: ReflectionRound
 
@@ -48,13 +50,16 @@ defmodule NpcServer.Life.DayPlan.Round do
                    静态种类的 objects 为空）
       today        今天已有的意图各行（`Mind.plan_intent_line/2`），没有为 []
       wants        旧 `wants` 各行（`want` 原文），没有为 []
+      open         此刻开着的任务（持久行 `tasks.open`，带 `"id"`）：检查 `drop` 用
+      open_tasks   开着的任务各行（`Tasks.Prompt.review_open_lines/2`），没有为 []
+      closed_tasks 最近关掉的任务各行（`Tasks.Prompt.review_closed_lines/1`），没有为 []
 
   返回交回 Life 落栏的结果 `%{result:, checked:, elapsed_ms:, usage:, wrote:}`：
 
       result   :ok | {:failed, 原因} | {:rejected, 原因}
                failed：此刻一块失败（`:no_body_state`、现查 World 失败）、召回失败、没有材料（`:no_materials`）、写作失败；
-               rejected：写成了但没过 `DayPlan.check/3`（原因同它）
-      checked  `DayPlan.check/3` 的 `%{intents:, wants:}`（`by` 已换成分钟），不是 :ok 时为 nil
+               rejected：写成了但没过 `Tasks.check/3`（原因同它）
+      checked  `Tasks.check/3` 的 `%{intents:, wants:, tasks: %{open:, drop:}}`（`by` 已换成分钟），不是 :ok 时为 nil
       usage    写作应答的 usage 原样（写成了才有，含被拒的；失败为 nil）
       wrote    写作请求发出了没有：写作函数 `snapshot.write` 被调用过就为真，不论它返回成功、失败（含连接被拒、超时）
                还是应答没过检查；在它之前失败的（此刻一块、召回、没有材料）为假。Life 落栏时据此决定这一次扣不扣当日额度
@@ -87,15 +92,22 @@ defmodule NpcServer.Life.DayPlan.Round do
     with {:ok, right_now} <- ReflectionRound.right_now(snapshot),
          {:ok, materials} <-
            ReflectionRound.materials(Reflection.self_question(), right_now, snapshot) do
-      system = Prompt.system_prompt(snapshot.character, Prompt.activities(snapshot.vocabulary))
-      user = Prompt.user_message(materials, today: snapshot.today, wants: snapshot.wants)
+      system = Prompt.review_system_prompt(snapshot.character, snapshot.vocabulary)
+
+      user =
+        Prompt.user_message(materials,
+          today: snapshot.today,
+          wants: snapshot.wants,
+          open_tasks: snapshot.open_tasks,
+          closed_tasks: snapshot.closed_tasks
+        )
 
       case snapshot.write.(system, user) do
         {:ok, %{text: text} = written} ->
           usage = Map.get(written, :usage)
           vocabulary = Map.new(snapshot.vocabulary, &{&1.kind, &1.objects})
 
-          case DayPlan.check(text, vocabulary, snapshot.now_minute) do
+          case Tasks.check(text, vocabulary, {:review, snapshot.now_minute, snapshot.open}) do
             {:ok, checked} -> {:ok, checked, usage, true}
             {:error, reason} -> {{:rejected, reason}, nil, usage, true}
           end
@@ -109,7 +121,9 @@ defmodule NpcServer.Life.DayPlan.Round do
   end
 
   defp outcome(:ok, checked),
-    do: "result=written intents=#{length(checked.intents)} wants=#{length(checked.wants)}"
+    do:
+      "result=written intents=#{length(checked.intents)} wants=#{length(checked.wants)} " <>
+        "tasks_open=#{length(checked.tasks.open)} tasks_drop=#{length(checked.tasks.drop)}"
 
   defp outcome({:failed, reason}, nil), do: "result=failed reason=#{inspect(reason)}"
   defp outcome({:rejected, reason}, nil), do: "result=rejected reason=#{inspect(reason)}"

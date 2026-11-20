@@ -2,20 +2,24 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   @moduledoc """
   只测试：日计划纯函数核心 `NpcServer.Life.DayPlan` 的契约——应答检查、持久行形状、调用额度与触发判定、采用计划、活动记账、给 Mind 的栏。
 
-  `check/3` 的合格 / 不合格样例是 S1-R8 离线测量里规划模型的真实应答（取出的 `text` 块；来源见
-  `test/support/fixtures/day_plan/README.md`），期望取自 S1-R8 `results.json` 里记的检查结果；其余失败原因用对这些真实正文
-  删减 / 换写法得到的变体来测。要进持久行的数据每步过一遍 JSON，证明是能原样存取的普通 map。
+  应答检查：任务层 T-1a 起规划调用就是每日回顾，唯一校验点是 `Tasks.check/3` 的 `{:review, 此刻分钟, 开着的任务}`
+  （顶层键、围栏经 `DayPlan.decode/1` 与 `check_keys/5`，意图与 `cannot_yet` 经 `DayPlan.check_lists/3`）；本文件经它测意图与
+  `cannot_yet` 的规则（任务的部分在 `npc_life_tasks_test`）。合格 / 不合格样例是 S1-R8 离线测量里规划模型的真实应答（取出的
+  `text` 块；来源见 `test/support/fixtures/day_plan/README.md`），那时还没有任务层，补一个空的 `tasks`（模型产得出的形状）；
+  期望取自 S1-R8 `results.json` 里记的检查结果；其余失败原因用对这些真实正文删减 / 换写法得到的变体来测。
+  要进持久行的数据每步过一遍 JSON，证明是能原样存取的普通 map。
 
   稿 A 批 0b（`docs/10-active/cross-cutting/2026-11-18-npc-full-capability-coverage-decision.md` §4 A-5，T-A3）：词表从“候选名逐字”
-  改为“种类 + 可选对象”。`check/3` 的词表是 `%{种类 => %{显示名 => 对象}}`（S1-R8 的六个候选名各是静态种类，没有对象），
+  改为“种类 + 可选对象”。检查的词表是 `%{种类 => %{显示名 => 对象}}`（S1-R8 的六个候选名各是静态种类，没有对象），
   意图多一个可缺 / 可 null 的 `object`；`record_activity/4` 按 `{种类, 对象}` 记账；种类的来源 `Offers.plan_kinds/1` 也在这里测。
   不证明：规划提示词、写作调用、Life 的接线与持久化（`npc_life_day_plan_round_test`、`npc_life_day_plan_integration_test`）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
-  alias NpcServer.Life.DayPlan
+  alias NpcServer.Life.{DayPlan, Tasks}
 
   @fixtures Path.expand("../support/fixtures/day_plan", __DIR__)
+  @no_tasks %{"open" => [], "drop" => []}
 
   defp sample(name),
     do: Path.join(@fixtures, "s1r8-#{name}.json") |> File.read!() |> Jason.decode!()
@@ -23,17 +27,35 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   # 词表（稿 A 批 0b）：`%{种类 => %{显示名 => 对象}}`。S1-R8 的六个候选名各是一个静态种类（没有对象可选）。
   defp vocabulary(names), do: Map.new(names, &{&1, %{}})
 
+  # 规划应答的检查只有回顾的唯一校验点（没有开着的任务）。
+  defp check(text, vocabulary, now_minute),
+    do: Tasks.check(text, vocabulary, {:review, now_minute, []})
+
+  # S1-R8 的真实正文补一个空的 `tasks`。
+  defp review_text(text),
+    do:
+      text
+      |> Jason.decode!()
+      |> Map.put("tasks", %{"open" => [], "drop" => []})
+      |> Jason.encode!()
+
   defp check_sample(name, now_minute \\ nil) do
     s = sample(name)
-    DayPlan.check(s["text"], vocabulary(s["activity_names"]), now_minute || s["now_minute"])
+    check(review_text(s["text"]), vocabulary(s["activity_names"]), now_minute || s["now_minute"])
   end
 
-  # 对真实正文做变体：解码 → 改 → 编码，再按同一份词表与此刻检查（`vocab` 缺省是 S1-R8 的静态词表）。
+  # 对真实正文做变体：解码 → 补空的 `tasks` → 改 → 编码，再按同一份词表与此刻检查（`vocab` 缺省是 S1-R8 的静态词表）。
   defp check_variant(name, fun, now_minute \\ nil, vocab \\ nil) do
     s = sample(name)
-    text = s["text"] |> Jason.decode!() |> fun.() |> Jason.encode!()
 
-    DayPlan.check(
+    text =
+      s["text"]
+      |> Jason.decode!()
+      |> Map.put("tasks", %{"open" => [], "drop" => []})
+      |> fun.()
+      |> Jason.encode!()
+
+    check(
       text,
       vocab || vocabulary(s["activity_names"]),
       now_minute || s["now_minute"]
@@ -52,7 +74,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
     String.to_integer(h) * 60 + String.to_integer(m)
   end
 
-  describe "check/3：S1-R8 的真实应答" do
+  describe "回顾检查（意图与 cannot_yet）：S1-R8 的真实应答" do
     test "整份合格的真实应答：意图与想做而写不出的事数量、by 换成日内分钟，与 S1-R8 记的一致" do
       for name <- ["R3-r1", "R2-r1", "R5-r1"] do
         s = sample(name)
@@ -113,12 +135,14 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       s = sample("R3-r1")
       expected = check_sample("R3-r1")
 
+      text = review_text(s["text"])
+
       for wrapped <- [
-            "```json\n" <> s["text"] <> "\n```",
-            "```\n" <> s["text"] <> "\n```",
-            "\n  ```json\n" <> s["text"] <> "\n```  \n"
+            "```json\n" <> text <> "\n```",
+            "```\n" <> text <> "\n```",
+            "\n  ```json\n" <> text <> "\n```  \n"
           ] do
-        assert DayPlan.check(wrapped, vocabulary(s["activity_names"]), s["now_minute"]) ==
+        assert check(wrapped, vocabulary(s["activity_names"]), s["now_minute"]) ==
                  expected
       end
     end
@@ -127,32 +151,33 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       s = sample("R3-r1")
       names = vocabulary(s["activity_names"])
       now = s["now_minute"]
-      fenced = "```json\n" <> s["text"] <> "\n```"
+      text = review_text(s["text"])
+      fenced = "```json\n" <> text <> "\n```"
 
-      assert DayPlan.check("Here is my plan:\n" <> fenced, names, now) == {:error, :not_json}
-      assert DayPlan.check(fenced <> "\nThat is all.", names, now) == {:error, :not_json}
-      assert DayPlan.check(fenced <> "\n" <> fenced, names, now) == {:error, :not_json}
-      assert DayPlan.check("```json\n" <> s["text"], names, now) == {:error, :not_json}
+      assert check("Here is my plan:\n" <> fenced, names, now) == {:error, :not_json}
+      assert check(fenced <> "\nThat is all.", names, now) == {:error, :not_json}
+      assert check(fenced <> "\n" <> fenced, names, now) == {:error, :not_json}
+      assert check("```json\n" <> text, names, now) == {:error, :not_json}
     end
   end
 
-  describe "check/3：对真实正文做变体得到的失败原因" do
+  describe "回顾检查（意图与 cannot_yet）：对真实正文做变体得到的失败原因" do
     test "不是 JSON：把正文截掉后半 → :not_json；正文前加一句话 → :not_json" do
       s = sample("R3-r1")
       names = vocabulary(s["activity_names"])
       now = s["now_minute"]
       half = binary_part(s["text"], 0, div(byte_size(s["text"]), 2))
 
-      assert DayPlan.check(half, names, now) == {:error, :not_json}
-      assert DayPlan.check("My plan: " <> s["text"], names, now) == {:error, :not_json}
-      assert DayPlan.check("", names, now) == {:error, :not_json}
+      assert check(half, names, now) == {:error, :not_json}
+      assert check("My plan: " <> s["text"], names, now) == {:error, :not_json}
+      assert check("", names, now) == {:error, :not_json}
     end
 
     test "是 JSON 但不是对象：把正文里的 intents 列表单独当整段 → :not_object" do
       s = sample("R3-r1")
       list = s["text"] |> Jason.decode!() |> Map.fetch!("intents") |> Jason.encode!()
 
-      assert DayPlan.check(list, vocabulary(s["activity_names"]), s["now_minute"]) ==
+      assert check(list, vocabulary(s["activity_names"]), s["now_minute"]) ==
                {:error, :not_object}
     end
 
@@ -302,7 +327,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
     test "意图与想做的事都为空列表：合格（两张表都可以空）" do
       assert check_variant("R3-r1", &%{&1 | "intents" => [], "cannot_yet" => []}) ==
-               {:ok, %{intents: [], wants: []}}
+               {:ok, %{intents: [], wants: [], tasks: %{open: [], drop: []}}}
     end
   end
 
@@ -349,22 +374,23 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   end
 
   describe "admit/3：当日规划调用额度" do
-    test "一个游戏日 5 次（规划加重排共计）：前 5 次记数通过，第 6 次 {:error, :day_budget_exhausted} 且行不变" do
+    # 任务层 T-1a（K-5）：日计划退化为每日回顾，当日额度 5 → 2（1 次日界 + 1 次事件）。
+    test "一个游戏日 2 次（回顾加事件重排共计）：前 2 次记数通过，第 3 次 {:error, :day_budget_exhausted} 且行不变" do
       plan =
-        Enum.reduce(1..5, DayPlan.new(), fn n, plan ->
+        Enum.reduce(1..2, DayPlan.new(), fn n, plan ->
           assert {:ok, plan} = DayPlan.admit(plan, 7, n)
           assert plan["calls"] == %{"day" => 7, "n" => n}
           plan
         end)
 
-      assert DayPlan.admit(plan, 7, 6) == {:error, :day_budget_exhausted}
-      assert plan["calls"] == %{"day" => 7, "n" => 5}
+      assert DayPlan.admit(plan, 7, 3) == {:error, :day_budget_exhausted}
+      assert plan["calls"] == %{"day" => 7, "n" => 2}
     end
 
     test "跨日清零：第二天从 1 起算；调用数只增不因采用计划而变" do
       {:ok, plan} = DayPlan.admit(DayPlan.new(), 7, 0)
-      plan = Enum.reduce(1..4, plan, fn n, plan -> elem(DayPlan.admit(plan, 7, n), 1) end)
-      assert DayPlan.admit(plan, 7, 5) == {:error, :day_budget_exhausted}
+      {:ok, plan} = DayPlan.admit(plan, 7, 1)
+      assert DayPlan.admit(plan, 7, 2) == {:error, :day_budget_exhausted}
 
       assert {:ok, next} = DayPlan.admit(plan, 8, 6)
       assert next["calls"] == %{"day" => 8, "n" => 1}
@@ -732,13 +758,14 @@ defmodule NpcServer.NpcLifeDayPlanTest do
       assert json(refunded) == refunded
 
       # 退回后额度按退回后的数算：S1-R10 那样一半调用没问到模型，当日照样还剩额度。
+      # 当日 2 次的额度下起了 3 次，前两次都退回：还剩一次。
       exhausted =
-        Enum.reduce(1..5, DayPlan.new(), fn n, plan ->
+        Enum.reduce(1..3, DayPlan.new(), fn n, plan ->
           {:ok, plan} = DayPlan.admit(plan, 4, n)
-          if rem(n, 2) == 0, do: DayPlan.refund(plan), else: plan
+          if n < 3, do: DayPlan.refund(plan), else: plan
         end)
 
-      assert exhausted["calls"] == %{"day" => 4, "n" => 3}
+      assert exhausted["calls"] == %{"day" => 4, "n" => 1}
       assert {:ok, _} = DayPlan.admit(exhausted, 4, 6)
     end
 
@@ -845,7 +872,7 @@ defmodule NpcServer.NpcLifeDayPlanTest do
   defp check_speaking(fields),
     do: check_variant("R3-r1", first_intent(fields), nil, speaking_vocabulary())
 
-  describe "check/3：种类 + 可选对象" do
+  describe "回顾检查（意图与 cannot_yet）：种类 + 可选对象" do
     test "说话种类点名词表里的一人：object 换成该人的对象（%{\"actor\" => cid}），过 JSON 不变形" do
       assert {:ok, %{intents: [first | _]} = checked} =
                check_speaking(%{"activity" => "speak_to", "object" => @tobin_name})
@@ -1099,13 +1126,14 @@ defmodule NpcServer.NpcLifeDayPlanTest do
 
       eat = %{"activity" => "eat", "times" => 1, "by" => "23:00", "why" => "I am hungry."}
 
-      assert DayPlan.check(
-               Jason.encode!(%{"intents" => [eat], "cannot_yet" => []}),
+      assert check(
+               Jason.encode!(%{"intents" => [eat], "cannot_yet" => [], "tasks" => @no_tasks}),
                vocabulary,
                600
              ) ==
                {:ok,
                 %{
+                  tasks: %{open: [], drop: []},
                   intents: [
                     %{
                       "activity" => "eat",
@@ -1122,15 +1150,20 @@ defmodule NpcServer.NpcLifeDayPlanTest do
         text =
           Jason.encode!(%{
             "intents" => [%{eat | "activity" => kind} |> Map.put("object", "x")],
-            "cannot_yet" => []
+            "cannot_yet" => [],
+            "tasks" => @no_tasks
           })
 
-        assert DayPlan.check(text, vocabulary, 600) == {:error, {:unknown_object, kind, "x"}}
+        assert check(text, vocabulary, 600) == {:error, {:unknown_object, kind, "x"}}
       end
 
       # 吃完一份（经历给出的种类 eat、对象是材料号）：记到没点名的 eat 意图上；合成不算进食。
       {:ok, checked} =
-        DayPlan.check(Jason.encode!(%{"intents" => [eat], "cannot_yet" => []}), vocabulary, 600)
+        check(
+          Jason.encode!(%{"intents" => [eat], "cannot_yet" => [], "tasks" => @no_tasks}),
+          vocabulary,
+          600
+        )
 
       plan = DayPlan.adopt(DayPlan.new(), 4, 600, checked, :day, 0)
       crafted = DayPlan.record_activity(plan, {"craft", %{"material" => 41}}, 4, 700)

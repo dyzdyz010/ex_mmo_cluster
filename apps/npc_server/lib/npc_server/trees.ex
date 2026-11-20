@@ -29,7 +29,7 @@ defmodule NpcServer.Trees do
   | 规则 | 内容 |
   |---|---|
   | 次数上限 | 每次尝试最多 gather 一次、build 重试一次；每工地每轮最多两次尝试（树结构保证，无循环） |
-  | 瞬态原因 | `invalid_session` / `dead` / `session_lost`（`Brain.Tree.transient/0`）与 `world_timeout`：工地内任一步遇到，60 tick（1 秒）后从站位整体重来一次——复活与重新 claim 后身体在出生点、World 只慢了一下，缺额由 `query_balances` 重算，不原样重发旧命令；再遇瞬态原因本工地本轮放弃。只有 `read_catalog`（只读、与位置无关）带 `retry: 60` 原样重发。**`world_timeout` 只进这里的工地整体重来，不进 `Brain.Tree.transient/0`**：那一条驱动 `act retry:` 的原样重发，而超时的写意图可能已经提交（见 `NpcServer.Body.session_call/4`） |
+  | 瞬态原因 | `invalid_session` / `dead` / `session_lost`（`Brain.Tree.transient/0`）与 `world_timeout`（合起来是 `transient_reasons/0`，唯一定义）：工地内任一步遇到，60 tick（1 秒）后从站位整体重来一次——复活与重新 claim 后身体在出生点、World 只慢了一下，缺额由 `query_balances` 重算，不原样重发旧命令；再遇瞬态原因本工地本轮放弃。只有 `read_catalog`（只读、与位置无关）带 `retry: 60` 原样重发。**`world_timeout` 只进这里的工地整体重来，不进 `Brain.Tree.transient/0`**：那一条驱动 `act retry:` 的原样重发，而超时的写意图可能已经提交（见 `NpcServer.Body.session_call/4`） |
   | 停因日志 | 工地放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`；材料单取不到（`definition_not_found`）本轮放弃，记 `npc_settler_idle entity= act=read_catalog reason=…`，休息后再试 |
   | 进度 | 不存档，以权威为准：重启后从头巡，已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建 |
   | 扩张出来的工地 | 只在黑板里，不存档：重启后只剩作者工地。扩张从世界现状继续（已建的地块因间隔带里有放置记录不再是候选），代价只是重启前扩张出来的建筑不再被维护；它们被拆后地块空出来，又会被扩张在网格上的原位置重建。不写进记忆：记忆将来换成独立系统，现在不依赖它（放置阶段决策稿 §7） |
@@ -44,6 +44,14 @@ defmodule NpcServer.Trees do
   @pause 60
   # 选择发问失败后隔多久再问（tick，60 Hz）：10 秒，与 Runtime 的技能检查节拍同量级，不追着接口重试。
   @retry 600
+
+  @doc """
+  瞬态失败原因的唯一定义：`NpcServer.Brain.Tree.transient/0`（命令没被执行、或角色暂时不能行动）再加 `:world_timeout`。
+  Settler 工地遇到它们整体重来一次（moduledoc 的“瞬态原因”一行）；任务层的 K-3 分类（`NpcServer.Life.Tasks.record_step/4`）按同一口径
+  判“同一步第 1 次瞬态失败不推进”。`world_timeout` 不进 `Brain.Tree.transient/0`：那一条驱动 `act retry:` 原样重发，而超时的
+  写意图可能已经提交。
+  """
+  def transient_reasons, do: NpcServer.Brain.Tree.transient() ++ [:world_timeout]
 
   @doc "Settler 树与黑板初值（`definition`、`sites`、`quarries`、`expansion`）；形状见 moduledoc。"
   def settler(profile) do
@@ -264,7 +272,7 @@ defmodule NpcServer.Trees do
     do: match?(%{last_failure: %{reason: ^reason}}, blackboard)
 
   defp transient?(%{last_failure: %{reason: reason}}, _observation),
-    do: reason in NpcServer.Brain.Tree.transient() or reason == :world_timeout
+    do: reason in transient_reasons()
 
   defp shortage?(blackboard, _observation), do: shortage(blackboard) != nil
 

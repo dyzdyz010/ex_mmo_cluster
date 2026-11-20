@@ -6,7 +6,11 @@ defmodule NpcServer.NpcLifeTasksTest do
 
   反例取自矩阵 K-1 的清单：多键 / 缺键、未知种类、对象不在词表、`continue` 无步骤、`done` 带步骤、步骤 > 3、开任务超上限；
   另证明单条种类与对象的核对复用 `DayPlan` 的同一函数（错误原因与日计划意图的相同）。
-  期望是按契约手写的小例。不证明：提示词（`npc_life_tasks_prompt_test`）、Life 接线与持久化（T-1）。
+  T-1a 起另测纯核心的其余部分（矩阵 K-2）：持久行初值、采用回顾的 `tasks`、步骤记账只动当头步与 K-3 分类表的每一行
+  （含反例：被打断不计失败、瞬态失败第 1 次不推进、碰巧同种类同对象的活动也记账）、两行新信息、到期与停滞、给 Mind 的栏。
+
+  期望是按契约手写的小例。不证明：提示词（`npc_life_tasks_prompt_test`）、Life 接线与持久化（`npc_life_tasks_integration_test`）、
+  推进的额度与采用（T-1b）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -256,5 +260,357 @@ defmodule NpcServer.NpcLifeTasksTest do
       assert {:error, {:too_many_open, 4}} =
                review(review_answer(%{"open" => two, "drop" => ["t3:1", "t3:1"]}), open)
     end
+  end
+
+  # —— T-1a：持久行、采用回顾、步骤记账与 K-3 分类、新信息、到期 / 停滞、给 Mind 的栏（决策稿 K-1、K-3、K-5，§5 K-2）——
+  # 输入是 `check/3` 合格后的形状（步骤 `%{"kind", "object", "why"}`）与 `Selector.experience/1` 交出的种类、对象、结局。
+
+  defp checked_step(kind, object \\ nil),
+    do: %{"kind" => kind, "object" => object, "why" => "I need to."}
+
+  defp rebuild,
+    do: %{
+      "goal" => "Rebuild my hut",
+      "why" => "It is gone.",
+      "steps" => [checked_step("gather_stone"), checked_step("build_hut")]
+    }
+
+  defp ask,
+    do: %{
+      "goal" => "Ask Corvin why",
+      "why" => "I want to know.",
+      "steps" => [checked_step("confront_wrecker"), checked_step("speak_to", %{"actor" => 1})]
+    }
+
+  # 回顾在第 1418 日、时刻 1000 开出的两个任务：t1418:1 重建、t1418:2 问 Corvin。
+  defp opened_tasks(opened \\ [rebuild(), ask()]) do
+    {tasks, _episodes} = Tasks.review(Tasks.new(), %{open: opened, drop: []}, 1418, 1_000)
+    tasks
+  end
+
+  defp task(tasks, id), do: Enum.find(tasks["open"], &(&1["id"] == id))
+  defp step!(tasks, done, outcome, at_ms), do: Tasks.record_step(tasks, done, outcome, at_ms)
+  defp json(term), do: term |> Jason.encode!() |> Jason.decode!()
+
+  describe "new/0 与 review/4（回顾采用 tasks）" do
+    test "持久行初值：没有任务、调用数为 0、各计数为 0" do
+      assert Tasks.new() == %{
+               "open" => [],
+               "closed" => [],
+               "calls" => %{"day" => nil, "n" => 0},
+               "last_at_ms" => nil,
+               "counts" =>
+                 Map.new(
+                   ~w(opened advanced done dropped expired stuck rejected failed),
+                   &{&1, 0}
+                 )
+             }
+    end
+
+    test "开两个任务：id 按开过的总数排、两个游戏日后到期、当头步从此刻计时；各写一句开任务的经历，带任务里的人" do
+      {tasks, episodes} =
+        Tasks.review(Tasks.new(), %{open: [rebuild(), ask()], drop: []}, 1418, 1_000)
+
+      assert [first, second] = tasks["open"]
+
+      assert first == %{
+               "id" => "t1418:1",
+               "goal" => "Rebuild my hut",
+               "why" => "It is gone.",
+               "opened_day" => 1418,
+               "expires_day" => 1420,
+               "steps" => rebuild()["steps"],
+               "log" => [],
+               "waiting" => nil,
+               "head_since_ms" => 1_000,
+               "head_failures" => 0,
+               "rejected_in_row" => 0,
+               "completed" => 0,
+               "note" => nil
+             }
+
+      assert second["id"] == "t1418:2"
+      assert tasks["counts"]["opened"] == 2
+      assert json(tasks) == tasks
+
+      assert episodes == [
+               %{
+                 "id" => "task:t1418:1:opened",
+                 "at_ms" => 1_000,
+                 "text" => ~s|I set myself a task: "Rebuild my hut".|,
+                 "tags" => ["kind:task"]
+               },
+               %{
+                 "id" => "task:t1418:2:opened",
+                 "at_ms" => 1_000,
+                 "text" => ~s|I set myself a task: "Ask Corvin why".|,
+                 "tags" => ["kind:task", "actor:1"]
+               }
+             ]
+    end
+
+    test "弃：按 id 关为 dropped、进最近关掉的小结、写一句经历；新开的 id 接着开过的总数，不与已关的重" do
+      {tasks, episodes} =
+        Tasks.review(opened_tasks(), %{open: [rebuild()], drop: ["t1418:1"]}, 1419, 2_000)
+
+      assert Enum.map(tasks["open"], & &1["id"]) == ["t1418:2", "t1419:3"]
+
+      assert tasks["closed"] == [
+               %{
+                 "id" => "t1418:1",
+                 "goal" => "Rebuild my hut",
+                 "result" => "dropped",
+                 "note" => nil,
+                 "closed_day" => 1419,
+                 "completed" => 0
+               }
+             ]
+
+      assert tasks["counts"]["dropped"] == 1
+
+      assert [
+               %{
+                 "id" => "task:t1418:1:dropped",
+                 "text" => ~s|I gave up my task "Rebuild my hut".|
+               },
+               _
+             ] =
+               episodes
+    end
+
+    # 评审反例：回顾在途时，它要弃的任务已被 tick 到期关掉（校验时开着，落栏时不在了）。弃这一项跳过，不再写“弃”的经历与计数。
+    test "要弃的任务落栏时已不在 open（回顾在途时到期关掉）：跳过，只开新的" do
+      {tasks, _} = Tasks.review(Tasks.new(), %{open: [rebuild()], drop: []}, 10, 1_000)
+      {expired, [_]} = Tasks.tick(tasks, 13, 2_000)
+
+      {reviewed, episodes} =
+        Tasks.review(expired, %{open: [ask()], drop: ["t10:1"]}, 13, 3_000)
+
+      assert Enum.map(reviewed["open"], & &1["id"]) == ["t13:2"]
+      assert reviewed["closed"] == expired["closed"]
+      assert reviewed["counts"]["dropped"] == 0 and reviewed["counts"]["expired"] == 1
+      assert [%{"id" => "task:t13:2:opened"}] = episodes
+    end
+
+    test "最近关掉的只留 5 条（新的在后）" do
+      tasks =
+        Enum.reduce(1..6, Tasks.new(), fn n, tasks ->
+          {tasks, _} = Tasks.review(tasks, %{open: [rebuild()], drop: []}, n, n)
+          [%{"id" => id}] = tasks["open"]
+          {tasks, _} = Tasks.review(tasks, %{open: [], drop: [id]}, n, n)
+          tasks
+        end)
+
+      assert Enum.map(tasks["closed"], & &1["id"]) == ~w(t2:2 t3:3 t4:4 t5:5 t6:6)
+    end
+  end
+
+  describe "record_step/4（K-2 只记当头步；K-3 分类）" do
+    test "当头步完成、后面还有步：前移，完成数加一，当头步从此刻计时，不待推进；log 记当头步的种类与对象" do
+      tasks = step!(opened_tasks(), {"gather_stone", nil}, :completed, 2_000)
+      task = task(tasks, "t1418:1")
+
+      assert task["steps"] == [checked_step("build_hut")]
+      assert task["completed"] == 1
+      assert task["head_since_ms"] == 2_000
+      assert task["waiting"] == nil
+
+      assert task["log"] == [
+               %{
+                 "kind" => "gather_stone",
+                 "object" => nil,
+                 "outcome" => "completed",
+                 "act" => nil,
+                 "reason" => nil,
+                 "at_ms" => 2_000
+               }
+             ]
+
+      assert task(tasks, "t1418:2") == task(opened_tasks(), "t1418:2")
+    end
+
+    test "完成最后一步：步骤用完，待推进 steps_done" do
+      tasks =
+        opened_tasks()
+        |> step!({"gather_stone", nil}, :completed, 2_000)
+        |> step!({"build_hut", nil}, :completed, 3_000)
+
+      assert %{"steps" => [], "completed" => 2, "waiting" => "steps_done"} =
+               task(tasks, "t1418:1")
+    end
+
+    test "非瞬态失败：偏差，待推进 failed，步骤留着，log 带动作与原因" do
+      tasks =
+        step!(opened_tasks(), {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+
+      task = task(tasks, "t1418:1")
+
+      assert task["waiting"] == "failed"
+      assert task["head_failures"] == 1
+      assert task["steps"] == rebuild()["steps"]
+
+      assert [%{"outcome" => "failed", "act" => "gather", "reason" => "exhausted"}] =
+               task["log"]
+    end
+
+    test "瞬态失败（Trees.transient_reasons/0）：第 1 次不推进，同一步连续第 2 次才偏差；world_timeout 也是瞬态" do
+      assert NpcServer.Trees.transient_reasons() ==
+               [:invalid_session, :dead, :session_lost, :world_timeout]
+
+      once =
+        step!(opened_tasks(), {"gather_stone", nil}, {:failed, "travel", "session_lost"}, 2_000)
+
+      assert %{"waiting" => nil, "head_failures" => 1, "head_since_ms" => 2_000} =
+               task(once, "t1418:1")
+
+      twice = step!(once, {"gather_stone", nil}, {:failed, "gather", "world_timeout"}, 3_000)
+      assert %{"waiting" => "failed", "head_failures" => 2} = task(twice, "t1418:1")
+    end
+
+    # 评审修正：偏差（failed / stalled）由当头步成功前移化解，清掉；新信息（heard / event）不是步骤化解得了的，留着。
+    test "当头步失败或停滞之后再成功前移：清掉 failed / stalled；heard / event 留着" do
+      failed =
+        opened_tasks()
+        |> step!({"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+        |> step!({"gather_stone", nil}, :completed, 3_000)
+
+      assert %{"waiting" => nil, "head_failures" => 0, "completed" => 1} =
+               task(failed, "t1418:1")
+
+      {stalled, []} = Tasks.tick(opened_tasks(), 1418, 1_000 + 900_000)
+      assert task(stalled, "t1418:1")["waiting"] == "stalled"
+      moved = step!(stalled, {"gather_stone", nil}, :completed, 1_000 + 900_001)
+      assert task(moved, "t1418:1")["waiting"] == nil
+
+      for reason <- ["heard", "event"] do
+        noted = Tasks.note_news(opened_tasks(), 1, reason)
+        moved = step!(noted, {"confront_wrecker", nil}, :completed, 2_000)
+        assert %{"waiting" => ^reason, "completed" => 1} = task(moved, "t1418:2")
+      end
+    end
+
+    test "被打断：不算失败，只记 log，当头步从此刻计时" do
+      tasks =
+        step!(opened_tasks(), {"gather_stone", nil}, {:interrupted, "to talk with Brann"}, 2_000)
+
+      assert %{"waiting" => nil, "head_failures" => 0, "head_since_ms" => 2_000, "steps" => steps} =
+               task(tasks, "t1418:1")
+
+      assert steps == rebuild()["steps"]
+
+      assert [%{"outcome" => "interrupted", "act" => nil, "reason" => "to talk with Brann"}] =
+               task(tasks, "t1418:1")["log"]
+    end
+
+    test "两个任务当头步相同：只记最早开的那个" do
+      tasks = opened_tasks([rebuild(), %{rebuild() | "goal" => "Stock up stone"}])
+      tasks = step!(tasks, {"gather_stone", nil}, :completed, 2_000)
+
+      assert task(tasks, "t1418:1")["completed"] == 1
+      assert task(tasks, "t1418:2")["completed"] == 0
+    end
+
+    test "点名优先，再没点名的：当头步恰为这个人的先记；没点名的当头步对谁都成立（碰巧同种类也记账），log 记当头步" do
+      anyone = %{ask() | "goal" => "Talk to someone", "steps" => [checked_step("speak_to")]}
+      corvin = %{ask() | "steps" => [checked_step("speak_to", %{"actor" => 1})]}
+      tasks = opened_tasks([anyone, corvin])
+
+      named = step!(tasks, {"speak_to", %{"actor" => 1}}, :completed, 2_000)
+      assert task(named, "t1418:1")["completed"] == 0
+      assert task(named, "t1418:2")["completed"] == 1
+
+      other = step!(tasks, {"speak_to", %{"actor" => 9}}, :completed, 2_000)
+      assert task(other, "t1418:1")["completed"] == 1
+      assert [%{"object" => nil}] = task(other, "t1418:1")["log"]
+    end
+
+    test "不是当头步（第二步、别的种类）：原样返回" do
+      tasks = opened_tasks()
+      assert step!(tasks, {"build_hut", nil}, :completed, 2_000) == tasks
+      assert step!(tasks, {"visit_plaza", nil}, {:failed, "travel", "no_path"}, 2_000) == tasks
+    end
+
+    test "log 只留最近 6 条" do
+      tasks =
+        Enum.reduce(1..8, opened_tasks(), fn n, tasks ->
+          step!(tasks, {"gather_stone", nil}, {:interrupted, "to talk"}, n)
+        end)
+
+      assert Enum.map(task(tasks, "t1418:1")["log"], & &1["at_ms"]) == [3, 4, 5, 6, 7, 8]
+    end
+  end
+
+  describe "people/1 与 note_news/3（K-3 的两行新信息）" do
+    test "任务里的人：待做步骤与 log 里点名过的（去重）" do
+      tasks = opened_tasks()
+      assert Tasks.people(task(tasks, "t1418:1")) == []
+      assert Tasks.people(task(tasks, "t1418:2")) == [1]
+
+      done =
+        tasks
+        |> step!({"confront_wrecker", nil}, :completed, 2_000)
+        |> step!({"speak_to", %{"actor" => 1}}, :completed, 3_000)
+
+      assert task(done, "t1418:2")["steps"] == []
+      assert Tasks.people(task(done, "t1418:2")) == [1]
+    end
+
+    test "人落在任务里：待推进 heard / event；不在任何任务里：原样；已在等的不改原因" do
+      tasks = opened_tasks()
+      heard = Tasks.note_news(tasks, 1, "heard")
+
+      assert task(heard, "t1418:2")["waiting"] == "heard"
+      assert task(heard, "t1418:1")["waiting"] == nil
+      assert Tasks.note_news(tasks, 99, "event") == tasks
+      assert task(Tasks.note_news(heard, 1, "event"), "t1418:2")["waiting"] == "heard"
+    end
+  end
+
+  describe "tick/3（到期、停滞）" do
+    test "到期日当天还开着，过了到期日关为 expired（不问模型），各写一句经历" do
+      tasks = opened_tasks()
+      assert Tasks.tick(tasks, 1420, 1_000) == {tasks, []}
+
+      {expired, episodes} = Tasks.tick(tasks, 1421, 5_000)
+      assert expired["open"] == []
+
+      assert Enum.map(expired["closed"], &{&1["id"], &1["result"]}) ==
+               [{"t1418:1", "expired"}, {"t1418:2", "expired"}]
+
+      assert expired["counts"]["expired"] == 2
+
+      assert [
+               %{
+                 "id" => "task:t1418:1:expired",
+                 "at_ms" => 5_000,
+                 "text" => ~s|I did not finish my task "Rebuild my hut" in time, so I let it go.|,
+                 "tags" => ["kind:task"]
+               },
+               %{"tags" => ["kind:task", "actor:1"]}
+             ] = episodes
+    end
+
+    test "当头步满 6 游戏小时（游戏钟 ×24：现实 900 秒）没被做：待推进 stalled；差 1 毫秒不算；已在等的不改" do
+      tasks = Tasks.note_news(opened_tasks(), 1, "heard")
+      assert Tasks.tick(tasks, 1418, 1_000 + 899_999) == {tasks, []}
+
+      {stalled, []} = Tasks.tick(tasks, 1418, 1_000 + 900_000)
+      assert task(stalled, "t1418:1")["waiting"] == "stalled"
+      assert task(stalled, "t1418:2")["waiting"] == "heard"
+    end
+  end
+
+  test "column/1：给 Mind 的每个开着的任务——目标、当头步（没有为 nil）、完成的步数" do
+    tasks =
+      opened_tasks()
+      |> step!({"gather_stone", nil}, :completed, 2_000)
+      |> step!({"build_hut", nil}, :completed, 3_000)
+
+    assert Tasks.column(tasks) == [
+             %{goal: "Rebuild my hut", next: nil, completed: 2},
+             %{goal: "Ask Corvin why", next: checked_step("confront_wrecker"), completed: 0}
+           ]
+
+    assert Tasks.column(Tasks.new()) == []
   end
 end

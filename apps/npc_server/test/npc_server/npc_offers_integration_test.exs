@@ -174,7 +174,8 @@ defmodule NpcServer.NpcOffersIntegrationTest do
 
     plan =
       ~s|{"intents": [{"activity": "eat", "times": 1, "by": "23:59", | <>
-        ~s|"why": "I should eat again before the day is out."}], "cannot_yet": []}|
+        ~s|"why": "I should eat again before the day is out."}], "cannot_yet": [], | <>
+        ~s|"tasks": {"open": [], "drop": []}}|
 
     send(writer, {:reply, {:ok, %{text: plan, usage: %{}}}})
 

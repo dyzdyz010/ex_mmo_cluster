@@ -2031,7 +2031,8 @@ What just happened: Nothing new.
           recall_ms: 0,
           buildings: [],
           thought: nil,
-          plan: nil
+          plan: nil,
+          tasks: []
         }
 
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))

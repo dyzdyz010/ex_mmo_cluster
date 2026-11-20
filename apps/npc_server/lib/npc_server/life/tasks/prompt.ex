@@ -2,8 +2,9 @@ defmodule NpcServer.Life.Tasks.Prompt do
   @moduledoc """
   任务推进调用的提示词拼装（任务层决策稿 `docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md` §4 K-4；纯函数，不做 I/O）。
 
-  **还没接线**：推进槽、取材与写作是 T-1 的 `Life.Tasks.Round`；现在只有 K-0 离线测量
-  （`.demo/observe/npc-task-k0-20261119/`）用它渲染请求。措辞全部是**原创取值**，K-0 之后按读数再调。
+  推进的系统提示词与用户消息（`system_prompt/2`、`user_message/4`）：推进槽、取材与写作是 T-1b 的 `Life.Tasks.Round`，现在只有
+  K-0 离线测量（`.demo/observe/npc-task-k0-20261119/`）用它渲染请求。每日回顾用户消息里“开着的任务”“最近关掉的任务”两块的各行
+  （`review_open_lines/2`、`review_closed_lines/1`，T-1a 起由 Life 起回顾槽时调）。措辞全部是**原创取值**，按实跑读数再调。
 
   ## 系统提示词
 
@@ -33,8 +34,17 @@ defmodule NpcServer.Life.Tasks.Prompt do
         "log" => [%{"kind", "object", "outcome" => "completed" | "failed" | "interrupted", "act", "reason"}],
         "waiting" => "failed" | "steps_done" | "stalled"}
 
-  `waiting` 是 K-3 判出的“为什么现在问”：`failed`（当头步失败，偏差；细节在 `log` 末条）、`steps_done`（步骤用完）、
-  `stalled`（当头步长时间没被做）。K-3 的另两种新信息（对方对我说话、event 落在任务对象上）属 T-1，这里还没有写法。
+  `waiting` 是 K-3 判出的“为什么现在问”（`NpcServer.Life.Tasks.record_step/4`、`note_news/3`、`tick/3`）：`failed`（当头步失败，偏差；
+  细节在 `log` 末条）、`steps_done`（步骤用完）、`stalled`（当头步长时间没被做）、`heard`（任务里的人对我说话）、`event`（任务里的人
+  对我的东西做了什么，`kind:event`）。
+
+  ## 每日回顾的两块（各行带任务 id，模型写 `drop` 要用）
+
+      - <id>: <goal> — next: <当头步>; last step: <种类 对象>: <结局>      （开着的；没做过步骤时 `; nothing done yet`；
+                                                                         没有待做步骤时 `<goal> — no steps planned`）
+      - <id>: <goal> — finished | given up | ran out of time | set aside, stuck   （最近关掉的：done / dropped / expired / stuck）
+
+  块的标题与位置在 `NpcServer.Life.DayPlan.Prompt.user_message/2`。
   """
   alias NpcServer.Life.DayPlan.Prompt, as: PlanPrompt
   alias NpcServer.Life.Reflection
@@ -64,7 +74,17 @@ defmodule NpcServer.Life.Tasks.Prompt do
   @why_now %{
     "failed" => "My last step did not work out.",
     "steps_done" => "I have taken every step I planned for it.",
-    "stalled" => "For a long while I have not taken the next step."
+    "stalled" => "For a long while I have not taken the next step.",
+    "heard" => "Someone this task is about has spoken to me.",
+    "event" => "Someone this task is about has done something to what is mine."
+  }
+
+  # 关掉的任务怎样关的 → 回顾里一句（原创措辞）。
+  @closed_words %{
+    "done" => "finished",
+    "dropped" => "given up",
+    "expired" => "ran out of time",
+    "stuck" => "set aside, stuck"
   }
 
   @doc """
@@ -94,6 +114,33 @@ defmodule NpcServer.Life.Tasks.Prompt do
       "\n\n"
     )
   end
+
+  @doc """
+  每日回顾用户消息里“开着的任务”一块的各行（开的次序），每行带任务 id：`- <id>: <task_line>; last step: <种类 对象>: <结局>`，
+  没做过步骤时 `; nothing done yet`。当头步、结局的写法与推进同一套（`Mind.activity_label/3`、`Mind.result/1`）；
+  `names` 是 `%{cid => 名字}`（取自此刻观察）。没有开着的任务给 []。
+  """
+  def review_open_lines(open, names) do
+    for task <- open do
+      last =
+        case List.last(task["log"]) do
+          nil -> "nothing done yet"
+          entry -> "last step: #{label(entry, names)}: #{Mind.result(outcome(entry))}"
+        end
+
+      "- #{task["id"]}: #{task_line(task, names)}; #{last}"
+    end
+  end
+
+  @doc """
+  每日回顾用户消息里“最近关掉的任务”一块的各行（持久行 `closed` 的次序，旧在前）：`- <id>: <goal> — <怎样关的>`。
+  """
+  def review_closed_lines(closed),
+    do:
+      for(
+        task <- closed,
+        do: "- #{task["id"]}: #{task["goal"]} — #{@closed_words[task["result"]]}"
+      )
 
   # 一个开着的任务写成一行：`<goal> — next: <当头步>`；没有待做步骤时 `<goal> — no steps planned`。
   defp task_line(%{"goal" => goal, "steps" => [head | _]}, names),

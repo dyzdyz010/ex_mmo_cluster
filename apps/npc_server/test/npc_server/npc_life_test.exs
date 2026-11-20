@@ -608,6 +608,8 @@ defmodule NpcServer.NpcLifeTest do
       appraise: false,
       observation: nil,
       experience_pending: [],
+      # 产品 `init/1` 恒有这个键：本用例的 profile 不带写日记的接口（`reflect`），所以是 nil（不反思、不规划）。
+      journaling: nil,
       sight: Life.Sight.new(),
       # 花费额度开着（同不给 `spend` 时 Life 的缺省）：刷新义务照常。
       spend: fn -> :open end,

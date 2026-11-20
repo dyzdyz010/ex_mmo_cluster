@@ -20,7 +20,7 @@ defmodule NpcServer.NpcMindTest do
   """
   use ExUnit.Case, async: true
   alias NpcServer.{Mind, Persona, Selector}
-  alias NpcServer.Life.{DayPlan, State}
+  alias NpcServer.Life.{DayPlan, State, Tasks}
 
   defp profile do
     {:ok, card} = Persona.new(%{"traits" => %{"bold" => 8}, "personal" => "Keeps promises."})
@@ -76,7 +76,8 @@ defmodule NpcServer.NpcMindTest do
     recall_ms: 0,
     buildings: [],
     thought: nil,
-    plan: nil
+    plan: nil,
+    tasks: []
   }
 
   # 经历原文（Life 写成的形状，不带时刻）：一次破坏的标准句与一条带期间事实的活动经历。
@@ -138,8 +139,9 @@ defmodule NpcServer.NpcMindTest do
         ],
         # 没有反思写成的那一句：新栏整栏不出现，仍是七栏。
         thought: nil,
-        # 没有日计划：计划栏同样整栏不出现。
-        plan: nil
+        # 没有日计划、没有开着的任务：计划栏同样整栏不出现。
+        plan: nil,
+        tasks: []
       }
 
       history = [
@@ -233,13 +235,69 @@ defmodule NpcServer.NpcMindTest do
       vocabulary = Map.new(sample["activity_names"], &{&1, %{}})
 
       {:ok, checked} =
-        DayPlan.check(sample["text"], vocabulary, sample["now_minute"])
+        Tasks.check(review_text(sample["text"]), vocabulary, {:review, sample["now_minute"], []})
 
       {DayPlan.adopt(DayPlan.new(), @plan_day, sample["now_minute"], checked, :day, 0),
        sample["now_minute"]}
     end
 
     defp plan_column(life), do: Enum.at(Mind.snapshot(profile(), alone(), [], life), 5)
+
+    # 规划应答只经回顾的唯一校验点 `Tasks.check/3`；S1-R8 的真实正文没有 `tasks`（那时还没有任务层），补一个空的。
+    defp review_text(text),
+      do:
+        text
+        |> Jason.decode!()
+        |> Map.put("tasks", %{"open" => [], "drop" => []})
+        |> Jason.encode!()
+
+    # 任务层 T-1a（决策稿 K-6）：开着的任务各一行，在今天的意图之后、wants 之前；`Life.Tasks.column/1` 的形状
+    # （目标、当头步或 nil、完成的步数）。点名的人按此刻观察里的名字写；不写该选什么。
+    test "plans and promises: open tasks, one line each, after the intents and before the wants" do
+      {plan, now_minute} = adopted("R5-r1")
+
+      tasks = [
+        %{
+          goal: "Find out why Mara wrecked my wall",
+          next: %{"kind" => "speak_to", "object" => %{"actor" => 21}, "why" => "Ask her."},
+          completed: 1
+        },
+        %{goal: "Rebuild my hut", next: nil, completed: 2},
+        %{
+          goal: "Stock up stone",
+          next: %{"kind" => "gather_stone", "object" => nil, "why" => "x"},
+          completed: 0
+        }
+      ]
+
+      life = %{@empty | plan: DayPlan.column(plan, @plan_day, now_minute), tasks: tasks}
+
+      assert "guard_hut: 0 of 1 done, by 08:00\n" <>
+               "visit_plaza: 0 of 2 done, by 18:00\n" <>
+               "Task: Find out why Mara wrecked my wall — next: speak_to Mara (actor 21); done so far: 1 step\n" <>
+               "Task: Rebuild my hut — no steps planned; done so far: 2 steps\n" <>
+               "Task: Stock up stone — next: gather_stone; done so far: 0 steps\n" <>
+               "I would like to Find out from Corvin why they took my hut down and have words with them, " <>
+               "but I cannot do that yet\n" <>
+               "I would like to Ask Tobin why they asked whether the hut was mine, but I cannot do that yet" ==
+               section(life, 5, observation())
+    end
+
+    test "plans and promises: tasks alone make the column; without a plan or tasks the state is unchanged" do
+      tasks = [%{goal: "Rebuild my hut", next: nil, completed: 0}]
+
+      assert {"Plans and promises",
+              "Task: Rebuild my hut — no steps planned; done so far: 0 steps"} ==
+               plan_column(%{@empty | tasks: tasks})
+
+      assert Mind.snapshot(profile(), alone(), [], %{@empty | tasks: []}) ==
+               Mind.snapshot(profile(), alone(), [], @empty)
+
+      refute Enum.any?(
+               Mind.snapshot(profile(), alone(), [], @empty),
+               &(elem(&1, 0) == "Plans and promises")
+             )
+    end
 
     test "plans and promises: absent without a plan, so the state is byte-identical to before" do
       assert "Now: It is night, 21:25.\n" <>
@@ -336,8 +394,9 @@ defmodule NpcServer.NpcMindTest do
           ]
         end)
         |> Jason.encode!()
+        |> review_text()
 
-      {:ok, checked} = DayPlan.check(text, vocabulary, sample["now_minute"])
+      {:ok, checked} = Tasks.check(text, vocabulary, {:review, sample["now_minute"], []})
       plan = DayPlan.adopt(DayPlan.new(), @plan_day, sample["now_minute"], checked, :day, 0)
       life = %{@empty | plan: DayPlan.column(plan, @plan_day, sample["now_minute"])}
 

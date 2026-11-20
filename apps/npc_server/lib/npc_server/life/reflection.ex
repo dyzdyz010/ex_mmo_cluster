@@ -14,7 +14,7 @@ defmodule NpcServer.Life.Reflection do
   ## 计分与触发（`score/1`、`new_trigger/0`、`record/2`、`started/2`、`manual/2`）
 
   每条经历按 tags 给分：`kind:event`（别人打或毁了我放的东西）8、`kind:conversation` 5、`kind:sight` 3、
-  `kind:activity` 且带任一 `actor:`（期间有人进过 6 米）3、其余 `kind:activity` 1。
+  `kind:activity` 且带任一 `actor:`（期间有人进过 6 米）3、其余 `kind:activity` 1、`kind:task`（开 / 关任务的标准句，任务层 T-1a）1。
   触发条件两种：`kind:event` 的经历到来（立即触发）、累计分 ≥ 20。条件成立时距上一轮不足现实 5 分钟（按经历的 `"at_ms"`）
   就不触发、条件保留，到满 5 分钟后的第一条经历上触发。
 
@@ -61,6 +61,8 @@ defmodule NpcServer.Life.Reflection do
   @score_sight 3
   @score_activity_with_people 3
   @score_activity_alone 1
+  # 开 / 关任务的标准句经历（任务层 T-1a，`Life.Tasks`）：同独自的活动，原创取值——自己定的打算，不该自己催出一轮反思。
+  @score_task 1
   @trigger_score 20
   @min_gap_ms 5 * 60_000
 
@@ -104,8 +106,8 @@ defmodule NpcServer.Life.Reflection do
 
   @doc """
   一条经历的分值，按它的 tags（`kind:` 恰好一个）：`kind:event` 8、`kind:conversation` 5、`kind:sight` 3、
-  `kind:activity` 带任一 `actor:` 3、不带 1。`kind:` 不是恰好一个、或不在这四种里，直接崩：计分表只覆盖
-  Life 的四个经历入口，别的种类（例如反思自己的存档）进来是调用方的错误。
+  `kind:activity` 带任一 `actor:` 3、不带 1、`kind:task`（开 / 关任务的标准句，任务层 T-1a）1。`kind:` 不是恰好一个、或不在这五种里，
+  直接崩：计分表只覆盖 Life 的经历入口，别的种类（例如反思自己的存档）进来是调用方的错误。
   """
   def score(%{"tags" => tags}) do
     [kind] = for "kind:" <> kind <- tags, do: kind
@@ -122,6 +124,9 @@ defmodule NpcServer.Life.Reflection do
 
       "activity" ->
         if with_people?(tags), do: @score_activity_with_people, else: @score_activity_alone
+
+      "task" ->
+        @score_task
     end
   end
 

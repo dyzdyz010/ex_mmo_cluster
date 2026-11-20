@@ -1,4 +1,5 @@
 # S1-R9 栏文本生成：对 S1-R8 里过了产品检查的 23 份真实规划应答，走产品路径生成 `Plans and promises` 栏。
+# 注（任务层 T-1a，2026-11-19）：依赖已删除的 `DayPlan.check/3`，重跑需检出当时版本。
 #
 # 是什么
 #   规格：.demo/observe/npc-slice1-20261112/s1r9/plan.md（唯一规格）、exec-brief.md。对每个样本：

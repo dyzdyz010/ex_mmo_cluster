@@ -999,8 +999,8 @@ flowchart LR
 种类取 `Offers.plan_kinds/1`（按生成器次序）——登记的每个 `activities` 项是一个静态种类（种类名就是候选名，没有对象；对人的登记项例外：种类名是登记名、对象是人、可点名，同说话），配了说话（统一形态总配）再加 `speak_to`，
 再是进食 `eat` 与合成 `craft`（批 1，每个带候选表的形态都有；判据 `Eat one serving of something edible from my inventory.` /
 `Craft something from materials in my inventory.` 是原创措辞；对象是材料但计划里不可点名，吃哪种都记到没点名的 eat 意图上）。
-说话的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），
-系统提示词里这一行在判据后接 `Optionally add "object": exactly one of "<显示名>", ….`（静态种类各行与 S1-R8 逐字节相同；这句措辞是原创、没测过）。
+说话的对象是人：Life 起规划槽时把“关系里的人 ∪ 此刻观察里的他人 ∪ 开着的任务里点名过的人（`Tasks.people/1`，T-1a）”展开成显示名（名字层 `名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），
+系统提示词里这一行在判据后接 `Optionally add "object": exactly one of "<显示名>", ….`（静态种类各行与 S1-R8 逐字节相同；这句措辞是原创，K-0 复测里用过）。
 意图的 `object` 可缺 / 为 null（没点名），写了就必须是列出的显示名之一，存成对象 `%{"actor" => cid}`；逐轮变的候选名 `speak_to:<cid>` 不是种类，写不进计划。
 活动完成按 `{种类, 对象}` 记账：种类相同的意图里，**点名的就是这个人的优先**，没有才记到没点名的（混在一起按时限取会让点名那条白白落空）。登记名与生成种类同名（如登记一个叫 `speak_to`、`eat` 或 `craft` 的候选）在登记时被拒。
 意图被做了几次由代码按活动结果记账，不是模型说了算；计划与账作为 `Plans and promises` 一栏交给选择。
@@ -1011,15 +1011,17 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  T[触发<br/>每帧观察上查 有过经历<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 5<br/>两次至少隔 3 分钟]
+  T[触发<br/>每帧观察上查 有过经历<br/>当日还没采用过计划 或 有 event 经历在等] --> Q[额度<br/>当日调用数 小于 2<br/>两次至少隔 3 分钟]
   Q -->|通过并保存调用数| W[单独的规划槽<br/>第四个 worker 槽<br/>写一次 不重问]
-  W --> C[检查<br/>JSON 形状 种类在词表内 对象是列出的显示名<br/>by 晚于此刻 条数不超过 5]
+  W --> C[检查 Tasks.check 回顾<br/>JSON 形状 种类在词表内 对象是列出的显示名<br/>by 晚于此刻 条数不超过 5 任务与 drop]
   C -->|合格| A[(Life 持久行 plan<br/>采用 一次落栏 权威)]
   C -->|不合格或写作失败| F[记一笔计数与 last<br/>沿用上一份]
   W -->|写作之前就失败| R[记一笔计数与 last<br/>退回这一次额度]
   X[活动完成<br/>Life.activity] --> B[活动记账<br/>种类相同 今天 未过时限的意图<br/>点名相同的优先 再没点名的 done 加一<br/>与那条经历同一次保存]
   B --> A
   A -->|DayPlan.column| M[心智快照新栏<br/>Plans and promises]
+  C -->|合格 Tasks.review| TK[(Life 持久行 tasks<br/>开 弃任务)]
+  TK -->|Tasks.column| M
 ```
 
 - **谁有**：只有“规划的形态”：profile 带写作接口（同反思，`NPC_REFLECT_*`）且有候选表，现在只有统一形态（`"npc"`）；别的形态不触发、
@@ -1028,23 +1030,24 @@ flowchart LR
   `world_time`，且要等身体状态到了、这个 NPC 有过至少一条经历（还没写进 Hindsight 的经历，或持久行 `retained` 大于 0——已写进过；刚出生一条都没有时
   不起调用、不记失败、不记 `skipped`，有了第一条经历的下一帧才起 `:day`）。到点后 `DayPlan.admit/3` 记一次调用与起调用的时刻、清 event 标记，保存成功才起槽；当日额度用完记
   `counts.skipped` 与一行日志（每个游戏日一次），触发条件不清；槽在途、没有观察时不查、不计数。规划在途时又来的 event 留着，落栏后过了最小间隔再重排。
-- **额度扣什么**：当日 5 次只算**发出了写作请求**的调用（写作函数被调用过，不论成功、失败还是检查不过；写作接口连接被拒也算）。在写作之前就失败的
+- **额度扣什么**：当日 2 次（任务层 T-1a 起；原为 5）只算**发出了写作请求**的调用（写作函数被调用过，不论成功、失败还是检查不过；写作接口连接被拒也算）。在写作之前就失败的
   （此刻一块、Hindsight 召回超时、没有材料）落栏时 `DayPlan.refund/1` 退回，照记 `counts.failed` 与 `last`，最小间隔照算；worker 崩溃、调用在途时 Life 重启
   不知道写作发出了没有，按发出算、不退。依据：实跑 S1-R10 里 8 次规划调用有 4 次没问到模型却各扣一次（T7，用户 2026-11-16 定）。
-- **一次规划做什么**：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 系统提示词与用户消息（逐字照离线测量 S1-R8）→ 写一次 →
-  `DayPlan.check/3`。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
+- **一次规划做什么**（T-1a 起即每日回顾）：此刻一块 → “自己”一问的材料（同反思的取材路径，不复制）→ 回顾系统提示词（`DayPlan.Prompt.review_system_prompt/2`，K-0 复测过）
+  与用户消息（三块材料与末行逐字照离线测量 S1-R8，后接今天的意图、旧 `wants`、开着的 / 最近关掉的任务四块可选的）→ 写一次 →
+  `Tasks.check/3 {:review, 此刻分钟, 开着的任务}`（意图与 `cannot_yet` 经 `DayPlan.check_lists/3`）。S1-R8 模板 `system_prompt/2` 与整份核对 `DayPlan.check/3` 已随 T-1a 删去。流程见 [`life/day_plan/round.ex`](life/day_plan/round.ex)，提示词见 [`life/day_plan/prompt.ex`](life/day_plan/prompt.ex)。
 - **持久行 `"plan"`**（Life 是唯一 owner，字符串键、能原样过 JSON，形状见 [`life/day_plan.ex`](life/day_plan.ex) 的 `new/0`）：
   `day`（意图属于哪个游戏日）、`intents`（`id` / `activity`（种类）/ `object`（对象或 nil；批 0b 之前的行没有这个键，读作 nil，不迁移）/ `times` / `by`（日内分钟）/ `why` / `done`）、`wants`（`want` / `why`）、
   `calls`（当日发出了写作请求的调用数）、`event_waiting`、`last_at_ms`、`last`（最近一次的结果与原因）、`counts`（`planned` / `replanned` / `failed` / `rejected` / `skipped`）。
   意图的状态（open / done / missed）不存，读时由代码按 `done`、`times`、`by` 与此刻推出。
 - **不变量**：`done` 只由代码按活动结果增（只记**完成**的，失败不计，打断也不计）。活动经历和计数由 Life 同次写盘。写盘失败时，`Life.observe/1` 的 `activity_pending` 为 true，Life 在轮询重投先前冻结的完成事实与时刻。下一次选择和已返回的重排等活动先落盘，`plan.waiting_for_activity` 表示重排在等。模型只在规划调用里写新意图、留或撤 `wants`；规划失败（写作失败、检查不过、worker 崩溃）
   不挡选择，行里沿用上一份；同日重排保留已完成与已过时的旧意图、换掉未了的；计划不是今天的则栏里只剩 `wants`。
-- **原创取值（没有外部依据，实跑后调）**：每游戏日 5 次规划调用（规划加重排共计）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
+- **原创取值（没有外部依据，实跑后调）**：每游戏日 2 次规划调用（1 次日界 + 1 次事件重排，任务层决策稿 K-5；原为 5）、两次调用至少隔 3 分钟、行里意图至多 8 条（一次规划至多写 5 条）、
   `by` 是日内分钟（0..1439）。
 - **观察与日志**：`Life.observe(cid).plan` 给出 `enabled`、`running`、持久行 `row`、此刻的栏数据 `column` 与最近一次规划失败的原因；日志一律
   `npc_plan cid=<cid> event=…`：`start` / `end`（在规划槽里，`end` 带结局、`wrote=true|false`（写作请求发出了没有）、耗时与 token 数）、
   `landed`（落栏，同样带 `wrote`）、`persist_failed`（落栏那次保存失败）、
-  `crashed`（worker 崩溃）、`skipped`（到点而当日额度用完）；计划正文不进日志。
+  `crashed`（worker 崩溃）、`skipped`（到点而当日额度用完）；`end` 写成时带 `tasks_open=` / `tasks_drop=`，`landed` 带开着的任务数；计划正文不进日志。
 - **当前状态**（2026-11-15）：**已实现**，单元测试与 Life 集成测试通过；规划提示词与检查做过离线测量 S1-R8（探索性，在真实 S1-R7 材料上：意图形状成立，
   `cannot_yet` 多半是想说话而写不出的事），**还没有闭环实跑、没有验收**。已知局限：
   ① 计划栏对选择的作用没有测过（栏的位置与写法是原创，只有离线 S1-R8 测了规划这一半）；
@@ -1052,18 +1055,42 @@ flowchart LR
   ③ `wants` 目前只展示在栏里，不触发任何动作，也与 `What I have come to think` 并存（是否保留其一等离线对照后再定）；
   ④ 计划耗尽、被直呼等其它重排触发、`times` 作完成条件的校准、计划进 Hindsight 都在后期范围。
 
-### 任务层（`Life.Tasks`，任务层决策稿；**还没接线**）
+### 任务层（`Life.Tasks`，任务层决策稿；T-1a 已接进 Life，推进是 T-1b）
 
-[任务层决策稿](../../../../docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md)：日计划将退化为每日回顾（开 / 弃任务），
-任务由 Life 持有、偏差时才问 LLM 推进、任务步只作为 Jev 的候选。**现在只有 K-0 离线探索要用的纯函数**，Life / Runtime 没有调用方（接线是 T-1 / T-2）：
+[任务层决策稿](../../../../docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md)：日计划退化为每日回顾（开 / 弃任务），
+任务由 Life 持有、偏差时才问 LLM 推进、任务步只作为 Jev 的候选。**T-1a（2026-11-19）**：回顾开 / 弃任务、持久行、步骤记账与 K-3 标记、
+新信息、到期与停滞、Mind 任务行、observe 已接进 Life；**推进槽（问模型写后续步骤）、推进额度、花费闸门 `:task` 属 T-1b，还没有**——
+现在 `waiting` 只是记下、`Life.observe/1` 看得到。
 
-- `Life.Tasks.check/3`：推进应答（`:advance`）与每日回顾应答（`{:review, 此刻分钟, 开着的任务}`）里任务 / 步骤的唯一校验；单条种类与对象、
-  `cannot`、意图与 `cannot_yet` 的核对都复用 `DayPlan` 的同一函数（`check_kind/3`、`check_want/1`、`check_lists/3`），不复制。
-- `Life.DayPlan.Prompt.review_system_prompt/2`（回顾新模板）；`Life.Tasks.Prompt`（推进提示词）。回顾用户消息里“开着的 / 最近关掉的任务”两块与任务持久行的渲染同批在 T-1 加（届时每行带任务 id）。
-  词表渲染 `DayPlan.Prompt.activities/1` + `activity_list/1` 是日计划、回顾与推进共用的一处（从 `DayPlan.Round` 挪来，日计划请求逐字节不变）。
-  回顾与推进两份模板共用填充函数 `DayPlan.Prompt.fill_template/3`（人格卡、词表、答案格式行里的 `"object"` 一栏：默认 null，只在词表那一行列了名字的种类上写名字，K-0 发现 1 之后的改法）。
+- **持久行 `"tasks"`**（Life 是唯一 owner，与 `"plan"` 等同一次保存，形状见 [`life/tasks.ex`](life/tasks.ex) 的 `new/0`）：`open`（≤ 3，开的次序）、
+  `closed`（最近 5 条小结）、`calls` / `last_at_ms`（推进用，T-1b）、`counts`。任务 = `id`（`t<开的日号>:<开过的总数>`）、`goal`、`why`、
+  `opened_day`、`expires_day`（开的日号 + 2）、`steps`（待做，当头那条是此刻的步）、`log`（最近 6 条步骤结局，记当头步本身的种类与对象）、
+  `waiting`（待推进及原因）、`head_since_ms`、`head_failures`、`rejected_in_row`、`completed`（完成的步数）、`note`。
+  之前存下的行在加载边界补成空的一份。
+- **回顾开 / 弃**：回顾应答合格时同一次落栏保存里 `Tasks.review/4`：先按 id 弃（`dropped`），再开新任务；开 / 弃各一句标准句经历
+  （`I set myself a task: "<goal>".` / `I gave up my task "<goal>".`；tags `kind:task` + 任务里的人 `actor:<cid>`；反思计 1 分）进未封存的尾部。
+  回顾用户消息多两块（`My open tasks (by id):` / `Tasks I closed recently:`，每行带任务 id，空时不出现），渲染在 `Tasks.Prompt.review_open_lines/2`、`review_closed_lines/1`。
+- **可点名的人**：词表展开（`Life.vocabulary/2` 一处，回顾与推进共用）= 关系 ∪ 此刻观察 ∪ 开着的任务里点名过的人（`Tasks.people/1`：
+  待做步骤与 log 里的 `%{"actor" => cid}`），K-0 评审第 8 条；K-3 判“任务里的人”用同一个 `people/1`。
+- **步骤记账与 K-3**：`Life.activity/2` 接纳活动经历的同一次保存里不论结局 `Tasks.record_step/4`：只记开着的任务的**当头步**
+  （点名相同的优先，再没点名的；各取最早开的一个）。完成 → 前移、`completed + 1`，在等的 `failed` / `stalled` 清掉（偏差已化解，
+  `heard` / `event` 留着），没有下一步了待推进 `steps_done`；失败 → 原因在 `NpcServer.Trees.transient_reasons/0`（瞬态的唯一定义）里时
+  同一步连续第 2 次才待推进 `failed`，其它原因立即 `failed`；打断只记 log（不计失败，也不清失败数）。
+  回顾要弃的任务若在回顾在途时已到期关掉，落栏时跳过。
+- **新信息**：接纳经历时（`accept/3`）`kind:event` 的出手者（经历的 `"actor"`）、对我说话的人（对话经历原消息叫的是我，同 Runtime 唤醒的 `Dialogue.direct?/2`；旁听别人之间的话不算）
+  落在某任务的人里 → 待推进 `event` / `heard`（`Tasks.note_news/3`；只读结构化字段，已在等的不改原因）。`place:` 不做（任务对象现在只有人）。
+- **到期与停滞**：每帧观察上 `Tasks.tick/3`：过了 `expires_day` 关为 `expired` 并写经历（`I did not finish my task "<goal>" in time, so I let it go.`），
+  当头步满 6 游戏小时没被做待推进 `stalled`；没变化不写库。
+- **给选择**：`Life.mind/2` 的 `tasks`（`Tasks.column/1`）→ Mind `Plans and promises` 栏在意图之后、`wants` 之前每任务一行
+  `Task: <goal> — next: <种类 名字>; done so far: <n> step(s)`（没有待做步骤时 `no steps planned`）；无任务时栏与之前逐字节相同。
+  K-6 的当头步占位没做：总上限 C 还没实现，可行的当头步必在候选里（占位与 C 在 X-1 同处做）。
+- **观察与日志**：`Life.observe(cid).tasks` = `%{row: 持久行 "tasks"}`（不规划的形态为 nil）；日志 `npc_task cid=<cid> event=step|news|opened|dropped|expired task=<id> …`。
+- **措辞**：标准句、回顾两块、Mind 任务行都是原创措辞，用户 2026-11-19 认可（“措辞可以，继续推进”），没离线测过，实跑后调。
+- 校验与提示词：`Life.Tasks.check/3` 是推进应答（`:advance`）与每日回顾应答（`{:review, 此刻分钟, 开着的任务}`）的唯一校验；单条核对复用
+  `DayPlan` 的同一函数（`check_kind/3`、`check_want/1`、`check_lists/3`）。词表渲染 `DayPlan.Prompt.activities/1` + `activity_list/1` 与填充函数
+  `DayPlan.Prompt.fill_template/3` 是回顾与推进共用的一处。推进提示词 `Life.Tasks.Prompt`（T-1b 起由推进槽调用）。
 - 任务词表：T-2 之前就是 `Offers.plan_kinds/1`；T-2 加 `look_for` 时再立任务词表入口（“去找某人”与它的生成器、执行树同批进词表，K-0 发现 3：没有生成器时它只会停滞）。
-- K-0 及其复测的读数见 `.demo/observe/npc-task-k0-20261119/results.md`、`retest-1/results.md` 与决策稿 §7。
+- K-0 及其复测的读数见 `.demo/observe/npc-task-k0-20261119/results.md`、`retest-1/results.md`；T-1a 的规划、偏差与测试见决策稿 §7。
 
 ## 附近对话（2026-10-11）
 

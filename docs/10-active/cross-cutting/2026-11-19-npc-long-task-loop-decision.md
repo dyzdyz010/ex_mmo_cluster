@@ -360,3 +360,53 @@ flowchart LR
 - 2026-11-19（第二十二个统筹会话，裁定 ②）：离线对照按发问前规则判“措辞仍有问题”（新版 1 份记为读成疲劳），**原判保留**；统筹会话读原文确认那份命中的是
   `cannot.why` 里 “the rest of the stone” 的 `rest`（规则正则的词面误中，同份 note 写 “the stone pile worked out”、思考疲劳词 0），且思考疲劳词 106 → 0、当头步重复 `gather_stone` 2/6 → 0/6。
   **裁定采用新措辞**。build / travel 三个码的新句子与对 Jev 的影响未离线测，按用户 happy path 方向留到下一次实跑观察；已存记忆的旧写法不迁移（新旧并存）。
+- 2026-11-19：**T-1a 实现**（任务落进 Life；实施子会话，基于 `76157206`，未提交，待统筹评审；未调模型、未起 release。规划 `.demo/observe/npc-task-t1-20261119/plan.md`，T-1b 推进另批）。
+  - 改了什么：`Life.Tasks` 加持久行与规则（`new/0`、`review/4` 开 / 弃、`record_step/4` 步骤记账与 K-3 分类、`people/1`、`note_news/3`、`tick/3` 到期 / 停滞、`column/1`）；
+    Life 持久行加 `"tasks"`（初值与加载边界补齐），回顾接进 Life：`DayPlan.Round` 改用 `review_system_prompt/2` 与 `Tasks.check/3 {:review…}`，用户消息加“开着的 / 最近关掉的任务”两块（`Tasks.Prompt.review_open_lines/2`、`review_closed_lines/1`，每行带 id），
+    落栏同一次保存里 `Tasks.review/4`，开 / 弃 / 到期各一句 `kind:task` 经历进未封存的尾部（`Reflection.score/1` 计 1 分）；活动经历同一次保存里 `record_step/4`；`accept/3` 读结构化字段记新信息（`kind:event` 的 `"actor"` → `event`，对话原消息 `speaker_id` ≠ 自己 → `heard`）；
+    每帧 `tick/3`（有变化才写库）；`Life.mind/2` 与 `observe/1` 加 `tasks`；Mind `Plans and promises` 在意图后、`wants` 前加任务行；`Trees.transient_reasons/0` 成为瞬态集合唯一定义（Settler 的私有 `transient?/2` 与 K-3 共用）；
+    回顾当日额度 5 → 2（`:day` 与 `:event` 触发都保留）；删 `DayPlan.Prompt.system_prompt/2`（S1-R8 模板）与 `DayPlan.check/3`（无产品调用方），金标按规划 §2.6 重定（系统提示词金标 = K-0 复测真实发出的回顾请求 R1 / R5，用户消息金标仍 S1-R8；Life 集成用例——任务集成测试与（经下条评审修正后的）日计划集成测试——逐字回放复测的真实回顾应答；单测给 S1-R8 应答补空 `tasks`，见下条偏差 D-9；来源记 `test/support/fixtures/day_plan/README.md`）；
+    历史离线脚本 `tools/jev/s1r8b_0b.exs`、`s1r9_columns.exs` 只在头注释加一句“依赖已删除的 `DayPlan.check/3`，重跑需检出当时版本”。
+  - 统筹裁定（实施依据）：① 推进时可点名的人并入 `Life.vocabulary/2` 一处（关系 ∪ 此刻观察 ∪ 开着的任务点名过的人 `Tasks.people/1`），K-3 判“任务里的人”共用；② 推进与回顾共用一个规划槽、都到点回顾先（推进槽属 T-1b，本批不做），保留 `:event`、回顾额度 5 → 2；
+    ③ `record_step/4` 输入与 K-3 两行新信息的数据来源按规划 §2.3，`place:` 不做，log 记当头步；④ 瞬态集合 `Trees.transient_reasons/0` 唯一定义；⑤ 标准句、回顾两块（每行带任务 id）、Mind 任务行的措辞用户已认可，`kind:task` 反思计 1 分；
+    ⑥ 删 `system_prompt/2` 与 `DayPlan.check/3`，金标按 §2.6 重定；⑦ K-6 不做占位；⑧ 偏差 D-3、D-4、D-5、D-7、D-8 采用。
+  - 用户措辞认可（用户 2026-11-19 在对话里答复，原话：“措辞可以，继续推进”）；方向照用户原话“记得专注happy path，其他外围兜底保护措施可以随着实验根据设计慢慢加”，稿件没写的兜底不加。
+  - 与稿件偏差（本批涉及的）：**D-1** K-6 当头步占位不做（总上限 C 未实现，可行的当头步必在候选里；占位与 C 在 X-1 同处做）；**D-2** K-3 只做 `actor`，`place:` 不做（任务对象现在只有人）；
+    **D-5** `note` 是任务字段、不进 log（本批只建字段，写 `note` 的推进在 T-1b）；**D-6** log 记当头步本身的 `{kind, object}`（候选的实际对象可能是材料，`Mind.activity_label/3` 没有写法）；**D-7** 任务多 `completed`（Mind 行要准数，log 只留 6）与 `note`。
+    D-3（最早开的等待任务先推进）、D-4（推进不加 `actor:` 召回）、D-8（`cannot` 只计数）已采用，落在 T-1b。
+    **集成测试组合**：§5 K-5 写真实 Registry / Body / Scene；`npc_life_tasks_integration_test` 与日计划集成测试同一组合——Life 直接起 + 真实 `DataService.NpcMemory`（独占 PostgreSQL）/ 真实 World（`kind:event` 经 `LifeFixtures.damage/4` 正式入口），
+    写作由回环替身回放 K-0 复测的真实回顾应答（`review-R1-r1.json`），测试自己发观察（`Life.observation/2`，Runtime 同一入口）。理由：Runtime 写进观察的游戏钟取墙钟、没有可注入的缝，回放应答的时限与开任务的日号要对上那份材料的此刻（第 1418 日 13:00）；
+    候选这一环 T-1a 没改（K-6 不占位），候选与经历已由 `npc_selector_test` / `npc_offers_integration_test` 证过。同一段写在该测试的 moduledoc。
+  - 测试（WSL；入口 `.demo/observe/npc-task-t1-20261119/mix.sh <日志> test --no-start <文件…>`，即 `cd apps/npc_server && MIX_ENV=test mix test --no-start …`；数据库 `npc-dev-pg-20261117`:55480，每个 VM 自建 `mmo_test_*` 独占库、跑完删；日志在同目录 `logs/`）：
+    先红 `test-red.log`：10 个文件（`npc_life_tasks` / `_tasks_prompt` / `_day_plan_prompt` / `_day_plan_round` / `_day_plan` / `npc_mind` / `npc_reflection` / `npc_life_tasks_integration` / `npc_life_day_plan_integration` / `npc_offers_integration`）164 / 219 通过、55 失败、1 排除；
+    后绿 `test-green.log`：同 10 个文件 219 通过、1 排除、0 失败。回归（另加 `npc_life` / `npc_dialogue_life` / `npc_selector` / `npc_spend_life` / `npc_registry` / `npc_life_interaction_gap` / `npc_life_sight` / `npc_emotion_life` / `npc_settler` / `npc_life_registry` / `npc_dialogue_world` / `npc_reflection_round`，共 22 个文件）：
+    首轮 `test-regression.log` 354 / 355、1 失败（`npc_life_test.exs:558`，见下）；修后 `test-regression-2.log` **355 通过、2 排除、0 失败**。`MIX_ENV=test mix compile --warnings-as-errors --force` 通过（`compile-2.log`）；改动的 `.ex` / `.exs` 过 `mix format --check-formatted`（`format-check-2.log`、`format-check-3.log`）。
+    跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
+  - 回归失败的根因与修法：`npc_life_test.exs:558`（restored fragments 那条）直接调 `Life.handle_info/2`，手搭的 state 没有 `:journaling` 键；T-1a 的 `accept/3` 对任意一批经历都问 `planning?/1`（原先只在有 `kind:event` 时短路求值才问），于是 `FunctionClauseError`。
+    产品 `init/1` 恒设 `journaling`（这个 profile 不带 `reflect` 时为 nil），没有任何路径产生无此键的 state，所以是测试数据不是产品能产生的形状：测试 state 补 `journaling: nil`，产品不加兜底子句。
+    同类：`npc_selector_test.exs:2024`（`:live_jev`，默认排除）手搭给 `Mind.snapshot/4` 的 `life` 缺 `tasks`（产品 `Life.mind/2` 恒给），编译期类型检查已报警告，补 `tasks: []`（`test-selector-3.log` 27 通过、1 排除、无警告；live 用例本身未跑）。
+  - 文档：`Life`（“每日回顾与任务”一节，额度 2 次）、`Life.Tasks`、`Tasks.Prompt`、`DayPlan`、`DayPlan.Prompt`、`DayPlan.Round`、`Mind`、`Trees`、`Reflection` moduledoc 与 `apps/npc_server/lib/npc_server/README.md`（日计划一节、任务层一节）同步。
+- 2026-11-19：**T-1a 评审修正**（独立评审无阻塞；统筹定 7 条，同一工作区修，未提交；未调模型、未起 release）。路径相对 `apps/npc_server/`。
+  - ① 崩溃：回顾在途时它要弃的任务被 `tick/3` 到期关掉，落栏时 `Tasks.review/4` 找不到它仍照关，`String.replace/4` FunctionClauseError。改为落栏时已不在 `open` 的 id 跳过（规划 §1.1 原意）。
+    单测反例 `review(t10:1) → tick(第 13 日) → review(drop "t10:1")`：只开新任务、`closed` / 计数不变、不写“弃”的经历。
+  - ② “任务里的人对我说话”原先判成“听到他说的任何一句”。改为与 Runtime 唤醒同一口径：`accept/3` 取对话经历原消息的说话人与对象，交 `Dialogue.direct?/2` 判（不另写一份）；
+    统筹已确认改口径。集成反例：Corvin 对别人说话（我旁听，经历照常接纳），任务不置 `waiting`；随后对我说话才 `heard`。
+  - ③ “可点名的人并入任务里的人”补可证伪的集成用例：第 1419 日 `:day` 回顾，任务未到期，帧里没有 Corvin、关系为空，系统提示词 `speak_to` 一行仍列 `"actor 1906495721474"`。
+    先红的做法：临时删掉 `Life.vocabulary/2` 里的并入跑这个文件，红（`speak_to` 一行没有名字，`test-review-red-vocabulary.log`），再还原。
+  - ④ 夹具：(a) `npc_life_day_plan_integration_test` 不再回放补过 `tasks` 的 S1-R8 正文（没有模型产出过的混合正文），改为逐字回放 K-0 复测同材料的真实回顾应答——不点名的 R1-r2（13:00）、R4-r2 / R4-r3（19:45），
+    被拒用 R1-r3（`{:too_many_items, 6}`），配说话用 R1-r1（Corvin 在观察里）；新复制 `fixtures/day_plan/review-R4-r2.json`、`review-R4-r3.json`，来源记同目录 README。
+    统筹点名的 R2-r2、R5-r1 没有用到（这些用例的材料时刻用上面几份已够），未复制。断言按新应答的实际内容改，契约不变：采用（R1-r2 4 条意图 1 条 wants）、记账（R4-r2 同名 `guard_hut` 两条：先记时限早的，过了时限记给晚的，失败不记）、
+    在途重排（R1-r2 的 `confront_wrecker` 完成先落盘、R4-r3 重排保留它）、`:event` 重排（用户消息的今天 / wants 两块，后接任务一块）、额度、被拒原因、越日、落栏保存失败。
+    待写经历条数各加 1（回顾开任务的一句 `kind:task`）。配说话的用例改证“真实应答点名的显示名换成对象落行”（R1-r1 点名只在任务步里）；**复测应答里没有点名的意图**，所以“点名的意图按种类 + 对象记账”只由
+    `npc_life_day_plan_test` 的单测覆盖（写在该测试 moduledoc）。(b) 单测里给 S1-R8 应答补空 `tasks` 保留，记为偏差 **D-9**（下条）。(c) `fixtures/day_plan/README.md` 中 `requests-R1/R5.json` 一行改为现状（只作用户消息金标）。
+    (d) 上条“T-1a 实现”里“集成用例回放复测真实回顾应答”一句按现状改写。
+  - ⑤ 当头步完成前移时清掉在等的 `failed` / `stalled`（偏差已被化解），`heard` / `event` 是新信息、留着。单测反例：失败 → 再成功前移 → `waiting` 为 nil；停滞 → 前移 → nil；`heard` / `event` → 前移 → 留着。
+  - ⑥ 只写文档：`Tasks` moduledoc 写明“连续”只数失败，`head_failures` 只在前移时清零，打断既不计也不清。
+  - ⑦ 只写文档：任务集成测试 moduledoc 记 `confront_wrecker` 沿用 K-0 复测当时的词表、在那里是静态种类；部署里它已是可点名人的种类，“没点名的当头步收到点名经历”那条路径只由单测覆盖。
+  - 偏差 **D-9**（统筹定，同记规划 §5）：规划 §2.6 写单测改调 `decode/1` + `check_lists/3`；实际单测（`npc_life_day_plan_test`、`npc_mind_test`、`npc_life_day_plan_round_test` 的计划栏渲染）给 S1-R8 真实应答补空 `"tasks"` 再经 `Tasks.check/3`。
+    理由：校验器输入本是任意模型文本，补空 `tasks` 与这些用例里已有的手改应答变体同类；列表规则仍由 S1-R8 真实应答锁住。Life 集成用例不这样做。
+  - 测试（同上条入口与数据库；日志 `.demo/observe/npc-task-t1-20261119/logs/`）：先红 `test-review-red.log`（`npc_life_tasks` / `npc_life_tasks_integration` / `npc_life_day_plan_integration` 3 个文件）62 / 66、4 失败——
+    ① ② ⑤ 三条按预期红（`String.replace/4` 崩溃、旁听被判 `heard`、`waiting` 没清），另 1 条是新写的配说话断言把显示名次序写错（产品按显示名排序，`"Corvin (…)"` 在 `"actor …"` 前），改测试；
+    ③ 的红见 `test-review-red-vocabulary.log`（1 / 3 红）。后绿 `test-review-green.log` 同 3 个文件 66 通过。回归 `test-regression-3.log`（文件集合同 `test-regression-2.log`，22 个文件）**357 通过、2 排除、0 失败、无警告**。
+    `MIX_ENV=test mix compile --warnings-as-errors --force` 通过（`compile-3.log`）；改动文件 `mix format` 后过 `--check-formatted`（`format-check-5.log`；`format-check-4.log` 是格式化之前那次，两处换行）。跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
+  - 文档：`Life` moduledoc（新信息一条）、`Life.Tasks` moduledoc 与 `review/4`、`note_news/3` 文档、`apps/npc_server/lib/npc_server/README.md` 任务层一节、两个集成测试的 moduledoc、`fixtures/day_plan/README.md`、规划 §5 同步。

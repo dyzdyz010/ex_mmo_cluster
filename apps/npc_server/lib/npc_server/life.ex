@@ -5,7 +5,7 @@ defmodule NpcServer.Life do
   慢记忆写入期间继续接纳权威事件。
 
   经历条目（`"pending"` 与片段里）是 `%{"id", "at_ms", "text", "tags", …}`：`"text"` 是不带时刻的原文，时刻只在 `"at_ms"`，
-  `"tags"` 是字符串列表（`kind:event | activity | conversation | sight`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
+  `"tags"` 是字符串列表（`kind:event | activity | conversation | sight | task`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
   交给 Hindsight 的正文是离线测过的 `At <UTC> (UTC), <原文>`，只由本模块的 `dated/1` 一处加前缀；
   心智快照拿到的是 `%{at_ms:, text:}`（不带前缀），由 `NpcServer.Mind` 按游戏时间写“多久以前”。
   短经历先按原文字数攒到约 3000 字封成片段 `%{"id", "at_ms", "episodes" => [经历条目]}`（片段只是运输批次）；
@@ -100,19 +100,25 @@ defmodule NpcServer.Life do
     落栏那次保存失败（行不变）；worker 在落栏前崩溃、记中止小结的那次保存也失败（`save_reflection/2` 失败时行不变）。
     要不要改成“起轮即撤下”是决定层面的事，现在不改。
 
-  ## 日计划（实现设计 `docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md` §1、§4）
+  ## 每日回顾与任务（日计划实现设计 `docs/10-active/cross-cutting/2026-11-15-npc-day-plan-implementation.md` §1、§4；任务层决策稿
+  `docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md` §4，T-1a）
 
-  一份计划是“今天我打算做几件事”：意图（词表里的种类 + 可选对象 + 次数 + 时限）与 `wants`（想做而词表写不出的事）。规则（检查、额度、
-  触发判定、采用、记账、给 Mind 的数据）都在纯函数核心 `Life.DayPlan`，一次规划调用的流程在 `Life.DayPlan.Round`；本模块只做
-  触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，写作接口与人格卡共用）且有候选表；
-  其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` 为 nil。
+  一份计划是“今天我打算做几件事”：意图（词表里的种类 + 可选对象 + 次数 + 时限）与 `wants`（想做而词表写不出的事）。任务层 T-1a 起
+  日计划退化为**每日回顾**：同一次规划调用另开 / 弃**任务**（一件要几步才做成的事，持久行 `"tasks"`，跨日留着）。规则都在纯函数核心：
+  意图那一半（额度、触发判定、采用、记账、给 Mind 的数据）在 `Life.DayPlan`，任务那一半（采用回顾、步骤记账与 K-3 分类、新信息、
+  到期与停滞、给 Mind 的数据）在 `Life.Tasks`，整份回顾应答的唯一校验点是 `Life.Tasks.check/3`；一次规划调用的流程在
+  `Life.DayPlan.Round`。本模块只做触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，
+  写作接口与人格卡共用）且有候选表；其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` / `tasks` 为 nil 或空。
+  任务的推进（偏差 / 新信息时问模型写后续步骤）属 T-1b，现在 `waiting` 只是记下、由 `observe/1` 看得到。
 
   - **词表**（稿 A 批 0b）：种类取 `NpcServer.Offers.plan_kinds/1`（按生成器次序：不对人的登记项各一个静态种类，对人的登记项各一个可点名人的种类（种类名 = 登记名，
     任务层稿 §7 ①），配了说话加 `speak_to`，批 1 起再加不可点名对象的 `eat` 与 `craft`），
-    起槽那一刻展开对象交进快照的 `vocabulary`：可点名人的种类（对人的登记项与说话同一套）能点名的人是关系里的人 ∪ 此刻观察里的他人，显示名用名字层
+    起槽那一刻展开对象交进快照的 `vocabulary`：可点名人的种类（对人的登记项与说话同一套）能点名的人是关系里的人 ∪ 此刻观察里的他人
+    ∪ 开着的任务里点名过的人（`Tasks.people/1`；任务层稿 K-0 评审第 8 条：回顾时点名过、推进时已不在观察里的人仍可点名），显示名用名字层
     `State.person/2`（`名字 (actor <cid>)`，观察里没有名字时 `actor <cid>`），对象 `%{"actor" => cid}`。
 
-  - **持久行 `"plan"`**（形状见 `DayPlan.new/0`）与其它键同一次保存，重启后还在；日计划之前存下的行在加载边界补成空的一份。
+  - **持久行 `"plan"`、`"tasks"`**（形状见 `DayPlan.new/0`、`Tasks.new/0`）与其它键同一次保存，重启后还在；之前存下的行在加载边界
+    补成空的一份。
   - **触发只在每帧观察上查**（`maybe_plan/1`，便宜：不到点不写库、不打日志）：行已加载、规划的形态、规划槽空着、这个 NPC
     有过至少一条经历（还没写进 Hindsight 的 `"pending"` / `"fragments"` 非空，或已写进的 `"retained"` 大于 0；刚出生、一条都没有时
     规划无事可依，S1-R10 出生那一次就是 `:no_materials`）、观察里有游戏钟（`world_time`；日号与日内分钟都取它）与身体状态
@@ -120,21 +126,28 @@ defmodule NpcServer.Life do
     （本游戏日还没有采用过计划）或 `:event`（接纳经历时有 `kind:event`，在那次保存里 `DayPlan.note_event/1`）。经历、身体状态、
     游戏钟不满足时不起调用、不记失败、不记 `skipped`。到点后 `DayPlan.admit/3` 记一次调用、起调用的时刻（`last_at_ms`，最小间隔
     从它算）并清 event 标记（这次的材料已含那条 event），保存成功才起槽；保存失败行不变，一秒之内不再试。槽在途、没有观察时不查，
-    不计数。当日 5 次额度用完：每个游戏日只记一笔 `skipped` 与一行日志（那次保存成功之后才记下这一日；失败则一秒之内不再试）。
+    不计数。当日 2 次额度用完：每个游戏日只记一笔 `skipped` 与一行日志（那次保存成功之后才记下这一日；失败则一秒之内不再试）。
   - **规划槽**（第四个 worker 槽 `plan`，与 `poll` / `job` / `reflect` 并列，可与反思槽同时在途）：快照在起槽那一刻取齐，
     worker 不回头问 Life。结果落栏是一次保存：写成且检查通过 → `DayPlan.adopt/6`；写作失败、检查不过、worker 崩溃 →
-    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常；`:event` 失败把 event 标记恢复，留到下次）。**当日额度只扣发出了写作请求的
+    `DayPlan.fail/5`（意图与 `wants` 不动，选择照常；`:event` 失败把 event 标记恢复，留到下次）。采用时同一次保存里 `Tasks.review/4`
+    开 / 弃任务，开 / 弃各一句标准句经历（`kind:task`）进未封存的尾部。当日 2 次（1 次日界 + 1 次事件）。**当日额度只扣发出了写作请求的
     调用**（T7，用户 2026-11-16 定）：结果说写作没有发出（`wrote: false`——此刻一块失败、召回失败、没有材料）时在同一次保存里
     `DayPlan.refund/1` 退回这一次；写作函数被调用过的（写作接口连接被拒、超时、检查不过也算）照扣；worker 崩溃不知道发没发出，
     按发出算、不退（防额度被反复崩溃绕过）。退回不动 `last_at_ms`，最小间隔照算。调用在途时又来的 `kind:event`
     照常记标记，落栏不清它，过了最小间隔再重排。日号、分钟、时刻都用**起槽那一刻**的：调用期间越过日界时，计划按起槽时的
     日号落栏，下一帧观察因日号变了再触发 `:day`（过了最小间隔）。
   - **活动记账**：`activity/2` 接纳活动经历的同一次保存里，完成的活动（结构化结局为 `:completed`）按它的 `{种类, 对象}`
-    与此刻观察里的游戏钟 `DayPlan.record_activity/4`；失败与被打断的不计（`done` 只由代码按活动结果增）。
-  - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果；`observe/1` 的 `plan` 是
-    `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`。
+    与此刻观察里的游戏钟 `DayPlan.record_activity/4`；失败与被打断的不计（`done` 只由代码按活动结果增）。同一次保存里不论结局
+    `Tasks.record_step/4`（只记开着的任务的当头步；K-3 分类：前移、待推进 `failed` / `steps_done`，打断只记 log）。
+  - **新信息**（K-3）：接纳经历的那次保存里（`accept/3`），`kind:event` 经历的出手者（经历的 `"actor"` 字段）、对我说话的人
+    （对话经历存的原消息叫的是我，与 Runtime 唤醒同一口径 `Dialogue.direct?/2`；旁听别人之间的话不算）落在某个任务的 `Tasks.people/1` 里 → `Tasks.note_news/3`（`event` / `heard`）。
+    只读结构化字段，不解析文字。
+  - **到期与停滞**：每帧观察上 `Tasks.tick/3`（游戏日与 Life 时钟；常数级）；有变化（到期关为 expired 并写经历、停滞待推进）才保存。
+  - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果，`tasks` 是 `Tasks.column/1`；`observe/1` 的 `plan` 是
+    `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`，
+    `tasks` 是 `%{row: 持久行 "tasks"}`（不规划的形态为 nil）。
   - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
-    `end` 与 `landed` 带 `wrote=true|false`）。
+    `end` 与 `landed` 带 `wrote=true|false`，写成时带开 / 弃任务数）；任务另有 `npc_task cid=<cid> event=step|news|opened|dropped|expired …`。
 
   已知的未设上限处与边界（只记事实）：
   - “当日额度用完只记一次 skipped”的标记只在内存：Life 在同一游戏日重启后，再到点会再记一次。
@@ -170,7 +183,7 @@ defmodule NpcServer.Life do
   use GenServer
   require Logger
   alias NpcServer.{Dialogue, Memory, Offers, Persona, Life.State, Life.Hindsight, Life.Sight}
-  alias NpcServer.Life.{Appraisal, DayPlan, Reflection}
+  alias NpcServer.Life.{Appraisal, DayPlan, Reflection, Tasks}
   alias NpcServer.Life.Reflection.{Round, Writer}
   @fragment_chars 3000
   # 起规划槽之前那次保存失败后，多久之内不再试（观察每秒 20 帧，不逐帧重试写库）：原创取值。
@@ -280,6 +293,7 @@ defmodule NpcServer.Life do
                      这个形态不反思时恒为 nil；与 observe 的 `thought` 同形，Mind 只用 `closing`）
       plan           日计划给选择的数据 `%{intents:, wants:}` 或 nil（`Life.DayPlan.column/3` 对持久行 `"plan"` 与本 owner 此刻
                      观察里的游戏钟的结果；不规划的形态、观察里还没有游戏钟、没有意图也没有 wants 时为 nil；与 observe 的 `plan.column` 同一份）
+      tasks          开着的任务给选择的数据 `[%{goal:, next:, completed:}]`（`Life.Tasks.column/1` 对持久行 `"tasks"`；不规划的形态为 []）
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
   {:life_models_unavailable, 原因} | 召回的失败原因 | :recall_timeout | World 路由或查询的失败原因}`。
@@ -324,7 +338,8 @@ defmodule NpcServer.Life do
          recall_ms: recalled.latency_ms,
          buildings: buildings,
          thought: snapshot.thought,
-         plan: snapshot.plan
+         plan: snapshot.plan,
+         tasks: snapshot.tasks
        }}
     end
   end
@@ -611,6 +626,7 @@ defmodule NpcServer.Life do
         emotion_owner: if(s.appraise, do: :model, else: :construction_rules),
         reflection: observe_reflection(s),
         plan: observe_plan(s),
+        tasks: observe_tasks(s),
         spend_refused: s.spend_refused
       }}, s}
   end
@@ -747,7 +763,7 @@ defmodule NpcServer.Life do
         s
       end
 
-    {:noreply, maybe_plan(s)}
+    {:noreply, s |> tick_tasks() |> maybe_plan()}
   end
 
   def handle_cast(:observation_lost, s),
@@ -809,17 +825,23 @@ defmodule NpcServer.Life do
           Enum.map(people, &"actor:#{&1}") ++ if(place, do: ["place:#{place}"], else: [])
     }
 
-    %{episode: episode, progress: activity_progress(s, experience)}
+    %{
+      episode: episode,
+      progress: activity_progress(s, experience),
+      step: step_progress(s, experience, at_ms)
+    }
   end
 
   defp save_activity(%{activity_pending: nil} = s), do: {:ok, s}
 
-  defp save_activity(%{activity_pending: %{episode: episode, progress: progress}} = s) do
+  defp save_activity(%{activity_pending: %{episode: episode, progress: progress, step: step}} = s) do
     {row, next} = accept(s, s.row, [episode])
-    row = record_plan_activity(row, progress)
+    row = row |> record_plan_activity(progress) |> record_task_step(step)
+    before = s.row["tasks"]
 
     case save(s, seal(row, false)) do
       {:ok, s} ->
+        log_task_step(s, before, step)
         {:ok, %{s | activity_pending: nil} |> automatic() |> follow_round(next) |> land_plan()}
 
       {:error, s} ->
@@ -1101,7 +1123,8 @@ defmodule NpcServer.Life do
          context: s.context,
          recent: recent(s.row),
          thought: thought(s),
-         plan: plan_column(s)
+         plan: plan_column(s),
+         tasks: task_column(s)
        }}
     else
       {:error, {:life_models_unavailable, s.job_error || s.error}}
@@ -1166,7 +1189,8 @@ defmodule NpcServer.Life do
       "refresh_at_ms" => nil,
       "thanked_seq" => 0,
       "reflection" => empty_reflection(),
-      "plan" => DayPlan.new()
+      "plan" => DayPlan.new(),
+      "tasks" => Tasks.new()
     }
 
   # 持久行的 "reflection"（形状见 moduledoc 的反思一节）：空的一份。字符串键，能原样过 JSON。
@@ -1184,14 +1208,16 @@ defmodule NpcServer.Life do
     }
 
   # 只有 owner 推进当前 canonical；在途 World 读取不能覆盖模型刚提交的情绪，持久行的身份与游标已由 World 验证。
-  # 加载边界：反思之前存下的行没有 "reflection"、日计划之前存下的行没有 "plan"，只在这里补成空的一份，别处一律直接读。
+  # 加载边界：反思之前存下的行没有 "reflection"、日计划之前存下的行没有 "plan"、任务层之前存下的行没有 "tasks"，
+  # 只在这里补成空的一份，别处一律直接读。
   defp accept_world(s, loaded, events) do
     row =
       s.row ||
         (loaded &&
            loaded
            |> Map.put_new("reflection", empty_reflection())
-           |> Map.put_new("plan", DayPlan.new())) ||
+           |> Map.put_new("plan", DayPlan.new())
+           |> Map.put_new("tasks", Tasks.new())) ||
         initial(s.context.cid, events, s.now.())
 
     canonical = State.upgrade(row["state"])
@@ -1419,7 +1445,7 @@ defmodule NpcServer.Life do
   #   起不了 → skipped 加一、触发状态不动（下一条经历进来还会到点），下一步
   #   `{:skip, 一轮, :busy | :no_observation | {:budget_exhausted, 北京日}}`。
   # 规划的形态在这一批里有 `kind:event` 的经历时，同一份行里给日计划记下“有 event 在等着重排”（`DayPlan.note_event/1`；
-  # 下一帧观察到点就起）；不规划的形态不动 `"plan"`。
+  # 下一帧观察到点就起）；不规划的形态不动 `"plan"`。同一份行里给任务记新信息（K-3，`task_news/3`）。
   # 返回 `{新的行, nil | 下一步}`。只改行，不保存：调用方保存成功之后才 `follow_round/2`（保存失败行没变，什么也不做）。
   defp accept(%{journaling: nil}, row, entries),
     do: {Map.update!(row, "pending", &(&1 ++ entries)), nil}
@@ -1444,11 +1470,17 @@ defmodule NpcServer.Life do
         do: DayPlan.note_event(row["plan"]),
         else: row["plan"]
 
+    tasks =
+      if planning?(s),
+        do: Enum.reduce(entries, row["tasks"], &task_news(s, &1, &2)),
+        else: row["tasks"]
+
     row = %{
       row
       | "pending" => row["pending"] ++ entries,
         "reflection" => reflection,
-        "plan" => plan
+        "plan" => plan,
+        "tasks" => tasks
     }
 
     cond do
@@ -1699,7 +1731,10 @@ defmodule NpcServer.Life do
         config: Map.put(s.config, :timeout_ms, @mind_recall_timeout_ms),
         context: s.context,
         today: today,
-        wants: Enum.map(plan["wants"], & &1["want"])
+        wants: Enum.map(plan["wants"], & &1["want"]),
+        open: s.row["tasks"]["open"],
+        open_tasks: Tasks.Prompt.review_open_lines(s.row["tasks"]["open"], names),
+        closed_tasks: Tasks.Prompt.review_closed_lines(s.row["tasks"]["closed"])
       })
 
     s =
@@ -1716,14 +1751,16 @@ defmodule NpcServer.Life do
   end
 
   # 起槽这一刻的词表（稿 A 批 0b）：每个可计划的种类（`Offers.plan_kinds/1`）展开成 `%{kind, criterion, objects: %{显示名 => 对象}}`。
-  # 对象是人的种类（说话）能点名的人 = 关系里的人 ∪ 此刻观察里的他人（关系在前、按 cid；观察里的在后、按观察次序；去重），
+  # 对象是人的种类（说话、对人的登记项）能点名的人 = 关系里的人 ∪ 此刻观察里的他人 ∪ 开着的任务里点名过的人（`Tasks.people/1`，
+  # 任务层稿 K-0 评审第 8 条）（关系在前、按 cid；观察里的在后、按观察次序；任务里的最后、按开的次序；去重），
   # 显示名用名字层 `State.person/2`（名字取自此刻观察，取不到写 `actor <cid>`），对象是 `%{"actor" => cid}`。
   # 显示名带 cid，所以不同的人不会撞名。没有对象的种类对象表为空。
   defp vocabulary(s, names) do
     people =
       Enum.uniq(
         Enum.map(State.relationships(s.row["state"]), & &1.actor) ++
-          Enum.map(State.others(s.observation), & &1.entity_id)
+          Enum.map(State.others(s.observation), & &1.entity_id) ++
+          Enum.flat_map(s.row["tasks"]["open"], &Tasks.people/1)
       )
 
     for %{kind: kind, criterion: criterion, objects: objects} <- s.journaling.kinds do
@@ -1738,13 +1775,17 @@ defmodule NpcServer.Life do
   end
 
   # 使用起槽时的日期与分钟，同时读取最新已入账的计划。写作未发出的轮次在同次保存内退额度。
+  # 采用时同一次保存里开 / 弃任务（`Tasks.review/4`，当头步与经历的时刻取落栏这一刻），开 / 弃的经历经 `accept/3` 进未封存的尾部。
   defp land_plan(%{activity_pending: nil, plan: %{outcome: outcome} = slot} = s) do
     s = %{s | plan: nil}
     plan = s.row["plan"]
 
-    {landed, plan_error} =
+    {landed, plan_error, tasks, episodes} =
       case outcome.result do
         :ok ->
+          {tasks, episodes} =
+            Tasks.review(s.row["tasks"], outcome.checked.tasks, slot.day, s.now.())
+
           {DayPlan.adopt(
              plan,
              slot.day,
@@ -1752,24 +1793,27 @@ defmodule NpcServer.Life do
              outcome.checked,
              slot.kind,
              slot.now_ms
-           ), nil}
+           ), nil, tasks, episodes}
 
         {failure, reason} when failure in [:failed, :rejected] ->
-          {DayPlan.fail(plan, slot.kind, failure, reason, slot.now_ms), reason}
+          {DayPlan.fail(plan, slot.kind, failure, reason, slot.now_ms), reason, s.row["tasks"],
+           []}
       end
 
     landed = if outcome.wrote, do: landed, else: DayPlan.refund(landed)
+    {row, next} = accept(s, %{s.row | "plan" => landed, "tasks" => tasks}, episodes)
 
-    case save(s, %{s.row | "plan" => landed}) do
+    case save(s, seal(row, false)) do
       {:ok, s} ->
         Logger.info(
           "npc_plan cid=#{s.context.cid} event=landed kind=#{slot.kind} day=#{slot.day} " <>
             "result=#{landed["last"]["result"]} reason=#{inspect(plan_error)} wrote=#{outcome.wrote} " <>
             "intents=#{length(landed["intents"])} wants=#{length(landed["wants"])} " <>
-            "elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
+            "tasks=#{length(tasks["open"])} elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
         )
 
-        %{s | plan_error: plan_error}
+        log_task_episodes(s, episodes)
+        %{s | plan_error: plan_error} |> automatic() |> follow_round(next)
 
       {:error, s} ->
         Logger.warning(
@@ -1803,6 +1847,112 @@ defmodule NpcServer.Life do
 
   defp record_plan_activity(row, {done, day, minute}),
     do: update_in(row["plan"], &DayPlan.record_activity(&1, done, day, minute))
+
+  # --- 任务（规则在 `Life.Tasks`；本节只做记账的接线、每帧的到期 / 停滞、新信息与视图） ---
+
+  # 任务记账的参数：不论结局都记（K-3 按结局分类）；只有规划的形态。时刻是接纳这条活动经历的那一刻。
+  defp step_progress(s, %{kind: kind, object: object, outcome: outcome}, at_ms) do
+    if planning?(s), do: {{kind, object}, outcome, at_ms}
+  end
+
+  defp record_task_step(row, nil), do: row
+
+  defp record_task_step(row, {done, outcome, at_ms}),
+    do: update_in(row["tasks"], &Tasks.record_step(&1, done, outcome, at_ms))
+
+  # 记账命中了哪个任务（保存成功之后）：一行 `npc_task … event=step`，带结局与此刻的 waiting；没命中不打。
+  defp log_task_step(_s, _before, nil), do: :ok
+
+  defp log_task_step(s, before, {{kind, _object}, outcome, _at_ms}) do
+    case Enum.find(s.row["tasks"]["open"], &(&1 not in before["open"])) do
+      nil ->
+        :ok
+
+      task ->
+        Logger.info(
+          "npc_task cid=#{s.context.cid} event=step task=#{task["id"]} kind=#{kind} " <>
+            "outcome=#{inspect(outcome)} waiting=#{task["waiting"]}"
+        )
+    end
+  end
+
+  # K-3 的两行新信息：只读结构化字段——World 经历的出手者 `"actor"`、对话经历存的原消息里**对我说话**的人
+  # （与 Runtime 唤醒同一口径 `Dialogue.direct?/2`：别人叫的是我；旁听别人之间的话、我自己说的都不算）。
+  defp task_news(s, entry, tasks) do
+    cond do
+      "kind:event" in entry["tags"] ->
+        news(s, tasks, entry["actor"], "event")
+
+      speaker = addressed_by(entry, s.context.cid) ->
+        news(s, tasks, speaker, "heard")
+
+      true ->
+        tasks
+    end
+  end
+
+  # 对话经历存的原消息是过了 JSON 的字符串键（`Dialogue.episode/3`）；取回判定要的两个字段交给 `Dialogue.direct?/2`。
+  defp addressed_by(%{"speech" => %{"speaker_id" => speaker, "target_id" => target}}, cid) do
+    if Dialogue.direct?(%{speaker_id: speaker, target_id: target}, cid), do: speaker
+  end
+
+  defp addressed_by(_entry, _cid), do: nil
+
+  defp news(s, tasks, cid, reason) do
+    noted = Tasks.note_news(tasks, cid, reason)
+
+    for task <- noted["open"], task not in tasks["open"] do
+      Logger.info(
+        "npc_task cid=#{s.context.cid} event=news task=#{task["id"]} reason=#{reason} actor=#{cid}"
+      )
+    end
+
+    noted
+  end
+
+  # 每帧观察上的到期 / 停滞（`Tasks.tick/3`；便宜：至多 3 个任务）。没有变化不写库；有变化时经历经 `accept/3` 进尾部、保存。
+  # 行没加载、不规划、活动经历在等写盘、观察里没有游戏钟时不查。保存失败行不变（错误经 `save/2` 可见），下一帧再算。
+  defp tick_tasks(%{row: nil} = s), do: s
+  defp tick_tasks(%{activity_pending: pending} = s) when pending != nil, do: s
+
+  defp tick_tasks(%{observation: %{world_time: %{day: day}}} = s) do
+    with true <- planning?(s),
+         tasks = s.row["tasks"],
+         {ticked, episodes} when ticked != tasks <- Tasks.tick(tasks, day, s.now.()) do
+      {row, next} = accept(s, %{s.row | "tasks" => ticked}, episodes)
+
+      case save(s, seal(row, false)) do
+        {:ok, s} ->
+          log_task_episodes(s, episodes)
+          s |> automatic() |> follow_round(next)
+
+        {:error, s} ->
+          s
+      end
+    else
+      _ -> s
+    end
+  end
+
+  defp tick_tasks(s), do: s
+
+  # 开 / 关任务的经历各一行日志（`npc_task … event=opened|dropped|expired task=`）。
+  defp log_task_episodes(s, episodes) do
+    for %{"id" => "task:" <> rest} <- episodes do
+      [event | id] = rest |> String.split(":") |> Enum.reverse()
+      id = id |> Enum.reverse() |> Enum.join(":")
+      Logger.info("npc_task cid=#{s.context.cid} event=#{event} task=#{id}")
+    end
+
+    :ok
+  end
+
+  # 给选择的任务数据（心智快照与 observe 共用）：不规划的形态为 []。调用方保证行已加载。
+  defp task_column(s), do: if(planning?(s), do: Tasks.column(s.row["tasks"]), else: [])
+
+  defp observe_tasks(s) do
+    if planning?(s), do: %{row: s.row && s.row["tasks"]}
+  end
 
   # 给选择的日计划数据（心智快照与 observe 共用）：`DayPlan.column/3` 对持久行与此刻观察里的游戏钟。调用方保证行已加载。
   defp plan_column(s) do

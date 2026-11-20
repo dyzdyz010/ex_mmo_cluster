@@ -3,11 +3,11 @@ Code.require_file("reflection_fixtures.exs", __DIR__)
 
 defmodule NpcServer.LifeFixtures do
   @moduledoc """
-  只测试：Life 集成用例共用的替身、profile 与真实 World 动作（`npc_life_test.exs` 与 `npc_life_day_plan_integration_test.exs`）。
-  替身只替 HTTP 适配器（`ReflectHindsight`）与写日记的函数（`reflect_profile/3`）；`damage/4` 经 World 正式入口做出
-  “别人打掉我放的一格”的真实事务。
+  只测试：Life 集成用例共用的替身、profile 与真实 World 动作（`npc_life_test.exs`、`npc_life_day_plan_integration_test.exs`、
+  `npc_life_tasks_integration_test.exs`）。替身只替 HTTP 适配器（`ReflectHindsight`）与写日记的函数（`reflect_profile/3`）；
+  `damage/4` 经 World 正式入口做出“别人打掉我放的一格”的真实事务；`ended/3` 经 Selector 的产品函数做出活动经历。
   """
-  alias NpcServer.NpcWorld
+  alias NpcServer.{NpcWorld, Selector}
   alias VoxelRegion.World
 
   defmodule ReflectHindsight do
@@ -162,6 +162,46 @@ defmodule NpcServer.LifeFixtures do
         )
         |> Map.put(:action, 1)
       )
+  end
+
+  @doc """
+  一项活动结束时 Runtime 交给 Life 的经历（`Selector.experience/1` 的结果）：经 Selector 的产品函数做出——先记下这次所问的
+  内容（`Selector.asked/2`：候选是登记项生成器给出的那一组再加上选中的这一份）→ 选定 `candidate`（`chose/3`）→ 结局
+  （`ended/2`：`:completed | {:failed, 动作, 原因}`，或 `{:interrupted, 原因}` 经 `interrupted/2`）→ 经历。
+  `candidate` 是生成器给出的那一份（登记项、说话、对人的项），`Selector.ask/4` 选中时就是把它整份冻结进选择。
+  """
+  def ended(profile, candidate, result) do
+    selection = %{
+      activity: candidate.name,
+      candidate: candidate,
+      trigger: "start",
+      confidence: 0.6,
+      latency_ms: 1,
+      recall_ms: 1,
+      model: "test"
+    }
+
+    chosen =
+      Selector.new()
+      |> Selector.asked(%{
+        state: "",
+        recall_queries: [],
+        recall_ms: 1,
+        candidates: Enum.uniq(NpcServer.Offers.registered(profile.activities, []) ++ [candidate])
+      })
+      |> Selector.chose(selection, 0)
+
+    state =
+      case result do
+        {:interrupted, reason} ->
+          Selector.interrupted(chosen, reason)
+
+        result ->
+          {_trigger, state} = Selector.ended(chosen, result)
+          state
+      end
+
+    Selector.experience(state)
   end
 
   @doc "角色替身（World 单元测试的那种，站在 (4.5, 65.5, 8.5)）：同一测试进程里同一角色只起一个。"

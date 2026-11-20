@@ -133,4 +133,46 @@ defmodule NpcServer.NpcLifeTasksPromptTest do
              "— Ask for stone.\n\nMy other open tasks:\nKeep the hut safe — next: guard_hut\n" <>
                "Learn to fish — no steps planned\n\nWhy I am thinking about it now:"
   end
+
+  # T-1a：K-3 的两行新信息（任务里的人对我说话、对我的东西做了什么）各一句（原创措辞，未离线测）。
+  test "新信息两种：任务里的人对我说话 heard、event 落在任务里的人身上 event" do
+    assert Prompt.user_message(@materials, task([], "heard"), %{}) =~
+             "Why I am thinking about it now: Someone this task is about has spoken to me."
+
+    assert Prompt.user_message(@materials, task([], "event"), %{}) =~
+             "Why I am thinking about it now: Someone this task is about has done something to what is mine."
+  end
+
+  # T-1a：每日回顾用户消息里“开着的任务”“最近关掉的任务”两块的各行（块的标题与位置在 `DayPlan.Prompt.user_message/2`）。
+  # 每行以任务 id 开头（模型写 `drop` 要用）；开着的写当头步与最近一步的结局（写法同推进，`Mind.result/1`）。
+  test "回顾的两块：开着的任务各一行（id、目标、当头步、最近一步的结局），关掉的各一行（id、目标、怎样关的）" do
+    failed = %{
+      "kind" => "build_hut",
+      "object" => nil,
+      "outcome" => "failed",
+      "act" => "build",
+      "reason" => "insufficient_material"
+    }
+
+    empty = %{"id" => "t3:2", "goal" => "Learn to fish", "steps" => [], "log" => []}
+
+    assert Prompt.review_open_lines([task([failed], "failed"), empty], %{7 => "Corvin"}) == [
+             "- t3:1: Rebuild my hut — next: speak_to Corvin (actor 7); " <>
+               "last step: build_hut: failed (build: I did not have enough material for it)",
+             "- t3:2: Learn to fish — no steps planned; nothing done yet"
+           ]
+
+    closed =
+      for {result, n} <- Enum.with_index(~w(done dropped expired stuck), 1),
+          do: %{"id" => "t2:#{n}", "goal" => "Goal #{n}", "result" => result}
+
+    assert Prompt.review_closed_lines(closed) == [
+             "- t2:1: Goal 1 — finished",
+             "- t2:2: Goal 2 — given up",
+             "- t2:3: Goal 3 — ran out of time",
+             "- t2:4: Goal 4 — set aside, stuck"
+           ]
+
+    assert Prompt.review_open_lines([], %{}) == []
+  end
 end

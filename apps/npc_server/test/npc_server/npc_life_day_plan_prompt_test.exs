@@ -1,11 +1,12 @@
 defmodule NpcServer.NpcLifeDayPlanPromptTest do
   @moduledoc """
-  只测试：规划提示词 `NpcServer.Life.DayPlan.Prompt` 的契约——系统提示词与用户消息与 S1-R8 真实发出的请求体逐字节相同，
-  以及两个后加的可选块（今天已有的意图、旧 `wants`）的位置与“为空等于不传”。
+  只测试：每日回顾（原日计划）的提示词 `NpcServer.Life.DayPlan.Prompt` 的契约——系统提示词与 K-0 复测真实发出的回顾请求
+  逐字节相同；用户消息在没有可选块时与 S1-R8 真实发出的逐字节相同；四个可选块（今天已有的意图、旧 `wants`、开着的任务、
+  最近关掉的任务）的位置与“为空等于不传”。
 
-  金标是 S1-R8 存下的两份真实请求体（`R1-r1`、`R5-r1`，来源见 `test/support/fixtures/day_plan/README.md`）：
-  测试从请求体里取出人格卡、词表（`activities.json`）与材料（把用户消息拆回 `Reflection.user_message/2` 的
-  第二个参数那张 map，拆法见 `materials/1`），再让产品函数重新拼，断言与存档字节相同。
+  金标（来源见 `test/support/fixtures/day_plan/README.md`）：系统提示词是 K-0 复测的两份回顾请求（`review-request-R1/R5.json`，
+  带人格卡与词表）；用户消息是 S1-R8 存下的两份真实请求体（`requests-R1/R5.json`）：测试把用户消息拆回
+  `Reflection.user_message/2` 的第二个参数那张 map（拆法见 `materials/1`），再让产品函数重新拼，断言与存档字节相同。
   """
   use ExUnit.Case, async: true
 
@@ -17,20 +18,7 @@ defmodule NpcServer.NpcLifeDayPlanPromptTest do
 
   defp request(name), do: fixture("requests-#{name}.json")
 
-  defp activities do
-    for %{"name" => name, "criterion" => criterion} <- fixture("activities.json"),
-        do: %{name: name, criterion: criterion}
-  end
-
-  defp system_of(request), do: request["system"]
   defp user_of(request), do: request["messages"] |> hd() |> Map.fetch!("content")
-
-  # 系统提示词第一行 `You are this person: ` 之后的原文。
-  defp character(request) do
-    [first | _] = String.split(system_of(request), "\n")
-    "You are this person: " <> character = first
-    character
-  end
 
   # 把真实用户消息拆回 `materials`：按 `\n\n` 切三块材料与末行，各块去掉标题、编号与前缀。
   defp materials(request) do
@@ -63,17 +51,48 @@ defmodule NpcServer.NpcLifeDayPlanPromptTest do
         {:ok, request: request, materials: materials(request)}
       end
 
-      test "系统提示词逐字节相同", %{request: request} do
-        assert Prompt.system_prompt(character(request), activities()) == system_of(request)
-      end
-
-      test "用户消息（两个可选块都空）逐字节相同", %{request: request, materials: materials} do
+      test "用户消息（可选块都空）逐字节相同", %{request: request, materials: materials} do
         assert Prompt.user_message(materials) == user_of(request)
       end
 
-      test "两个可选块为空列表时与不传相同", %{materials: materials} do
-        assert Prompt.user_message(materials, today: [], wants: []) ==
+      test "可选块为空列表时与不传相同", %{materials: materials} do
+        assert Prompt.user_message(materials,
+                 today: [],
+                 wants: [],
+                 open_tasks: [],
+                 closed_tasks: []
+               ) ==
                  Prompt.user_message(materials)
+      end
+
+      # 任务层 T-1a（K-5）：开着的任务、最近关掉的任务两块，在今天的意图与旧 wants 之后、末行之前；各行由
+      # `Tasks.Prompt.review_open_lines/2` / `review_closed_lines/1` 渲染（带任务 id），本模块只加标题与位置。
+      test "四块都给：今天的意图、旧 wants、开着的任务、最近关掉的任务，依次在三块材料之后、末行之前", %{
+        request: request,
+        materials: materials
+      } do
+        message =
+          Prompt.user_message(materials,
+            today: ["guard_hut: 0 of 1 done, by 20:00"],
+            wants: ["speak to Tobin"],
+            open_tasks: ["- t3:1: Rebuild my hut — next: gather_stone; nothing done yet"],
+            closed_tasks: ["- t2:1: Ask Corvin why — finished"]
+          )
+
+        {materials_part, last} = split_last(user_of(request))
+
+        assert message ==
+                 Enum.join(
+                   [
+                     materials_part,
+                     "What I meant to do today, as it stands:\nguard_hut: 0 of 1 done, by 20:00",
+                     "Things I wanted to do but could not yet:\nspeak to Tobin",
+                     "My open tasks (by id):\n- t3:1: Rebuild my hut — next: gather_stone; nothing done yet",
+                     "Tasks I closed recently:\n- t2:1: Ask Corvin why — finished",
+                     last
+                   ],
+                   "\n\n"
+                 )
       end
 
       test "只给今天的意图：多出一块，在三块材料之后、末行之前", %{request: request, materials: materials} do
@@ -116,21 +135,22 @@ defmodule NpcServer.NpcLifeDayPlanPromptTest do
     end
   end
 
-  test "候选每个一行 `- <name>: <criterion>`，次序同词表，多余的键忽略" do
-    prompt =
-      Prompt.system_prompt("Garen, a builder.", [
-        %{name: "a_one", criterion: "Do the first thing.", extra: 1},
-        %{name: "b_two", criterion: "Do the second thing."}
-      ])
+  # 任务层 T-1a：回顾是唯一的规划调用，系统提示词金标换成 K-0 复测里产品渲染、真实发出的两份回顾请求（同一人格卡；请求里存的
+  # 就是那次交给模板的词表，含点名 Corvin 的说话一行；来源见 `test/support/fixtures/day_plan/README.md`）。
+  for name <- ["R1", "R5"] do
+    test "回顾系统提示词与 K-0 复测 #{name} 真实发出的逐字节相同" do
+      request = fixture("review-request-#{unquote(name)}.json")
 
-    assert prompt =~ "You are this person: Garen, a builder.\n"
-    assert prompt =~ "\n- a_one: Do the first thing.\n- b_two: Do the second thing.\n"
-    refute prompt =~ "<activities>"
-    refute prompt =~ "<character>"
-    refute String.ends_with?(prompt, "\n")
+      vocabulary =
+        for %{"kind" => kind, "criterion" => criterion, "objects" => objects} <-
+              request["vocabulary"],
+            do: %{kind: kind, criterion: criterion, objects: objects}
+
+      assert Prompt.review_system_prompt(request["character"], vocabulary) == request["system"]
+    end
   end
 
-  describe "每日回顾的新模板（任务层决策稿 K-5；K-0 离线用，T-1 才接进 Life）" do
+  describe "每日回顾的模板（任务层决策稿 K-5）" do
     # 词表与 Round 交进来的同形：静态种类、说话（对象是人）。
     @vocabulary [
       %{kind: "guard_hut", criterion: "Stand beside the small hut for a while.", objects: %{}},
