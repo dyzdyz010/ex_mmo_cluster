@@ -153,3 +153,10 @@ flowchart LR
   **E9 落地待办**：hindsight 服务并进青岚自己的 compose（`-p voxim_qinglan`，卷 `voxim_qinglan_hindsight_data`）、key 进 `release.env` 的接法、备份进 cutover、核对主机端口 24650 空闲与该主机 compose 版本能否展开 `${HINDSIGHT_PORT}`、app 限额与守护替换；控制台进程（9999）关不关待定（关掉省内存但要重测）。
 - 2026-11-20：**更正**：上条“已压实为检查点”是统筹会话的推断，错。选点子会话读代码与导出确认：现行 World 的世界真值在 M2 页表（`voxel_safe_prefix` / `voxel_world_globals` / `voxel_page_segment` / `voxel_identity_locator`），启动走 `World.restore_pages/1` 读前缀与页、只重放前缀之后的日志；`PageStore.collect` 删掉 ≤ 前缀的日志行，日志只是滚动尾巴。导出里青岚 CV 34 行全是 kind 3 热模拟元数据，没有编辑、建筑、余额与保留区 / 认领区。**只凭这份导出选点不成立**，选点停在恢复路径核对；生成基线与生产一致（worldgen `620378ec…`、kernel `9ef4581c…`、properties `e63744e2…`）。证据 `.demo/observe/npc-e8-20261120/site/plan.md`。需另取页表导出（待用户同意）。
 - 2026-11-20：生产只读导出第 3 步（用户同意，原话：“同意，之后都同意，不要问我了”）：同一快照导出 5 张体素页表 / 日志表，46.6 MB，只含这 5 张表；清单见 `.demo/observe/npc-e8-20261120/README.md`。用户此后授权 E8 起的后续步骤不再逐步询问（统筹会话仍在对话里先说明再做；写生产 / 部署前照样先报）。
+- 2026-11-20：**E8 离线选点完成**（还原第 3 步导出的生产页表，现行 release `02bcc8f0` 走前缀路径起 World：`voxel_page_restore prefix=3625862 suffix=9`，就绪 seq 3625871，两 Scene 起来）。
+  保留区经产品读路径读全：庭院 (0,40)–(47,87)、出生前庭 (0,20)–(48,39)、如园、1 处玩家认领 (4,137)–(5,137)；编辑盒 x −64..128、y 448..640、z −64..128。
+  方案：全部在 Scene 1、出生前庭以西的地台（x ≤ −1.5），彼此 ≤ 31 m（`build` 不先走路须在 8 m 内、`gather` 起步须在 32 m 内，出生点南北 32 m 内无石料，只剩西侧）；3 个出生点、5 个去处、采集盒（材料 11，24 格天然石）、建造锚点，全部过产品判据。
+  另发现：生产属性目录是 `e6db8dee…`，不是主检出 RUNBOOK:100 记的 `e63744e2…`（用旧目录 World 起不来），E9 前更正 RUNBOOK。证据 `.demo/observe/npc-e8-20261120/site/plan.md`、`site.json`、`site-alt-steps.json`，判据脚本 `e8_site.exs`（登记前对新导出重跑 `calc`）。资源：Windows UDP 88 不变，4266 记录号 128241 不变，release / 私有库 / 私有目录全部清理。
+- 2026-11-20：**E8 统筹裁定**（用户授权统筹自行推进，原话：“之后都同意，不要问我了”；以下两条用户可推翻）：
+  ① 建造用纯石料定义 `324e53ee`（作者定义 “Jiangnan Steps”，庭院石阶，锚点微格 [−40,4135,192]）代替 `079f`（实为园林构件 “ScholarRock Clipped 02”、需 252 微格石灰石，编辑盒内无天然石灰石、生产不能补料，建造必然 `insufficient_material`）。活动名与 criterion 按石阶写，不叫小屋。理由：happy path 上唯一能建成的现成定义；另作纯石料小屋是新内容，冻结期不做。
+  ② 采集用射程内唯一的石料——布局给玩家的作者料堆 Stone A / B（不会再生，约 3 次采集后采光，之后 `gather` 以 `exhausted` 结束），criterion 写“只在不够建造时才采”；不换到约 74 m 外未核的天然陡坡（会把活动区拉成两片）。料堆消耗与玩家影响由 E8b 长跑观察。
