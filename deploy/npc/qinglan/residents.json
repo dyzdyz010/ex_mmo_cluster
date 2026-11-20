@@ -63,7 +63,7 @@
   "residents": [
     {
       "name": "石砚",
-      "spawn": [-2.5, 516, 26.5],
+      "spawn": [-2.5, 518, 26.5],
       "who": "Shi Yan, a stonemason",
       "persona": {
         "traits": {
@@ -81,7 +81,7 @@
     },
     {
       "name": "柳莺",
-      "spawn": [-2.5, 516, 25.5],
+      "spawn": [-2.5, 518, 25.5],
       "who": "Liu Ying, a sociable villager",
       "persona": {
         "traits": {
@@ -99,7 +99,7 @@
     },
     {
       "name": "林眺",
-      "spawn": [-8.5, 516, 26.5],
+      "spawn": [-8.5, 518, 26.5],
       "who": "Lin Tiao, a curious loner",
       "persona": {
         "traits": {
