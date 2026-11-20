@@ -469,3 +469,11 @@ flowchart LR
     改动文件过 `--check-formatted`（`t1b-review-format-check-1.log` 是格式化之前那次，两个测试文件换行；`-2` / `-3` 通过）。跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
   - 文档：`Life.Tasks` moduledoc（推进一节加“比对后采用”、`counts` 加 `stale`、`basis/2`、`adopt/6`、`due/2`）、`Life` moduledoc（任务推进、日志）、
     `apps/npc_server/lib/npc_server/README.md` 任务层一节（流程图、持久行、落栏、日志、排队）、任务集成测试与任务单测 moduledoc、`fixtures/tasks/README.md`。
+- 2026-11-20（第二十三个统筹会话）：**T-1 真实短场景（K-6 按 T-1 能力重设）**。规格、判定规则与统筹裁定见 `.demo/observe/npc-task-t1-live-20261119/plan.md`（正文 + 附录 A–E）；用户定“服务端 + 脚本角色”、“拆屋起算 10 分钟”、未判定时“照常冻结”。
+  - `task1-01`（08:45Z，release `6dd4db70`）：准备阶段失败——驱动缺陷（`prepare-site.exs` 把含函数的 actor 上下文放进 RPC 结果，JSON 编码失败），未登记 NPC。修复后五个片段在真实 release 上离线排练通过。原判保留。
+  - `task1-02`（09:45Z）：统筹撤起跑器不彻底而**意外起跑**（旧 release、无偏移、驱动版本混杂）。原判 G2 False（判定器只认采样的实例格数，建屋 5.6 s 后即被拆，结构性读不到）；修判定器（附录 E）后离线复判 `rejudge-1.json` 全 True。只作佐证。
+    读数：拆屋触发的事件回顾出向达 4096 被截断（`finish_reason=length`），之后当日回顾额度用完未再起——K-9 的截断风险在实跑出现一次。
+  - **`task1-03`（10:29Z，release `02bcc8f0`，Test-only 世界钟偏移 1650 s、登记在游戏 06:00）：通过**——G0–G3、B1–B6 全 True，`freeze_allowed=True`，资源与凭据通过。
+    任务链：日回顾开 `t611:1`（重建）→ 步骤失败 → 推进采用 continue → 再失败 → 推进采用 drop；拆屋触发的事件回顾开 `t611:2`（点名 Corvin）→ 两步完成 → `steps_done` 推进采用 drop。回顾 2 次、推进 3 次，应答无截断。
+    资源：UDP 84 → 峰 93 → 88，Tcpip 4266 记录号 128241 未变；花费 $0.108（产品 $0.037、Hindsight $0.072）。证据 `runs/task1-03/`（`verdict.json`、`resources.json`、`release.log`）。
+  - 遗留（上线后或另议）：回顾 / 推进出向 4096 的截断比例要随实跑观察；判定器读实例格数应更早取样（附录 E 只放宽了来源）；`npc_plan` / `npc_task` 的 `end` 行在 DeepSeek 下 token 字段恒为 nil。
