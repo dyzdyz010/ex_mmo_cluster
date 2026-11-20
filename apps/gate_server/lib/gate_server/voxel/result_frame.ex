@@ -19,6 +19,10 @@ defmodule GateServer.Voxel.ResultFrame do
 
   `reason` 会 `inspect/1` 成可诊断字符串下行，不做归一化——客户端与 CLI 都依赖原始
   reason 区分业务级拒绝。
+
+  唯一例外是施法的计价层数值检查违规 `{:rejects, [检查名]}`（World 在施放的前摇开始或出手时给出，Hello 45，
+  决策稿 slice3-protocol §3.4–3.5）：下行为 `"rejects:<检查名,…>"`，检查名按 0x83 `rejects` 位掩码的同一位序
+  （`MmoContracts.Voxel.Codec.spell_rejects_reason/1`），不带 `inspect` 的冒号前缀。
   """
   @spec error(request(), term()) :: tuple()
   def error(request, reason) do
@@ -30,9 +34,14 @@ defmodule GateServer.Voxel.ResultFrame do
        result_code: :rejected,
        result_ref: 0,
        authoritative: [],
-       reason: inspect(reason)
+       reason: reason_text(reason)
      }}
   end
+
+  defp reason_text({:rejects, checks}),
+    do: MmoContracts.Voxel.Codec.spell_rejects_reason(checks)
+
+  defp reason_text(reason), do: inspect(reason)
 
   @doc "体素世界事务成功回执：`result_ref` 取提交的 seq（或调用方给定的引用），`reason` 默认 \"ok\"。"
   @spec accepted(request(), non_neg_integer(), String.t()) :: tuple()

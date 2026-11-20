@@ -170,15 +170,73 @@ defmodule MmoContracts.Voxel.Codec do
   def intent?({:voxel_spell_intent, request}), do: spell_intent?(request)
 
   @doc """
-  魔法施法意图 0x82（Hello 25），大端，与 0x7D 工具意图同一目标表示：
-  rid u64、client_intent_seq u32、scene u64、action u8（0 报价 / 1 施放）、魔法目录 digest 32B、
-  眼睛方向 f64×3（单位向量）、目标微格 i64×3、incarnation u64、owner {birth u64, occurrence u32}、material u16、
-  granularity u8（0..2）、目标拟态 id {seq u64, n u32}（增量 2，驱散用；其余程序填 0）、程序 u16 长度 + UTF-8 JSON。
-  程序内容由 `VoxelRegion.Magic.Program` 在 World 裁决。
+  魔法施法意图 0x82 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.1）的取值约束，线解码与进程内调用方
+  （`NpcServer.WorldRequest`，经 `intent?/1`）共用。帧 127 + n B，大端，与 0x7D 工具意图同一目标表示：
+
+  | 偏移 | 字段 | 类型 |
+  |---|---|---|
+  | 0 | opcode | u8 = 0x82 |
+  | 1 | `request_id` | u64 |
+  | 9 | `client_intent_seq` | u32 |
+  | 13 | `logical_scene_id` | u64 |
+  | 21 | `action` | u8：0 报价、1 施放、2 取消、3 改向 |
+  | 22 | `catalog_digest` | 32 B（目录 v5 文件字节的 sha256） |
+  | 54 | `direction` | f64 × 3，单位向量（范数 ∈ (0.99, 1.01)） |
+  | 78 | `micro` | i64 × 3，准星目标微格 |
+  | 102 | `incarnation` | u64 |
+  | 110 | `owner` | birth u64、occurrence u32 |
+  | 122 | `material` | u16 |
+  | 124 | `granularity` | u8（0..2） |
+  | 125 | `program_len` | u16 |
+  | 127 | `program` | n B，IR v2 字节 |
+
+  v1 偏移 125–136 的 12 B 拟态 id 已删除（驱散改为区域，〈调〉的目标走程序内的 `sid96`）。
+  这里只判帧形与上表的取值；n 的上下限与程序内容归 World 的 `VoxelRegion.Magic.Program`（唯一信任边界）。
   """
   def spell_intent?(%{action: action, direction: {dx, dy, dz}, granularity: granularity}) do
     norm = dx * dx + dy * dy + dz * dz
     action in [0, 1, 2, 3] and granularity in [0, 1, 2] and norm > 0.99 and norm < 1.01
+  end
+
+  # 计价层数值检查（设计 §3.3）的线上位序：0x83 `rejects` 位掩码的第 0–4 位与 0x68 "rejects:<名,…>" 的排列
+  # 同用这一张表，客户端用同一张“检查名 → 提示文案”表处理两种来源（决策稿 §3.5）。
+  @spell_reject_checks [:capacity, :domain, :first_tick, :ambient_floor, :thermal_step]
+
+  @doc """
+  计价层数值检查名的线上位序：T5 `capacity`、T6 `domain`、T13 `first_tick`、T14 `ambient_floor`、
+  T15 `thermal_step`，下标即 0x83 `rejects` 的位号。
+  """
+  def spell_reject_checks, do: @spell_reject_checks
+
+  @doc """
+  检查名列表 → 0x83 `rejects` 位掩码（整数；编码端以 f64 承载）。空表为 0；表外的名字显式失败（`ArgumentError`）。
+  """
+  def spell_rejects_mask(checks) do
+    checks
+    |> Enum.map(&Bitwise.bsl(1, spell_reject_bit(&1)))
+    |> Enum.reduce(0, &Bitwise.bor/2)
+  end
+
+  @doc """
+  检查名列表 → 0x68 拒绝原因串 `"rejects:<检查名,…>"`（按 `spell_reject_checks/0` 的位序、去重，以逗号连接；
+  决策稿 §3.4–3.5）。不带冒号前缀，与 `inspect` 形式的其他拒绝（如 `":no_target"`）有意区分。
+  空表与表外名字显式失败（`ArgumentError`）：没有违规就不该有这条拒绝。
+  """
+  def spell_rejects_reason([_ | _] = checks) do
+    Enum.each(checks, &spell_reject_bit/1)
+
+    "rejects:" <>
+      Enum.map_join(Enum.filter(@spell_reject_checks, &(&1 in checks)), ",", &Atom.to_string/1)
+  end
+
+  def spell_rejects_reason(checks),
+    do: raise(ArgumentError, "rejects 原因串至少要有一个检查名，收到 #{inspect(checks)}")
+
+  defp spell_reject_bit(check) do
+    case Enum.find_index(@spell_reject_checks, &(&1 == check)) do
+      nil -> raise ArgumentError, "未知的计价数值检查名 #{inspect(check)}"
+      bit -> bit
+    end
   end
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
@@ -210,8 +268,8 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(
         <<0x82, rid::64, seq::32, scene::64, action::8, digest::binary-size(32), dx::float-64,
           dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64, incarnation::64,
-          birth::64, occurrence::32, material::16, granularity::8, semblance_seq::64,
-          semblance_n::32, n::16, program::binary-size(n)>>
+          birth::64, occurrence::32, material::16, granularity::8, n::16,
+          program::binary-size(n)>>
       ) do
     request = %{
       request_id: rid,
@@ -225,7 +283,6 @@ defmodule MmoContracts.Voxel.Codec do
       owner: {birth, occurrence},
       material: material,
       granularity: granularity,
-      semblance: {semblance_seq, semblance_n},
       program: program
     }
 
@@ -468,14 +525,26 @@ defmodule MmoContracts.Voxel.Codec do
     {:ok, <<0x81, t.request_id::64, t.seq::64, t.material::16, t.balance::64, t.cost::32>>}
   end
 
-  # 魔法增量 1（Hello 24）施法者状态 0x83，大端：request_id u64（登录下发为 0）、world seq u64、
-  # 能量 J、容量 J、相干度、最近一次报价总支出 J、报价结构权重 S、本次实际支出 J（报价与登录为 0），
-  # Hello 28 末尾追加本次报价的前摇 s（非报价推送为 0），均为 f64。
+  # 施法者状态 0x83 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.2），161 B，大端：
+  #
+  #   0 opcode u8 = 0x83 | 1 request_id u64（登录与身体推送为 0）| 9 seq u64（World 事务号）
+  #   17 energy_j | 25 capacity_j | 33 resolution_eff（Ω_eff，原 coherence）| 41 quote_j
+  #   49 quote_s（S·P，原 S）| 57 spent_j（本次实际扣除，只发施法者本人）| 65 quote_windup_s
+  #   报价扩展（v2 追加 11 × f64）：73 x0 | 81 x_star | 89 e_min_j | 97 p_maint_w | 105 life_s | 113 detect_w
+  #   121 fail_step | 129 rejects（位掩码，见 `spell_rejects_mask/1`）| 137 entries_charge | 145 entries_spoof
+  #   153 first_tick_min_j
+  #
+  # 17 起全部是 f64；fail_step、rejects、entries_* 是整数值，以 f64 承载。前 73 B 位置与 v1 相同。
+  # 扩展段只在报价回复（action 0）中非零——这是 World 的填写规则，编码端只承载，不替调用方补 0：
+  # 缺字段即显式失败（KeyError）。`rejects` 传检查名列表，按 `spell_reject_checks/0` 的位序编码。
   def encode({:voxel_caster_state, t}) do
     {:ok,
      <<0x83, t.request_id::64, t.seq::64, t.energy_j::float-64, t.capacity_j::float-64,
-       t.coherence::float-64, t.quote_j::float-64, t.quote_s::float-64, t.spent_j::float-64,
-       t.quote_windup_s::float-64>>}
+       t.resolution_eff::float-64, t.quote_j::float-64, t.quote_s::float-64, t.spent_j::float-64,
+       t.quote_windup_s::float-64, t.x0::float-64, t.x_star::float-64, t.e_min_j::float-64,
+       t.p_maint_w::float-64, t.life_s::float-64, t.detect_w::float-64, t.fail_step::float-64,
+       spell_rejects_mask(t.rejects)::float-64, t.entries_charge::float-64,
+       t.entries_spoof::float-64, t.first_tick_min_j::float-64>>}
   end
 
   def encode({:voxel_property_state, t}) do
@@ -1361,71 +1430,111 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_semblances(_, _, _), do: {:error, :invalid_semblance}
 
   @doc """
-  施放前摇（协议 27，Voxim Docs/Magic.md §13.6）：待施放增量 `%{caster => 记录}` 的线字节，放在 PropertyBatch 末尾
-  （拟态之后）。大端、按 caster 升序且唯一，变长：
+  施放记录 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.3）：待施放增量 `%{caster => 记录}` 的线字节，
+  放在 PropertyBatch 末尾（拟态之后）。大端、按 caster 升序且唯一，变长（定长部分 46 B，每步 17 B）：
 
-      caster:u64, live:u8 (1 前摇中 / 0 已结算), outcome:u8 (0 成功 / 1 走火 / 2 结算时拒绝；live=1 时为 0),
-      t0_us:u64, origin_x/y/z:f64, n:u8, n × (adjust_s:f64, inject_s:f64), program_len:u16, program bytes
+      caster:u64, live:u8 (1 前摇中 / 0 已结算),
+      outcome:u8 (0 建成 / 1 建构在第 k 步中断 / 2 结算时拒绝、不扣能；live = 1 时为 0),
+      fail_step:u8 (outcome = 1 时为 k，1 起；其余为 0),
+      t0_us:u64, origin_x/y/z:f64,
+      n:u8, n × (part_index:u8, adjust_s:f64, inject_s:f64),
+      program_len:u16, program bytes (IR v2)
 
+  记录形状：
+
+  - 前摇中 `%{live: 1, t0_us:, origin: {x, y, z}, steps: [%{part_index:, adjust_s:, inject_s:}], program:}`。
+    `steps` 按服务端构造顺序（设计 §3.5）排列；`part_index` 是本步部件在规范字节中的 0 起序号，与签名、报价
+    `steps[].part_index` 同一编号，n 步的 `part_index` 必须是 0..n−1 的一个排列。编码端只取这三个键，可以直接
+    传 `VoxelRegion.Magic.Cost` 报价的 `steps`。
+  - 已结算 `%{live: 0, outcome:, fail_step:}`：其余字段全为 0（n = 0、program_len = 0）。
+
+  实际扣除量不进本记录（记录随批次广播，扣除量会泄露余额）；它只经 0x83 `spent_j` 发给施法者本人（v2.11 W3）。
   t0_us 是服务器时间线 `MmoContracts.ServerTime`（与拟态 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
   origin 是施法者手边位置（canonical 米，Y-up）；program 为施放意图里的规范程序字节原样。
-  已结算记录除 caster、live、outcome 外全为 0（n = 0、program_len = 0）。
+
+  违反上述约束的记录（`part_index` 不是排列、步数不在 1..255、`fail_step` 与 `outcome` 不符）编码时显式失败
+  （`ArgumentError`），不产生客户端会拒收的字节。
   """
   def encode_casts(delta) do
     for {caster, c} <- Enum.sort(delta), into: <<>> do
       case c do
-        %{live: 0, outcome: outcome} ->
-          <<caster::64, 0::8, outcome::8, 0::64, 0.0::float-64, 0.0::float-64, 0.0::float-64,
-            0::8, 0::16>>
+        %{live: 0, outcome: outcome, fail_step: fail_step} ->
+          settled_fail_step?(outcome, fail_step) ||
+            raise ArgumentError,
+                  "施放记录 #{caster}：outcome #{inspect(outcome)} 与 fail_step #{inspect(fail_step)} 不符"
+
+          <<caster::64, 0::8, outcome::8, fail_step::8, 0::64, 0.0::float-64, 0.0::float-64,
+            0.0::float-64, 0::8, 0::16>>
 
         %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program} ->
-          <<caster::64, 1::8, 0::8, t0::64, x::float-64, y::float-64, z::float-64,
+          part_permutation?(steps) ||
+            raise ArgumentError,
+                  "施放记录 #{caster}：part_index #{inspect(Enum.map(steps, & &1.part_index))} " <>
+                    "不是 0..n−1 的排列（n 须在 1..255）"
+
+          <<caster::64, 1::8, 0::8, 0::8, t0::64, x::float-64, y::float-64, z::float-64,
             length(steps)::8,
-            for({a, i} <- steps, into: <<>>, do: <<a::float-64, i::float-64>>)::binary,
-            byte_size(program)::16, program::binary>>
+            for(
+              %{part_index: p, adjust_s: a, inject_s: i} <- steps,
+              into: <<>>,
+              do: <<p::8, a::float-64, i::float-64>>
+            )::binary, byte_size(program)::16, program::binary>>
       end
     end
   end
 
   @doc """
-  `encode_casts/1` 的逆。已结算记录按同一布局解析，只取 caster、live、outcome（其余字段编码端写 0，解码端不用）；
-  前摇中记录要求 outcome 0、至少 1 步、各段时长非负、程序非空。
+  `encode_casts/1` 的逆，返回 `{:ok, %{caster => 记录}}` 或 `{:error, :invalid_cast}`。
+  已结算记录按同一布局解析，只取 caster、live、outcome、fail_step（其余字段编码端写 0，解码端不用）；
+  outcome 1 要求 fail_step ≥ 1，outcome 0 / 2 要求 fail_step = 0。前摇中记录要求 outcome 与 fail_step 为 0、
+  至少 1 步、各段时长非负、程序非空。任何记录的 `part_index` 都必须是 0..n−1 的排列。
   """
   def decode_casts(bytes), do: decode_casts(bytes, nil, %{})
 
   defp decode_casts(<<>>, _, acc), do: {:ok, acc}
 
   defp decode_casts(
-         <<caster::64, live::8, outcome::8, t0::64, x::float-64, y::float-64, z::float-64, n::8,
-           steps::binary-size(n * 16), size::16, program::binary-size(size), rest::binary>>,
+         <<caster::64, live::8, outcome::8, fail_step::8, t0::64, x::float-64, y::float-64,
+           z::float-64, n::8, steps::binary-size(n * 17), size::16, program::binary-size(size),
+           rest::binary>>,
          previous,
          acc
        )
        when previous == nil or caster > previous do
-    steps = for <<a::float-64, i::float-64 <- steps>>, do: {a, i}
+    steps =
+      for <<p::8, a::float-64, i::float-64 <- steps>>,
+        do: %{part_index: p, adjust_s: a, inject_s: i}
 
-    cond do
-      live == 0 and outcome in [0, 1, 2] ->
-        decode_casts(rest, caster, Map.put(acc, caster, %{live: 0, outcome: outcome}))
+    record =
+      cond do
+        not (n == 0 or part_permutation?(steps)) ->
+          :invalid
 
-      live == 1 and outcome == 0 and n > 0 and size > 0 and
-          Enum.all?(steps, fn {a, i} -> a >= 0 and i >= 0 end) ->
-        decode_casts(
-          rest,
-          caster,
-          Map.put(acc, caster, %{
-            live: 1,
-            t0_us: t0,
-            origin: {x, y, z},
-            steps: steps,
-            program: program
-          })
-        )
+        live == 0 and settled_fail_step?(outcome, fail_step) ->
+          %{live: 0, outcome: outcome, fail_step: fail_step}
 
-      true ->
-        {:error, :invalid_cast}
-    end
+        live == 1 and outcome == 0 and fail_step == 0 and n > 0 and size > 0 and
+            Enum.all?(steps, &(&1.adjust_s >= 0 and &1.inject_s >= 0)) ->
+          %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program}
+
+        true ->
+          :invalid
+      end
+
+    if record == :invalid,
+      do: {:error, :invalid_cast},
+      else: decode_casts(rest, caster, Map.put(acc, caster, record))
   end
 
   defp decode_casts(_, _, _), do: {:error, :invalid_cast}
+
+  # 已结算记录的 outcome / fail_step 组合：只有“第 k 步中断”（outcome 1）带步号，k 从 1 起。
+  defp settled_fail_step?(1, fail_step), do: fail_step in 1..255
+  defp settled_fail_step?(outcome, fail_step), do: outcome in [0, 2] and fail_step == 0
+
+  # 前摇各步的 part_index 是 0..n−1 的一个排列（设计 v2.11：构造顺序可以与字节序不同，但每个部件恰好一步）。
+  defp part_permutation?(steps) do
+    n = length(steps)
+    n in 1..255 and Enum.sort(Enum.map(steps, & &1.part_index)) == Enum.to_list(0..(n - 1))
+  end
 end

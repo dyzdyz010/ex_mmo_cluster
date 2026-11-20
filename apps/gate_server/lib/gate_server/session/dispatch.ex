@@ -182,9 +182,11 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  # 魔法增量 1：施法意图 0x82。先回施法者状态 0x83（同 request_id，带报价、实际支出与施放后能量）；
-  # 施放与走火都是已提交事务，再回 0x68 accepted（result_ref = seq，reason "ok" / "misfire_energy" /
-  # "misfire_coherence"）；报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式）。
+  # 魔法施法意图 0x82 v2（Hello 45，无拟态 id；解码后的请求原样转给 Player / World）。先回施法者状态 0x83 v2
+  # （同 request_id，带报价、实际支出与施放后能量）；建成与第 k 步中断都是已提交事务，再回 0x68 accepted
+  # （result_ref = seq，reason "ok" / "interrupted_omega" / "interrupted_energy"，由 World 的 outcome 给出）；
+  # 报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式，如 ":no_target"；计价数值检查违规为
+  # "rejects:<检查名,…>"，见 `ResultFrame.error/2`）。
   # 施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才有，在独立进程里等，编辑 worker 不被占住
   # （前摇中的再次施放要立即拿到 cast_too_soon，其他编辑意图照常）；报价同步回复。
   # 施放经角色 owner 的公共入口 Player.cast_spell/5（与 NPC Body 同一个），回复发往这里的等待进程。

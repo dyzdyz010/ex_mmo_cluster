@@ -2,16 +2,16 @@ Code.require_file("../../../voxel_region/test/support/world_fixtures.exs", __DIR
 
 defmodule GateServer.VoximSpellDispatchTest do
   @moduledoc """
-  只测试：魔法增量 1 的 Gate 胶合——0x82 经正式解码与 Dispatch 进入真实 World；报价只回 0x83，
-  施放（含走火）先回 0x83 再回 0x68 accepted，拒绝回 0x68 rejected；QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）。
-  World 用 Test-only 魔法目录 19c513f9…（版本 4）与材料目录 b1aca503…；施法者能量 0（新角色），走火扣 0。
-  夹具更新（能力库 I4）：原目录 ff15757b… 是版本 2，现行 `VoxelRegion.Magic.Catalog` 只收版本 4，World 启动即失败；
-  换成同一组常数的 v4 目录 19c513f9…（release_lead_s 0、rest_pose 全 0），断言语义与期望数值不变，数值按新夹具重算见下。
-  施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才到（真实定时器，点火前摇约 0.89 s），
-  Dispatch 立即返回；前摇中再施放立即回 0x68 rejected cast_too_soon。
+  只测试：魔法线协议 v2（Hello 45，决策稿 `docs/10-active/magic/2026-11-19-slice3-protocol.md` §3、§9 G-1）的 Gate 胶合——
+  0x82 v2（127 + n B，无拟态 id）经正式解码与 Dispatch 进入真实 World；报价只回 0x83 v2（161 B）；拒绝回 0x68 rejected；
+  QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）；World 的施法回复在连接里先 0x83 后 0x68。
 
-  报价与前摇的期望值取自权威 `VoxelRegion.Magic.Cost.quote/2`（同一目录、同一程序）：公式由 voxel_region
-  `magic_test` 按契约手算表证明；本文件只证明 Gate 把 World 的报价原样编进 0x83，不在胶合层重算物理。
+  World 用目录 v5 发布物 `apps/voxel_region/priv/magic/<sha256>.json`（P9）与材料目录 b1aca503…；施法者能量 0（新角色）。
+  程序字节取自 `ir-v2-samples.json`（唯一来源）；期望值只来自线契约与报价样本（`quote-v2-samples.json` 的 draw_1mj：
+  total 560 750 mJ、前摇 0.430375 s、S·P = 1），不调 `Magic.Cost`。
+
+  依赖 World 迁到 v2（切片 3 的 World 部分）：World 仍是 v1 施法路径时，经 World 的用例失败属预期。
+  〈取〉施放成功的端到端（先 0x83 后 0x68 "ok"）依赖 World 的〈取〉结算与能源夹具，随 World 部分补在这里。
   """
   use ExUnit.Case, async: false
   alias GateServer.Session.{Dispatch, Sink}
@@ -122,7 +122,7 @@ defmodule GateServer.VoximSpellDispatchTest do
     defp actor(state), do: Map.put(state.actor, :player, self())
   end
 
-  # Test-only: isolate World from background 500 ms thermal commits during the 892 ms windup
+  # Test-only: isolate World from background 500 ms thermal commits during windup
   # so post-rejection World.seq assertions cannot race an unrelated thermal tick.
   defmodule ManualClock do
     @behaviour VoxelRegion.World.Clock
@@ -134,7 +134,16 @@ defmodule GateServer.VoximSpellDispatchTest do
     def cancel(_, _), do: false
   end
 
-  @magic "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
+  @catalog_dir Path.expand("../../../voxel_region/priv/magic", __DIR__)
+  @catalog @catalog_dir |> Path.join("*.json") |> Path.wildcard() |> then(fn [path] -> path end)
+  @digest @catalog |> Path.basename(".json") |> Base.decode16!(case: :lower)
+  @ir Path.join(@fixtures, "magic/ir-v2-samples.json") |> File.read!() |> Jason.decode!()
+  @external_resource @catalog
+  @external_resource Path.join(@fixtures, "magic/ir-v2-samples.json")
+
+  defp ir_program(id),
+    do:
+      Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
 
   setup do
     root = Path.join(System.tmp_dir!(), "magic_dispatch_#{System.unique_integer([:positive])}")
@@ -157,7 +166,7 @@ defmodule GateServer.VoximSpellDispatchTest do
            ]),
          thermal_environment_path:
            Path.join([@fixtures, "combustion", "environment-radiation.json"]),
-         magic_catalog_path: Path.join([@fixtures, "magic", @magic <> ".json"]),
+         magic_catalog_path: @catalog,
          prefab_catalog_path: nil}
       )
 
@@ -196,102 +205,78 @@ defmodule GateServer.VoximSpellDispatchTest do
     %{world: world, state: state}
   end
 
-  # 0x82：rid 7、seq 8、scene 1、目标 = 叶宏格 (0,2,3) 的角微格 {0,16,24}、incarnation 1（作者编辑后的纪元）、
-  # 方向 (0,0,1)、目标拟态 id {0, 0}（Hello 25；加热不用）、程序 = 契约预设 ignite_near。
-  @program ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":50000}}]})
-
-  defp spell(action, digest) do
-    program = @program
-
+  # 0x82 v2：rid 7、seq 8、scene 1、action、digest、方向 (0,0,1)、目标 = 叶宏格 (0,2,3) 的角微格 {0,16,24}、
+  # incarnation 1（作者编辑后的纪元）、owner {0,0}、material 28、granularity 0、u16 程序长度（偏移 125）+ 程序。
+  defp spell(action, digest, program) do
     <<0x82, 7::64, 8::32, 1::64, action, digest::binary-size(32), 0.0::float-64, 0.0::float-64,
       1.0::float-64, 0::signed-64, 16::signed-64, 24::signed-64, 1::64, 0::64, 0::32, 28::16, 0,
-      0::64, 0::32, byte_size(program)::16, program::binary>>
+      byte_size(program)::16, program::binary>>
   end
 
   defp dispatch(state, bytes) do
-    {:ok, message} = Codec.decode(bytes)
+    assert byte_size(bytes) == 127 + (bytes |> binary_part(125, 2) |> :binary.decode_unsigned())
+    {:ok, {:voxel_spell_intent, request} = message} = Codec.decode(bytes)
+    refute Map.has_key?(request, :semblance)
     assert {:ok, ^state} = Dispatch.handle(message, state)
   end
 
-  test "报价回 0x83（World 报价原样、S 1）；施放立即返回，前摇中再施放 cast_too_soon，走完前摇后先 0x83 再 0x68 accepted misfire_energy；目录过期 0x68 rejected",
+  # 0x83 v2 的报价扩展段（偏移 73 起 11 个 f64）。
+  defp extension(<<_::binary-size(73), ext::binary-size(88)>>),
+    do: for(<<x::float-64 <- ext>>, do: x)
+
+  test "报价只回 0x83 v2（161 B）：取能 1 MJ 的报价、Ω_eff 16、S·P 1，结构类扩展字段为 0；报价不改世界", c do
+    seq = World.seq(c.world)
+    dispatch(c.state, spell(0, @digest, ir_program("draw_1mj")))
+
+    assert_receive {:mmo_voxel_bytes, :session,
+                    <<0x83, 7::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, 16.0::float-64,
+                      quote::float-64, 1.0::float-64, +0.0::float-64, windup::float-64,
+                      _::binary-size(88)>> = frame},
+                   2_000
+
+    assert byte_size(frame) == 161
+    assert_in_delta quote, 560.75, 1.0e-9
+    assert_in_delta windup, 0.430375, 1.0e-6
+
+    # 施法者动作程序（kind 0）：x0…detect_w 为 0；余额 0 < 第 1 步累计 560 750 mJ → fail_step 1；
+    # 叶在眼前 3 m（≤ 施法域 6 m）→ rejects 0；entries_* 与 first_tick_min_j 为 0（设计 v2.10 E4）。
+    assert extension(frame) == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    refute_receive {:mmo_voxel_bytes, :session, _}, 50
+    assert World.seq(c.world) == seq
+  end
+
+  test "施放被拒回 0x68 rejected：目录 digest 过期 :stale_magic_catalog、v1 JSON 程序 :invalid_program；不改世界",
        c do
-    digest = Base.decode16!(@magic, case: :lower)
-    expected = authority_quote()
-    dispatch(c.state, spell(0, digest))
+    seq = World.seq(c.world)
 
-    # 报价：能量 0、容量 5 MJ、相干度 4（同一目录 JSON 的 caster 段）、结构 1、支出 0；总支出与 Hello 28 末尾前摇取自权威 Cost。
-    assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
-                      quote::float-64, 1.0::float-64, +0.0::float-64, windup::float-64>>}
-
-    assert quote == expected.total_j
-    assert windup == expected.windup_s
-    refute_receive {:mmo_voxel_bytes, :session, _}, 50
-    assert World.seq(c.world) == 1
-
-    started = System.monotonic_time(:millisecond)
-    dispatch(c.state, spell(1, digest))
-    # 前摇开始：World 出现该施法者的待施放记录，此时尚无回执。
-    assert pending(c.world)
-    refute_received {:mmo_voxel_bytes, :session, _}
-    # 前摇中再施放：同一 request_id 7、入口时钟相同，立即拒绝。
-    dispatch(c.state, spell(1, digest))
+    dispatch(c.state, spell(1, <<0::256>>, ir_program("draw_1mj")))
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 14::16, ":cast_too_soon">>},
-                   500
+                    <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 20::16, ":stale_magic_catalog">>},
+                   2_000
 
-    # 余额 0 < 报价：前摇走完后结算走火，扣 min(总支出, 0) = 0；结算事务在开始事务之后
-    # （真实前摇期间 World 自身的 500 ms 热提交也可能占用 seq，故不断言具体值），0x83 与 0x68 引用同一 seq。
-    # 结算后的状态不是报价：前摇字段为 0。
-    assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 7::64, settled::64, _::binary-size(48), +0.0::float-64>>},
-                   5_000
+    v1 =
+      ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"energy.draw","args":{"energy_j":1000000}}]})
 
-    assert settled > 2
-    assert System.monotonic_time(:millisecond) - started >= trunc(expected.windup_s * 1000)
+    dispatch(c.state, spell(1, @digest, v1))
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x68, 7::64, 8::32, 1::64, 0, ^settled::64, 0::16, 14::16,
-                      "misfire_energy">>}
+                    <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 16::16, ":invalid_program">>},
+                   2_000
 
-    # 结算后该施法者没有待施放记录（live 0 的结算记录不留在快照里）。
-    assert casts(c.world) == %{}
-
-    dispatch(c.state, spell(1, <<0::256>>))
-
-    assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 20::16, ":stale_magic_catalog">>}
-
-    # 目录过期的拒绝不进入前摇：World 串行处理，拒绝回执之后读到的快照仍没有该施法者的待施放记录。
-    # 不比较全局 seq：走火把构型损耗作为脚下热源送进世界，此后 World 每 500 ms 的热提交也推进 seq
-    # （原断言 World.seq 不变因此在 CI 上偶发红：5 ≠ 4）。
-    assert casts(c.world) == %{}
-    refute_receive {:mmo_voxel_bytes, :session, _}, 50
+    assert World.seq(c.world) == seq
   end
-
-  # 权威报价：与 World 同一魔法目录文件、同一程序字节，调用唯一实现 `Cost.quote/2`。
-  defp authority_quote do
-    alias VoxelRegion.Magic.{Catalog, Cost, Program}
-    catalog = Catalog.load(Path.join([@fixtures, "magic", @magic <> ".json"]))
-    {:ok, program} = Program.parse(@program, catalog)
-    Cost.quote(program, catalog)
-  end
-
-  defp casts(world),
-    do: VoxelRegion.TestSupport.observe(world, [1001], {{-2, -2, -2}, {2, 2, 2}}).casts
-
-  defp pending(world), do: Enum.find_value(1..2_000, fn _ -> casts(world)[1001] end)
 
   # 接纳即开户：该角色尚无施法者账，World 先提交一次性充能事务（seq 1 → 2），余额 497 084 850 mJ = 497 084.85 J
-  # （50 发法杖光弹的整数扣款 9 941 697 mJ，推导见 World.Casting）；同一请求再发一次（重连）不再充。
-  test "QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）：首次开户充能，再请求不重复", c do
+  # （推导见 World.Casting）；同一请求再发一次（重连）不再充，扩展段全 0。
+  test "QUIC 接纳 0x76 后的施法者状态请求回 0x83 v2（request_id 0，扩展段全 0）：首次开户充能，再请求不重复", c do
     request = {:voxel_caster_state_request, %{request_id: 0, logical_scene_id: 1}}
     assert {:ok, _} = Dispatch.handle(request, c.state)
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 2::64, 497_084.85::float-64, 5.0e6::float-64, 4.0::float-64,
-                      +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+                    <<0x83, 0::64, 2::64, 497_084.85::float-64, 5.0e6::float-64, 16.0::float-64,
+                      +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
+                      0::size(88)-unit(8)>>}
 
     assert {:ok, _} = Dispatch.handle(request, c.state)
 
@@ -301,46 +286,60 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert World.seq(c.world) == 2
   end
 
-  test "报价调用回复延迟时，World 仍先发报价再发身体状态；迟到回复不重发旧相干度", c do
+  test "报价调用回复延迟时，World 仍先发报价再发身体状态；身体推送的 Ω_eff = 16 × 0.45，迟到回复不重发", c do
     :ok = GenServer.call(c.state.player, :hold_reply)
-    task = Task.async(fn -> dispatch(c.state, spell(0, Base.decode16!(@magic, case: :lower))) end)
+    task = Task.async(fn -> dispatch(c.state, spell(0, @digest, ir_program("draw_1mj"))) end)
     assert_receive :caster_reply_held
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
-                      _::binary-size(32)>>}
+                    <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 16.0::float-64,
+                      _::binary-size(120)>>}
 
     identity = c.state.identity
     {gate, _} = c.state.sink.ref
     send(c.world, {:body_coherence, c.state.cid, 0.45, gate, identity})
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, 1.8::float-64,
-                      +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+                    <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, omega::float-64,
+                      +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
+                      0::size(88)-unit(8)>>}
 
+    assert_in_delta omega, 7.2, 1.0e-12
     :ok = GenServer.call(c.state.player, :release_reply)
     Task.await(task)
     refute_receive {:mmo_voxel_bytes, _, <<0x83, _::binary>>}, 50
   end
 
-  test "同一连接跨 Scene 的施法成功先状态后结果；旧连接及关闭连接不接纳" do
+  test "同一连接跨 Scene 的施法回复先 0x83 v2 后 0x68（第 k 步中断 interrupted_energy）；旧连接及关闭连接不接纳" do
     alias GateServer.Session.QuicConnection
     {:ok, initial} = QuicConnection.init(conn: :test, listener: self(), hello: nil)
     moved = %{initial | identity: make_ref()}
     request = %{request_id: 7, client_intent_seq: 8, logical_scene_id: 1, action: 1}
 
+    # World 的结算回复：结算后的状态扩展段为 0（只有报价回复带），spent_j 是本次实际扣除。
     result = %{
       seq: 9,
-      outcome: :misfire_coherence,
+      outcome: :interrupted_energy,
       caster: %{
         seq: 9,
-        energy_j: 100.0,
+        energy_j: 0.0,
         capacity_j: 5.0e6,
-        coherence: 1.8,
-        quote_j: 120.0,
-        quote_s: 2.0,
-        spent_j: 120.0,
-        quote_windup_s: 0.0
+        resolution_eff: 16.0,
+        quote_j: 0.0,
+        quote_s: 0.0,
+        spent_j: 300.0,
+        quote_windup_s: 0.0,
+        x0: 0.0,
+        x_star: 0.0,
+        e_min_j: 0.0,
+        p_maint_w: 0.0,
+        life_s: 0.0,
+        detect_w: 0.0,
+        fail_step: 0,
+        rejects: [],
+        entries_charge: 0,
+        entries_spoof: 0,
+        first_tick_min_j: 0.0
       }
     }
 
@@ -348,14 +347,30 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert {:noreply, accepted} = QuicConnection.handle_info(message, moved)
     assert [{caster, _, _}, {receipt, _, _}] = :queue.to_list(accepted.reliable[2])
 
-    assert <<0x83, 7::64, 9::64, 100.0::float-64, 5.0e6::float-64, 1.8::float-64, 120.0::float-64,
-             2.0::float-64, 120.0::float-64, +0.0::float-64>> == caster
+    assert <<0x83, 7::64, 9::64, +0.0::float-64, 5.0e6::float-64, 16.0::float-64, +0.0::float-64,
+             +0.0::float-64, 300.0::float-64, 0::size(96)-unit(8)>> == caster
 
-    assert <<0x68, 7::64, 8::32, 1::64, 0, 9::64, 0::16, 17::16, "misfire_coherence">> == receipt
+    assert <<0x68, 7::64, 8::32, 1::64, 0, 9::64, 0::16, 18::16, "interrupted_energy">> == receipt
 
     {:ok, reconnected} = QuicConnection.init(conn: :next, listener: self(), hello: nil)
     assert {:noreply, ^reconnected} = QuicConnection.handle_info(message, reconnected)
     closing = %{moved | closing: true}
     assert {:noreply, ^closing} = QuicConnection.handle_info(message, closing)
+  end
+
+  test "计价数值检查违规的 0x68 原因串是 rejects:<检查名,…>（位序同 0x83），射线落空是 :no_target" do
+    request = %{request_id: 7, client_intent_seq: 8, logical_scene_id: 1, action: 1}
+
+    for {reason, text} <- [
+          {{:rejects, [:domain]}, "rejects:domain"},
+          {{:rejects, [:thermal_step, :first_tick]}, "rejects:first_tick,thermal_step"},
+          {:no_target, ":no_target"}
+        ] do
+      {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, reason) |> Codec.encode()
+      size = byte_size(text)
+
+      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> =
+               IO.iodata_to_binary(frame)
+    end
   end
 end
