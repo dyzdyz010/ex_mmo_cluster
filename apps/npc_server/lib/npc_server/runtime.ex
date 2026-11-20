@@ -64,6 +64,9 @@ defmodule NpcServer.Runtime do
         profile: profile,
         memory: Map.get(profile, :memory, DataService.NpcMemory),
         policy: Scheduler.configured(profile),
+        # Test-only 世界钟偏移（微秒；`config/runtime.exs` 由 VOXIM_TEST_WORLD_CLOCK_OFFSET_S 解析，生产为 0），起来时读一次。
+        world_clock_test_offset_us:
+          Application.fetch_env!(:npc_server, :world_clock_test_offset_us),
         observation: nil,
         skill: nil,
         # 选择器状态（正在做的活动与最近几次选择）；在途的一次发问 `%{id: 命令号, ref: worker 的 monitor}`。
@@ -105,7 +108,11 @@ defmodule NpcServer.Runtime do
           observation =
             observation
             |> Map.put(:heard, state.heard)
-            |> Map.put(:world_time, MmoContracts.WorldTime.at(now * 1000))
+            # 游戏钟 = 墙钟 + Test-only 偏移（生产为 0）；Life 的 `now_ms` 与心智视图仍用现实毫秒，不跟着偏移。
+            |> Map.put(
+              :world_time,
+              MmoContracts.WorldTime.at(now * 1000 + state.world_clock_test_offset_us)
+            )
 
           if state.life, do: NpcServer.Life.observation(state.life, observation)
 

@@ -5,12 +5,26 @@ defmodule NpcServer.Application do
   监督树第一位是出站 HTTP（`NpcServer.Http`：交互、后台两条车道的 Finch 实例，见 Finch 决策稿），
   任何 NPC 起来之前它已经在；之后依次是名字表、Body 监督器、从持久化登记恢复 NPC 的 `Bootstrap`，最后是花费额度
   （`NpcServer.SpendBudget`：每天模型花费的 owner；`init` 校验运行配置，非法即应用起不来）。
+  部署设了 Test-only 世界钟偏移（`VOXIM_TEST_WORLD_CLOCK_OFFSET_S`，见 `MmoContracts.WorldTime`）时，启动先打一行 warning。
   """
 
   use Application
+  require Logger
 
   @impl true
   def start(_type, _args) do
+    # Test-only 世界钟偏移（`config/runtime.exs`）：非 0 时打一行，免得把开着偏移的部署当成正常部署。
+    case Application.fetch_env!(:npc_server, :world_clock_test_offset_us) do
+      0 ->
+        :ok
+
+      offset_us ->
+        Logger.warning(
+          "world_clock_test_offset Test-only offset_s=#{div(offset_us, 1_000_000)} " <>
+            "（NPC 观察的游戏时间 = 墙钟 + 偏移，客户端昼夜不跟着偏移；生产不得设置 VOXIM_TEST_WORLD_CLOCK_OFFSET_S）"
+        )
+    end
+
     children = [
       NpcServer.Http,
       {Registry, keys: :duplicate, name: NpcServer.Names},

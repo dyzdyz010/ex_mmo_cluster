@@ -498,6 +498,13 @@ flowchart LR
   按 0.5 小时四舍五入（`1 hour`、`0.5 hours`、`13.5 hours`），再往上按天四舍五入。句型与取整照离线测量 S1-K 的原文
   （`docs/10-active/cross-cutting/tools/jev/s1k_design.py`）。存进 Hindsight 的正文仍是 `At <UTC> (UTC), …`，快照不解析它，用条目的 `at_ms`。
 
+  **Test-only 世界钟偏移**：观察里的 `world_time` = `MmoContracts.WorldTime.at(墙钟 + 偏移)`。偏移来自部署的
+  `VOXIM_TEST_WORLD_CLOCK_OFFSET_S`（整数秒，`config/runtime.exs` 解析一次写进 `:npc_server, :world_clock_test_offset_us`，
+  Runtime 起来时读一次；未设为 0，非 0 时 `NpcServer.Application` 启动打一行 `world_clock_test_offset Test-only` warning）。
+  只移日号与钟点（Now 栏、日计划 / 回顾 / 任务的游戏日）；“多久以前”与任务停滞是两个时刻的游戏时间差，偏移相消；Life 的
+  `now_ms`、心智视图、花费额度的 UTC 高峰都仍是现实毫秒。开偏移时客户端天色与 NPC 的钟点对不上。生产不得设置，见世界钟设计页
+  “Test-only 偏移”一节。
+
   情绪强度由代码转成词（≥ 0.4 strong、≥ 0.2 moderate、其余 faint；Life 衰减到 0.1 及以下的不给出：一次破坏后约 70 秒内 strong、
   约 190 秒内 moderate、约 310 秒后消失）。信任不随时间恢复（≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 四档，其间不写）。
   人写成 `名字 (actor <cid>)`，不在附近的写 `actor <cid>, who is not nearby`：经历与记忆的原文同样写 `名字 (actor <cid>)`

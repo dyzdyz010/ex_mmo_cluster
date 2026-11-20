@@ -131,6 +131,11 @@ Life 的后台工作按“无法计量”一直停着（现状生产不受影响
 [NPC 运行时说明](../apps/npc_server/lib/npc_server/README.md)“每天花费额度”。额度要读 Hindsight 自己的 LLM 追踪并按库开关自动巩固，
 所以 Hindsight 容器的 `HINDSIGHT_API_LLM_TRACE_ENABLED` 与 `ENABLE_BANK_CONFIG_API` **不得关**。账本表 `npc_spend_ledger` 随常规迁移建立。
 
+**Test-only 世界钟偏移（`VOXIM_TEST_WORLD_CLOCK_OFFSET_S`）生产 / 分发不得设置**：它让 NPC 的游戏时间 = 墙钟 + 偏移，只给本地实跑
+驱动用（让一轮落在游戏日开头），客户端昼夜不跟着偏移；`.env.example` 有意不列。设了非 0 值时 release 启动日志有一行
+`world_clock_test_offset Test-only`，部署核对时见到即撤掉。格式不对 release 启动失败。说明见世界钟设计页
+`docs/10-active/cross-cutting/2026-11-13-world-clock-design.md`“Test-only 偏移”一节。
+
 **模型 key 与崩溃转储**：各 `*_KEY`（含 llm / life 大脑的 `NPC_LLM_KEY`）登记时先校验是合法的 HTTP 头值：非空、首尾为
 0x21–0x7E、中间只有 0x20–0x7E 与制表符（不含 CR / LF 等控制字符，RFC 9110 §5.5；也不含 NBSP、零宽空格、全角字符等非 ASCII
 字节——有意比 RFC 严格，与 Mint HTTP/1 一致），不合法即登记被拒、错误只报变量名与原因，不自动 trim——Windows 编辑的 `.env`

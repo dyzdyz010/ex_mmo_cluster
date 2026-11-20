@@ -82,3 +82,42 @@ NPC 集成：Runtime 观察带世界时间，由可注入的时钟决定（不�
 - **客户端对账已完成（voxim-d4 通报，Voxim main `93a9cb27`）**：新用例 `Voxim.Weather.WorldClockReconcile` 按 §3 七行断言时:分，与客户端现行 `HourOfDay` 全部一致，`Voxim.Weather` 13/13 通过；`Docs/Weather.md:26` 已改并链接本页。
   客户端没有日号 / weekday 接口，这两列只由服务端断言。**已知差异**：客户端对纪元前超过 6 小时的输入会得到负小时（C++ `%` 取负），表内值不受影响；服务端用 `Integer.floor_div` / `Integer.mod` 不会有此问题，第二阶段客户端改读服务端值时一并消除。（这是对方的通报，未在本线复核。）
 - **第二阶段排期（voxim-d4 2026-11-13 答复）**：排在发版 `20261112-qinglan` 生产切换并公网冒烟通过之后；切换前任何协议变化都会打破当前冻结。对接人 voxim-d4，客户端改动由它派 worker，两端同提交冻结、同一次发版。服务端第二阶段方案准备好后发给它。在此之前本线不动协议。
+
+## 7. Test-only 偏移（2026-11-20）
+
+分类：只测试（Test-only），不进分发。起因：用户 2026-11-20“我觉得可以做一个testonly的世界钟偏移，不然每次测试事件相关的还得等，太浪费时间了”。
+×24 下游戏日界落在每个现实小时的 :45，实跑想避开日界只能等到 :45 之后起跑；有了偏移，驱动起跑时选好偏移，让这一轮落在游戏日开头（如 06:00），随时能起跑。
+
+**做法**：游戏时间 = §2 原公式（墙钟 + 偏移）。公式与参数三元组仍只在 `MmoContracts.WorldTime`（`params/0` 不变、不复制公式），偏移只加在输入的墙钟上：
+
+```mermaid
+flowchart LR
+  env["VOXIM_TEST_WORLD_CLOCK_OFFSET_S<br/>（整数秒，部署环境）"] -->|"config/runtime.exs 解析一次<br/>WorldTime.test_offset_us!/1<br/>格式不对即启动失败"| cfg[":npc_server, :world_clock_test_offset_us"]
+  cfg -->|"Runtime 起来时读一次"| rt["NpcServer.Runtime"]
+  wall["墙钟 now"] --> rt
+  rt -->|"WorldTime.at(now + 偏移)"| obs["观察 world_time<br/>（日号 / 钟点 / 星期）"]
+  wall -->|"不偏移"| life["Life now_ms、心智视图、<br/>花费额度、Scene / World 钟、客户端时刻"]
+```
+
+- 开关：`VOXIM_TEST_WORLD_CLOCK_OFFSET_S`，十进制整数秒（可带正负号，不带空白与单位）。未设为 0，行为与没有这个开关时相同（加 0）；非 0 时 `NpcServer.Application` 启动打一行 `world_clock_test_offset Test-only offset_s=<值>` warning。`deploy/.env.example` 不列；`deploy/README.md` 写明生产不得设置。
+- 参数从哪传：选“调用方给 `at/2` 的输入加偏移”，不改 `params`、不给 `at` 加第三个参数。理由：偏移是“这台部署读到的墙钟”的属性，不是游戏钟的定义（第二阶段 `SessionStart` 要下发的仍是不带偏移的三元组）；放进 `params`（如改 `epoch_us`）会让 §3 对账用的冻结值随测试开关变化；加参数会扩大纯函数的接口。换算的唯一读者是 Runtime（`runtime.ex` 观察写 `world_time` 的那一行），偏移在它 init 时从应用环境读一次存进状态；`NpcServer.Application` 启动时只读这个值来打 warning，不参与换算。解析函数放在 `WorldTime` 旁，让算法层测试一并覆盖格式。
+- 校验只在 `config/runtime.exs` 加载这一处（信任边界）；按用户“专注 happy path”，不设上限、不做降级。
+
+**不改什么**：发给客户端的服务器时刻（`server_time_us`）、Scene / World 的调度钟与 tick、花费额度的 UTC 高峰与北京日、Life 的现实毫秒（`now_ms` 间隔、时限、心智视图的 `now`）。“多久以前”（`Mind`）与任务停滞（`Life.Tasks`）是两个时刻的游戏时间差，`game_us` 是线性的，偏移相消，不受影响。会跟着偏移的是读 `world_time` 的一切：Now 栏、日计划 / 回顾 / 任务推进记的游戏日号与日内分钟、任务到期日。
+
+**已知后果**：开偏移跑真实 UE 客户端时，客户端天色（`HourOfDay` 读未偏移的 `server_time_us`）与 NPC 的游戏时间会对不上。只在 Test-only 部署出现；要到第二阶段服务端下发参数后才能一致（届时偏移可并进下发值，另议）。
+
+**依据**（2026-11-20 逐条核原文）
+| 来源 | 原文（摘） | 对应与取舍 |
+|---|---|---|
+| Java SE 21 `java.time.Clock` 类说明（docs.oracle.com） | “The primary purpose of this abstraction is to allow alternate clocks to be plugged in as and when required.” “This approach allows an alternative clock, such as `fixed` or `offset` to be used during testing.” | 核到。测试换时钟是标准做法；本仓不引入时钟对象（只有一个读者），在唯一读点加偏移。 |
+| 同上 `Clock.offset(Clock, Duration)` | “Obtains a clock that returns instants from the specified clock with the specified duration added.” “The main use case for this is to simulate running in the future or in the past.” “A duration of zero would have no offsetting effect.” | 核到。语义完全对应：基准钟照走、只加固定时长、0 即原钟。 |
+| libfaketime README（github.com/wolfcw/libfaketime） | §4d：相对偏移须以 `+` / `-` 开头，无单位时按秒；§4c：“The absolute dates described in 4b) simulate a STOPPED system clock”；§4h：“works on a per-program (and not a per-user or system-wide) scope” | 核到（§4d 只核到摘要，原文过长未逐字引）。取“相对偏移、钟照走”而不取“绝对时刻”（会停钟）；作用域按进程。本仓不用 LD_PRELOAD 整进程造假——那会连 Scene / 花费额度的墙钟一起移，违反上面“不改什么”；只移游戏钟换算一处。不要求正号、不支持单位（只用整数秒）。 |
+| Erlang/OTP《Time and Time Correction》（erlang.org） | “By adding current Erlang monotonic time with current time offset, you get current Erlang system time.” “Take time stamps with erlang:monotonic_time/0 and calculate the time difference using ordinary subtraction.” | 核到。“时刻 = 基准 + 偏移、差值用减法”与本节“偏移只移时刻、差值相消”同构。 |
+
+**测试**（先红后绿；入口 `.demo/observe/npc-clock-offset-20261120/mix.sh`，日志在同目录 `logs/`）
+- 算法层 `mmo_contracts` `world_time_test.exs`：墙钟取纪元后 50 分钟（未偏移 day 1、02:00），手算偏移 `nil` / `"0"` → 02:00、`"600"` → day 1 06:00、`"+75"` → 02:30、`"-3000"` → day 0 06:00、`"-7200"` → day −1 02:00 weekday 6；偏移 0 时 §3 表逐行同值；8 种非法原值 raise 且消息带变量名与原值。红 8 / 17 失败 → 绿 17 / 17。
+- NPC 集成 `npc_runtime_world_time_test.exs`：真实 Runtime，改应用环境为 +1800 秒，断言 `world_time` 在“墙钟 + 偏移”的候选里、不在未偏移的候选里（模块改 `async: false`）。红 1 / 2 失败（实得 01:06，应为 13:06）→ 绿 2 / 2。
+- 配置层：仓内没有 runtime 配置的测试先例，解析由算法层测；另手跑 `mix run --no-start`：未设得 0、`abc` 在加载 `config/runtime.exs` 时失败（ArgumentError 带变量名与原值）；`-600` 的 warning 行是在同一个 `--no-start` VM 里手动调 `NpcServer.Application.start/2` 打出的（`logs/config-*.log`），正常应用启动与 release 启动尚未实跑过——release 启动由 T-1 短场景驱动在 G0 核对 warning 行。
+
+**进度**：2026-11-20 实现与测试完成（未提交）。驱动接入（T-1 短场景起跑时算偏移、经部署环境注入、判定器按偏移换算游戏日）由统筹另派。

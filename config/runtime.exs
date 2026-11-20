@@ -161,6 +161,14 @@ for {env, key} <- [
 # VOXIM_GM_TOOLS=1 才开启；分发配置不设，默认关闭。
 config :voxel_region, :gm_tools, System.get_env("VOXIM_GM_TOOLS") == "1"
 
+# 只测试世界钟偏移（MmoContracts.WorldTime.test_offset_us!/1；世界钟设计页“Test-only 偏移”一节）：
+# VOXIM_TEST_WORLD_CLOCK_OFFSET_S=<整数秒，可为负> 时，NPC 观察里的游戏时间按“墙钟 + 偏移”换算，让实跑随时能落在游戏日开头；
+# 客户端时刻、Scene / World 调度钟、花费额度的 UTC 高峰与 Life 的现实间隔都不跟着偏移。只在这里解析一次：格式不对即启动失败；
+# 未设为 0（行为与没有这个开关时相同）；非 0 时 NpcServer.Application 启动打一行 Test-only warning。生产 / 分发不得设置。
+config :npc_server,
+       :world_clock_test_offset_us,
+       MmoContracts.WorldTime.test_offset_us!(System.get_env("VOXIM_TEST_WORLD_CLOCK_OFFSET_S"))
+
 # 开发期便利（VoxelRegion.World.Beacons）：VOXIM_BEACONS_ALL_ATTUNED=1 时每个角色都视为已调谐全部传送信标，不必先到访。
 config :voxel_region, :beacons_all_attuned, System.get_env("VOXIM_BEACONS_ALL_ATTUNED") == "1"
 
