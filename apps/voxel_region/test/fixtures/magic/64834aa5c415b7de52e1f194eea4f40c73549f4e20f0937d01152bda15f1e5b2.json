@@ -1,0 +1,319 @@
+{
+  "version": 5,
+  "caster": {
+    "resolution_omega": 16,
+    "capacity_j": 5000000,
+    "max_power_w": 1000000,
+    "draw_efficiency": 0.9
+  },
+  "construction": {
+    "b0_w": 1000,
+    "b_floor": 1,
+    "alpha": 1.5,
+    "e_ref_j": 1000000,
+    "eta_j_s_per_rad2": 18,
+    "release_lead_s": 0.3,
+    "rest_pose": [150, -120, -120, 30, 120, 120]
+  },
+  "limits": {
+    "program_max_bytes": 512,
+    "range_m": 30,
+    "local_domain_m": 6,
+    "cast_interval_ms": 500,
+    "backup_modes": [0],
+    "counts": {
+      "n_act": 1,
+      "n_grp": 1,
+      "n_ref": 0,
+      "n_shape": 1,
+      "n_qual": 4,
+      "n_energy": 1,
+      "n_motion": 1,
+      "n_rule": 2,
+      "n_read": 2,
+      "n_resp": 2
+    }
+  },
+  "quotas": {
+    "structures_per_caster": 6,
+    "folded_per_caster": 3,
+    "flights_per_caster": 2,
+    "region_budget_units": 256,
+    "region_reserve_units": 32,
+    "fair_share_ratio": 0.75,
+    "structure_weight_base": 1,
+    "structure_weight_awake_thermal_node": 2,
+    "structure_weight_per_rule": 0.5,
+    "structure_weight_per_sensing_coupling": 0.5,
+    "structures_per_npc": 4,
+    "npc_budget_ratio": 0.25,
+    "region_flight_slots_base": 16,
+    "awake_thermal_nodes_per_region": 16,
+    "triggers_per_region_tick": 64,
+    "triggers_per_caster_tick": 8,
+    "quotes_per_caster_per_s": 4,
+    "present_floor_structures": 1,
+    "region_flight_slots_per_present": 1
+  },
+  "runtime": {
+    "run_loss_ratio": 0.05,
+    "reference_volume_m3": 0.05,
+    "disruption_rate_per_s": 0.02,
+    "disruption_load_gain": 4,
+    "repair_rate_per_s": 0.05,
+    "repair_unit_cost_j": 4000,
+    "coherence_loss_per_debt": 1,
+    "segment_debt_limit": 0.5,
+    "coherence_min": 0.3,
+    "min_energy_per_complexity_j": 250,
+    "storage_density_j_per_m3": 16000000,
+    "throughput_density_w_per_m2": 200000,
+    "grade_multipliers": [1, 1.75, 2.5],
+    "env_temperature_gain": 0.5,
+    "env_neighbor_gain": 0.3,
+    "env_embedded_gain": 0.5,
+    "disruption_dose_gain": 1.0,
+    "release_dose_ratio": 0.3,
+    "repair_quality": [1.0, 0.85, 0.7],
+    "leak_deposit_max_j": 10000,
+    "leak_deposit_temperature_k": 2,
+    "thermal_step_min_ms": 25,
+    "thermal_check_temperature_k": 2500,
+    "windup_interrupt_dose": 0.3,
+    "env_neighbor_radius_m": 8,
+    "env_neighbor_max": 16,
+    "env_temperature_ref_k": 300,
+    "env_temperature_scale_k": 100,
+    "release_dose_radius_m": 3,
+    "overline_leak_factor": 2,
+    "dropout_debt_scale": 0.5,
+    "dropout_max": 0.5,
+    "leak_heat_fraction": 0.5,
+    "release_heat_fraction": 0.5,
+    "thermal_sleep_delta_k": 5,
+    "thermal_sleep_power_w": 100,
+    "quote_life_slices": 32
+  },
+  "semblance": {
+    "specific_heat_j_per_kg_k": 500,
+    "thermal_conductivity_w_per_m_k": 400
+  },
+  "group_signature": {
+    "requires_all": ["form:semblance", "energy:load"]
+  },
+  "symbols": [
+    {
+      "index": 0, "id": "energy.draw", "section": "caster_action", "phase": 1,
+      "params": [
+        {"name": "energy_j", "class": "dec", "unit": "J", "min": 1000, "max": 2000000}
+      ],
+      "units": 1, "precision": 0,
+      "pose": [155, -90, -95, 25, 90, 95]
+    },
+    {
+      "index": 2, "id": "form.semblance", "section": "shape", "phase": 1,
+      "params": [
+        {"name": "shape", "class": "enum8", "enum": [{"code": 0, "name": "sphere"}, {"code": 1, "name": "block"}, {"code": 2, "name": "plate"}]},
+        {"name": "size1_mm", "class": "lin16", "unit": "mm"},
+        {"name": "size2_mm", "class": "lin16", "unit": "mm"},
+        {"name": "size3_mm", "class": "lin16", "unit": "mm"},
+        {"name": "mass_g", "class": "dec", "unit": "g", "min": 10, "max": 50000, "zero_means_absent": true}
+      ],
+      "ranges_by_param": {
+        "shape": {
+          "sphere": {"size1_mm": [50, 1000], "size2_mm": [0, 0], "size3_mm": [0, 0]},
+          "block": {"size1_mm": [50, 1000], "size2_mm": [50, 1000], "size3_mm": [50, 1000]},
+          "plate": {"size1_mm": [50, 2000], "size2_mm": [50, 2000], "size3_mm": [10, 200]}
+        }
+      },
+      "provides": ["form:semblance"],
+      "provides_by_param": {"mass_g": {"present": ["mass"]}},
+      "max_per_group": 1,
+      "units": 1, "precision": 0,
+      "pose": [115, -90, -85, 25, 90, 35]
+    },
+    {
+      "index": 7, "id": "anchor.hand", "section": "anchor.form", "phase": 1,
+      "params": [],
+      "provides": ["anchor:form#hand"],
+      "units": 0, "precision": 0,
+      "pose": [165, -80, -150, 40, 115, 90]
+    },
+    {
+      "index": 8, "id": "anchor.surface", "section": "anchor.form", "phase": 1,
+      "params": [
+        {"name": "to_group", "class": "ref8", "refs_enabled": false}
+      ],
+      "provides": ["anchor:form#surface"],
+      "refs": [{"param": "to_group", "kind": "group", "must_be": "earlier"}],
+      "numeric_checks": ["domain"],
+      "units": 0, "precision": 0,
+      "pose": [165, -80, -150, 5, 95, 85]
+    },
+    {
+      "index": 15, "id": "cpl.thermal", "section": "quality", "phase": 1,
+      "params": [
+        {"name": "t0_dk", "class": "lin16", "unit": "dK", "min": 1000, "max": 25000},
+        {"name": "phi_grade", "class": "u8", "min": 1, "max": 3}
+      ],
+      "provides": ["coupling:thermal"],
+      "requires_all": ["mass"],
+      "max_per_group": 1,
+      "numeric_checks": ["capacity", "ambient_floor", "thermal_step"],
+      "units": 1, "precision": 0,
+      "pose": [60, -85, -45, 0, 85, 25]
+    },
+    {
+      "index": 16, "id": "cpl.glow", "section": "quality", "phase": 1,
+      "params": [
+        {"name": "power_w", "class": "dec", "unit": "W", "min": 1, "max": 2000}
+      ],
+      "provides": ["coupling:glow"],
+      "max_per_group": 1,
+      "numeric_checks": ["capacity"],
+      "units": 1, "precision": 0,
+      "pose": [60, -85, -45, 30, 85, 5]
+    },
+    {
+      "index": 23, "id": "cpl.capacity", "section": "quality", "phase": 1,
+      "params": [
+        {"name": "cap_kind", "class": "enum8", "enum": [{"code": 0, "name": "storage"}, {"code": 2, "name": "repair"}]},
+        {"name": "grade", "class": "u8", "min": 2, "max": 3}
+      ],
+      "max_per_group": 2,
+      "unique_by": ["cap_kind"],
+      "units": 1, "units_by_param": {"grade": {"2": 1, "3": 2}}, "precision": 0,
+      "pose": [60, -85, -45, 20, 115, 20]
+    },
+    {
+      "index": 27, "id": "energy.load", "section": "energy", "phase": 1,
+      "params": [
+        {"name": "energy_j", "class": "dec", "unit": "J", "min": 1, "max": 5000000}
+      ],
+      "provides": ["energy:load"],
+      "max_per_group": 1,
+      "numeric_checks": ["capacity", "first_tick"],
+      "units": 0, "precision": 0,
+      "pose": [120, -135, 5, 10, 75, 10]
+    },
+    {
+      "index": 30, "id": "act.throw", "section": "motion", "phase": 1,
+      "params": [
+        {"name": "speed_mmps", "class": "lin16", "unit": "mm/s", "min": 1000, "max": 30000}
+      ],
+      "provides": ["motion:throw"],
+      "max_per_group": 1,
+      "units": 1, "precision": 0,
+      "pose": [125, -95, 5, 5, 55, 0]
+    },
+    {
+      "index": 34, "id": "cond.contact", "section": "rule.reading", "phase": 1,
+      "params": [],
+      "provides": ["reading:contact"],
+      "requires_any": [["coupling:contact"], ["coupling:thermal"], ["motion:throw"], ["motion:transmit"]],
+      "max_per_rule": 1,
+      "units": 1, "precision": 0,
+      "pose": [130, -45, 10, -5, 45, 0]
+    },
+    {
+      "index": 35, "id": "cond.timer", "section": "rule.reading", "phase": 1,
+      "params": [
+        {"name": "duration_cs", "class": "lin16", "unit": "cs", "min": 10, "max": 60000},
+        {"name": "from", "class": "ref8", "refs_enabled": false}
+      ],
+      "provides": ["reading:timer"],
+      "refs": [{"param": "from", "kind": "rule", "must_be": "earlier"}],
+      "max_per_rule": 1,
+      "units": 1, "precision": 0,
+      "pose": [130, -45, 10, -15, 45, -35]
+    },
+    {
+      "index": 36, "id": "cond.load", "section": "rule.reading", "phase": 1,
+      "params": [
+        {"name": "quantity", "class": "enum8", "enum": [{"code": 0, "name": "load"}, {"code": 1, "name": "coherence"}]},
+        {"name": "dir", "class": "enum8", "enum": [{"code": 0, "name": "above"}, {"code": 1, "name": "below"}]},
+        {"name": "threshold_bp", "class": "lin16", "unit": "bp", "min": 1, "max": 9999}
+      ],
+      "provides": ["reading:load"],
+      "units": 1, "precision": 0,
+      "pose": [130, -45, 10, -10, 10, -20]
+    },
+    {
+      "index": 44, "id": "resp.release", "section": "rule.response", "phase": 1,
+      "params": [],
+      "units": 0, "precision": 0,
+      "pose": [130, -15, 10, -10, 35, -20]
+    },
+    {
+      "index": 54, "id": "int.disrupt", "section": "quality", "phase": 1,
+      "params": [
+        {"name": "activity_w", "class": "dec", "unit": "W", "min": 1000, "max": 500000},
+        {"name": "radius_mm", "class": "lin16", "unit": "mm", "min": 500, "max": 4000}
+      ],
+      "provides": ["intervention:disrupt"],
+      "max_per_group": 1,
+      "units": 1, "precision": 0,
+      "pose": [80, -130, -35, 15, 80, 20]
+    }
+  ],
+  "reserved_symbols": [
+    {"index": 1, "id": "act.adjust"},
+    {"index": 3, "id": "geo.vent"},
+    {"index": 4, "id": "geo.segment"},
+    {"index": 5, "id": "geo.hinge"},
+    {"index": 6, "id": "geo.tooth"},
+    {"index": 9, "id": "anchor.item"},
+    {"index": 10, "id": "anchor.body"},
+    {"index": 11, "id": "anchor.target"},
+    {"index": 12, "id": "anchor.alt"},
+    {"index": 13, "id": "proto.material"},
+    {"index": 14, "id": "dev.override"},
+    {"index": 17, "id": "cpl.appearance"},
+    {"index": 18, "id": "cpl.flow"},
+    {"index": 19, "id": "cpl.contact"},
+    {"index": 20, "id": "cpl.anima"},
+    {"index": 21, "id": "cpl.receive"},
+    {"index": 22, "id": "cpl.key"},
+    {"index": 24, "id": "cpl.harvest"},
+    {"index": 25, "id": "cpl.conduct"},
+    {"index": 26, "id": "cpl.mass"},
+    {"index": 28, "id": "feed.chain"},
+    {"index": 29, "id": "feed.stream"},
+    {"index": 31, "id": "move.transmit"},
+    {"index": 32, "id": "move.fold"},
+    {"index": 33, "id": "move.track"},
+    {"index": 37, "id": "cond.heat"},
+    {"index": 38, "id": "cond.light"},
+    {"index": 39, "id": "cond.stir"},
+    {"index": 40, "id": "cond.anima"},
+    {"index": 41, "id": "cond.arrive"},
+    {"index": 42, "id": "cond.press"},
+    {"index": 43, "id": "cond.memo"},
+    {"index": 45, "id": "resp.split"},
+    {"index": 46, "id": "resp.vent"},
+    {"index": 47, "id": "resp.fold"},
+    {"index": 48, "id": "resp.unfold"},
+    {"index": 49, "id": "resp.toggle"},
+    {"index": 50, "id": "resp.signal"},
+    {"index": 51, "id": "resp.steer"},
+    {"index": 52, "id": "resp.select"},
+    {"index": 53, "id": "resp.backup"},
+    {"index": 55, "id": "int.cut"},
+    {"index": 56, "id": "int.absorb"},
+    {"index": 57, "id": "int.reflect"},
+    {"index": 58, "id": "int.charge"},
+    {"index": 59, "id": "int.strike"},
+    {"index": 60, "id": "real.ascend"}
+  ],
+  "presets": [
+    {"id": "draw_1mj", "name": "取能 1 MJ", "program_hex": "020001000033e8"},
+    {"id": "draw_2mj", "name": "取能 2 MJ", "program_hex": "020001000037d0"},
+    {"id": "lamp", "name": "灯", "program_hex": "020101000700010002000096000000000000010010006401001b21f40000"},
+    {"id": "fireball", "name": "火球", "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0010001002201002c00"},
+    {"id": "hot_throw", "name": "炽热投掷", "program_hex": "0201010007000100020001900000000007d001000f4e200101001b24b001001e2ee000"},
+    {"id": "scorch", "name": "灼点", "program_hex": "0201010008ff000100020000fa00000000029401000f3a980101001b15dc0000"},
+    {"id": "dispel_pulse", "name": "驱散脉冲", "program_hex": "0201010008ff000100020000c800000000000001003623e80bb801001b22580000"},
+    {"id": "timed_ember", "name": "定时火种", "program_hex": "0201010008ff000100020100960096009600000001001b27d00001000100230bb8ff01002c00"},
+    {"id": "guarded_fireball", "name": "过热保险火球", "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0020001002201002c00010100240101138801002c00"}
+  ]
+}
