@@ -54,7 +54,8 @@ flowchart LR
   B --> C[合并主线<br/>CI 全绿]
   C --> D[部署配置<br/>变量 · Hindsight · 凭据]
   D --> E[青岚放置<br/>出生点 · 去处 · 对话 UI]
-  E --> F[分发流程<br/>冻结版本 · 镜像 · 打包冒烟]
+  E --> L[本机长跑<br/>生产限额 · 6–12 h]
+  L --> F[分发流程<br/>冻结版本 · 镜像 · 打包冒烟]
 ```
 
 | # | 条目 | 现状 |
@@ -64,9 +65,10 @@ flowchart LR
 | E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | **3 人同机已过**（`limits3-03`，带 M-3c 的 2 核配置）：release 峰值 1854 MiB（启动加载世界），窗口内两边同一时刻合计最大 2200 MiB，tick 不掉速，召回失败 0；6 人同机不过（`limits6-01`，召回失败 11）。D-2 定同机、首批限 3 人（§7） |
 | E4 | 每 NPC 每小时的 token 与请求次数（含 Hindsight 自己的模型用量），按生产节奏外推成本，在 D-3 的预算内 | **读数已有**（`scale3-direct-02` 截断于 37.4 min，用户定采用）：每 NPC 每小时约 266 万 token、约 $0.71（高峰价）；3 人每天最坏约 $51，在 D-3 的 $50 档附近，进青岚前须由产品侧额度兜住，见 §7 |
 | E5 | 生产网络路径（HTTP/2 直连 DeepSeek）下 N 人同场无排队失败、无取消残留 | 未测（实跑都经本机明文代理，走 HTTP/1）；M-1 改一轮直连 |
-| E6 | 分支合并 master、CI 全绿 | PR #11 draft，181 提交 |
-| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | 未做。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
+| E6 | 分支合并 master、CI 全绿 | **已合并**（2026-11-20）：PR #11 在 `1069899a` 上 CI 全绿后转 ready，用户同意后快进推到 master（`29531ea4..1069899a`，216 提交，SHA 原样保留）；master 上 CI 见 §7 |
+| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | 实施中（用户 2026-11-20 定：app 4600m + Hindsight 2048m 同机；deploy/ 新建生产 Hindsight 镜像，补丁与模型烘入；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权）。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
 | E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | 未做；对话 UI 只在测试地图实跑过 |
+| E8b | 本机长跑：生产限额（app 4600m + Hindsight 2048m）、3 人、6–12 h、跨一次每日重启；看内存走势、后台积压能否排空、每天花费与额度重置、重启后接着生活 | 用户 2026-11-20 同意加（原话：“可以”）；排在 E8 之后、E9 之前，起跑前报时长、花费上限与资源预算。依据：真实模型最长只跑过 37.4 min（M-4 截断），线上 24 h 运行无证据 |
 | E9 | 分发：冻结客户端 / 服务端 / 协议版本，镜像推送后本地同镜像 + 新打包客户端冒烟（含 NPC 说话主链路） | 按 Voxim 分发规则，未做 |
 
 ## 5. 测试矩阵（本层只验链路与量读数；阈值只在测试侧）
@@ -139,3 +141,6 @@ flowchart LR
   内存峰值 1838 MiB、积压能排空；**`limits6-01`（6 人）不通过**——召回失败 11：首次建库时 6 人 24 个建模操作挤在 2 个名额里，5 人首次选择 `life_initialization_timeout`（只在首次建库发生）；
   认识刷新期间召回超时 6 次，窗口末刷新积压仍在涨（最老 253 s）。原判保留、不重跑。明细与证据：驱动 README“M-3c 实跑结果”、`runs/limits3-03/`、`runs/limits6-01/`。
 - **D-2 定**（用户 2026-11-19）：**Hindsight 与 voxim_server 同机部署，首批限 3 人**；部署时带 M-3c 配置（E7）。扩到 3 人以上前须先另放 Hindsight 或重新实测。
+- 2026-11-20（第二十四个统筹会话）：**E6 合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871），用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR 显示 merged。推 master 照例触发 Docker Publish（阿里云 ACR `:master` / `:latest`），青岚生产用本机构建的 `voxim-server:<版本>`，不受影响。
+- 2026-11-20：**E7 用户定**（三问）：内存 app 4600m + Hindsight 2048m（统筹建议 4000m，用户选 4600m；守护按“告警 = 上限 − 1200、重启 = 上限 − 700”改为 3400 / 3900）；deploy/ 新建生产 Hindsight 镜像（ORT 补丁与嵌入 / 重排模型烘入、`HF_HUB_OFFLINE=1`）；E7 范围 = 仓内配置 + 本机启动核对。
+- 2026-11-20：**新增 E8b 本机长跑**（用户同意，原话：“可以”）：起因是用户问线上 24 h 运行时 NPC 能否“活”，现有证据最长 37.4 min，见 §4 E8b 行。

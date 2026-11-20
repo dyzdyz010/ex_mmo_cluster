@@ -32,6 +32,14 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（指纹 `02bcc8f0`，含偏移）；烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`。
 已按用户要求删除：旧 release `~/npc-t1live-20261119`、`~/npc-scale-20261118`、`~/npc-current-20261118`、`~/npc-final-20261118` 与全部 `~/npc-build-*` 构建目录；`~/npc-build`（OTP 工具链源码）未删。
 
+### 第二十四个统筹会话的进展（2026-11-20 起）——上面第二十三 → 第二十四交接里“下一步”各项的状态以这里为准
+
+- **E6 完成合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871）；用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR merged。
+  推 master 照例触发 Docker Publish（ACR `:master` / `:latest`），青岚生产用本机构建镜像，不受影响。近两天 CI 的三次失败都在魔法侧测试（`MagicSemblanceWorldTest` 冷重启 ×2、`VoximSpellDispatchTest` ×1，时好时坏），本线未动。
+- **E7 用户定（2026-11-20）**：app 4600m + Hindsight 2048m 同机（守护改 3400 / 3900）；deploy/ 新建生产 Hindsight 镜像（ORT 补丁与模型烘入）；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权。实施中（子会话，产物 `.demo/observe/npc-e7-20261120/`）。
+  缺口盘点要点：compose 无 Hindsight 服务 / 卷 / 备份；M-3c 变量与补丁只在 Test-only 目录；README / `.env.example` 开关名笔误（应为 `HINDSIGHT_API_ENABLE_BANK_CONFIG_API`）；生产 runbook 在主检出 `.demo/observe/qinglan-deploy-20261029/RUNBOOK.md`。
+- **新增 E8b 本机长跑**（用户同意，原话：“可以”）：生产限额、3 人、6–12 h、跨一次每日重启，排在 E8 之后、E9 之前；起跑前报时长、花费上限与资源预算。起因：用户问线上 24 h NPC 能否“活”，现有真实模型实跑最长 37.4 min。
+
 ### 交接（2026-11-19，第二十二个统筹会话 → 第二十三个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-23-brief.md`
 
 **一句话**：花费额度 T4 通过；用户定了**长程任务闭环（任务层）**的概念与细节，新稿 `2026-11-19-npc-long-task-loop-decision.md`（§6 全按建议）；稿 A 批 1（eat / craft，门槛由 World 一处定义）、
