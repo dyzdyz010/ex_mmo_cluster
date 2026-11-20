@@ -51,6 +51,24 @@ defmodule VoxelRegion.World.Projectiles do
     end
   end
 
+  @doc """
+  World 恢复时：持久化的飞行中投射物（尚无冻结交付）按已持久的年龄散解，剩余能量散入空气记 `semblance_released_j`，
+  一笔热提交删除记录。实时采样以墙钟与当时人物为准，崩溃间隙不可追溯，恢复时 Scene 也尚未接入（2026-11-20 run-04：
+  恢复后首轮采样调用未启动的 Scene 使 World 退出、服务端起不来）。已冻结的命中交付照常重投同一目标。
+  """
+  def settle_restored(state) do
+    case for({id, s} <- shots(state), not Map.has_key?(s, :impact_delivery), do: {id, s}) do
+      [] ->
+        state
+
+      settled ->
+        thermal = Enum.reduce(settled, state.thermal, fn {id, s}, thermal -> Thermal.release(thermal, id, s, nil) end)
+        next = HeatCommit.thermal_commit(%{state | thermal: thermal}, [], %{semblances: Map.new(settled, fn {id, _} -> {id, nil} end)})
+        Logger.info("voxel_projectile_restored_dissipated world_seq=#{next.seq} projectiles=#{inspect(Enum.map(settled, &elem(&1, 0)))}")
+        next
+    end
+  end
+
   @doc "同一轮只有一个异步工作；下一轮在本轮提交以后采样，不缓存人物位置。"
   def poll(%{projectile_task: nil} = state) do
     case shots(state) do

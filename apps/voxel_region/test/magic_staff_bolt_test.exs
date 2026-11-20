@@ -127,20 +127,22 @@ defmodule VoxelRegion.MagicStaffBoltTest do
   end
 
   # 手边发出：目标字段按线格式填 0（同 MagicSemblanceWorldTest）。
-  defp bolt(c, a, at) do
+  defp bolt(c, a, at, direction \\ @forward), do: aimed(c, a, @bolt, direction, at)
+
+  defp aimed(c, a, program, direction, at) do
     seq = next()
     request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-      direction: @forward, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0,
-      semblance: {0, 0}, program: Jason.encode!(@bolt)}
+      direction: direction, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0,
+      semblance: {0, 0}, program: Jason.encode!(program)}
     VoxelRegion.TestSupport.spell(c.w, Map.merge(a, %{received_us: at, clock_node: node()}), request)
   end
 
-  defp draw(c, a, energy_j, at) do
-    {:ok, target} = World.tool_intent(c.w, a, query(a, @stone_micro))
+  defp draw(c, a, energy_j, at, micro \\ @stone_micro) do
+    {:ok, target} = World.tool_intent(c.w, a, query(a, micro))
     seq = next()
     program = %{v: 1, target: %{kind: "aim"}, emit: "at_target", steps: [%{sym: "energy.draw", args: %{energy_j: energy_j}}]}
     request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-      direction: query(a, @stone_micro).direction, program: Jason.encode!(program), semblance: {0, 0}}
+      direction: query(a, micro).direction, program: Jason.encode!(program), semblance: {0, 0}}
     request = Map.merge(request, Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
     VoxelRegion.TestSupport.spell(c.w, Map.merge(a, %{received_us: at, clock_node: node()}), request)
   end
@@ -278,7 +280,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert energy(c.w) == 487_143.153
     assert log =~ "spent_mj=#{@cost_mj} energy_mj=487143153"
     s = observe(c.w)
-    assert %{caster: @cid, shape: 0} = s.semblances[{seq, 0}]
+    # 射程内有落点：照旧落在靶石格 (0,2,3) 上、接触该格。
+    assert %{caster: @cid, shape: 0, contact: %{cell: {0, 2, 3}}} = s.semblances[{seq, 0}]
     # 热账入账：拟态物理 104.5 J + 废热 (9 941 697 / 1000 − 104.5) J = 施法者扣款 9941.697 J。
     created = ledger(s, :semblance_created_j) - ledger(before, :semblance_created_j)
     waste = ledger(s, :cast_waste_j) - ledger(before, :cast_waste_j)
@@ -346,5 +349,69 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert_in_delta battery(before).stored_j - battery(s).stored_j,
                     (ledger(s, :caster_drawn_j) - ledger(before, :caster_drawn_j)) + (ledger(s, :draw_loss_j) - ledger(before, :draw_loss_j)),
                     1.0e-6
+  end
+
+  # 射程内无落点（用户 2026-11-20 定；rclick-01 对空地瞄准被拒 out_of_domain）：照常接纳、扣款，弹道飞到射程端点或寿命
+  # 散解。竖直向上：手边 (0.5, 3.0, 0.5)，眼→手 0.5 m 计入路程；上升段弦长之和 = 升高 30t − ½·9.81·t²，
+  # 0.5 + 升高 ≥ 30 m 首次于 t = 1.25 s（升高 29.8359375 m；t = 1.20 s 时 28.9368 m 不足）→ 射程端点 y = 32.8359375。
+  # 光弹寿命 1 s < 1.25 s：飞行中寿命到期散入空气。账（拟态温度 = 环境，显热 0）：发光 100 W × 1 s = 100 J，
+  # 释放 = 飞行动能 ½·0.01·30² = 4.5 J，合计 = 物理 104.5 J。
+  @up {0.0, 1.0, 0.0}
+
+  defp commit(w), do: (send(w, :thermal_commit); observe(w))
+
+  # 等可观察条件：拟态离开拟态表（投射物采样每 50 ms 一轮，有界 5 s）。
+  defp await_gone(w, id),
+    do: Enum.find_value(1..250, fn _ -> s = commit(w); if Map.has_key?(s.semblances, id), do: (Process.sleep(20); nil), else: s end)
+
+  defp assert_bolt_dissipated(before, gone) do
+    delta = fn key -> ledger(gone, key) - ledger(before, key) end
+    assert delta.(:semblance_created_j) == 104.5
+    assert_in_delta delta.(:semblance_light_j), 100.0, 1.0e-9
+    assert_in_delta delta.(:semblance_released_j), 4.5, 1.0e-6
+    assert_in_delta delta.(:semblance_light_j) + delta.(:semblance_released_j) + delta.(:semblance_exchanged_j), 104.5, 1.0e-6
+  end
+
+  test "射程内无落点的光弹（运动学拟态）：接纳并扣恰好 cost_mj，飞到寿命散入空气，账闭合", c do
+    {:ok, _} = send_state(c.w, c.a)
+    before = observe(c.w)
+    assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = bolt(c, c.a, 1_000_000, @up)
+    assert caster.spent_j == 9941.697
+    assert energy(c.w) == 487_143.153
+    s = observe(c.w).semblances[{seq, 0}]
+    assert s.contact == nil and s.origin == {0.5, 3.0, 0.5}
+    assert_in_delta s.flight_s, 1.25, 1.0e-12
+    assert_in_delta elem(s.rest, 1), 32.8359375, 1.0e-9
+    assert gone = await_gone(c.w, {seq, 0})
+    assert_bolt_dissipated(before, gone)
+    assert ledger(gone, :projectile_body_j) == 0
+  end
+
+  test "射程内无落点的光弹（投射物实时采样）：接纳、按寿命 1 s 飞行后散入空气，账闭合", c do
+    :ok = stop_supervised(:world)
+    w = start(c.root, projectile_backend: MissBackend)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
+    c = %{c | w: w}
+    shooter = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5}, feet: {0.5, 1.0, 0.5}, tick_us: 16_667, life_generation: 1, position: {0.5, 1.0, 0.5}}
+    shooter = Map.put(shooter, :player, start_supervised!({Actor, shooter}, id: make_ref()))
+    {:ok, _} = send_state(w, shooter)
+    before = observe(w)
+    assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = bolt(c, shooter, 1_000_000, @up)
+    assert caster.spent_j == 9941.697
+    s = observe(w).semblances[{seq, 0}]
+    assert Map.has_key?(s, :projectile_source) and s.contact == nil and s.flight_s == 1.0
+    assert gone = await_gone(w, {seq, 0})
+    assert_bolt_dissipated(before, gone)
+  end
+
+  test "作用于目标格的法术不放宽：加热瞄空仍 out_of_domain，取能指向普通石仍 invalid_target，均不扣能", c do
+    {:ok, _} = send_state(c.w, c.a)
+    energy = energy(c.w)
+    heat = %{v: 1, target: %{kind: "aim"}, emit: "at_target", steps: [%{sym: "act.heat", args: %{energy_j: 400_000, power_w: 200_000}}]}
+    assert {:error, :out_of_domain} = aimed(c, c.a, heat, @up, 1_000_000)
+    # 地面石宏格 (0,0,1) 顶面中心微格：眼睛射线首个命中即它，在本地施法域 6 m 内。
+    assert {:error, :invalid_target} = draw(c, c.a, 1000, 2_000_000, {4, 7, 12})
+    assert energy(c.w) == energy
   end
 end

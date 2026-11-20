@@ -841,7 +841,7 @@ defmodule VoxelRegion.World do
 
         state = schedule_liquid(state)
         state = Thermal.wake(state)
-        state = VoxelRegion.World.Projectiles.wake(state)
+        state = state |> VoxelRegion.World.Projectiles.settle_restored() |> VoxelRegion.World.Projectiles.wake()
         {:ok, state}
 
       error -> error

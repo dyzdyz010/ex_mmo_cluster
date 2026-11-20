@@ -238,6 +238,36 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     closed?(final)
   end
 
+  # 只测试：Scene 尚未接入时的真实后端形状（prod `WorldServer.Movement.Projectile` 调未启动的 Scene → 退出）。
+  defmodule UnavailableBackend do
+    def poll(_shots, _cv), do: exit({:noproc, {GenServer, :call, [:scene_not_started, :tool_candidates, 5000]}})
+    def notify(_hit, _seq), do: :ok
+  end
+
+  # 回归（2026-11-20 staff-20261120 run-04：World 崩溃时有一枚光弹在飞，重启恢复后首轮采样调用尚未启动的 Scene，
+  # World 退出、服务端起不来）。恢复时飞行中投射物按已持久年龄散入空气：年龄 0 时剩余能量 = 创建时物理能量
+  # C·(T − T_amb) + ½mv² + glow·寿命 = 1000 × (2000 − 293.15) + ½·2·12² + 100 × 60 = 1 712 994 J，全部记释放。
+  @tag :projectile
+  test "飞行中投射物随 World 持久化后重启：恢复时散解记账，不调用后端，World 存活", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    before = observe(c.w)
+    assert before.semblances[{seq, 0}].age_s == 0.0
+    :ok = stop_supervised(:world)
+    if Process.alive?(worker), do: Process.exit(worker, :kill)
+
+    w = start(c.root, UnavailableBackend)
+    monitor = Process.monitor(w)
+    # 后端节拍 50 ms：改前此窗口内 World 即因后端退出而 DOWN。
+    refute_receive {:DOWN, ^monitor, :process, _, _}, 500
+    restored = observe(w)
+    refute Map.has_key?(restored.semblances, {seq, 0})
+    assert_in_delta ledger(restored, :semblance_released_j) - ledger(before, :semblance_released_j), 1_712_994.0, 1.0e-6
+    assert ledger(restored, :projectile_body_j) == 0
+    closed?(restored)
+  end
+
   @tag :impact_snapshot
   test "触散：命中前存在，碰撞热提交删除并下发；余光和动能只释放一次，叶获热", c do
     assert {:ok, _} = draw(c, 1_000_000)

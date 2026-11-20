@@ -329,8 +329,11 @@ defmodule VoxelRegion.World.Casting do
       {:error, :semblance_limit, state}
     else
       case Magic.Semblance.trace(actor.eye, hand, velocity, form["radius_m"], state.magic.range_m, state, &semblance_cast/4) do
-        {:miss, state} ->
-          {:error, :out_of_domain, state}
+        # 射程内无命中（用户 2026-11-20 定）：照常接纳，沿已求交弹道飞到射程端点、无接触散解（散入空气）；
+        # 有投射物后端的〈触散〉光弹在结算时照既有规则改为按寿命实时采样飞行。
+        {{:miss, t}, state} ->
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: Magic.Semblance.position(hand, velocity, t), contact: nil}, throw)
+          {:ok, %{sym: "form.semblance", args: form, launch: launch, cells: [Magic.Semblance.macro(hand)]}, state}
 
         {{:free, point}, state} ->
           launch = %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: nil}
@@ -339,13 +342,16 @@ defmodule VoxelRegion.World.Casting do
         {{:hit, t, rest, target}, state} ->
           node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
           contact = %{target: target, key: VoxelRegion.ThermalGeometry.key(node), cell: Damage.macro(target)}
-          launch = %{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}
-          launch = if Enum.any?(throw, &(&1.sym == "act.break_on_hit")), do: Map.put(launch, :break_on_hit, true), else: launch
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}, throw)
           {:ok, %{sym: "form.semblance", args: form, launch: launch,
                   cells: Enum.uniq([Magic.Semblance.macro(rest), contact.cell])}, state}
       end
     end
   end
+
+  # 〈触散〉编译为记录上的 break_on_hit。
+  defp break_flag(launch, throw),
+    do: if(Enum.any?(throw, &(&1.sym == "act.break_on_hit")), do: Map.put(launch, :break_on_hit, true), else: launch)
 
   # 拟态弹道的 canonical 求交：同一 Amanatides-Woo 射线，命中返回目标与进入的微格。
   def semblance_cast(origin, direction, length, state) do

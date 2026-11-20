@@ -61,7 +61,10 @@ Global system。法杖的能量就是既有的每角色施法者账 `World.caste
   - 线协议、Hello 44、0x83 字段不变（0x83 `quote_windup_s` 报价即 0.3）。
 - **首次真实实跑（2026-11-20，Voxim `Saved/Tests/staff-20261120/`，本分支 native prod release，青岚世界副本、战斗关闭）**：
   - aim-02 暴露既有 prod 崩溃：投射物采样任务结果 `{任务引用, 结果}` 经输入闸门排队时，`World.queue_ready_input/2` 的 info 日志 `kind=#{Admission.kind(...)}` 插入引用 → `String.Chars` 异常 → `VoxelRegion.World` 退出 → 两个场景 `canonical_incomplete`、玩家会话 reason 5。只在 info 日志级别（prod）且投射物采样到真实人物（Player actor 带 `life_generation`、配置了采样后端）时出现，测试环境默认 warning 级别、无后端，所以 CI 没覆盖到。修复：`Admission.kind/1` 对 `{引用, _}` 返回 `:projectile_result`（三处日志共用）；回归 `magic_staff_bolt_test`“投射物采样结果在 info 日志级别经输入闸门提交，World 不崩”（采样后端替身 + Player 形状施法者），去掉修复时按同一 `String.Chars` 崩溃红。
-  - 未修（另报）：World 崩溃时持久化了在飞投射物（带 `projectile_source`），冷重启恢复后立即向尚未启动的 Scene 采样 → `noproc` → `replica_snapshot_failed`，拓扑启动失败（run-04）。本次换干净部署 server2 继续。
+  - World 崩溃时持久化了在飞投射物（带 `projectile_source`），冷重启恢复后立即向尚未启动的 Scene 采样 → `noproc` → `replica_snapshot_failed`，拓扑启动失败（run-04；当时换干净部署 server2 继续）。已修，见下“后续修复”。
+- **后续修复（2026-11-20，分支 `staff-bolt-followup-20261120`，未实跑）**：
+  - **瞄空的投掷照常接纳（用户定）**：rclick-01 对 ~25 m 外空地瞄准被拒 `out_of_domain` 的根因是 `Semblance.trace` 的抛物线自手边求交 `range_m`（30 m）路程未碰到实占用格即返回 miss，`Casting.spell_effect` 把 miss 直接映射成 `out_of_domain`；投掷路径没有任何权威域边界判定（World 是单一 canonical authority，页按需装入），所以不存在要保留的“离开权威域”分支。现规则：miss 时 `trace` 给出射程端点时刻，施法照常接纳、照常扣 cost_mj，记录 `contact = nil`、`flight_s = 射程端点时刻`；无投射物后端的运动学拟态到射程端点落地即散解（`Semblance.spent?/1`：无接触、有初速、已落地），有后端的〈触散〉光弹按既有结算规则改为按寿命实时采样飞行、寿命到期散解；两者都以 `Thermal.release` 散入空气，剩余能量记 `semblance_released_j`。地块权限只查成形处手边宏格。作用于目标格的加热／取能不变（瞄空仍 `out_of_domain`、非蓄能石仍 `invalid_target`）。客户端拒绝文案“投掷 30 m 内需落点”已过时，属 Voxim 侧。
+  - **重启恢复在飞投射物**：`Projectiles.settle_restored/1` 在 World 恢复完成时把尚无冻结交付的投射物按已持久年龄散入空气（`semblance_released_j`，一笔热提交删除记录），不再向后端采样。理由：实时采样以墙钟与当时人物为准，崩溃间隙不可追溯，恢复时 Scene 也未接入。已冻结的命中交付仍照原设计重投同一目标（其真实后端在 Scene 未起时同样会 `noproc`，未在本次处理）。
   - aim-04（server2，新角色）：开户 497 084.85 J；单击一发报价前摇 0.3 s、扣 9 941.697 J → 487 143.153 J；按住连发 4 发、松开时在途 1 发，每发同额，余额逐发 477 201.456 → 437 434.668 J；服务端 `voxel_cast_begin windup_s=0.3 steps=[{0.0, 0.0}, …]`、`voxel_spell spent_mj=9941697`；施放意图间隔 0.559／0.501／0.535 s（受 `cast_interval_ms` 500 限），施放→结果 0.318–0.519 s。取能未实跑（部署上没有已充能蓄能石）。
 
 ```mermaid
@@ -72,4 +75,4 @@ flowchart LR
   E -->|"cost_mj/1000 − 物理"| W["cast_waste_j<br/>(脚下废热)"]
 ```
 
-Test-only 验证：`apps/voxel_region/test/magic_staff_bolt_test.exs`（目录 `fixtures/magic/71ca543b…` 为 UE 发布原字节）覆盖报价、开户一次与冷恢复、光弹扣款与热账同额、空账/不足走火、旧浮点余额、取能整数分账；`apps/scene_server/test/scene_server/movement/cast_wait_lifecycle_test.exs` 用真实 Player（combat_scope nil）证明光弹照常结算；gate 的接纳 0x83 用例改为开户后余额。既有用例按整数规则改的期望见提交说明。客户端法杖、真实双端与分发未验证。
+Test-only 验证：`apps/voxel_region/test/magic_staff_bolt_test.exs`（目录 `fixtures/magic/71ca543b…` 为 UE 发布原字节）覆盖报价、开户一次与冷恢复、光弹扣款与热账同额、空账/不足走火、旧浮点余额、取能整数分账、瞄空光弹接纳与散解（运动学与实时采样两路）、加热／取能无效目标仍拒；`magic_semblance_world_test` 覆盖重启时在飞投射物散解记账且 World 存活；`apps/scene_server/test/scene_server/movement/cast_wait_lifecycle_test.exs` 用真实 Player（combat_scope nil）证明光弹照常结算；gate 的接纳 0x83 用例改为开户后余额。既有用例按整数规则改的期望见提交说明。客户端法杖、真实双端与分发未验证。
