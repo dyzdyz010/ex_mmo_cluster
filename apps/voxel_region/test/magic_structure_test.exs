@@ -18,8 +18,8 @@ defmodule VoxelRegion.MagicStructureTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Structure}
 
-  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
-  @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
+  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @ambient_k 293.15
   # 〈附〉的形成距离取本地施法域内的 3 m；T15 的热环境取设计 A.7 的示意值。

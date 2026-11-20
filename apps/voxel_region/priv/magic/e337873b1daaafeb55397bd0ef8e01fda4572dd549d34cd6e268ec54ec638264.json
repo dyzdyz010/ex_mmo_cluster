@@ -109,6 +109,7 @@
       "params": [
         {"name": "energy_j", "class": "dec", "unit": "J", "min": 1000, "max": 2000000}
       ],
+      "numeric_checks": ["domain"],
       "units": 1, "precision": 0,
       "pose": [155, -90, -95, 25, 90, 95]
     },

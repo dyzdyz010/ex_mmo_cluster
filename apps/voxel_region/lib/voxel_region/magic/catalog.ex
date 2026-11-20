@@ -2,7 +2,7 @@ defmodule VoxelRegion.Magic.Catalog do
   @moduledoc """
   全局系统功能（魔法增量 1）：魔法目录——施法者常数、上限、成本参数与符号清单的唯一服务端读取入口。
 
-  作者入口是 Voxim 的 `UVoxelMagicCatalogAsset`（`DA_MagicCatalogV1`），Publish 产出不可变
+  版本 4 的作者入口是 Voxim 的 `UVoxelMagicCatalogAsset`（`DA_MagicCatalogV1`），Publish 产出不可变
   `Content/Voxel/Magic/Published/<sha256>.json`；服务端在 World 启动时读取部署进来的同一文件
   （`:magic_catalog_path`），digest = 文件字节 sha256，与属性目录同法（`VoxelRegion.Damage.load/1`）。
   部署文件是信任边界：结构在这里校验一次，之后 `Program` 与 `Cost` 直接消费。
@@ -21,6 +21,8 @@ defmodule VoxelRegion.Magic.Catalog do
   `caster.max_power_w` 是注能的最大输出功率。姿态只是数据，时长与损耗由 `Cost` 的通用公式算出。
 
   版本 5（符号组合魔法 v2，切片 0a）：schema 见 `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
+  唯一作者源是本仓 `apps/voxel_region/priv/magic/<sha256>.json`（不可变、按内容寻址；方向与 v4 相反，切片 3 决策 P9）：
+  Voxim 按 sha256 校验后拷入 `Content/Voxel/Magic/Published/`，部署照旧拷成 `catalogs/magic-catalog.json`。
   解码为 `%VoxelRegion.Magic.Catalog{}`：符号表按 u16 下标索引（`Catalog.Symbol` / `Catalog.Slot`）、预留下标表
   （`reserved`，设计 v2.4 K3：未开放阶段的下标只占位，解码层按未知下标拒绝）、计数上限、`backup_modes`、配额、
   运行期常数与预设字节；任何不符都抛出带字段路径的 `ArgumentError`。
@@ -368,6 +370,9 @@ defmodule VoxelRegion.Magic.Catalog do
     checks = Map.get(entry, "numeric_checks", [])
     check!(is_list(checks) and Enum.all?(checks, &(&1 in @numeric_checks)), "#{at}.numeric_checks",
       "只允许 #{Enum.join(@numeric_checks, "、")}")
+    # 施法者动作不建结构，数值检查只可能是 T6（设计 v2.10 E4）；Cost 的〈取〉报价只有施放处读数可判。
+    check!(section != :caster_action or checks -- ["domain"] == [], "#{at}.numeric_checks",
+      "施法者动作段只允许 domain")
 
     # 可选；只有质段耦合写入性质类，其余符号不写（§4.5）。
     property_class = entry["property_class"]

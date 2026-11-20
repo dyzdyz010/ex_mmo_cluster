@@ -18,8 +18,8 @@ defmodule VoxelRegion.MagicCostTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Structure}
 
-  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
-  @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
+  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @ambient_k 293.15
   @site %{
@@ -187,7 +187,8 @@ defmodule VoxelRegion.MagicCostTest do
     for id <- ~w(draw_1mj draw_2mj) do
       {:ok, %Program{kind: :caster_action} = draw} = Program.decode_ir(c.bytes[id], c.catalog)
       q = Cost.quote_structure(draw, c.catalog, @site)
-      # rejects 只可能含 T6；P1 目录〈取〉不声明 numeric_checks，所以为空。
+
+      # rejects 只可能含 T6；施放处的能源目标在 3 m（域内），所以为空。T6 边界见下一条用例。
       assert {q.units * q.precision, q.physical_mj, q.rejects} == {1, 0, []}
 
       assert [
@@ -213,6 +214,26 @@ defmodule VoxelRegion.MagicCostTest do
       assert Cost.staged_failure(q, q.total_mj, 16) == nil
       assert Cost.staged_failure(q, q.total_mj - 1, 16) == {1, q.total_mj - 1}
       assert Cost.staged_failure(q, q.total_mj, 0.9) == {1, q.total_mj}
+    end
+  end
+
+  test "Q-1 取能 T6（v2.10 E4）：能源目标距离 6.0 m 通过、6.01 m 被拒；只判 domain，造价与前摇不随距离变", c do
+    # 目录 limits.local_domain_m = 6；〈取〉声明 numeric_checks: ["domain"]。形成距离 = 施法者眼点到目标宏格中心，
+    # 由 World 算好放进 site。若取能子句仍忽略 site，6.01 m 一侧会错误地得到空表。
+    for id <- ~w(draw_1mj draw_2mj) do
+      {:ok, %Program{kind: :caster_action} = draw} = Program.decode_ir(c.bytes[id], c.catalog)
+      quote_at = &Cost.quote_structure(draw, c.catalog, %{@site | formation_distance_m: &1})
+
+      inside = quote_at.(6.0)
+      outside = quote_at.(6.01)
+      assert inside.rejects == [], id
+
+      assert outside.rejects == [
+               %{check: :domain, detail: %{distance_m: 6.01, local_domain_m: 6}}
+             ],
+             id
+
+      assert Map.delete(outside, :rejects) == Map.delete(inside, :rejects), id
     end
   end
 

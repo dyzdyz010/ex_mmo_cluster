@@ -7,7 +7,7 @@ defmodule VoxelRegion.Magic.Cost do
 
   `quote_structure/3` 按设计 v2.10（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`，下称“设计”）
   §4.2 计价、§4.4 容量、§4.5 从零定义、§3.3 数值检查、§11.4.7 整数公式给出一个结构组的报价（施法者动作程序只有
-  构造计价）；`staged_failure/3` 按 §5.5 / §3.6 判定建构在第几步中断、只结算第 1..k 步。落地决策见
+  构造计价与 T6 施法域检查）；`staged_failure/3` 按 §5.5 / §3.6 判定建构在第几步中断、只结算第 1..k 步。落地决策见
   `docs/10-active/magic/2026-11-19-glyph-v2-server-landing.md`。
 
   ```mermaid
@@ -62,7 +62,9 @@ defmodule VoxelRegion.Magic.Cost do
 
   - `ambient_k`：施法处环境温度（K，f64）。量化为 T_ref_dk 存入结构（§11.4.7），也决定 env 与 `life_s`（§4.2 口径：
     只按施法者所在格温度，不含邻近干扰）。
-  - `formation_distance_m`：施法者到形成位置的距离（〈握〉为 0；〈附〉为准星格面），T6 `domain` 用。
+  - `formation_distance_m`：施法者到形成位置的距离（〈握〉为 0；〈附〉为准星格面），T6 `domain` 用。取能程序
+    （〈取〉）的形成位置就是能源目标：取施法者眼点到目标宏格中心 (x + 0.5, y + 0.5, z + 0.5) 的欧氏距离（设计 v2.10
+    E4；决策稿 `2026-11-19-slice3-protocol.md` §3.5，口径沿用原 World `spell_target` 的距离检查）。
   - `emissivity`、`exchange_w_per_m2_k`：World 热环境的发射率与线性换热系数（`world/thermal.ex` 的 `emissivity`、
     `environment_w_per_m2_k`），T15 `thermal_step` 的 g_max 用。设计 v2.9 A2 确认二者属于 World 的热环境参数、
     不进目录，报价时由 World 传入（§3.3 T15、附录 A.7），以免形成第二份真值。
@@ -104,12 +106,14 @@ defmodule VoxelRegion.Magic.Cost do
   施法者动作程序（〈取〉，`kind: :caster_action`）不建结构，只有构造计价（设计 v2.10 E4，§4.2、附录 A.12）：`units`、
   `precision`（S·P = 1，即 0x83 的 `quote_s`）、`physical_mj`（恒为 0：〈取〉的能量来自能源，不由施法者注入）、
   `loss_mj` = `total_mj`（构型损耗 + 出手前置维护）、`loss_rounding_mj`、`windup_s`、`steps`（`staged_failure/3`
-  照常判 `fail_step`），以及 `rejects`。E4 规定 `rejects` 只可能含 T6；P1 目录〈取〉不声明 `numeric_checks`，
-  所以这里恒为空表。0x83 的其余结构类字段对它填 0（§11.4.6）。
+  照常判 `fail_step`），以及 `rejects`。E4 规定 `rejects` 只可能含 T6：目录〈取〉声明 `numeric_checks: ["domain"]`
+  （目录加载时保证施法者动作段只能声明 `domain`），按 `site.formation_distance_m`（施法者到能源目标）与结构共用同一个
+  T6 判定。施法域距离只在这里判一次，World 不再另做距离检查（决策稿 §3.5）。0x83 的其余结构类字段对它填 0（§11.4.6）。
 
-  参数与原决策稿 `quote_structure/4` 的差异及理由：施法者分辨 Ω_eff 不进报价，只交给 `staged_failure/3`——设计 §4.1
-  要求报价时用当前 Ω_eff、出手时用出手瞬间的 Ω_eff 重裁，同一份报价要能按两个值判定；施放处读数合并为 `site/0`，
-  因为 T6 需要形成距离、T15 需要 World 的热环境系数，二者都不在目录里。
+  参数与原决策稿 `quote_structure/4` 的差异及理由：施法者分辨 Ω_eff 不进报价，只交给 `staged_failure/3`；施放处读数
+  合并为 `site/0`，因为 T6 需要形成距离、T15 需要 World 的热环境系数，二者都不在目录里。报价与施放同源（设计 v2.10
+  E4 第 3 条，决策稿 §3.5）：报价、前摇开始与结算时 World 各用当时的 `site` 重新调用本函数、重新判 `rejects`，再以
+  同一时刻的 Ω_eff 调 `staged_failure/3`；不复用早先时刻的报价。
 
   返回的报价包含：
 
@@ -124,13 +128,14 @@ defmodule VoxelRegion.Magic.Cost do
   - `rejects`：全部数值检查违规（`reject/0`）；空表即可施放。
   """
   @spec quote_structure(Program.t(), Catalog.t(), site()) :: map()
-  def quote_structure(%Program{kind: :caster_action, action: %Glyph{} = action}, catalog, _site) do
+  def quote_structure(%Program{kind: :caster_action, action: %Glyph{} = action}, catalog, site) do
     {placed, _pose} = nearest_first([{action, 0}], catalog.construction.rest_pose, catalog, [])
 
     %{
       units: Enum.sum(Enum.map(placed, & &1.units)),
       precision: 1 + Enum.sum(Enum.map(placed, & &1.precision)),
-      rejects: []
+      # 只有施放处读数：施法者动作段只能声明 T6（目录加载时保证），T6 只读 site。
+      rejects: rejects(placed, %{site: site}, catalog)
     }
     |> Map.merge(construction(placed, %{}, 0.0, catalog))
   end
@@ -184,7 +189,18 @@ defmodule VoxelRegion.Magic.Cost do
     |> Map.merge(entries(group, catalog))
     |> Map.put(
       :rejects,
-      rejects(placed, group, upkeep, thermal, runtime, shape.params, site, catalog)
+      rejects(
+        placed,
+        %{
+          group: group,
+          upkeep: upkeep,
+          thermal: thermal,
+          runtime: runtime,
+          shape: shape.params,
+          site: site
+        },
+        catalog
+      )
     )
   end
 
@@ -195,7 +211,8 @@ defmodule VoxelRegion.Magic.Cost do
   返回 `nil`（建成，按报价 `total_mj` 结算），或 `{k, spent_mj}`：k 从 1 起；第 1..k 步的注能与构型损耗照付，
   其余步不发生、不扣费。设计 v2.9 A6（§4.2 报价接口约定、§5.5）确认的扣费：余额耗尽时付到耗尽为止，即
   spent_mj = min(可用余额, 第 1..k 步累计支出)；Ω 不足时扣第 1..k 步累计支出（此时余额足够，min 取后者）。
-  出手前置维护费已并入最后一步的累计支出（见 `construction/4`）。报价时与出手时各以当时的 Ω_eff 调用一次。
+  出手前置维护费已并入最后一步的累计支出（见 `construction/4`）。报价时与结算时各调用一次，报价与 Ω_eff 都取该
+  时刻的值：结算时先按当时的 `site` 重新 `quote_structure/3`，不复用前摇开始时的报价（决策稿 §3.5）。
   """
   @spec staged_failure(map(), integer(), number()) :: nil | {pos_integer(), non_neg_integer()}
   def staged_failure(%{steps: steps}, available_mj, resolution) do
@@ -517,18 +534,20 @@ defmodule VoxelRegion.Magic.Cost do
     {"thermal_step", :thermal_step}
   ]
 
-  defp rejects(placed, group, upkeep, thermal, runtime, shape, site, catalog) do
+  # `inputs` 是检查所读的报价中间量：结构组为 group、upkeep、thermal、runtime、shape（〈形〉参数）与 site；
+  # 施法者动作只有 site。每条检查只匹配自己读的键。
+  defp rejects(placed, inputs, catalog) do
     declared =
       MapSet.new(placed, & &1.glyph.index) |> Enum.flat_map(&catalog.symbols[&1].numeric_checks)
 
     for {name, check} <- @checks,
         name in declared,
-        detail <- violations(check, group, upkeep, thermal, runtime, shape, site, catalog),
+        detail <- violations(check, inputs, catalog),
         do: %{check: check, detail: detail}
   end
 
   # T5：E₀_op + |E_th0| ≤ E_cap；〈辉〉功率 ≤ Φ_cap（〈链〉功率为 P2）。
-  defp violations(:capacity, group, upkeep, _thermal, _runtime, _shape, _site, _catalog) do
+  defp violations(:capacity, %{group: group, upkeep: upkeep}, _catalog) do
     load_mj = glyph(group.energy, "energy.load").params["energy_mj"] + abs(upkeep.e_th0_mj)
     glow_w = Enum.find_value(group.quality, 0, &(&1.id == "cpl.glow" && &1.params["power_w"]))
 
@@ -539,8 +558,8 @@ defmodule VoxelRegion.Magic.Cost do
     |> Enum.filter(& &1)
   end
 
-  # T6：形成位置须在本地施法域内（P1 没有〈传〉）。
-  defp violations(:domain, _group, _upkeep, _thermal, _runtime, _shape, site, catalog) do
+  # T6：形成位置须在本地施法域内（P1 没有〈传〉）。结构与〈取〉共用：〈取〉的形成位置是能源目标（见 `site/0`）。
+  defp violations(:domain, %{site: site}, catalog) do
     limit = catalog.limits.local_domain_m
 
     if site.formation_distance_m > limit,
@@ -549,7 +568,7 @@ defmodule VoxelRegion.Magic.Cost do
   end
 
   # T13：E₀_op ≥ E_min + 出生一拍的运转出账（整数 mJ 比较）。
-  defp violations(:first_tick, group, _upkeep, _thermal, runtime, _shape, _site, _catalog) do
+  defp violations(:first_tick, %{group: group, runtime: runtime}, _catalog) do
     energy = glyph(group.energy, "energy.load").params["energy_mj"]
 
     if energy < runtime.first_tick_min_mj,
@@ -558,7 +577,7 @@ defmodule VoxelRegion.Magic.Cost do
   end
 
   # T14（P1）：〈热〉的 T0 ≥ 施法处环境温度（同为 0.1 K 整数）。
-  defp violations(:ambient_floor, _group, _upkeep, thermal, _runtime, _shape, _site, _catalog) do
+  defp violations(:ambient_floor, %{thermal: thermal}, _catalog) do
     if thermal.t0_dk < thermal.t_ref_dk,
       do: [%{t0_dk: thermal.t0_dk, t_ref_dk: thermal.t_ref_dk}],
       else: []
@@ -566,7 +585,7 @@ defmodule VoxelRegion.Magic.Cost do
 
   # T15：热节点显式稳定步长 0.45·C_th / g_max ≥ thermal_step_min_ms（设计 §3.3、A.7）；
   # g_max = 接触上限 + 4σε·A·T_chk³ + h·A。
-  defp violations(:thermal_step, _group, upkeep, _thermal, _runtime, shape, site, catalog) do
+  defp violations(:thermal_step, %{upkeep: upkeep, shape: shape, site: site}, catalog) do
     %{runtime: rt, semblance: %{thermal_conductivity_w_per_m_k: k}} = catalog
     {_volume, area} = geometry(shape)
 

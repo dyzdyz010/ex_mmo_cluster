@@ -16,13 +16,14 @@ defmodule VoxelRegion.MagicQuoteSamplesTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program}
 
-  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
-  @catalog_path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
+  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @catalog_path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @ir_samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @path Path.expand("fixtures/magic/quote-v2-samples.json", __DIR__)
   @decimals 6
 
-  # 与 `magic_cost_test.exs` 相同的施放处读数：环境 293.15 K（附录 A.1）；〈附〉形成距离 3 m（本地施法域内）；
+  # 与 `magic_cost_test.exs` 相同的施放处读数：环境 293.15 K（附录 A.1）；〈附〉的形成位置与〈取〉的能源目标都在
+  # 3 m（本地施法域 6 m 内，T6 通过）；
   # T15 的热环境取设计 A.7 的示意值 ε = 0.9、h = 10 W/(m²·K)。
   @site %{
     ambient_k: 293.15,

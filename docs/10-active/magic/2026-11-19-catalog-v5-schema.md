@@ -1,9 +1,9 @@
 # 魔法目录 v5 schema（服务端起草）
 
-> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），v2.9 加入 `property_class`、两项从零定义步长并把〈热〉`phi_grade` 收为 [1, 1]（Q21(a)、A3），v2.10 加入读数段符号的 `reading_source`（E2），§7 各项均已由设计确认或改正。
-> 上游：决策稿 [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md) §3.1；设计 v2.6 §11.4.5 规定目录 v5 由服务端起草并冻结。
+> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），v2.9 加入 `property_class`、两项从零定义步长并把〈热〉`phi_grade` 收为 [1, 1]（Q21(a)、A3），v2.10 加入读数段符号的 `reading_source`（E2），§7 各项均已由设计确认或改正。切片 3（3b）：〈取〉声明 `numeric_checks: ["domain"]`（设计 v2.10 E4），目录从测试夹具挪到唯一作者源 `priv/magic/`（切片 3 决策 P9、客户端 C1）。
+> 上游：决策稿 [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md) §3.1；设计 v2.6 §11.4.5 规定目录 v5 由服务端起草并冻结；[`2026-11-19-slice3-protocol.md`](2026-11-19-slice3-protocol.md) §3.5（取能 T6）、§5（目录下发与 digest）。
 > 唯一解释者：`apps/voxel_region/lib/voxel_region/magic/catalog.ex`（schema 与加载校验）、`program.ex`（IR v2 字节）、`signature.ex`（签名）。本文只描述字段，不复述字节规范；字节规范以设计 §11.4 为准。
-> Test-only 夹具：`apps/voxel_region/test/fixtures/magic/<sha256>.json`（P1 内容，见 §6）。
+> 唯一作者源（发布物）：`apps/voxel_region/priv/magic/<sha256>.json`（P1 内容，见 §6；发布约定见 §6.1）。测试直接读该文件，不另存同字节夹具。
 
 ## 1. 总体
 
@@ -114,7 +114,7 @@ flowchart LR
 | `max_per_rule` | 否 | 单条规则内（读数 + 响应 + 备用响应）出现次数上限 |
 | `unique_by` | 否 | 槽名列表：同组内按这些槽的取值判唯一（〈容〉每种 ≤ 1） |
 | `refs` | 否 | `[{param, kind: group\|rule, must_be: earlier}]`；`param` 必须是 `ref8` 槽 |
-| `numeric_checks` | 否 | 只声明计价层数值检查（设计 §3.3 定名）：`capacity`(T5)、`domain`(T6)、`first_tick`(T13)、`ambient_floor`(T14)、`thermal_step`(T15) |
+| `numeric_checks` | 否 | 只声明计价层数值检查（设计 §3.3 定名）：`capacity`(T5)、`domain`(T6)、`first_tick`(T13)、`ambient_floor`(T14)、`thermal_step`(T15)。施法者动作段（`caster_action`）也可声明，但只允许 `domain`（设计 v2.10 E4：取能不建结构，`rejects` 只可能含 T6），写其他检查即加载拒绝。P1：〈取〉、〈附〉声明 `domain`。〈取〉的形成距离 = 施法者眼点到能源目标宏格中心 (x + 0.5, y + 0.5, z + 0.5) 的欧氏距离，由 World 放进报价的 `site.formation_distance_m`；施法域距离只在报价里判这一次（切片 3 决策稿 §3.5） |
 | `units` / `units_by_param` | 是 / 否 | 计价单元 S；`units_by_param` 命中时取代 `units` |
 | `precision` / `precision_by_param` | 是 / 否 | 精度增量 π；同上 |
 | `pose` | 是 | 双支链 6 关节 (q1, q2, q3 \| q4, q5, q6)，存储为**整数度**（设计 §2.6 给出的就是度），5 的倍数、\|q\| ≤ 175；服务端加载时换算为弧度，客户端直接读本字段 |
@@ -147,9 +147,10 @@ P2 开放〈纳〉〈印〉前，按设计 v2.10 E1（§4.2、§11.4.5）加入�
 - 发布时把该项从 `reserved_symbols` 移进 `symbols`，下标不变；下标永不复用。〈否〉`resp.backup` 预留 0x0035，P2 以 `in_program = false` 发布。
 - 加载约束：`index` 与 `id` 各自唯一，且都不与 `symbols` 重复；已发布与预留的下标合起来恰好是 0..n−1（表序不留空洞）。
 
-## 6. P1 Test-only 夹具
+## 6. P1 发布物
 
-- 文件：`test/fixtures/magic/fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443.json`（设计 v2.10 版；依次取代 `ce77caac…`、`64834aa5…`、`c6f60cdb…`、`77036cbc…`）。
+- 文件：`apps/voxel_region/priv/magic/e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264.json`（切片 3 版；依次取代 Test-only 夹具 `ce77caac…`、`64834aa5…`、`c6f60cdb…`、`77036cbc…`、`fcc1002a…`，旧文件已删除）。测试经 `Application.app_dir(:voxel_region, "priv/magic/<sha256>.json")` 读它。
+- 切片 3 相对 `fcc1002a…` 只加一个字段：〈取〉0 `numeric_checks: ["domain"]`（设计 v2.10 E4）。程序字节不变；`ir-v2-samples.json` 与 `quote-v2-samples.json` 只更新 `catalog_digest`，报价数值与两个取能预设的 `rejects`（空，样本 site 的形成距离 3 m）不变。
 - v2.10 相对 `77036cbc…` 只加三个字段：〈遇〉34 `reading_source = "external"`，〈时〉35、〈满〉36 `reading_source = "self"`（E2）。程序字节不变；`ir-v2-samples.json` 与 `quote-v2-samples.json` 只更新 `catalog_digest`，报价数值不变。
 - v2.9 相对 `c6f60cdb…` 只改三处：〈热〉`phi_grade` 区间 [1, 3] → [1, 1]（A3）；〈热〉〈辉〉加 `property_class`；`runtime` 加 `scratch_unit_step`、`scratch_precision_step`。程序字节与 `ir-v2-samples.json` 的样本不变，只更新其 `catalog_digest`。
 - 离线报价样本 `test/fixtures/magic/quote-v2-samples.json`（带同一 `catalog_digest`）：9 个预设经 `Cost.quote_structure/3` 的报价与 T5/T13/T15 各一个反例，供客户端 U0 对接；由 `test/magic_quote_samples_test.exs` 生成并校验不漂移。
@@ -157,6 +158,21 @@ P2 开放〈纳〉〈印〉前，按设计 v2.10 E1（§4.2、§11.4.5）加入�
 - `pose` 照抄设计 §2.6 的 14 个 P1 姿态（整数度；〈取〉保留 v4 姿态）。v2.8（字形辨识 G1）调整了〈遇〉34、〈时〉35、〈满〉36、〈散〉44 四个姿态，〈散〉所在响应层左三位改为 (−60, −45, 10)。
 - 预设：§11.4.5 清单的 9 组，按清单顺序：`draw_1mj`、`draw_2mj`、`lamp`、`fireball`、`hot_throw`、`scorch`、`dispel_pulse`、`timed_ember`、`guarded_fireball`。字节从设计 §11.4.4 逐字抽取；同一份字节另存 `test/fixtures/magic/ir-v2-samples.json`（带本目录 digest），供客户端测试读取。
 - `construction.b_floor = 1`；`quotas` / `runtime` 含 §11.4.5.1 建议补入的全部字段（§4 标 ★）。
+
+### 6.1 唯一作者源与发布约定
+
+目录 v5 以本仓为唯一作者源（切片 3 决策 P9，客户端 C1 同意），方向与 v4（UE `DA_MagicCatalogV1` → 服务端）相反；`DA_MagicCatalogV1` 随 v1 在下一个 Hello 合入时退役。
+
+```mermaid
+flowchart LR
+  A["本仓 priv/magic/{sha256}.json<br/>（唯一作者源，不可变）"] -->|按 sha256 校验后拷入| V["Voxim Content/Voxel/Magic/Published/"]
+  A -->|部署拷成| D["catalogs/magic-catalog.json<br/>（VOXIM_MAGIC_CATALOG_PATH）"]
+  A -->|digest 同步| S["test/fixtures/magic/ir-v2-samples.json<br/>quote-v2-samples.json"]
+```
+
+- **不可变、按内容寻址**：文件名 = 文件字节 sha256 的小写十六进制。改内容就是发布新文件：旧文件删除，不保留同字节副本或别名（AGENTS §2.2-2/3）。
+- **发布顺序**：① 改之前先通知 worldbook 与客户端（Voxim）；② 写新文件、删旧文件，同步 `ir-v2-samples.json` 的 `catalog_digest`，`quote-v2-samples.json` 只用其唯一生成器重写（`WRITE_MAGIC_QUOTE_SAMPLES=1`，见 §6），核对 diff；③ 提交后把新 digest 与 commit 发给 worldbook 与客户端。
+- **digest 不符**：服务端按 `:stale_magic_catalog` 拒绝施法（不扣能、不改世界）；部署时须与客户端同一 digest 一起替换。
 
 ## 7. 服务端临时处理的确认状态
 

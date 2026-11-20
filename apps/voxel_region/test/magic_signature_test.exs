@@ -7,7 +7,7 @@ defmodule VoxelRegion.MagicSignatureTest do
     经真实入口 `Program.diagnose_ir/2` 触发，判定为 `{:signature, violations}` 中的完整违规项。
   - 设计 v2.5–v2.6 裁定：S1/S4 越界引用同样以 `refs` 报出；S2 数值取值键按内部单位（J 槽按 mJ）；S3 输出全部违规，
     每条带组序号、部件序号 `part_index`（v2.7 R10：组内规范字节序，0 起）、符号、原因码与未满足的标签。
-  - 夹具：与 `magic_ir_test.exs` 同一份 Test-only 目录 v5 与冻结样本；P1 目录没有用到的规则
+  - 夹具：与 `magic_ir_test.exs` 同一份目录 v5 发布物（`priv/magic/`）与冻结样本；P1 目录没有用到的规则
     （`requires_by_param`、`excludes`、启用的 `refs`）在测试内改写目录数据后经 `Catalog.decode/1` 加载。
   - 冻结样本本身全部通过签名，由 `magic_ir_test.exs` 的解码用例覆盖，这里不重复。
   """
@@ -15,10 +15,8 @@ defmodule VoxelRegion.MagicSignatureTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Program}
 
-  @path Path.expand(
-          "fixtures/magic/fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443.json",
-          __DIR__
-        )
+  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
 
   setup_all do

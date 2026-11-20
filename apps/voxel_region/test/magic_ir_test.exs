@@ -5,8 +5,8 @@ defmodule VoxelRegion.MagicIrTest do
   - 契约：设计 v2.6 §11.4（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）的字节布局、
     §11.4.2 的 B1 槽检查顺序与 K1 `dec` 规范判据、§11.4.3 的拒绝清单与 K4 分层；目录 schema 见
     `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
-  - 夹具：`fixtures/magic/fcc1002a….json` 是按 schema 手写的 Test-only 目录（P1 14 个符号与 47 个预留下标，
-    按 §2.3 表序冻结全部 61 个下标；姿态照抄 §2.6），不是 UE 发布物；`fixtures/magic/ir-v2-samples.json` 是从设计
+  - 夹具：目录是唯一作者源 `priv/magic/e337873b….json`（按 schema 手写的 P1 内容：14 个符号与 47 个预留下标，
+    按 §2.3 表序冻结全部 61 个下标；姿态照抄 §2.6），测试直接读发布物，不另存副本；`fixtures/magic/ir-v2-samples.json` 是从设计
     §11.4.4 逐字抽取的 9 组冻结字节（服务端持有的唯一判据）。
   - 判定：冻结样本的期望语义值抄自设计 §11.4.4 的逐字节注释；反例字节在样本上按注释偏移手工改写，期望原因与偏移手算。
   - 不覆盖：签名规则（见 `magic_signature_test.exs`）、数值检查与计价（切片 0b）。
@@ -17,8 +17,8 @@ defmodule VoxelRegion.MagicIrTest do
   alias VoxelRegion.Magic.{Catalog, Program}
   alias VoxelRegion.Magic.Program.{Glyph, Group, Rule}
 
-  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
-  @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
+  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @preset_ids ~w(draw_1mj draw_2mj lamp fireball hot_throw scorch dispel_pulse timed_ember guarded_fireball)
 
@@ -99,7 +99,7 @@ defmodule VoxelRegion.MagicIrTest do
     for preset <- c.catalog.presets, do: assert({:ok, _} = diagnose(c, preset.program))
   end
 
-  test "目录 v5 拒绝：超硬上限、未开放量化类、槽名缺单位后缀、段符号缺 max_per_group、未知字段、非法预设、预留表冲突", c do
+  test "目录 v5 拒绝：超硬上限、未开放量化类、槽名缺单位后缀、段符号缺 max_per_group、未知字段、非法预设、预留表冲突、〈取〉声明 domain 以外的检查", c do
     lamp = Enum.find(c.data["presets"], &(&1["id"] == "lamp"))
     reserved = fn fun -> update_in(c.data, ["reserved_symbols"], fun) end
 
@@ -140,6 +140,11 @@ defmodule VoxelRegion.MagicIrTest do
           {"cond.timer", &Map.put(&1, "reading_source", "internal")}
         ] do
       assert_raise ArgumentError, ~r/symbols\[#{id}\]\.reading_source: /, fn -> catalog(symbol(c.data, id, fun)) end
+    end
+
+    # 施法者动作不建结构，只可能触发 T6（v2.10 E4）：〈取〉再声明 domain 以外的检查即按该字段拒绝。
+    assert_raise ArgumentError, ~r/symbols\[energy\.draw\]\.numeric_checks: /, fn ->
+      catalog(symbol(c.data, "energy.draw", &Map.put(&1, "numeric_checks", ["domain", "capacity"])))
     end
   end
 
