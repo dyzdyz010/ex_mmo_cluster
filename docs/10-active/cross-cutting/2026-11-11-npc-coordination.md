@@ -51,6 +51,17 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 生产主机：腾讯云 `dyz@192.144.200.208`，密钥 `C:/Users/DYZ/.ssh/voxim_qinglan_tencent_ed25519`（`../Voxim/Launcher/README.md:172`），compose `/data/voxim_qinglan/`，容器 `voxim_qinglan-app-1`（`voxim-server:20261112-qinglan`）/ `voxim_qinglan-db-1`。生产上不要用整世界盒调 `simulation_snapshot`（会阻塞 World 数分钟）。
 魔法侧未提交改动（`ci.yml`、两个 `*_test.exs`）仍在工作区，不碰。本分支在 master 之后多了 E7 / 文档提交，PR #11 已合，再合 master 时先报用户。
 
+### 第二十五个统筹会话的进展（2026-11-20 起）——上面第二十四 → 第二十五交接里“下一步”各项的状态以这里为准
+
+- 开工基线：Windows UDP 87，Tcpip 4266 记录号 128241 未变，本线无 beam；`02bcc8f0..HEAD` 无 `apps/` 改动，现行 release 可复用。
+- E8 收尾切三件（子会话）：A 登记包（进仓 `deploy/npc/qinglan/`：`residents.json` 三卡共用一份活动表 + `register.exs` 经 rpc 登记 + 发布一次建筑名 + `deploy/README.md` 一节；
+  只做产品 `Registry.brain/2` 离线校验，评审后提交）；B 本机短排练（Test-only，`.demo/observe/npc-e8-20261120/rehearsal/`，走登记包、E7 镜像、生产限额形态、15 min 窗口、总花费约 $3 以内；
+  判定 R1–R5 已在任务书写定：登记与发布成功 / 每人到过去处 / 采集或建造有结构化结局 / 召回失败 0 / 内存 < 4600 / 2048 MiB 且 oom 0，外加资源回收；先干跑、停下待统筹放行）；
+  C 只读核查 `L_Qinglan` 的正式组合根是否装配对话 UI。**客户端对话在 L_Qinglan 的验证定为并进 E9 打包客户端冒烟**（E9 本就要求含 NPC 说话主链路；Editor 通过不能替代打包运行），C 的静态核查用于提前发现装配缺口。
+- C 结果（只读，二进制资产按字符串检索，属强推断）：`L_Qinglan` → `BP_QinglanGameMode` → `BP_QinglanController`（父类 `AVoximPlayerController`），`DialogueClass` = `WBP_Dialogue_C`，与测试图 `L_GameplayDemo` 的 `BP_GameplayController` 同一资产、C++ 全共用、无地图开关
+  （`../Voxim/Source/Voxim/VoximPlayerController.cpp:114-122`；作者脚本 `../Voxim/Docs/NPC/author_dialogue.py:106`）。**E9 冒烟要补**：对话阅读区与 `WBP_QinglanHUD` 是否遮挡（截图看）、打包版输入链（`ReplayInputs` 只在 Editor 编译，打包客户端用真实键鼠或 `-ExecCmds` 调 `Voxim.Dialogue.Say` / `Status`）。
+  另：`../Voxim/Docs/NPC/targeting-integration.md:51`“Qinglan 分发控制器尚未组合”已过时（客户端仓，E9 时顺带更正）。
+
 ### 第二十四个统筹会话的进展（2026-11-20 起）——上面第二十三 → 第二十四交接里“下一步”各项的状态以这里为准
 
 - **E6 完成合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871）；用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR merged。

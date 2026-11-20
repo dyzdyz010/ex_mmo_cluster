@@ -18,6 +18,7 @@ authoritative overlay log, accounts/characters and NPC memories.
 | `hindsight/build-image.sh <version>` | 构建 `voxim-hindsight:<version>`（见“Hindsight”） |
 | `hindsight/Dockerfile` | 生产 Hindsight 镜像：0.10.3 slim（digest 钉死）+ 钉版本的 ONNX / flashrank 依赖 + 烘入的两个模型 + M-3c 配置 |
 | `hindsight/ort-bound/sitecustomize.py` | ORT 线程补丁（移植上游 b18f425，有退出条件） |
+| `npc/qinglan/residents.json`、`npc/qinglan/register.exs` | 青岚首批 3 位 NPC 的登记包（见“青岚 NPC 登记包”） |
 
 ## Domains
 
@@ -303,3 +304,94 @@ ORT 会话应有嵌入的 `model.onnx` 与 flashrank 的 `flashrank-MiniLM-L-12-
 - Hindsight 的模型三项（含 key）写进 `release.env`，NPC 一组与 `NPC_LIFE_HINDSIGHT_URL` 同处；端口先在主机上核对没被占用；
 - 把 Hindsight 备份（上面“备份”的三条命令）放进 cutover 步骤，恢复按上面“恢复”；
 - app 上限改为 4600m，内存守护换成仓内 3400 / 3900 的版本（见“青岚内存兜底”）。
+
+## 青岚 NPC 登记包
+
+`npc/qinglan/` 是青岚首批 3 位常驻 NPC 的登记包：
+
+- `residents.json` 是数据：Scene 1；三人各自的注册名、出生点、`who` 与人格卡；三人共用的 `tools` 与活动表。
+  三人能力相同、只是倾向不同（用户 2026-11-20 定），差别只来自人格卡，各人倾向直接看文件里的卡。
+- `register.exs` 经 release `rpc` 逐人调 `NpcServer.Registry.put/2` 登记，并把建造活动用的定义以该活动的 `place_name` 发布一次。
+  发布次序、理由、幂等与重跑语义只写在它的头注释里。
+
+参数各键的含义以 [`NpcServer.Registry`](../apps/npc_server/lib/npc_server/registry.ex) 的 moduledoc 为准（人格卡词表见
+[`NpcServer.Persona`](../apps/npc_server/lib/npc_server/persona.ex)），这里不复述。
+
+- **地点**：全部在出生前庭以西的 layout 地台（Scene 1、保留区外），来自 E8 离线选点。
+  - 建造用纯石料的作者定义 “Jiangnan Steps” `324e53ee…`，发布名 `stone steps`；
+  - 采石用工坊旁的 Stone A / B 料堆（玩家共用、24 格、不会再生）。
+  - 取舍与依据见[扩人数与进青岚决策稿](../docs/10-active/cross-cutting/2026-11-18-npc-scale-and-qinglan-entry-decision.md) §7 的“E8 离线选点完成”“E8 统筹裁定”两条。
+- **料堆消耗（统筹裁定：不改用量，接受，E8b 观察）**：一次 `gather_stone` 采 7 格（一座石阶的量）。三人开局余额都是 0，
+  `gather_stone` 的 criterion“只在不够建造时才采”对首轮不起作用，**预计首轮三人各采一次，共采走 24 格里的 21 格**；
+  这条缓解只对之后的补建（石阶被拆后重建）有效。料堆采光后 `gather` 以 `exhausted` 结束，玩家也没有这份料可拿。
+- **一处锚点、三个人**：先建成的人拥有那座石阶，另两人再建得到 `occupied`；“我的建筑”只出现在建造者的心智里，
+  别人看不到这座石阶是谁的，产品里也没有“帮别人建”。
+
+### 生产登记前的步骤
+
+前提：NPC 变量与花费额度（“NPC 常驻应用”）和 Hindsight（“Hindsight”）已在青岚落地（E9）。下面的 `bin/voxim_server rpc` 都在青岚的 app 容器里执行。
+
+```mermaid
+flowchart TD
+  A["1 取新的生产页表导出<br/>五张表同一快照，只读"] --> B["2 私有库还原 + 同版本 release<br/>e8_site.exs calc 重跑选点判据"]
+  B -- "all_ok: true" --> C["3 核对生产配置<br/>材料 11 · 目录含 324e53ee · 编辑盒"]
+  B -- "不通过" --> X["停：回到选点，不登记"]
+  C --> D["4 登记包拷到数据目录"]
+  D --> E["5 rpc register.exs"]
+  E --> F["6 读回：登记行 · Bootstrap · 发布元信息"]
+```
+
+1. **新的生产页表导出**：选点用的是 2026-11-20 12:08:55Z 的快照。登记前在生产库上经 ssh 只读导出同一快照的五张表
+   （`pg_dump -Fc -t voxel_safe_prefix -t voxel_world_globals -t voxel_page_segment -t voxel_identity_locator -t voxel_overlay_log`，
+   做法与记录见决策稿 §7“生产只读导出第 3 步”一条）。世界真值在页表，只导 `voxel_overlay_log` 不够。
+2. **重跑选点判据**：在私有库还原导出，用生产同版本 release 起 World 与两 Scene，跑 `e8_site.exs calc site-alt-steps.json`，读回
+   `all_ok: true` 才继续；不通过（例如有人在西侧地台动过土）就不登记，回到选点。
+   - **这道闸门的工具不在 git 里**：`e8_site.exs`、同目录负责建库 / 还原 / 起停 / 清理的 `deploy.sh` 与方案 `plan.md` 都是 Test-only，
+     只在统筹本机 worktree 的 `.demo/observe/npc-e8-20261120/site/`（`.demo/` 被 `.gitignore` 忽略）。别的检出要先从那里取。
+   - 判据是什么、读回怎么看，见 `plan.md` 与决策稿 §7“E8 离线选点完成”一条，这里不复述。
+   - 它只读私有 World。不要在生产上用整世界盒调 `simulation_snapshot`：World 会物化全世界构件几何，在私有 World 上阻塞过约 3.5 分钟。
+3. **核对生产配置**（只读）：
+
+   ```sh
+   bin/voxim_server rpc 'IO.inspect(for(b <- VoxelRegion.World.material_balances(VoxelRegion.World, 0), do: b.material), label: "production_materials")'
+   bin/voxim_server rpc 'IO.inspect(Map.has_key?(VoxelRegion.World.prefab_catalog(), Base.decode16!("324e53ee00459b0c78a9383f9161e0574512244c5c5506a4391972668adbf6dc", case: :lower)), label: "steps_in_catalog")'
+   bin/voxim_server rpc 'IO.inspect(Application.get_env(:voxel_region, :edit_bounds), label: "edit_bounds")'
+   ```
+
+   - `production_materials` 要含 11：采到的石料只有在 World 的生产材料表（`VOXIM_PRODUCTION_MATERIALS`）里才入账。
+     第一条读的是 World 自己的表（余额读口按它逐项返回，cid 0 只是占位）。
+   - `steps_in_catalog` 要是 `true`：定义不在 World 的 prefab 目录里，发布与建造都会失败。
+   - `edit_bounds` 要与选点时读到的编辑盒一致（数值见决策稿 §7“E8 离线选点完成”一条）。
+4. **拷登记包**：把 `npc/qinglan/` 拷到 app 容器读得到的数据目录（模板里是 `VOXIM_DATA_DIR`，容器内 `/srv/voxim`），例如 `/srv/voxim/npc/qinglan/`。
+5. **登记并发布**（次序、幂等与重跑语义见 `register.exs` 头注释）：
+
+   ```sh
+   bin/voxim_server rpc 'Code.eval_string(File.read!("/srv/voxim/npc/qinglan/register.exs"), residents_file: "/srv/voxim/npc/qinglan/residents.json")'
+   ```
+
+   - 预期输出：每人一行 `npc_qinglan_register name=<注册名> cid=<cid> result={:ok, …}`，第一人之后有一行
+     `npc_qinglan_publish definition=324e53ee… name="stone steps" action=published|already_published publisher=<cid>`。
+     发布由运维发起、以第一位居民（石砚）的会话署名；这一行就是发布的审计记录，留存 rpc 输出。
+   - 失败：显式失败、rpc 非零退出。看已打印的行判断登记到了哪一步：
+     - 还没有任何 `npc_qinglan_register` 行（定义已以别的名字或空名发布）：一人未登记，按报错处理后重跑；
+     - 有石砚一行但没有 `npc_qinglan_publish` 行（会话或发布失败）：石砚已登记并在跑。能马上修好就重跑；
+       不能马上重跑就先停掉它：`bin/voxim_server rpc 'IO.inspect(NpcServer.Registry.remove("石砚"))'`；
+     - 有发布行、后面有人失败：按报错修 `residents.json` 后重跑。
+6. **读回**：
+
+   ```sh
+   bin/voxim_server rpc 'IO.inspect(for(r <- NpcServer.Registry.list(), do: Map.take(r, [:name, :cid, :enabled, :running])))'
+   bin/voxim_server rpc 'IO.inspect(NpcServer.Bootstrap.status())'
+   bin/voxim_server rpc 'id = Base.decode16!("324e53ee00459b0c78a9383f9161e0574512244c5c5506a4391972668adbf6dc", case: :lower); IO.inspect(for(r <- VoxelRegion.World.published_prefab_metadata(), r.id == id, do: %{r | id: Base.encode16(r.id, case: :lower)}))'
+   ```
+
+改人格卡或活动表：改 `residents.json` 后重做第 4–5 步。
+
+### 停用
+
+```sh
+bin/voxim_server rpc 'for name <- ["石砚", "柳莺", "林眺"], do: IO.inspect({name, NpcServer.Registry.remove(name)})'
+```
+
+`NpcServer.Registry.remove/1` 停掉 Body、把登记行置为停用，release 重启后不再拉起。角色行、余额、记忆与登记行都保留，cid 不复用；
+再启用就重做第 5 步。已发布的名字留在 World 的发布元信息里（没有撤销发布的入口），不影响别的内容。
