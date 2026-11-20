@@ -156,13 +156,15 @@ defmodule VoxelRegion.MagicTest do
     assert Cost.misfire(%{quote | structure: 5.0}, 0.0, c.catalog) == :misfire_coherence
     assert Cost.misfire(%{quote | structure: 4.0}, 1.0e9, c.catalog) == nil
 
-    # 10 MJ 石取 1 MJ，η 0.9，余额 0：ΔE = min(1 MJ, 10 MJ, 5 MJ − 0) = 1 MJ → 得 0.9 MJ、损耗 0.1 MJ。
-    d = Cost.draw(1.0e6, 1.0e7, 0.0, c.catalog)
-    assert d.taken_j == 1.0e6
-    assert_in_delta d.gained_j, 9.0e5, 1.0e-6
-    assert_in_delta d.loss_j, 1.0e5, 1.0e-6
-    # 石只剩 0.3 MJ → ΔE = 0.3 MJ；余额 4.9 MJ → 容量余量 0.1 MJ 封顶。
-    assert Cost.draw(1.0e6, 3.0e5, 0.0, c.catalog).taken_j == 3.0e5
-    assert_in_delta Cost.draw(1.0e6, 1.0e7, 4.9e6, c.catalog).taken_j, 1.0e5, 1.0e-6
+    # 取能分账在整数 mJ 上（施法者账的最小单位；容量 5 MJ = 5 000 000 000 mJ）。
+    # 10 MJ 石取 1 MJ，η 0.9，余额 0：ΔE = min(1e9, 1e10, 5e9 − 0) = 1 000 000 000 mJ → 得 900 000 000、损耗 100 000 000。
+    assert Cost.draw(1_000_000_000, 10_000_000_000, 0, c.catalog) ==
+             %{taken_mj: 1_000_000_000, gained_mj: 900_000_000, loss_mj: 100_000_000}
+    # 石只剩 0.3 MJ → ΔE = 300 000 000 mJ；余额 4.9 MJ → 容量余量 100 000 000 mJ 封顶。
+    assert Cost.draw(1_000_000_000, 300_000_000, 0, c.catalog).taken_mj == 300_000_000
+    assert Cost.draw(1_000_000_000, 10_000_000_000, 4_900_000_000, c.catalog).taken_mj == 100_000_000
+    # 取整：0.9 × 1 234 567 = 1 111 110.3 → round 1 111 110；损耗取差额 123 457，两项之和恰为 taken。
+    assert Cost.draw(1_234_567, 10_000_000_000, 0, c.catalog) ==
+             %{taken_mj: 1_234_567, gained_mj: 1_111_110, loss_mj: 123_457}
   end
 end

@@ -12,7 +12,8 @@ defmodule VoxelRegion.Magic.Cost do
     构型调整 T_adj = d_i·√(η/b_i)，注能 T_inj = E_i / P_max，本步损耗 L_i = 2·d_i·√(η·b_i) + b_i·T_inj。
     前摇 = Σ(T_adj + T_inj) + release_lead_s，E_loss = Σ L_i + b_final·release_lead_s；施放总支出 = E_phys + E_loss。
   - S > 相干度 → `:misfire_coherence`（先判）；可支付能量 < 总支出 → `:misfire_energy`。
-  - 取能：ΔE = min(请求, 石储能, 容量 − 余额)；施法者得 η·ΔE，(1 − η)·ΔE 为取能损耗。
+  - 取能：ΔE = min(请求, 石储能, 容量 − 余额)；施法者得 η·ΔE，(1 − η)·ΔE 为取能损耗。施法者账是整数 mJ，
+    分账在整数 mJ 上做（`draw/4`）；报价与走火的能量比较仍按 J 给出，施放结算处换成整数扣款（`World.Casting`）。
   """
 
   alias VoxelRegion.Magic.Semblance
@@ -62,10 +63,14 @@ defmodule VoxelRegion.Magic.Cost do
     end
   end
 
-  @doc "取能分账：石减少 taken_j = 施法者取得 gained_j + 损耗 loss_j。"
-  def draw(requested_j, stored_j, balance_j, catalog) do
-    taken = min(requested_j, min(stored_j, catalog.capacity_j - balance_j))
-    gained = catalog.draw_efficiency * taken
-    %{taken_j: taken, gained_j: gained, loss_j: taken - gained}
+  @doc """
+  取能分账（整数 mJ，施法者账的最小单位）：石减少 taken_mj = 施法者取得 gained_mj + 损耗 loss_mj，两端同一整数。
+  入参均为整数 mJ：请求（调用方 `round(energy_j × 1000)`）、石储能（调用方 `trunc(stored_j × 1000)`）、施法者余额；
+  容量取 `round(capacity_j × 1000)`；取得按 `round(η × taken_mj)`，损耗是差额。
+  """
+  def draw(requested_mj, stored_mj, balance_mj, catalog) do
+    taken = min(requested_mj, min(stored_mj, round(catalog.capacity_j * 1000) - balance_mj))
+    gained = round(catalog.draw_efficiency * taken)
+    %{taken_mj: taken, gained_mj: gained, loss_mj: taken - gained}
   end
 end

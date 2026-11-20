@@ -29,7 +29,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     def close(_, _, _), do: :ok
   end
 
-  setup do
+  setup context do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -48,7 +48,11 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
       Path.join(root, "environment.json")
     )
 
-    File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
+    # 用例可用 `@tag magic:` 换魔法目录（光弹需要含拟态的现行目录）；默认增量 1 目录。
+    File.cp!(
+      Path.join([@fixtures, "magic", Map.get(context, :magic, @magic) <> ".json"]),
+      Path.join(root, "magic.json")
+    )
 
     opts = [
       name: nil,
@@ -151,7 +155,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
       File.rm_rf!(root)
     end)
 
-    %{world: world, player: player, identity: identity, root: root}
+    %{world: world, player: player, identity: identity, root: root, config: config}
   end
 
   defp await(fun, left \\ 100)
@@ -387,5 +391,63 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     entries = World.entries_after(c.world, before)
     assert Enum.any?(entries, fn entry -> entry.seq == accepted end)
     refute_receive {^tag, _}, 0
+  end
+
+  # 法杖光弹不受战斗范围限制：本夹具的 Scene 配置没有 test_combat_bounds_m，`Scene.load_config!` 给出
+  # combat_scope = nil，即战斗处处关闭（工具 22/23 的候选在 Scene.tool_candidates 被拒、人物受击在
+  # Player.receive_effect 被拒）。施法链路 Player.cast_spell → World 没有战斗范围判定，所以同一个 Player
+  # 照常前摇、结算并扣整数 cost_mj。光弹命中人物仍归投射物链路的 Harm 判定，不在本例范围。
+  @bolt_magic "71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7"
+  @tag magic: @bolt_magic
+  test "战斗范围关闭（combat_scope nil）时法杖光弹照常施放：真实 Player 前摇后 World 结算并扣 cost_mj", c do
+    assert c.config.combat_scope == nil
+    refute SceneServer.Movement.Harm.open?(c.config.combat_scope)
+    # 开户（玩家接纳同一出口）：497 084 850 mJ。
+    assert {:ok, %{energy_j: 497_084.85}} =
+             World.send_caster_state(c.world, 1001, 0, {self(), c.identity})
+
+    program =
+      Jason.encode!(%{
+        v: 1,
+        target: %{kind: "aim"},
+        emit: "hand",
+        steps: [
+          %{
+            sym: "form.semblance",
+            args: %{
+              shape: 0,
+              radius_m: 0.05,
+              mass_kg: 0.01,
+              temperature_k: 293.15,
+              glow_w: 100,
+              lifetime_s: 1
+            }
+          },
+          %{sym: "act.throw", args: %{speed_mps: 30}},
+          %{sym: "act.break_on_hit", args: %{}}
+        ]
+      })
+
+    # 朝下投向脚下地面石（准星方向与客户端同一表示）。
+    request = %{
+      request()
+      | catalog_digest: Base.decode16!(@bolt_magic, case: :lower),
+        direction: {0.0, -1.0, 0.0},
+        program: program
+    }
+
+    ingress = %{
+      caster_recipient: {self(), make_ref()},
+      received_us: System.monotonic_time(:microsecond),
+      clock_node: node()
+    }
+
+    tag = make_ref()
+    Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
+    # 前摇 1.93 s 由 Player 的真实定时器推进。
+    assert_receive {^tag, {:ok, %{outcome: nil, caster: caster}}}, 10_000
+    # 独立复算的光弹扣款 9 941 697 mJ：497 084 850 − 9 941 697 = 487 143 153 mJ。
+    assert caster.spent_j == 9941.697
+    assert caster.energy_j == 487_143.153
   end
 end

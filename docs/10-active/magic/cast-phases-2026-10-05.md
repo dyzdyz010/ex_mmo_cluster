@@ -39,3 +39,26 @@ Replica 物化边界：kind2 和 nil 都从副本存活表删除；原始 kind2 
 已观察验证（2026-10-05）：原始红灯 `combat-body-red.log`（缺少扫掠/接纳）与 `combat-wire-red.log`（Hello36）；首次 World 回归发现 nullable 对象误用严格 `not`，保留于 `combat-world-first.log`，修复后 `combat-world-green.log`。正式 Mix 图、隔离 DB：`scene_server` 的 ToolHit/ToolAction/Snapshot 11 项通过；`world_server` 的 `p0_body_world_test.exs` 3 项通过，实际 Native 移动后采到目标新位置和非零速度、双方回执相同、PG 身体存档重登去重、真实跨 Scene 移交后重投去重；`voxel_region` 的 magic_semblance/magic_semblance_world/magic_cost/magic_world/world 61 项通过；`mmo_contracts test --no-start` 136 项通过。后补 World 冻结交付不能驱散、重启恢复同一目标/金额，定向 3 项通过（`combat-world-persistence.log`）。World 测试仅替换人物查询和时钟，真实 World/NIF/日志未替换；真实 Player 测试用纯弹道输入验证组合边界，不冒称正式施法双客户端已验收。
 
 正式镜像 `voxim-server:20261005-combat-projectile`，image id `sha256:5e23de6321af5edcc8fa18e6eb5ef5a566fc036a1b94e7827f60299cdb57e30a`，构建 exit0，日志 `combat-server-build.log`；Hello37，UE 目录 `71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7`。没有修改魔法 Cost 或目录参数。实际正式 Cost 对比由 `combat_speed_quote.exs` 执行：fireball 前摇 2.9759839847→2.0762897908 s，报价 445361.3299→438968.3333 J，日志 `combat-speed-quote.log`。镜像已交 Voxim 主任务开始真实双客户端闭环；本记录不把构建/模块绿灯写成双端或分发验收。
+
+## 法杖光弹：整数 mJ 施法者账与开户充能（2026-11-20，服务端已实现，客户端与真实双端待接）
+
+Global system。法杖的能量就是既有的每角色施法者账 `World.caster_energy`，只有这一本账，不另设法杖账。
+
+- **整数 mJ**：账值改为整数毫焦（守恒量按整数最小单位结算，Voxim AGENTS 设计纪律 7；同 [Fowler, PoEAA “Money”](https://martinfowler.com/eaaCatalog/money.html) 以最小货币单位存整数的做法）。唯一读取入口 `World.Casting.balance_mj/2`。扣款 `cost_mj = round(报价总支出 J × 1000)`（Elixir `round/1` 半数远离零），走火判定比较 `可用_mj < cost_mj`，相干度判定不变；走火扣 `min(cost_mj, 余额_mj)`。`Magic.Cost.quote` v4 不变。
+- **热账同额**：物理部分仍记浮点 J（连续物理状态），废热改为 `cost_mj / 1000 − 物理 J`（走火为 `spent_mj / 1000`），所以每笔施法的施法者扣款 = 热账入账（`spell_heat_j` / `semblance_created_j` + `cast_waste_j`）。
+- **取能整数分账**（`Magic.Cost.draw/4`，唯一实现，入参全是 mJ）：`taken = min(round(请求 J × 1000), trunc(石 stored_j × 1000), round(容量 J × 1000) − 余额)`，`gained = round(η × taken)`，`loss = taken − gained`；石 `stored_j −= taken / 1000`，`caster_drawn_j += gained / 1000`，`draw_loss_j` 与石格热源 `+= loss / 1000`。
+- **迁移兼容**：来源 = 整数化之前已持久化的浮点 J 余额（如青岚生产日志、检查点）；原因 = 日志按键合并、不改写历史；规则 = `trunc(J × 1000)`（与魔法 v2 决策 P8 同一取整）；该键下次结算即写回整数；退出条件 = S1a A1 把施法者能量迁入 `Pages.character_row` 时一次性换算并删除该分支。
+- **开户一次性充能**：`World.send_caster_state`（Gate 在 QUIC 接纳时排一次，及客户端显式请求；NPC 不经过）在已加载魔法目录且账上**没有该 cid 的键**时，先提交一笔充能事务：`caster_energy: %{cid => 497_084_850}`，热账新增源项 `caster_granted_j += 497 084.85`（凭空注入、与 `caster_drawn_j` 同为施法者能量来源），主体 `{:character, cid}`，日志 `voxel_caster_grant seq=.. cid=.. granted_mj=..`。键随日志持久化，重连、冷重启、检查点后都不再充；已有键（含 0、旧浮点）不动。只读 `caster_state` 仍是纯读。`Access` 中该消息改归 `:character_intent`。
+- **光弹数值**（目录 `71ca543b…`、环境 293.15 K）：程序 `form.semblance{shape 0, radius_m 0.05, mass_kg 0.01, temperature_k 293.15, glow_w 100, lifetime_s 1} → act.throw{speed_mps 30} → act.break_on_hit{}`（普通 v1 施法意图，无目录变更、无服务端 holdable 解析）。真实 `Cost.quote` 与独立 Python 复算一致：总支出 9941.697170433505 J（物理 104.5 J）、前摇 1.9299314814115767 s → `cost_mj = 9_941_697`；充能 = 50 × cost_mj = `497_084_850` mJ（`World.Casting` 模块属性，唯一定义处）。
+- **线协议不变**：0x83 仍为 f64 J（`energy_j = 余额_mj / 1000`、`spent_j = spent_mj / 1000`），Hello 44 不变。`voxel_spell` 日志新增 `spent_mj=`、`energy_mj=`。
+- **战斗范围**：施法链路（Gate → `Player.cast_spell` → World）没有 `combat_scope` 判定；该判定只在伤害人物处（`Scene.tool_candidates`、`Player.receive_effect`、投射物命中采样）。
+
+```mermaid
+flowchart LR
+  G["caster_granted_j<br/>(开户)"] --> E["caster_energy[cid]<br/>整数 mJ"]
+  D["caster_drawn_j<br/>(取能 gained)"] --> E
+  E -->|"cost_mj"| P["spell_heat_j / semblance_created_j<br/>(物理 J)"]
+  E -->|"cost_mj/1000 − 物理"| W["cast_waste_j<br/>(脚下废热)"]
+```
+
+Test-only 验证：`apps/voxel_region/test/magic_staff_bolt_test.exs`（目录 `fixtures/magic/71ca543b…` 为 UE 发布原字节）覆盖报价、开户一次与冷恢复、光弹扣款与热账同额、空账/不足走火、旧浮点余额、取能整数分账；`apps/scene_server/test/scene_server/movement/cast_wait_lifecycle_test.exs` 用真实 Player（combat_scope nil）证明光弹照常结算；gate 的接纳 0x83 用例改为开户后余额。既有用例按整数规则改的期望见提交说明。客户端法杖、真实双端与分发未验证。

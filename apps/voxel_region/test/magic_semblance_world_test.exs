@@ -364,11 +364,13 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
 
   test "炽热拟态投掷：r 0.4 m、2 kg、2000 K 球以 12 m/s 投向孤立叶 → 落点精确、叶着火；支出与账闭合", c do
     assert {:ok, %{outcome: nil}} = draw(c, 1_000_000)
-    assert_in_delta energy(c), 1_798_946.2777903, 1.0e-6
+    # 施法者账是整数 mJ：取 2 MJ 得 round(0.9 × 2e9) = 1 800 000 000 mJ，减取能扣款 round(1 053 722.2097) = 1 053 722 → 1 798 946 278 mJ。
+    assert energy(c) == 1_798_946.278
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000)
-    # 支出 = E_phys 1 706 994 + E_loss 14 256.0775635 = 1 721 250.0775635 J（手算见 magic_semblance_test）；余 77 696.2002268 J。
-    assert_in_delta caster.spent_j, 1_721_250.0775635, 1.0e-3
-    assert_in_delta caster.energy_j, 77_696.2002268, 1.0e-3
+    # 支出 = E_phys 1 706 994 + E_loss 14 256.0775635 = 1 721 250.0775635 J（手算见 magic_semblance_test）
+    # → 扣款 round(1 721 250 077.5635) = 1 721 250 078 mJ；余 1 798 946 278 − 1 721 250 078 = 77 696 200 mJ。
+    assert caster.spent_j == 1_721_250.078
+    assert caster.energy_j == 77_696.2
     # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
     assert caster.quote_windup_s == 0.0
     s = observe(c.w)
@@ -565,19 +567,20 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert Map.has_key?(before.semblances, {seq, 0})
     fed = fn t -> t.thermal.supplied_j - ledger(t, :combustion_j) end
 
-    # 驱散只付构型损耗 2107.4444193 J（落脚下）；目标拟态 id 由线上给出，眼到球心 √(0² + 0.136² + 2.1²) ≈ 2.10 m < 6 m。
+    # 驱散只付构型损耗 2107.4444193 J → 整数扣款 round(2 107 444.4193) = 2 107 444 mJ（落脚下 2107.444 J）；
+    # 目标拟态 id 由线上给出，眼到球心 √(0² + 0.136² + 2.1²) ≈ 2.10 m < 6 m。
     assert {:ok, %{outcome: nil, caster: %{spent_j: dispel_j}}} =
              cast(c, c.presets["dispel"], @forward, at: 3_000_000, semblance: {seq, 0})
-    assert_in_delta dispel_j, 2107.4444193, 1.0e-6
+    assert dispel_j == 2107.444
     after_dispel = observe(c.w)
     assert after_dispel.semblances == %{}
     released = ledger(after_dispel, :semblance_released_j) - ledger(before, :semblance_released_j)
     assert released > 0
     closed?(after_dispel)
 
-    # 释放的热与脚下构型损耗都经有限热源进世界：热源放完后供热（去掉燃烧）增量 = 释放 + 2107.4444193 J。
+    # 释放的热与脚下废热都经有限热源进世界：热源放完后供热（去掉燃烧）增量 = 释放 + 2107.444 J。
     drained = Enum.find_value(1..10, fn _ -> t = commit(c.w); if t.thermal.sources == %{}, do: t end)
-    assert_in_delta fed.(drained) - fed.(before), released + 2107.4444193, 1.0e-3
+    assert_in_delta fed.(drained) - fed.(before), released + 2107.444, 1.0e-3
     # 驱散不追溯：叶继续燃烧。
     assert burning?(commit(c.w))
     # 已移除的 id 再驱散：stale_target，不扣能量。
@@ -624,12 +627,15 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
       |> then(& &1.thermal.semblances[{seq, 0}])
     end
 
+    # 每次重启后都与此刻持久化的最后一份比：两次重启之间 World 自身的墙钟热提交可能再推进并落盘拟态
+    # （年龄、温度），所以不能用第一次读到的记录去比压实后的恢复结果。
     w = restart(c)
     stored = persisted.()
     assert observe(w).semblances[{seq, 0}] == stored
     assert stored.temperature_k > 293.15 + 1
     :ok = World.compact(w)
     w = restart(%{c | w: w})
+    stored = persisted.()
     assert observe(w).semblances[{seq, 0}] == stored
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     cooled = commit(w).semblances[{seq, 0}]

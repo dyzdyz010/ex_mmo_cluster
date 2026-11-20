@@ -51,6 +51,8 @@ defmodule VoxelRegion.Access do
     prepare_cast: :character_intent,
     authorize_cast: :character_intent,
     cancel_cast: :character_intent,
+    # 发施法者状态时可能开户（一次性充能事务），以角色身份提交
+    send_caster_state: :character_intent,
     production_intent: :character_intent,
     attachment_intent: :character_intent,
     prefab_intent: :character_intent,
@@ -134,7 +136,6 @@ defmodule VoxelRegion.Access do
     magic_range: :read,
     magic_digest: :read,
     caster_state: :read,
-    send_caster_state: :read,
     tool_range: :read,
     tool_definition: :read,
     material_balances: :read,
