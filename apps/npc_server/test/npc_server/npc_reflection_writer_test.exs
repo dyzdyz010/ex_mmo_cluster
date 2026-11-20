@@ -260,6 +260,15 @@ defmodule NpcServer.NpcReflectionWriterTest do
            }
   end
 
+  # 任务层决策稿 K-9：每日回顾与任务推进按次带 `max_tokens` 4096（Life 并进 endpoint），其余写作不带、仍是缺省 8192（上一例）。
+  test "openai: a per-call max_tokens in the config is what the request body carries" do
+    response = fixture("deepseek-chat-response.json")
+    config = chat_server(fn :post, "/chat/completions", _ -> {200, response} end)
+
+    assert {:ok, _} = Writer.write(Map.put(config, :max_tokens, 4096), "system", "user")
+    assert [%{body: %{"max_tokens" => 4096}}] = HttpStub.requests(1)
+  end
+
   test "openai: a finish_reason other than stop fails with the actual value, usage still recorded" do
     truncated =
       fixture("deepseek-chat-response.json")

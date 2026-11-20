@@ -331,21 +331,29 @@ defmodule NpcServer.Life.DayPlan do
   """
   @spec admit(plan(), integer(), integer()) :: {:ok, plan()} | {:error, :day_budget_exhausted}
   def admit(plan, day, now_ms) do
-    case plan["calls"] do
-      %{"day" => ^day, "n" => n} when n >= @day_calls -> {:error, :day_budget_exhausted}
-      %{"day" => ^day, "n" => n} -> {:ok, started(plan, day, n + 1, now_ms)}
-      _other_day -> {:ok, started(plan, day, 1, now_ms)}
+    with {:ok, calls} <- charge_call(plan["calls"], day, @day_calls) do
+      {:ok, %{plan | "calls" => calls, "last_at_ms" => now_ms, "event_waiting" => false}}
     end
   end
 
-  defp started(plan, day, n, now_ms) do
-    %{
-      plan
-      | "calls" => %{"day" => day, "n" => n},
-        "last_at_ms" => now_ms,
-        "event_waiting" => false
-    }
-  end
+  @doc """
+  按游戏日计数的写作额度（规划调用与任务推进共用这一条规则，各自给自己的 `limit`；`NpcServer.Life.Tasks.admit/3`）：
+  `calls` 是持久行里的 `%{"day", "n"}`。同一日 `n < limit` 给 `{:ok, n + 1 的 calls}`，到顶给 `{:error, :day_budget_exhausted}`；
+  换了日（含从没调用过的 `"day" => nil`）从 1 重计。额度管的是“问了模型几次”（T7），退回见 `refund_call/1`。
+  """
+  @spec charge_call(map(), integer(), pos_integer()) ::
+          {:ok, map()} | {:error, :day_budget_exhausted}
+  def charge_call(%{"day" => day, "n" => n}, day, limit) when n >= limit,
+    do: {:error, :day_budget_exhausted}
+
+  def charge_call(%{"day" => day, "n" => n}, day, _limit),
+    do: {:ok, %{"day" => day, "n" => n + 1}}
+
+  def charge_call(_other_day, day, _limit), do: {:ok, %{"day" => day, "n" => 1}}
+
+  @doc "把 `charge_call/3` 记下的一次退回（写作没有发出时；前提与理由见 `refund/1`）。"
+  @spec refund_call(map()) :: map()
+  def refund_call(calls), do: Map.update!(calls, "n", &(&1 - 1))
 
   @doc """
   此刻该不该起一次规划：`:day`（本游戏日还没有采用过计划）、`:event`（计划是今天的、且有一条 event 经历在等）或 nil。
@@ -463,7 +471,7 @@ defmodule NpcServer.Life.DayPlan do
   调用在途时 Life 重启（结果随进程丢了，同理）都不退。起调用时 `admit/3` 照旧先记一次，退回只在落栏时发生。
   """
   @spec refund(plan()) :: plan()
-  def refund(plan), do: update_in(plan, ["calls", "n"], &(&1 - 1))
+  def refund(plan), do: %{plan | "calls" => refund_call(plan["calls"])}
 
   @doc """
   到点而当日额度用完（`admit/3` 拒绝）：只给 `counts.skipped` 加一，触发条件不清。槽在途、没有观察时调用方不查 `due/3`，

@@ -12,7 +12,8 @@ defmodule NpcServer.Life.Tasks do
     NW["对我说话 / kind:event 的人"] -->|"note_news/3"| TK
     CL["每帧观察的游戏日与时钟"] -->|"tick/3：到期关闭、停滞"| TK
     TK -->|"column/1"| MD["Mind 的 Plans and promises"]
-    TK -->|"waiting ≠ nil"| AD["推进（T-1b）"]
+    TK -->|"due/2：最早开的 waiting 任务<br/>admit/3：当日 12 次<br/>basis/2：起推进时的基准"| AD["推进写作<br/>Tasks.Round（check/3 :advance）"]
+    AD -->|"adopt/6（比对基准）· reject/4 · fail/1 · refund/1"| TK
   ```
 
   ## 任务与步骤（K-1）
@@ -26,9 +27,12 @@ defmodule NpcServer.Life.Tasks do
 
       "open"        [任务]，开的次序（≤ 3）
       "closed"      最近关掉的 5 条小结 %{"id", "goal", "result" => "done" | "dropped" | "expired" | "stuck", "note", "closed_day", "completed"}
-      "calls"       %{"day", "n"}：本游戏日发出了写作请求的推进次数（推进与额度属 T-1b）
-      "last_at_ms"  上一次推进调用的时钟（T-1b）
-      "counts"      %{opened advanced done dropped expired stuck rejected failed}
+      "calls"       %{"day", "n"}：本游戏日发出了写作请求的推进次数（`admit/3` 起调用时记、`refund/1` 退回没发出的；
+                    T-3 的学习写作与推进共用这一个计数，决策稿 K-9）
+      "last_at_ms"  上一次推进调用的时钟（`admit/3` 记；最小间隔从它算）
+      "counts"      %{opened advanced done dropped expired stuck rejected failed cannot stale}
+                    advanced = 采用的推进（任一决定）；rejected / failed / stale = 没采用的推进；cannot = 采用的推进里写了 cannot 的；
+                    stale = 合格、但写作在途时任务的步骤已经变了的推进（见“推进”）
 
       任务 = %{"id" => "t<开的日号>:<开过的总数>", "goal", "why", "opened_day", "expires_day" => 开的日号 + 2,
               "steps" => [%{"kind", "object", "why"}],                       待做，当头那条是此刻的候选
@@ -41,9 +45,9 @@ defmodule NpcServer.Life.Tasks do
 
   ## 谁写什么（不变量）
 
-  - LLM 写的任务与步骤只经 `check/3` 一处进入（回顾 `{:review, …}`、推进 `:advance`）；采用回顾在 `review/4`。
-  - 指针、`waiting`、计数、到期只由代码按结构化结局与时钟改（`record_step/4`、`note_news/3`、`tick/3`）。
-  - 开 / 关任务各给一条标准句经历（`review/4`、`tick/3` 的第二个返回值），由 Life 写进经历；Hindsight 里的这些只是派生物。
+  - LLM 写的任务与步骤只经 `check/3` 一处进入（回顾 `{:review, …}`、推进 `:advance`）；采用回顾在 `review/4`，采用推进在 `adopt/6`。
+  - 指针、`waiting`、计数、到期只由代码按结构化结局与时钟改（`record_step/4`、`note_news/3`、`tick/3`、推进落栏的 `reject/4` / `fail/1`）。
+  - 开 / 关任务各给一条标准句经历（`review/4`、`tick/3`、`reject/4` 的第二个返回值、`adopt/6` 的第三个），由 Life 写进经历；Hindsight 里的这些只是派生物。
 
   ## K-3：只在偏差或新信息时待推进
 
@@ -67,11 +71,23 @@ defmodule NpcServer.Life.Tasks do
   单条种类与对象、`cannot` 的核对复用 `DayPlan` 的同一函数（`DayPlan.check_kind/3`、`DayPlan.check_want/1`），回顾里的
   意图与 `cannot_yet` 原样交 `DayPlan.check_lists/3`——错误原因与日计划完全相同，不另写一份。
 
+  ## 推进（K-4、K-9）
+
+  Life 每帧观察上（回顾没有起的时候）问 `due/2`：过了 3 分钟最小间隔，取最早开的 `waiting` 任务；过花费闸门之后 `admit/3` 记一次
+  调用，起推进槽（`NpcServer.Life.Tasks.Round`），槽里存这个任务此刻的基准 `basis/2`（待做步骤与完成步数）。落栏：合格 → `adopt/6`；
+  不合格 → `reject/4`（连续 3 次关为 stuck）；写作失败 → `fail/1`；写作没发出 → 另 `refund/1`。除采用外 `waiting` 都留着，下一次到点再问。
+
+  **比对后采用**（乐观并发控制：读时记版本、提交时比对，变了就放弃这次写入；Kung & Robinson 1981 的验证阶段）：写作在途时 NPC 照常
+  行动，当头步可能已经做成前移（`record_step/4`）。合格的应答是对起推进那一刻的任务写的，落栏时任务的 `steps` 或 `completed` 与
+  基准不同，就不采用（三种决定都一样）：任务保持现状，只计 `stale`；`rejected_in_row`、`waiting` 不动，下一次到点照常再问。
+  额度已扣（写作已发出），不退。只比这两项：`waiting`、log、连续失败数变了（如又失败一次）不影响应答针对的那几步。
+
   ## 原创取值（实跑后调；决策稿 §6 Q-4）
 
   开着的任务至多 3（`@max_open`）；一次（开任务或推进）至多 3 步（`@max_steps`）；任务开后 2 个游戏日到期（`@expire_days`）；
   当头步 6 游戏小时没被做算停滞（`@stall_hours`）；瞬态失败连续 2 次算偏差（`@transient_tolerance`）；log 留 6 条、
-  关掉的小结留 5 条。
+  关掉的小结留 5 条；两次推进至少隔 3 分钟（`@min_gap_ms`）；推进连续 3 次不合格关为 stuck（`@stuck_after`）。
+  推进与学习写作共用每人每游戏日 12 次（`@day_calls`，用户 2026-11-18 定）；回顾与推进每次写作出向 ≤ 4096（`write_max_tokens/0`，K-9）。
   """
   alias MmoContracts.WorldTime
   alias NpcServer.Life.DayPlan
@@ -90,8 +106,18 @@ defmodule NpcServer.Life.Tasks do
   # 每个任务留最近几条步骤结局、持久行留最近几条关掉的小结（K-1，原创取值）。
   @log_size 6
   @closed_size 5
+  # 每人每游戏日的写作额度（K-9，用户 2026-11-18 定的 12 次）：推进与 T-3 的学习写作共用这一个计数（持久行 `"calls"`）。
+  @day_calls 12
+  # 两次推进的最小间隔（K-9“同日计划”，原创取值；与回顾的间隔各算各的，所以单独一个常量）。
+  @min_gap_ms 3 * 60_000
+  # 同一任务连续几次推进应答不合格就关为 stuck（K-4，Voyager“卡住 4 轮换任务”的对应，原创取值）。
+  @stuck_after 3
+  # 回顾与推进每次写作的出向上限（K-9：思考 + 正文，DeepSeek 执行这个参数；K-0 实测最大 4,406）。
+  @write_max_tokens 4096
 
-  @counts ~w(opened advanced done dropped expired stuck rejected failed)
+  @counts ~w(opened advanced done dropped expired stuck rejected failed cannot stale)
+  # 起推进时记下、落栏时比对的任务字段（`basis/2`、`adopt/6`）：这两项只由“步骤做成前移”与采用推进改。
+  @basis_keys ["steps", "completed"]
 
   @advance_keys ["task", "steps", "cannot", "note"]
   @review_keys ["intents", "cannot_yet", "tasks"]
@@ -337,10 +363,143 @@ defmodule NpcServer.Life.Tasks do
 
   defp stall(task, _now_ms), do: task
 
+  # --- 推进（K-4、K-9；T-1b） ---
+
+  @doc """
+  此刻该推进哪个任务：距上一次推进调用（`"last_at_ms"`，`admit/3` 记）不足 3 分钟一律 nil；否则开着的任务里**最早开的**、
+  `waiting` 非空的那个的 id，没有为 nil。一次只推进一个（决策稿 K-3 写“最早置上”，这里用开的次序代替，不另记置上的时刻；规划偏差 D-3）。
+  排在前面的任务只有等待清掉或任务关掉才让位：采用清掉等待；被拒至多 3 次就关为 stuck；但写作失败（`fail/1`）与 stale 都把等待
+  留着，所以写作一直失败时，最早开的那个任务会一直排在最前，后开的在等的任务轮不到。
+  """
+  @spec due(tasks(), integer()) :: String.t() | nil
+  def due(%{"last_at_ms" => last} = tasks, now_ms) do
+    if last != nil and now_ms - last < @min_gap_ms,
+      do: nil,
+      else: Enum.find_value(tasks["open"], &(&1["waiting"] && &1["id"]))
+  end
+
+  @doc """
+  今天还能不能再起一次推进写作：每人每游戏日 12 次（`calls`，规则同日计划的 `DayPlan.admit/3`，共用 `DayPlan.charge_call/3`），
+  放行给 `{:ok, 记了一次调用、记了 last_at_ms 的持久行}`，到顶给 `{:error, :day_budget_exhausted}`。调用在**起调用时**就记；
+  写作没有发出的由 `refund/1` 退回。**T-3 的学习写作与推进共用这一个计数**（决策稿 K-9：推进与学习共用 12 次），届时同样经本函数记账。
+  `waiting` 不清：只有采用（`adopt/6`）清它，被拒、失败、stale、花费到线都留着。
+  """
+  @spec admit(tasks(), integer(), integer()) :: {:ok, tasks()} | {:error, :day_budget_exhausted}
+  def admit(tasks, day, now_ms) do
+    with {:ok, calls} <- DayPlan.charge_call(tasks["calls"], day, @day_calls) do
+      {:ok, %{tasks | "calls" => calls, "last_at_ms" => now_ms}}
+    end
+  end
+
+  @doc "把一次**没有发出写作请求**的推进从当日额度里退回（前提与理由同 `DayPlan.refund/1`：额度管“问了模型几次”）。"
+  @spec refund(tasks()) :: tasks()
+  def refund(tasks), do: %{tasks | "calls" => DayPlan.refund_call(tasks["calls"])}
+
+  @doc """
+  起推进时的基准：任务 `id`（此刻开着，`due/2` 给的）的待做步骤与完成步数。Life 存进推进槽，落栏时原样交给 `adopt/6` 比对
+  （“比对后采用”，见 moduledoc 的“推进”）。
+  """
+  @spec basis(tasks(), String.t()) :: %{String.t() => term()}
+  def basis(tasks, id), do: Map.take(find_open(tasks, id), @basis_keys)
+
+  @doc """
+  采用一份合格的推进应答（`check/3` 的 `:advance` 结果）。`id` 是起推进时的任务，`basis` 是起推进时 `basis/2` 的结果，
+  `day` 是起推进的游戏日（关掉时的 `closed_day`），`at_ms` 是落栏那一刻。返回 `{结局, 新的持久行, 经历}`，结局：
+
+  - `:adopted`：任务还开着、`steps` 与 `completed` 都与基准相同。计数 `advanced + 1`（不论哪种决定）；写了 `cannot` 另 `cannot + 1`
+    （交学习属 T-3，这里只计数，原文由 Life 进日志；D-8）。
+    - `continue`：待做步骤整份换成新的（可为空：只写了 `cannot`），`note` 存进任务（D-5），清 `waiting`，`rejected_in_row` 与
+      `head_failures` 清零，当头步从此刻计时。
+    - `done` / `drop`：关为 `done` / `dropped`，`note` 进小结；经历是标准句后接 `note`。
+  - `:stale`：任务还开着，但写作在途时 `steps` 或 `completed` 变了（当头步做成前移）。不采用：任务原样，只 `stale + 1`，无经历。
+  - `:gone`：推进在途时任务已被关掉（到期）。原样返回、不计数。
+  """
+  @spec adopt(tasks(), String.t(), map(), advanced(), integer(), integer()) ::
+          {:adopted | :stale | :gone, tasks(), [episode()]}
+  def adopt(tasks, id, basis, checked, day, at_ms) do
+    case find_open(tasks, id) do
+      nil ->
+        {:gone, tasks, []}
+
+      task ->
+        if Map.take(task, @basis_keys) == basis do
+          {tasks, episodes} = apply_advance(tasks, task, checked, day, at_ms)
+          {:adopted, tasks, episodes}
+        else
+          {:stale, %{tasks | "counts" => bump(tasks["counts"], "stale")}, []}
+        end
+    end
+  end
+
+  defp apply_advance(tasks, task, checked, day, at_ms) do
+    %{task: verdict, steps: steps, cannot: cannot, note: note} = checked
+    counts = bump(tasks["counts"], "advanced")
+    tasks = %{tasks | "counts" => if(cannot, do: bump(counts, "cannot"), else: counts)}
+
+    case verdict do
+      :continue ->
+        task = %{
+          task
+          | "steps" => steps,
+            "note" => note,
+            "waiting" => nil,
+            "rejected_in_row" => 0,
+            "head_failures" => 0,
+            "head_since_ms" => at_ms
+        }
+
+        {replace_open(tasks, task), []}
+
+      closing ->
+        result = if closing == :done, do: "done", else: "dropped"
+        {tasks, episode} = close(tasks, %{task | "note" => note}, result, day, at_ms, note)
+        {tasks, [episode]}
+    end
+  end
+
+  @doc """
+  推进应答没过 `check/3`：`rejected + 1`，任务不动、`waiting` 留着，`rejected_in_row + 1`；连续第 3 次关为 `stuck` 并给一句经历（K-4）。
+  返回 `{新的持久行, 经历}`。任务已被关掉则原样返回。
+  """
+  @spec reject(tasks(), String.t(), integer(), integer()) :: {tasks(), [episode()]}
+  def reject(tasks, id, day, at_ms) do
+    case find_open(tasks, id) do
+      nil ->
+        {tasks, []}
+
+      task ->
+        task = %{task | "rejected_in_row" => task["rejected_in_row"] + 1}
+        tasks = %{tasks | "counts" => bump(tasks["counts"], "rejected")}
+
+        if task["rejected_in_row"] >= @stuck_after do
+          {tasks, episode} = close(tasks, task, "stuck", day, at_ms)
+          {tasks, [episode]}
+        else
+          {replace_open(tasks, task), []}
+        end
+    end
+  end
+
+  @doc "推进写作失败（写作接口失败、取材失败、worker 崩溃）：`failed + 1`，任务不动、`waiting` 留着（同日计划的失败口径）。"
+  @spec fail(tasks()) :: tasks()
+  def fail(tasks), do: %{tasks | "counts" => bump(tasks["counts"], "failed")}
+
+  @doc "回顾与推进每次写作的出向上限（K-9：4096；Life 起槽时交给写作接口，反思等其它写作不受影响）。"
+  @spec write_max_tokens() :: pos_integer()
+  def write_max_tokens, do: @write_max_tokens
+
+  defp find_open(tasks, id), do: Enum.find(tasks["open"], &(&1["id"] == id))
+
+  defp replace_open(tasks, task),
+    do: %{
+      tasks
+      | "open" => Enum.map(tasks["open"], &if(&1["id"] == task["id"], do: task, else: &1))
+    }
+
   # --- 关闭 ---
 
-  # 把一个开着的任务关掉：移出 open，小结进 closed（留最近 5 条），计数，给一句经历。
-  defp close(tasks, task, result, day, at_ms) do
+  # 把一个开着的任务关掉：移出 open，小结进 closed（留最近 5 条），计数，给一句经历（推进的 done / drop 在标准句后接模型写的 note）。
+  defp close(tasks, task, result, day, at_ms, note \\ nil) do
     summary = %{
       "id" => task["id"],
       "goal" => task["goal"],
@@ -358,6 +517,7 @@ defmodule NpcServer.Life.Tasks do
     }
 
     text = String.replace(@closing_sentences[result], "<goal>", task["goal"])
+    text = if note, do: text <> " " <> note, else: text
     {tasks, episode(task, result, text, at_ms)}
   end
 
@@ -416,7 +576,7 @@ defmodule NpcServer.Life.Tasks do
             :task_not_object | {:task_missing_key, 键} | {:task_unknown_key, 键} | :bad_goal | :bad_task_why | :task_without_steps
             {:unknown_task, id} | {:too_many_open, n}
 
-  本函数只给检查结果，采用（`review/4`；推进的采用、拒绝计数属 T-1b）在调用方。
+  本函数只给检查结果，采用在调用方（回顾 `review/4`；推进 `adopt/6` / `reject/4`）。
   """
   @spec check(String.t(), vocabulary(), :advance | {:review, non_neg_integer(), [map()]}) ::
           {:ok, advanced() | reviewed()} | {:error, term()}

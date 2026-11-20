@@ -50,6 +50,9 @@ defmodule NpcServer.Life.Reflection.Writer do
   或 `%{api: :openai, url: 完整的 chat completions 地址, key:, model:, reasoning_effort: 可选}`，可带 `timeout_ms`
   （单次请求，缺省同 `NpcServer.Http`）、出站车道 `lane` 与 `cacertfile`；`system` 是系统提示词，`user` 是这一问的用户消息。
 
+  **按次的 `max_tokens`**：`config` 带 `max_tokens` 时请求体用它，不带用本模块的缺省（Messages 2000、`:openai` 8192）。
+  Life 只给每日回顾与任务推进的写作带 4096（任务层决策稿 K-9，`NpcServer.Life.Tasks.write_max_tokens/0`）；反思等其它写作不带，取值不变。
+
   `scope` 可给出此次写作的 `cid` 与 `operation`，缺省分别为 nil 和 `:write`。
   成功返回 `{:ok, %{text: 正文, usage: 应答的 usage 原样, tokens: 归一化用量或 nil}}`，
   `text` 是全部 `text` 块按次序连起来的原文
@@ -71,7 +74,7 @@ defmodule NpcServer.Life.Reflection.Writer do
   def write(%{api: :openai} = config, system, user, scope) do
     body = %{
       model: config.model,
-      max_tokens: @openai_max_tokens,
+      max_tokens: Map.get(config, :max_tokens, @openai_max_tokens),
       messages: [%{role: "system", content: system}, %{role: "user", content: user}]
     }
 
@@ -93,7 +96,7 @@ defmodule NpcServer.Life.Reflection.Writer do
 
     body = %{
       model: config.model,
-      max_tokens: @max_tokens,
+      max_tokens: Map.get(config, :max_tokens, @max_tokens),
       system: system,
       messages: [%{role: "user", content: user}]
     }

@@ -109,7 +109,7 @@ defmodule NpcServer.Life do
   到期与停滞、给 Mind 的数据）在 `Life.Tasks`，整份回顾应答的唯一校验点是 `Life.Tasks.check/3`；一次规划调用的流程在
   `Life.DayPlan.Round`。本模块只做触发、起槽、落栏、记账与视图。只有**规划的形态**规划：profile 带写日记的接口（同反思，
   写作接口与人格卡共用）且有候选表；其余形态不触发、不记账，`mind/2` 与 `observe/1` 的 `plan` / `tasks` 为 nil 或空。
-  任务的推进（偏差 / 新信息时问模型写后续步骤）属 T-1b，现在 `waiting` 只是记下、由 `observe/1` 看得到。
+  任务的**推进**（K-3 判出偏差 / 新信息时问模型这个任务下一步，T-1b）与回顾共用同一个规划槽，流程在 `Life.Tasks.Round`，见下文“任务推进”。
 
   - **词表**（稿 A 批 0b）：种类取 `NpcServer.Offers.plan_kinds/1`（按生成器次序：不对人的登记项各一个静态种类，对人的登记项各一个可点名人的种类（种类名 = 登记名，
     任务层稿 §7 ①），配了说话加 `speak_to`，批 1 起再加不可点名对象的 `eat` 与 `craft`），
@@ -143,11 +143,26 @@ defmodule NpcServer.Life do
     （对话经历存的原消息叫的是我，与 Runtime 唤醒同一口径 `Dialogue.direct?/2`；旁听别人之间的话不算）落在某个任务的 `Tasks.people/1` 里 → `Tasks.note_news/3`（`event` / `heard`）。
     只读结构化字段，不解析文字。
   - **到期与停滞**：每帧观察上 `Tasks.tick/3`（游戏日与 Life 时钟；常数级）；有变化（到期关为 expired 并写经历、停滞待推进）才保存。
+  - **任务推进**（任务层决策稿 K-4、K-9）：规划槽（`job: :advance`）与回顾共用，一次只一个在途；每帧上回顾到点先起回顾，回顾没有起
+    （不到点、当日额度用完、花费到线）才查推进。条件同回顾（槽空、有经历、观察里有游戏钟与身体状态、不在防抖期内）加 `Tasks.due/2`
+    （距上次推进 ≥ 3 分钟、取最早开的 `waiting` 任务，一次一个）→ 花费闸门 `:task` → `Tasks.admit/3`（每人每游戏日 12 次，T-3 的学习写作
+    共用这一计数）记一次调用并保存，保存成功才起槽。快照与回顾同一套材料（`planning_snapshot/4`），另带这个任务与其它开着的任务；
+    槽里存这个任务此刻的基准（`Tasks.basis/2`：待做步骤与完成步数）。
+    落栏一次保存：合格 → `Tasks.adopt/6` 先比对基准——写作在途时当头步做成前移了（步骤或完成数变了）就不采用（`stale`：任务原样、
+    `waiting` 与连续不合格数不动、额度不退，下一次到点再问），任务已到期关掉为 `gone`；否则采用（continue 换待做步骤、清 `waiting`；
+    done / drop 关掉，标准句后接 `note` 进经历）。不合格 → `Tasks.reject/4`（`waiting` 留着，连续 3 次关为 stuck 并写经历）；
+    写作失败、worker 崩溃 → `Tasks.fail/1`；写作没有发出 → 同一次保存 `Tasks.refund/1`（崩溃不退，同回顾）。`cannot` 只计数并进落栏日志
+    （交学习属 T-3）。12 次用完不记、不打日志。
+  - **写作的出向上限**：回顾与推进每次写作 `max_tokens` 4096（`Tasks.write_max_tokens/0`，经写作函数按次交给 `Reflection.Writer`）；
+    反思的写作不带，取 Writer 的缺省。
   - **视图**：`mind/2` 的 `plan` 是 `DayPlan.column/3` 对持久行与此刻游戏钟的结果，`tasks` 是 `Tasks.column/1`；`observe/1` 的 `plan` 是
-    `%{enabled, running, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`，
-    `tasks` 是 `%{row: 持久行 "tasks"}`（不规划的形态为 nil）。
-  - 日志一律 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
-    `end` 与 `landed` 带 `wrote=true|false`，写成时带开 / 弃任务数）；任务另有 `npc_task cid=<cid> event=step|news|opened|dropped|expired …`。
+    `%{enabled, running: 回顾在途, row: 持久行 "plan", column: 同 mind/2, error: 最近一次规划调用失败的原因（只在内存，起下一次时清空）}`，
+    `tasks` 是 `%{row: 持久行 "tasks", running: 推进在途, task: 在推进的任务 id, calls: 当日调用数 %{"day", "n"}, counts, error: 最近一次推进
+    失败 / 被拒的原因（只在内存）}`（不规划的形态为 nil）。
+  - 日志：回顾 `npc_plan cid=<cid> …`（`start` / `end` 在槽里，`landed` / `persist_failed` / `crashed` / `skipped` 在本模块；
+    `end` 与 `landed` 带 `wrote=true|false`，写成时带开 / 弃任务数）；任务 `npc_task cid=<cid> event=step|news|opened|dropped|expired|done|stuck …`，
+    推进 `npc_task … event=start|end task= why=`（槽里）与 `event=landed|persist_failed|crashed task=`（本模块；`landed` 带结局
+    `result=adopted|stale|gone|rejected|failed`、决定、`cannot`、`wrote`、当日调用数、用量）。
 
   已知的未设上限处与边界（只记事实）：
   - “当日额度用完只记一次 skipped”的标记只在内存：Life 在同一游戏日重启后，再到点会再记一次。
@@ -173,10 +188,11 @@ defmodule NpcServer.Life do
   | 认识刷新槽（`automatic/1` 的刷新分支） | 不起（`dirty` 留着，恢复后下一次触发照常刷新） |
   | CLI `refresh/1` / `reflect/1` | `{:error, {:budget_exhausted, 北京日}}` |
   | 到点的反思 | 按 `cannot_start` 跳过：`skipped` 加一、`npc_reflect … event=skipped reason=budget_exhausted` |
-  | 日计划 | 在 `DayPlan.admit/3` 之前拒：不记调用、不扣当日额度，`event` 标记留着 |
+  | 日计划（每日回顾） | 在 `DayPlan.admit/3` 之前拒：不记调用、不扣当日额度，`event` 标记留着 |
+  | 任务推进（`:task`） | 在 `Tasks.admit/3` 之前拒：不记调用、不扣当日额度，`waiting` 留着；已写好的步骤照常是候选（执行不调模型） |
   | retain、读认识（`:models`）、选择、说话、召回 | 照常（Q-3 (b)：经历不丢；交互不过闸门） |
 
-  每种后台工作每个北京日只打一行 `npc_spend_refused cid= kind=refresh|reflect|plan day=`；`observe/1` 的 `spend_refused` 是
+  每种后台工作每个北京日只打一行 `npc_spend_refused cid= kind=refresh|reflect|plan|task day=`；`observe/1` 的 `spend_refused` 是
   `%{种类 => 最近一次被拒的北京日}`（只在内存）。恢复不广播：次日结论变回 `:open` 后，由各自的下一次自然触发（下一条经历、
   下一帧观察、下一次落栏）照常起。
   """
@@ -539,17 +555,21 @@ defmodule NpcServer.Life do
        reflect: nil,
        # 最近一轮里最近一次失败的原因（只在内存，observe 用）：起下一轮时清空。
        reflect_error: nil,
-       # 规划槽（worker，同 reflect）：nil 或 `%{pid, ref, kind, day, now_minute, now_ms}`（见 `start_plan/5`）。
+       # 规划槽（worker，同 reflect；每日回顾与任务推进共用，一次只一个在途）：nil，或回顾
+       # `%{pid, ref, job: :review, kind, day, now_minute, now_ms}`（见 `start_plan/5`）、推进
+       # `%{pid, ref, job: :advance, task: 任务 id, basis: 起推进时的基准, day, now_ms}`（见 `start_advance/4`）。
        plan: nil,
        # 最近一次规划调用失败的原因（只在内存，observe 用）：起下一次时清空，采用成功时为 nil。
        plan_error: nil,
+       # 最近一次推进失败 / 被拒的原因（只在内存，observe 的 `tasks.error`）：起下一次推进时清空，采用时为 nil。
+       task_error: nil,
        # 起槽之前那次保存失败后，这一刻之前不再试（内存里的防抖，不落库）。
        plan_not_before_ms: nil,
        # 当日额度用完那次已经记过一笔 skipped 的游戏日（每个游戏日只记一次；内存里，Life 重启即忘）。
        plan_exhausted_day: nil,
        # 花费额度的结论（`NpcServer.SpendBudget.background/0` 的形状），只在后台触发处读，见 moduledoc“花费额度”。
        spend: Map.get(options, :spend, fn -> :open end),
-       # 各种后台工作最近一次因额度被拒的北京日 `%{refresh | reflect | plan => Date}`（内存里；每种每天只打一行日志）。
+       # 各种后台工作最近一次因额度被拒的北京日 `%{refresh | reflect | plan | task => Date}`（内存里；每种每天只打一行日志）。
        spend_refused: %{}
      }}
   end
@@ -572,19 +592,20 @@ defmodule NpcServer.Life do
   defp journaling(_profile, _config, _cid), do: nil
 
   defp journal_writer(%{write_journal: write}, _cid),
-    do: fn _operation, system, user -> write.(system, user) end
+    do: fn _operation, _limits, system, user -> write.(system, user) end
 
   # 反思与日计划没人在等：写作走出站的后台车道（`NpcServer.Http`），与说话的交互写作分开。
+  # `limits` 是这一种写作按次的请求参数（只有每日回顾与任务推进带 `max_tokens`，任务层决策稿 K-9），并进 endpoint 交给 `Writer`。
   defp journal_writer(%{reflect: endpoint}, cid) do
     endpoint = Map.put(endpoint, :lane, :background)
 
-    fn operation, system, user ->
-      Writer.write(endpoint, system, user, %{cid: cid, operation: operation})
+    fn operation, limits, system, user ->
+      Writer.write(Map.merge(endpoint, limits), system, user, %{cid: cid, operation: operation})
     end
   end
 
-  defp write_for(%{write: write}, operation),
-    do: fn system, user -> write.(operation, system, user) end
+  defp write_for(%{write: write}, operation, limits \\ %{}),
+    do: fn system, user -> write.(operation, limits, system, user) end
 
   @impl true
   def handle_call(:observe, _, s) do
@@ -1053,21 +1074,33 @@ defmodule NpcServer.Life do
     {:noreply, land_plan(%{s | plan: Map.put(slot, :outcome, outcome)})}
   end
 
-  # 规划槽崩溃（写作函数退出、取材时抛错等）：清槽，当一次失败记（`DayPlan.fail/5`，原因带截断的退出原因）；Life 不受影响。
-  # 当日额度不退：不知道写作发出了没有，按发出算（否则反复崩溃就能绕过额度）。
+  # 规划槽崩溃（写作函数退出、取材时抛错等）：清槽，当一次失败记（回顾 `DayPlan.fail/5`、推进 `Tasks.fail/1`，原因带截断的
+  # 退出原因）；Life 不受影响。当日额度不退：不知道写作发出了没有，按发出算（否则反复崩溃就能绕过额度）。
   def handle_info({:DOWN, ref, :process, _, reason}, %{plan: %{ref: ref} = slot} = s) do
     detail = reason |> inspect(limit: 10, printable_limit: 200) |> String.slice(0, 400)
-
-    Logger.warning(
-      "npc_plan cid=#{s.context.cid} event=crashed kind=#{slot.kind} day=#{slot.day} reason=#{detail}"
-    )
-
     failure = {:plan_worker_crashed, detail}
-    s = %{done(s, :plan) | plan_error: failure}
+    s = done(s, :plan)
 
-    plan = DayPlan.fail(s.row["plan"], slot.kind, :failed, failure, slot.now_ms)
+    {s, row} =
+      case slot.job do
+        :review ->
+          Logger.warning(
+            "npc_plan cid=#{s.context.cid} event=crashed kind=#{slot.kind} day=#{slot.day} reason=#{detail}"
+          )
 
-    case save(s, %{s.row | "plan" => plan}) do
+          plan = DayPlan.fail(s.row["plan"], slot.kind, :failed, failure, slot.now_ms)
+          {%{s | plan_error: failure}, %{s.row | "plan" => plan}}
+
+        :advance ->
+          Logger.warning(
+            "npc_task cid=#{s.context.cid} event=crashed task=#{slot.task} day=#{slot.day} reason=#{detail}"
+          )
+
+          {%{s | task_error: {:failed, failure}},
+           %{s.row | "tasks" => Tasks.fail(s.row["tasks"])}}
+      end
+
+    case save(s, row) do
       {:ok, s} -> {:noreply, s}
       {:error, s} -> {:noreply, s}
     end
@@ -1652,6 +1685,8 @@ defmodule NpcServer.Life do
   defp maybe_plan(%{row: nil} = s), do: s
   defp maybe_plan(%{activity_pending: pending} = s) when pending != nil, do: s
 
+  # 回顾与推进共用这一个槽：回顾到点先起回顾（它会开 / 弃任务，先推进一个即将被弃的任务是白花一次写作）；回顾没有起
+  # （不到点、当日额度用完、花费到线）才查推进（任务层规划 §2.2）。
   defp maybe_plan(s) do
     with true <- planning?(s),
          nil <- s.plan,
@@ -1659,14 +1694,25 @@ defmodule NpcServer.Life do
          %{world_time: %{day: day, minute_of_day: minute}, self: %{body_state: body_state}}
          when body_state != nil <- s.observation,
          now_ms = s.now.(),
-         true <- s.plan_not_before_ms == nil or now_ms >= s.plan_not_before_ms,
-         kind when kind != nil <- DayPlan.due(s.row["plan"], day, now_ms),
+         true <- not_debounced?(s, now_ms) do
+      s = maybe_review(s, day, minute, now_ms)
+      if s.plan == nil and not_debounced?(s, now_ms), do: maybe_advance(s, day, now_ms), else: s
+    else
+      _ -> s
+    end
+  end
+
+  defp not_debounced?(s, now_ms),
+    do: s.plan_not_before_ms == nil or now_ms >= s.plan_not_before_ms
+
+  defp maybe_review(s, day, minute, now_ms) do
+    with kind when kind != nil <- DayPlan.due(s.row["plan"], day, now_ms),
          {:open, s} <- background(s, :plan) do
       admit_plan(s, kind, day, minute, now_ms)
     else
       # 花费额度停了后台：在 `DayPlan.admit/3` 之前拒，不记调用、不扣当日额度，event 标记留着。
       {{:budget_exhausted, _day}, refused} -> refused
-      _ -> s
+      nil -> s
     end
   end
 
@@ -1712,24 +1758,12 @@ defmodule NpcServer.Life do
       end
 
     snapshot =
-      Map.merge(s.journaling, %{
-        cid: s.context.cid,
-        write: write_for(s.journaling, :day_plan),
-        vocabulary: vocabulary(s, names),
+      s
+      |> planning_snapshot(:day_plan, names, now_ms)
+      |> Map.merge(%{
         kind: kind,
         day: day,
         now_minute: minute,
-        now_ms: now_ms,
-        observation: s.observation,
-        recent: recent(s.row),
-        buildings: s.row["state"]["buildings"],
-        people: Enum.map(State.relationships(s.row["state"]), & &1.actor),
-        names: names,
-        latest: s.row["reflection"]["latest"],
-        adapter: s.adapter,
-        # 每路召回的上限同心智快照（召回是串行发的）。
-        config: Map.put(s.config, :timeout_ms, @mind_recall_timeout_ms),
-        context: s.context,
         today: today,
         wants: Enum.map(plan["wants"], & &1["want"]),
         open: s.row["tasks"]["open"],
@@ -1745,10 +1779,142 @@ defmodule NpcServer.Life do
 
     %{
       s
-      | plan: Map.merge(s.plan, %{kind: kind, day: day, now_minute: minute, now_ms: now_ms}),
+      | plan:
+          Map.merge(s.plan, %{
+            job: :review,
+            kind: kind,
+            day: day,
+            now_minute: minute,
+            now_ms: now_ms
+          }),
         plan_error: nil
     }
   end
+
+  # 规划位置（每日回顾、任务推进）共用的快照部分：写作函数（按次 `max_tokens` 4096，任务层决策稿 K-9）、人格卡、词表与取材
+  # 要的一切（同反思“自己”一问；`DayPlan.Round.ask/3` 读）。在本进程里取齐，worker 不回头问 Life。
+  defp planning_snapshot(s, operation, names, now_ms) do
+    Map.merge(s.journaling, %{
+      cid: s.context.cid,
+      write: write_for(s.journaling, operation, %{max_tokens: Tasks.write_max_tokens()}),
+      vocabulary: vocabulary(s, names),
+      now_ms: now_ms,
+      observation: s.observation,
+      recent: recent(s.row),
+      buildings: s.row["state"]["buildings"],
+      people: Enum.map(State.relationships(s.row["state"]), & &1.actor),
+      names: names,
+      latest: s.row["reflection"]["latest"],
+      adapter: s.adapter,
+      # 每路召回的上限同心智快照（召回是串行发的）。
+      config: Map.put(s.config, :timeout_ms, @mind_recall_timeout_ms),
+      context: s.context
+    })
+  end
+
+  # --- 任务推进（规则在 `Life.Tasks`，流程在 `Life.Tasks.Round`；与回顾共用规划槽，回顾没有起时才查） ---
+
+  # 推进到点（`Tasks.due/2`：过了最小间隔、有任务在等）→ 花费闸门（到线在记调用之前拒：不记调用，`waiting` 留着，
+  # 已写好的步骤照常是候选）→ `Tasks.admit/3` 记一次调用并保存，保存成功才起槽；保存失败行不变，一秒之内不再试。
+  # 当日 12 次用完不记、不打日志（`observe/1` 的 `tasks.calls` 看得到；稿件没写跳过的记账）。
+  defp maybe_advance(s, day, now_ms) do
+    with id when id != nil <- Tasks.due(s.row["tasks"], now_ms),
+         {:open, s} <- background(s, :task),
+         {:ok, admitted} <- Tasks.admit(s.row["tasks"], day, now_ms) do
+      case save(s, %{s.row | "tasks" => admitted}) do
+        {:ok, s} -> start_advance(%{s | plan_not_before_ms: nil}, id, day, now_ms)
+        {:error, s} -> %{s | plan_not_before_ms: now_ms + @plan_retry_ms}
+      end
+    else
+      {{:budget_exhausted, _day}, refused} -> refused
+      _ -> s
+    end
+  end
+
+  # 起推进槽的 worker（记调用那次保存已经成功）：快照取齐要推进的任务、其它开着的任务与回顾同一套材料（`planning_snapshot/4`）。
+  defp start_advance(s, id, day, now_ms) do
+    open = s.row["tasks"]["open"]
+    task = Enum.find(open, &(&1["id"] == id))
+
+    snapshot =
+      s
+      |> planning_snapshot(:task_advance, names(s), now_ms)
+      |> Map.merge(%{day: day, task: task, others: Enum.reject(open, &(&1["id"] == id))})
+
+    s =
+      worker(s, :plan, fn ->
+        {:ok, _} = Application.ensure_all_started(:ssl)
+        Tasks.Round.write(snapshot)
+      end)
+
+    # 槽里存起推进这一刻的基准（`Tasks.basis/2`），落栏时 `Tasks.adopt/6` 比对：写作在途时步骤变了就不采用（stale）。
+    slot = %{
+      job: :advance,
+      task: id,
+      basis: Tasks.basis(s.row["tasks"], id),
+      day: day,
+      now_ms: now_ms
+    }
+
+    %{s | plan: Map.merge(s.plan, slot), task_error: nil}
+  end
+
+  # 推进落栏（一次保存，读最新的行）：合格 → `Tasks.adopt/6` 与槽里的基准比对（采用：continue 换步骤，done / drop 关掉并写经历；
+  # 写作在途时步骤变了：stale，不采用；任务已关：gone）；不合格 → `Tasks.reject/4`（连续 3 次关为 stuck 并写经历）；
+  # 写作失败 → `Tasks.fail/1`。写作没有发出（`wrote: false`）同一次保存里 `Tasks.refund/1`。`cannot` 只计数并进日志（交学习是 T-3）。
+  # 经历经 `accept/3` 进未封存的尾部。
+  defp land_advance(s, slot, outcome) do
+    at_ms = s.now.()
+    tasks = s.row["tasks"]
+
+    {landed, tasks, episodes, error} =
+      case outcome.result do
+        :ok ->
+          {landed, tasks, episodes} =
+            Tasks.adopt(tasks, slot.task, slot.basis, outcome.checked, slot.day, at_ms)
+
+          {landed, tasks, episodes, nil}
+
+        {:rejected, reason} ->
+          {tasks, episodes} = Tasks.reject(tasks, slot.task, slot.day, at_ms)
+          {:rejected, tasks, episodes, {:rejected, reason}}
+
+        {:failed, reason} ->
+          {:failed, Tasks.fail(tasks), [], {:failed, reason}}
+      end
+
+    tasks = if outcome.wrote, do: tasks, else: Tasks.refund(tasks)
+    {row, next} = accept(s, %{s.row | "tasks" => tasks}, episodes)
+
+    case save(s, seal(row, false)) do
+      {:ok, s} ->
+        Logger.info(
+          "npc_task cid=#{s.context.cid} event=landed task=#{slot.task} day=#{slot.day} " <>
+            "#{advance_result(landed, outcome)} wrote=#{outcome.wrote} calls=#{tasks["calls"]["n"]} " <>
+            "elapsed_ms=#{outcome.elapsed_ms} usage=#{inspect(outcome.usage)}"
+        )
+
+        log_task_episodes(s, episodes)
+        %{s | task_error: error} |> automatic() |> follow_round(next)
+
+      {:error, s} ->
+        Logger.warning(
+          "npc_task cid=#{s.context.cid} event=persist_failed task=#{slot.task} day=#{slot.day} " <>
+            "reason=#{inspect(s.error)}"
+        )
+
+        %{s | task_error: s.error}
+    end
+  end
+
+  # 落栏日志的结局：应答合格时 `result=` 是实际的落栏结局（`adopted` / `stale` 写作在途时步骤变了 / `gone` 任务已关），
+  # 都带决定、步骤数与 `cannot` 原文（不存进任务，交学习属 T-3，这里是它唯一的去处；决策稿偏差 D-8）；不合格 / 失败带原因。
+  defp advance_result(landed, %{result: :ok, checked: checked}),
+    do:
+      "result=#{landed} verdict=#{checked.task} steps=#{length(checked.steps)} cannot=#{inspect(checked.cannot)}"
+
+  defp advance_result(landed, %{result: {_failure, reason}}),
+    do: "result=#{landed} reason=#{inspect(reason)}"
 
   # 起槽这一刻的词表（稿 A 批 0b）：每个可计划的种类（`Offers.plan_kinds/1`）展开成 `%{kind, criterion, objects: %{显示名 => 对象}}`。
   # 对象是人的种类（说话、对人的登记项）能点名的人 = 关系里的人 ∪ 此刻观察里的他人 ∪ 开着的任务里点名过的人（`Tasks.people/1`，
@@ -1774,10 +1940,21 @@ defmodule NpcServer.Life do
     end
   end
 
-  # 使用起槽时的日期与分钟，同时读取最新已入账的计划。写作未发出的轮次在同次保存内退额度。
-  # 采用时同一次保存里开 / 弃任务（`Tasks.review/4`，当头步与经历的时刻取落栏这一刻），开 / 弃的经历经 `accept/3` 进未封存的尾部。
+  # 规划槽的结果按槽里的 `job` 分：回顾 / 推进。都等前一条活动经历写盘之后才落栏（落栏读最新的行）。
   defp land_plan(%{activity_pending: nil, plan: %{outcome: outcome} = slot} = s) do
     s = %{s | plan: nil}
+
+    case slot.job do
+      :review -> land_review(s, slot, outcome)
+      :advance -> land_advance(s, slot, outcome)
+    end
+  end
+
+  defp land_plan(s), do: s
+
+  # 回顾落栏：使用起槽时的日期与分钟，同时读取最新已入账的计划。写作未发出的轮次在同次保存内退额度。
+  # 采用时同一次保存里开 / 弃任务（`Tasks.review/4`，当头步与经历的时刻取落栏这一刻），开 / 弃的经历经 `accept/3` 进未封存的尾部。
+  defp land_review(s, slot, outcome) do
     plan = s.row["plan"]
 
     {landed, plan_error, tasks, episodes} =
@@ -1824,8 +2001,6 @@ defmodule NpcServer.Life do
         %{s | plan_error: s.error}
     end
   end
-
-  defp land_plan(s), do: s
 
   # 完成的活动按 `{种类, 对象}` 记账（`DayPlan.record_activity/4`；种类、对象与结局由 `Selector.experience/1` 给出，
   # “完成”即结局为 `:completed`，失败与被打断都不记）。
@@ -1950,8 +2125,22 @@ defmodule NpcServer.Life do
   # 给选择的任务数据（心智快照与 observe 共用）：不规划的形态为 []。调用方保证行已加载。
   defp task_column(s), do: if(planning?(s), do: Tasks.column(s.row["tasks"]), else: [])
 
+  # 任务的 observe：持久行全文，加推进在途（`running`、在推进的任务 id）、当日调用数与计数（取自持久行，CLI 不用翻行）、
+  # 最近一次推进失败 / 被拒的原因（只在内存）。
   defp observe_tasks(s) do
-    if planning?(s), do: %{row: s.row && s.row["tasks"]}
+    if planning?(s) do
+      row = s.row && s.row["tasks"]
+      advancing = match?(%{job: :advance}, s.plan)
+
+      %{
+        row: row,
+        running: advancing,
+        task: if(advancing, do: s.plan.task),
+        calls: row && row["calls"],
+        counts: row && row["counts"],
+        error: s.task_error
+      }
+    end
   end
 
   # 给选择的日计划数据（心智快照与 observe 共用）：`DayPlan.column/3` 对持久行与此刻观察里的游戏钟。调用方保证行已加载。
@@ -1969,8 +2158,9 @@ defmodule NpcServer.Life do
     if planning?(s) do
       %{
         enabled: true,
-        running: s.plan != nil,
-        waiting_for_activity: match?(%{outcome: _}, s.plan),
+        # 规划槽回顾与推进共用：这里只说回顾（推进在途见 `tasks.running`）。
+        running: match?(%{job: :review}, s.plan),
+        waiting_for_activity: match?(%{job: :review, outcome: _}, s.plan),
         row: s.row && s.row["plan"],
         column: s.row && plan_column(s),
         error: s.plan_error

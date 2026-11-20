@@ -8,6 +8,8 @@ defmodule NpcServer.Life.DayPlan.Round do
       write/1：此刻一块 → “自己”一问的材料（两次召回、之前的想法）→ 回顾系统提示词 + 用户消息 → 写一次
                → Tasks.check/3 {:review, now_minute, 开着的任务}
 
+  取材 → 写一次 → 检查 → `wrote` 这一段是公开的 `ask/3`，任务推进（`NpcServer.Life.Tasks.Round`）只换提示词与检查、共用它。
+
   词表（稿 A 批 0b）是“种类 + 可选对象”：渲染成系统提示词的工作列表由 `Prompt.activities/1` 做（有对象的种类在判据后接
   一句可选对象；每日回顾与任务推进共用这一处），检查时交给 `Tasks.check/3` 的是 `%{种类 => %{显示名 => 对象}}`。
 
@@ -80,34 +82,49 @@ defmodule NpcServer.Life.DayPlan.Round do
 
     Logger.info(
       "#{head} event=end #{which} #{outcome(result, checked)} wrote=#{wrote} elapsed_ms=#{elapsed_ms} " <>
-        "uncached_input_tokens=#{tokens(usage, "input_tokens")} output_tokens=#{tokens(usage, "output_tokens")}"
+        usage_fields(usage)
     )
 
     %{result: result, checked: checked, elapsed_ms: elapsed_ms, usage: usage, wrote: wrote}
   end
 
-  # 取材 → 写一次 → 检查。返回 {结局, checked | nil, usage | nil, 写作发出了没有}：走到写作函数那一步就为真，
-  # 在它之前的失败（`with` 的 else）为假。
   defp plan(snapshot) do
+    vocabulary = Map.new(snapshot.vocabulary, &{&1.kind, &1.objects})
+
+    ask(
+      snapshot,
+      fn materials ->
+        {Prompt.review_system_prompt(snapshot.character, snapshot.vocabulary),
+         Prompt.user_message(materials,
+           today: snapshot.today,
+           wants: snapshot.wants,
+           open_tasks: snapshot.open_tasks,
+           closed_tasks: snapshot.closed_tasks
+         )}
+      end,
+      &Tasks.check(&1, vocabulary, {:review, snapshot.now_minute, snapshot.open})
+    )
+  end
+
+  @doc """
+  规划位置的一次写作（每日回顾与任务推进共用，`NpcServer.Life.Tasks.Round`）：取材（“自己”一问的此刻一块与两路召回，
+  同反思）→ `messages.(materials)` 给出 `{系统提示词, 用户消息}` → `snapshot.write` 写一次 → `check.(正文)`。不重问。
+
+  返回 `{结局, checked | nil, usage | nil, wrote}`：结局 `:ok | {:failed, 原因} | {:rejected, 原因}`（同 `write/1`）；
+  `wrote` 是写作函数被调用过没有——走到写作那一步就为真（不论成败、检查过不过），在它之前的失败（此刻一块、召回、
+  没有材料）为假。落栏时据此退额度（T7：额度管“问了模型几次”），这条规则只在这里定义一次。
+  """
+  def ask(snapshot, messages, check) do
     with {:ok, right_now} <- ReflectionRound.right_now(snapshot),
          {:ok, materials} <-
            ReflectionRound.materials(Reflection.self_question(), right_now, snapshot) do
-      system = Prompt.review_system_prompt(snapshot.character, snapshot.vocabulary)
-
-      user =
-        Prompt.user_message(materials,
-          today: snapshot.today,
-          wants: snapshot.wants,
-          open_tasks: snapshot.open_tasks,
-          closed_tasks: snapshot.closed_tasks
-        )
+      {system, user} = messages.(materials)
 
       case snapshot.write.(system, user) do
         {:ok, %{text: text} = written} ->
           usage = Map.get(written, :usage)
-          vocabulary = Map.new(snapshot.vocabulary, &{&1.kind, &1.objects})
 
-          case Tasks.check(text, vocabulary, {:review, snapshot.now_minute, snapshot.open}) do
+          case check.(text) do
             {:ok, checked} -> {:ok, checked, usage, true}
             {:error, reason} -> {{:rejected, reason}, nil, usage, true}
           end
@@ -119,6 +136,11 @@ defmodule NpcServer.Life.DayPlan.Round do
       {:error, reason} -> {{:failed, reason}, nil, nil, false}
     end
   end
+
+  @doc "槽日志里的用量两栏（读应答 usage 的原始字段；完整输入见模型请求日志）：`uncached_input_tokens=… output_tokens=…`。"
+  def usage_fields(usage),
+    do:
+      "uncached_input_tokens=#{tokens(usage, "input_tokens")} output_tokens=#{tokens(usage, "output_tokens")}"
 
   defp outcome(:ok, checked),
     do:

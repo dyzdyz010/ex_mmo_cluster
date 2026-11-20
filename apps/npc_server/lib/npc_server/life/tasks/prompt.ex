@@ -2,8 +2,8 @@ defmodule NpcServer.Life.Tasks.Prompt do
   @moduledoc """
   任务推进调用的提示词拼装（任务层决策稿 `docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md` §4 K-4；纯函数，不做 I/O）。
 
-  推进的系统提示词与用户消息（`system_prompt/2`、`user_message/4`）：推进槽、取材与写作是 T-1b 的 `Life.Tasks.Round`，现在只有
-  K-0 离线测量（`.demo/observe/npc-task-k0-20261119/`）用它渲染请求。每日回顾用户消息里“开着的任务”“最近关掉的任务”两块的各行
+  推进的系统提示词与用户消息（`system_prompt/2`、`user_message/4`）：由 `NpcServer.Life.Tasks.Round`（Life 的推进槽，T-1b）调，
+  K-0 离线测量（`.demo/observe/npc-task-k0-20261119/`）渲染的也是这一份。每日回顾用户消息里“开着的任务”“最近关掉的任务”两块的各行
   （`review_open_lines/2`、`review_closed_lines/1`，T-1a 起由 Life 起回顾槽时调）。措辞全部是**原创取值**，按实跑读数再调。
 
   ## 系统提示词

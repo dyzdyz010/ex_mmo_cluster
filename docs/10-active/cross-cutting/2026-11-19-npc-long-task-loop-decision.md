@@ -410,3 +410,62 @@ flowchart LR
     ③ 的红见 `test-review-red-vocabulary.log`（1 / 3 红）。后绿 `test-review-green.log` 同 3 个文件 66 通过。回归 `test-regression-3.log`（文件集合同 `test-regression-2.log`，22 个文件）**357 通过、2 排除、0 失败、无警告**。
     `MIX_ENV=test mix compile --warnings-as-errors --force` 通过（`compile-3.log`）；改动文件 `mix format` 后过 `--check-formatted`（`format-check-5.log`；`format-check-4.log` 是格式化之前那次，两处换行）。跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
   - 文档：`Life` moduledoc（新信息一条）、`Life.Tasks` moduledoc 与 `review/4`、`note_news/3` 文档、`apps/npc_server/lib/npc_server/README.md` 任务层一节、两个集成测试的 moduledoc、`fixtures/day_plan/README.md`、规划 §5 同步。
+- 2026-11-19：**T-1b 实现**（任务推进；实施子会话，基于 `c846bbcf`，未提交，待统筹评审；未调模型、未起 release。规划 `.demo/observe/npc-task-t1-20261119/plan.md` §1.2、§1.5、§2.2、§3 T-1b）。路径相对 `apps/npc_server/`。
+  - 改了什么：
+    `Life.Tasks` 加推进规则：`due/2`（距上次推进 ≥ 3 分钟、最早开的 `waiting` 任务）、`admit/3` / `refund/1`（每人每游戏日 12 次，持久行 `calls`；T-3 学习写作共用这一个计数，moduledoc 写明）、
+    `adopt/5`（continue 换待做步骤、`note` 存进任务、清 `waiting`、`rejected_in_row` / `head_failures` 清零、当头步从此刻计时；done / drop 关闭，经历为标准句后接 `note`）、
+    `reject/4`（`waiting` 留着，连续 3 次关为 stuck 并写经历）、`fail/1`、`write_max_tokens/0`（4096）；`counts` 加 `cannot`（`advanced` = 采用的推进，任一决定）。
+    按日计数的额度规则从 `DayPlan.admit/3` 抽成 `DayPlan.charge_call/3` / `refund_call/1`，回顾与推进共用（各给自己的上限）。
+    `DayPlan.Round` 抽出公开的 `ask/3`（取材 → 写一次 → 检查 → `wrote`）与 `usage_fields/1`；新模块 `Life.Tasks.Round.write/1` 只给推进提示词（`Tasks.Prompt`）与 `Tasks.check/3 :advance`。
+    Life：规划槽加 `job: :review | :advance`（推进另带 `task`）；每帧上回顾到点先起回顾，回顾没有起（不到点、当日额度用完、花费到线）才查推进 →
+    `background(s, :task)`（到线在 `admit` 之前拒）→ `Tasks.admit/3` 保存 → 起槽；快照的共用部分抽成 `planning_snapshot/4`（回顾与推进同一套材料与写作函数）；
+    落栏按 `job` 分 `land_review` / `land_advance`；规划槽崩溃按 `job` 分（推进 → `Tasks.fail/1`，不退额度）。写作函数按次带参数：回顾与推进 `max_tokens: 4096` 并进 endpoint，
+    `Reflection.Writer` 两种形状都取 `config[:max_tokens]`、缺省不变（反思仍 8192 / 2000）。
+  - 可观测面：`Life.observe/1` 的 `tasks` = `%{row, running, task, calls, counts, error}`，`plan.running` 只说回顾；日志 `npc_task … event=start|end task= why=`（槽里）、
+    `event=landed|persist_failed|crashed task=`（`landed` 带结局、决定、步骤数、`cannot` 原文、`wrote`、当日调用数、用量）、`npc_spend_refused kind=task`。
+  - 与稿件 / 规划的偏差：
+    ① 按规划已定的 D-3（最早**开**的等待任务）、D-4（不加 `actor:` 召回）、D-5（`note` 是任务字段）、D-8（`cannot` 只计数 + 进落栏日志，`counts` 因此多一个 `cannot` 键）。
+    ② “回顾先起”落实为“回顾没有起才查推进”：若写成“回顾到点就不查推进”，当日 2 次用完后一条 `kind:event` 会让 `event_waiting` 一直为真，当天推进全被挡住。
+    ③ 推进在途时任务被 `tick/3` 到期关掉：落栏 `adopt/5` / `reject/4` 原样返回、不计数（同 T-1a 评审修正 ① 的回顾弃任务；没有单独用例，`adopt/5` 单测里一行断言）。
+    ④ 规划 §3 列的独立 `npc_life_tasks_round_test.exs` 没写：`Tasks.Round` 只是 `ask/3` + 提示词 + 检查，`ask/3` 由既有 `npc_life_day_plan_round_test` 覆盖，推进经它的全链路由集成测试覆盖。
+    ⑤ 用户点名的 `raw/advance/A01.json`、`A06.json` 所述内容（采石 `exhausted` → continue；Corvin 任务步骤用完 → done）是复测 `retest-1/raw/advance/` 的那两份，按规划 §3 取复测的；
+    被拒用例用 K-0 首轮的真实应答 `raw/advance/A17.json`（含 `look_for`，今天的词表里没有 → `{:unknown_activity, "look_for"}`），正文未改；K-0 / 复测的推进应答在当时的词表下全部合格，没有别的真实被拒样本。
+    来源记 `test/support/fixtures/tasks/README.md`。
+    ⑥ 推进当日 12 次用完不记 `skipped`、不打日志（稿件没写；`observe` 的 `tasks.calls` 看得到）。
+  - 测试（WSL；入口 `.demo/observe/npc-task-t1-20261119/mix.sh <日志> test --no-start <文件…>`；数据库 `npc-dev-pg-20261117`:55480，每个 VM 自建 `mmo_test_*` 独占库、跑完删；日志同目录 `logs/t1b-*.log`）：
+    算法层 `npc_life_tasks_test`：`due/2`（最早开的等待任务、3 分钟边界）、`admit/3` 12 次 / 第 13 次拒 / 跨日、`refund/1`、`adopt/5` continue / done / drop、`reject/4` 第 3 次 stuck、`fail/1`；
+    `npc_reflection_writer_test`：config 带 `max_tokens: 4096` → `:openai` 请求体 4096（不带仍 8192 由原用例锁）。
+    集成层 `npc_life_tasks_integration_test`（组合同 T-1a）：① 采石失败 → 推进（系统提示词与回顾同一词表、用户消息带直白失败原因与“为什么现在问”）→ 回放 A17 被拒（`waiting` 留着、`rejected_in_row` 1、调用照扣、
+    observe `error`）→ 回放 A01 采用（步骤、`note`、等待清、`cannot` 计数、`calls.n` 2；`Life.mind/2` 任务栏的 next 就是新当头步）→ Corvin 任务 confront / 说话完成 → `steps_done` → 回放 A06 → done 关闭、经历进尾部 → 重启读回；
+    ② 花费结论注入为到线：推进不起、不记调用（`calls` 仍为初值）、`spend_refused` 有 `:task`、`waiting` 留着、`Life.mind/2` 的当头步照常；恢复后下一帧起推进，写作失败 → `failed`、等待留着、调用照扣；
+    ③ K-9：不替写作函数，真实 `Writer` 发给 `HttpStub`（本机 TCP，回放 R1-r1 / A01 原始回执字节）：回顾与推进请求体 `max_tokens` 都是 4096。
+    先红 `t1b-test-red.log`（产品文件临时还原到 `c846bbcf`，跑这 3 个文件）：68 项里 55 通过、**13 失败**（算法 9、Writer 1、集成 3，都是功能不存在：函数未定义、等不到推进写作、`spend_refused` 为空、K-9 收到的回顾请求是 8192）；
+    后绿 `t1b-test-green.log` 同 3 个文件 **68 通过、1 排除、0 失败**。回归 `t1b-test-regression.log`（`test-regression-3.log` 的 22 个文件 + `npc_reflection_writer_test`，格式化之后跑）**381 通过、3 排除、0 失败、无编译警告**。
+    `MIX_ENV=test mix compile --warnings-as-errors --force` 通过（`t1b-compile.log`；只改文档注释之后再跑一次 `t1b-compile-2.log`）；改动文件 `mix format` 后过 `--check-formatted`（`t1b-format-check-1.log` 是格式化之前那次，`t1b-format-check-2.log` / `-3.log` 通过）。跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
+  - 文档：`Life`（每日回顾与任务一节加“任务推进”“写作的出向上限”、视图与日志、花费额度表加 `:task` 一行）、`Life.Tasks`、`Life.Tasks.Round`（新）、`Life.Tasks.Prompt`、`DayPlan`（`charge_call/3`）、`DayPlan.Round`（`ask/3`）、
+    `Reflection.Writer`（按次 `max_tokens`）moduledoc，`apps/npc_server/lib/npc_server/README.md` 任务层一节（含推进流程图），`test/support/fixtures/tasks/README.md`（新）。
+  - 未决：推进与回顾共用的 `plan_not_before_ms` 防抖、推进 `cannot` 原文只在日志里（T-3 再定存处）；真实模型下推进的频率与 12 次额度是否够，属实跑读数。
+- 2026-11-19：**T-1b 评审修正**（独立评审无阻塞；统筹定 7 条，同一工作区修，未提交；未调模型、未起 release）。路径相对 `apps/npc_server/`。
+  - ① 推进在途时旧应答盖掉已有进展（反例：`gather_stone` 失败起推进，写作在途时 `gather_stone` 做成前移，A01 落栏把步骤整份换回 `[gather_stone, …]`；
+    同类：只剩一步、在等 `heard`，写作在途时这一步做完）。改为**比对后采用**：起槽时 `Tasks.basis/2` 记这个任务的 `steps` 与 `completed` 存进槽，
+    落栏 `Tasks.adopt/6` 比对（唯一一处，Life 不另写比较），任一项变了就不采用、三种决定都一样：任务原样，只计新键 `counts.stale`，不计 `rejected`、
+    不清 `rejected_in_row`、`waiting` 是什么留什么，下一次到点照常再问；额度已扣不退。`adopt/6` 返回 `{:adopted | :stale | :gone, 行, 经历}`。
+    只比这两项：`waiting`、log、连续失败数变了（又失败一次）不影响应答针对的那几步，照常采用（单测锁）。不合格的应答（`reject/4`）不比对，照旧计 `rejected`。
+    依据：乐观并发控制的验证阶段（Kung & Robinson, *On Optimistic Methods for Concurrency Control*, ACM TODS 6(2), 1981：读时记下、提交时验证没有冲突才写，
+    冲突则放弃这次写入）；对应：规划槽的快照即“读阶段”、落栏即“验证 + 写阶段”；取舍：冲突时不重跑写作（额度贵、下一次到点自然再问），只计数。
+  - ② 偏差②“回顾没起成才查推进”补可证伪的用例：`npc_life_tasks_integration_test` 的 `kind:event` 用例续写——第 2 次回顾落栏后 Corvin 再 `damage/4`，
+    `event_waiting` 为真；拨过间隔发一帧 → 收到推进写作、`plan.row.counts.skipped == 1`。先红的做法：临时把逻辑改成“回顾到点（`DayPlan.due/3` 非 nil）就不查推进”，
+    红（等不到推进写作，`t1b-review-test-red-review-first.log`），再还原。
+  - ③ 不修，只记：T-1a 时期存的行 `counts` 缺 `cannot`（本批又加 `stale`），`Map.update!` 会崩。T-1a / T-1b 从未起过 release，产品不会产生这种行，不加兼容；
+    **本地跑过 T-1a / T-1b 的库要重建，T-1 实跑用新库。**
+  - ④ 只改文档：`Tasks.due/2` 的“不会饿死”改为实际——被拒至多 3 次就关为 stuck；写作失败（与 stale）时等待一直留着，最早开的那个任务会一直排在最前（README 同步）。
+  - ⑤ 推进落栏日志按实际结局打：`result=adopted|stale|gone|rejected|failed`（任务在途时已到期关掉为 `gone`，原先误打 `adopted`）。
+  - ⑥ 测试里重复的 `await_review_write` 删掉，统一 `await_write(@review_marker)`。
+  - ⑦ `test/support/fixtures/tasks/README.md` 的 A17 一行注明：T-2 `look_for` 进词表后这份应答的被拒原因会变，届时被拒用例要重定。
+  - 测试（入口同上条；日志 `.demo/observe/npc-task-t1-20261119/logs/t1b-review-*.log`）：先红 `t1b-review-test-red.log`（`npc_life_tasks` + `npc_life_tasks_integration`）
+    59 项 52 通过、**7 失败**（单测 6：`basis/2` / `adopt/6` 不存在、`counts` 没有 `stale`；集成 1：等不到 `stale`）；② 的红见上。
+    后绿 `t1b-review-test-green.log` 同 2 个文件 **59 通过**，落栏日志有 `result=stale`。回归 `t1b-review-test-regression.log`（文件集合同 `t1b-test-regression.log`，23 个文件，
+    格式化之后跑）**385 通过、3 排除、0 失败、无警告**。`MIX_ENV=test mix compile --warnings-as-errors --force` 通过（`t1b-review-compile.log`）；
+    改动文件过 `--check-formatted`（`t1b-review-format-check-1.log` 是格式化之前那次，两个测试文件换行；`-2` / `-3` 通过）。跑完 `npc-dev-pg-20261117` 没有 `mmo_test_*` 库。
+  - 文档：`Life.Tasks` moduledoc（推进一节加“比对后采用”、`counts` 加 `stale`、`basis/2`、`adopt/6`、`due/2`）、`Life` moduledoc（任务推进、日志）、
+    `apps/npc_server/lib/npc_server/README.md` 任务层一节（流程图、持久行、落栏、日志、排队）、任务集成测试与任务单测 moduledoc、`fixtures/tasks/README.md`。

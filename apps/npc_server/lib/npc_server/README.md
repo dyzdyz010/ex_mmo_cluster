@@ -1055,15 +1055,35 @@ flowchart LR
   ③ `wants` 目前只展示在栏里，不触发任何动作，也与 `What I have come to think` 并存（是否保留其一等离线对照后再定）；
   ④ 计划耗尽、被直呼等其它重排触发、`times` 作完成条件的校准、计划进 Hindsight 都在后期范围。
 
-### 任务层（`Life.Tasks`，任务层决策稿；T-1a 已接进 Life，推进是 T-1b）
+### 任务层（`Life.Tasks`，任务层决策稿；T-1a 回顾与记账、T-1b 推进已接进 Life）
 
 [任务层决策稿](../../../../docs/10-active/cross-cutting/2026-11-19-npc-long-task-loop-decision.md)：日计划退化为每日回顾（开 / 弃任务），
 任务由 Life 持有、偏差时才问 LLM 推进、任务步只作为 Jev 的候选。**T-1a（2026-11-19）**：回顾开 / 弃任务、持久行、步骤记账与 K-3 标记、
-新信息、到期与停滞、Mind 任务行、observe 已接进 Life；**推进槽（问模型写后续步骤）、推进额度、花费闸门 `:task` 属 T-1b，还没有**——
-现在 `waiting` 只是记下、`Life.observe/1` 看得到。
+新信息、到期与停滞、Mind 任务行、observe。**T-1b（2026-11-19）**：推进槽（`waiting` 的任务问模型下一步）、推进额度、花费闸门 `:task`、
+回顾与推进每次写作 `max_tokens` 4096。学习写作（推进的 `cannot` 交学习）属 T-3，现在只计数、进日志。
+
+```mermaid
+flowchart LR
+  F["每帧观察"] --> RV{"回顾到点？<br/>DayPlan.due/3"}
+  RV -->|"是：先起回顾"| SL["规划槽（一个）"]
+  RV -->|"否 / 没起成"| DU{"Tasks.due/2<br/>≥ 3 分钟、最早开的 waiting 任务"}
+  DU -->|有| GT{"花费闸门 :task"}
+  GT -->|到线：不记调用、waiting 留着| F
+  GT -->|开着| AD["Tasks.admit/3<br/>当日 12 次（与 T-3 学习共用）"] --> SL
+  SL -->|"job: :advance<br/>槽里存 basis/2：steps + completed"| RD["Tasks.Round.write/1<br/>（DayPlan.Round.ask/3：取材 · 写一次 · check :advance · wrote）"]
+  RD --> LD{"落栏"}
+  LD -->|合格| CMP{"adopt/6 比对基准"}
+  CMP -->|没变| AP["adopted：continue 换步骤、清 waiting<br/>done / drop 关闭 + 经历"]
+  CMP -->|"步骤 / 完成数变了"| ST["stale：任务原样、只计数<br/>waiting 留着"]
+  CMP -.->|任务已到期关掉| GN["gone：原样"]
+  LD -->|不合格| RJ["reject/4：waiting 留着<br/>连续 3 次 → stuck + 经历"]
+  LD -->|写作失败 / 崩溃| FL["fail/1：waiting 留着"]
+  LD -.->|"wrote = false"| RF["refund/1"]
+```
 
 - **持久行 `"tasks"`**（Life 是唯一 owner，与 `"plan"` 等同一次保存，形状见 [`life/tasks.ex`](life/tasks.ex) 的 `new/0`）：`open`（≤ 3，开的次序）、
-  `closed`（最近 5 条小结）、`calls` / `last_at_ms`（推进用，T-1b）、`counts`。任务 = `id`（`t<开的日号>:<开过的总数>`）、`goal`、`why`、
+  `closed`（最近 5 条小结）、`calls`（`%{"day", "n"}`：当日发出了写作请求的推进次数，T-3 的学习写作共用）/ `last_at_ms`（上一次推进调用）、
+  `counts`（`opened advanced done dropped expired stuck rejected failed cannot stale`）。任务 = `id`（`t<开的日号>:<开过的总数>`）、`goal`、`why`、
   `opened_day`、`expires_day`（开的日号 + 2）、`steps`（待做，当头那条是此刻的步）、`log`（最近 6 条步骤结局，记当头步本身的种类与对象）、
   `waiting`（待推进及原因）、`head_since_ms`、`head_failures`、`rejected_in_row`、`completed`（完成的步数）、`note`。
   之前存下的行在加载边界补成空的一份。
@@ -1084,13 +1104,32 @@ flowchart LR
 - **给选择**：`Life.mind/2` 的 `tasks`（`Tasks.column/1`）→ Mind `Plans and promises` 栏在意图之后、`wants` 之前每任务一行
   `Task: <goal> — next: <种类 名字>; done so far: <n> step(s)`（没有待做步骤时 `no steps planned`）；无任务时栏与之前逐字节相同。
   K-6 的当头步占位没做：总上限 C 还没实现，可行的当头步必在候选里（占位与 C 在 X-1 同处做）。
-- **观察与日志**：`Life.observe(cid).tasks` = `%{row: 持久行 "tasks"}`（不规划的形态为 nil）；日志 `npc_task cid=<cid> event=step|news|opened|dropped|expired task=<id> …`。
+- **推进（T-1b，决策稿 K-4 / K-9）**：与回顾共用一个规划槽（`job: :advance`），一次只一个在途；每帧上回顾到点先起回顾，回顾没有起
+  （不到点、当日 2 次用完、花费到线）才查推进：`Tasks.due/2`（距上次推进 ≥ 3 分钟；取最早**开**的 `waiting` 任务——稿件写“最早置上”，
+  规划偏差 D-3）→ 花费闸门 `:task`（到线在记调用之前拒：`waiting` 留着，已写好的步骤照常是候选）→ `Tasks.admit/3`（每人每游戏日 12 次，
+  按日计数的规则与回顾共用 `DayPlan.charge_call/3`）→ 保存成功起槽。`Tasks.Round.write/1` 与回顾共用 `DayPlan.Round.ask/3`（快照在起槽时取齐、
+  取材同回顾、写一次不重问、`wrote` 标记），提示词 `Tasks.Prompt`，检查 `Tasks.check/3 :advance`；不加 `actor:` 第三路召回（D-4）。
+  落栏：合格 → `Tasks.adopt/6` 先与槽里的基准比对（**比对后采用**，乐观并发控制：起槽时 `Tasks.basis/2` 记这个任务的 `steps` 与 `completed`，
+  写作在途时 NPC 照常行动、当头步可能已做成前移；任一项变了就不采用，三种决定都一样：任务原样，只计 `counts.stale`，`waiting` 与
+  `rejected_in_row` 不动，额度不退，下一次到点照常再问；任务已到期关掉为 `gone`，不计数）；没变才采用（`continue` 换待做步骤、`note`
+  存进任务（D-5）、清 `waiting`、`rejected_in_row` 清零；`done` / `drop` 关闭，经历 `I finished my task "<goal>". <note>` /
+  `I gave up my task "<goal>". <note>`）；不合格 → `Tasks.reject/4`（任务不动、`waiting` 留着，
+  连续 3 次关为 `stuck`，经历 `I could not settle on a next step for my task "<goal>", so I set it aside.`）；写作失败 / worker 崩溃 → `Tasks.fail/1`；
+  写作没有发出（`wrote: false`）同一次保存 `Tasks.refund/1`（崩溃不退）。`cannot` 只计数（`counts.cannot`）并进落栏日志（D-8，交学习属 T-3）。
+- **写作出向上限**：回顾与推进每次 `max_tokens` 4096（`Tasks.write_max_tokens/0`，Life 经写作函数按次并进 endpoint 交给 `Reflection.Writer`）；
+  反思等其它写作不带，仍是 Writer 的缺省（`:openai` 8192、Messages 2000）。
+- **观察与日志**：`Life.observe(cid).tasks` = `%{row: 持久行 "tasks", running: 推进在途, task: 在推进的任务 id, calls: 当日调用数, counts, error: 最近一次
+  推进失败 / 被拒的原因（只在内存）}`（不规划的形态为 nil）；`plan.running` 只说回顾。日志 `npc_task cid=<cid> event=step|news|opened|dropped|expired|done|stuck task=<id> …`；
+  推进 `event=start|end task= why=`（槽里，`end` 带结局、决定、步骤数、`wrote`、用量）与 `event=landed|persist_failed|crashed task=`（`landed` 带结局
+  `result=adopted|stale|gone|rejected|failed`、决定、`cannot` 原文、`wrote`、当日调用数、用量）；闸门 `npc_spend_refused kind=task`。
+- **排队**：`Tasks.due/2` 总取最早开的在等任务，它只在等待清掉（采用）或任务关掉（被拒 3 次 stuck、到期等）时让位；写作一直失败、
+  或一直 stale 时等待留着，最早开的那个会一直排在最前。
 - **措辞**：标准句、回顾两块、Mind 任务行都是原创措辞，用户 2026-11-19 认可（“措辞可以，继续推进”），没离线测过，实跑后调。
 - 校验与提示词：`Life.Tasks.check/3` 是推进应答（`:advance`）与每日回顾应答（`{:review, 此刻分钟, 开着的任务}`）的唯一校验；单条核对复用
   `DayPlan` 的同一函数（`check_kind/3`、`check_want/1`、`check_lists/3`）。词表渲染 `DayPlan.Prompt.activities/1` + `activity_list/1` 与填充函数
-  `DayPlan.Prompt.fill_template/3` 是回顾与推进共用的一处。推进提示词 `Life.Tasks.Prompt`（T-1b 起由推进槽调用）。
+  `DayPlan.Prompt.fill_template/3` 是回顾与推进共用的一处。推进提示词 `Life.Tasks.Prompt`（由推进槽 `Life.Tasks.Round` 调用）。
 - 任务词表：T-2 之前就是 `Offers.plan_kinds/1`；T-2 加 `look_for` 时再立任务词表入口（“去找某人”与它的生成器、执行树同批进词表，K-0 发现 3：没有生成器时它只会停滞）。
-- K-0 及其复测的读数见 `.demo/observe/npc-task-k0-20261119/results.md`、`retest-1/results.md`；T-1a 的规划、偏差与测试见决策稿 §7。
+- K-0 及其复测的读数见 `.demo/observe/npc-task-k0-20261119/results.md`、`retest-1/results.md`；T-1a / T-1b 的规划、偏差与测试见决策稿 §7。
 
 ## 附近对话（2026-10-11）
 

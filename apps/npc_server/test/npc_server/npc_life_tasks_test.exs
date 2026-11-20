@@ -9,8 +9,11 @@ defmodule NpcServer.NpcLifeTasksTest do
   T-1a 起另测纯核心的其余部分（矩阵 K-2）：持久行初值、采用回顾的 `tasks`、步骤记账只动当头步与 K-3 分类表的每一行
   （含反例：被打断不计失败、瞬态失败第 1 次不推进、碰巧同种类同对象的活动也记账）、两行新信息、到期与停滞、给 Mind 的栏。
 
-  期望是按契约手写的小例。不证明：提示词（`npc_life_tasks_prompt_test`）、Life 接线与持久化（`npc_life_tasks_integration_test`）、
-  推进的额度与采用（T-1b）。
+  T-1b 起另测推进的规则：`due/2`（最小间隔、最早开的等待任务）、额度 `admit/3` / `refund/1`（每游戏日 12 次、跨日恢复）、
+  采用 `adopt/6`（continue 换步骤并清等待；done / drop 关闭并写句子；起推进时的基准 `basis/2` 变了即 stale、不采用）、
+  `reject/4`（连续 3 次关为 stuck）、`fail/1`（等待留着）。
+
+  期望是按契约手写的小例。不证明：提示词（`npc_life_tasks_prompt_test`）、Life 接线与持久化（`npc_life_tasks_integration_test`）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -301,7 +304,7 @@ defmodule NpcServer.NpcLifeTasksTest do
                "last_at_ms" => nil,
                "counts" =>
                  Map.new(
-                   ~w(opened advanced done dropped expired stuck rejected failed),
+                   ~w(opened advanced done dropped expired stuck rejected failed cannot stale),
                    &{&1, 0}
                  )
              }
@@ -612,5 +615,247 @@ defmodule NpcServer.NpcLifeTasksTest do
            ]
 
     assert Tasks.column(Tasks.new()) == []
+  end
+
+  # —— 推进（T-1b）。`checked` 是 `check/3` 的 `:advance` 结果的形状。 ——
+
+  defp advanced(task, steps, cannot \\ nil, note \\ "It went as it went."),
+    do: %{task: task, steps: steps, cannot: cannot, note: note}
+
+  describe "due/2：一次推进一个，最早开的等待任务，两次至少隔 3 分钟" do
+    test "没有任务在等：nil；只有后开的在等：它；两个都在等：最早开的那个" do
+      tasks = opened_tasks()
+      assert Tasks.due(tasks, 10_000) == nil
+
+      later = Tasks.note_news(tasks, 1, "heard")
+      assert Tasks.due(later, 10_000) == "t1418:2"
+
+      both = step!(later, {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+      assert task(both, "t1418:1")["waiting"] == "failed"
+      assert Tasks.due(both, 10_000) == "t1418:1"
+    end
+
+    test "距上一次推进调用不足 3 分钟一律 nil，恰满 3 分钟给出" do
+      tasks = Tasks.note_news(opened_tasks(), 1, "heard")
+      {:ok, admitted} = Tasks.admit(tasks, 1418, 50_000)
+
+      assert Tasks.due(admitted, 50_000 + 179_999) == nil
+      assert Tasks.due(admitted, 50_000 + 180_000) == "t1418:2"
+    end
+  end
+
+  describe "admit/3 与 refund/1（每人每游戏日 12 次写作）" do
+    test "同一游戏日第 13 次被拒、行不变；跨日从 1 重计；放行时记起调用的时刻，不清 waiting" do
+      tasks = Tasks.note_news(opened_tasks(), 1, "heard")
+
+      admitted =
+        Enum.reduce(1..12, tasks, fn n, acc ->
+          assert {:ok, acc} = Tasks.admit(acc, 1418, n)
+          acc
+        end)
+
+      assert admitted["calls"] == %{"day" => 1418, "n" => 12}
+      assert admitted["last_at_ms"] == 12
+      assert task(admitted, "t1418:2")["waiting"] == "heard"
+      assert Tasks.admit(admitted, 1418, 13) == {:error, :day_budget_exhausted}
+
+      assert {:ok, next_day} = Tasks.admit(admitted, 1419, 14)
+      assert next_day["calls"] == %{"day" => 1419, "n" => 1}
+    end
+
+    test "写作没有发出：退回这一次，其余不动（最小间隔照算）" do
+      {:ok, admitted} = Tasks.admit(opened_tasks(), 1418, 7_000)
+      refunded = Tasks.refund(admitted)
+
+      assert refunded["calls"] == %{"day" => 1418, "n" => 0}
+      assert refunded["last_at_ms"] == 7_000
+      assert Map.delete(refunded, "calls") == Map.delete(admitted, "calls")
+    end
+  end
+
+  # 起推进那一刻（落栏前没有别的变化）就采用：基准取自传进来的同一份行。
+  defp adopt_now(tasks, id, checked, day, at_ms),
+    do: Tasks.adopt(tasks, id, Tasks.basis(tasks, id), checked, day, at_ms)
+
+  describe "adopt/6：合格的推进应答" do
+    test "continue：待做步骤整份换掉，note 存进任务，等待与连续不合格清零，当头步从此刻计时；cannot 只计数" do
+      tasks =
+        opened_tasks()
+        |> step!({"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+        |> Tasks.reject("t1418:1", 1418, 3_000)
+        |> elem(0)
+
+      assert %{"waiting" => "failed", "head_failures" => 1, "rejected_in_row" => 1} =
+               task(tasks, "t1418:1")
+
+      steps = [checked_step("gather_stone"), checked_step("visit_plaza")]
+      cannot = %{"want" => "rest a while", "why" => "I am worn out."}
+
+      {:adopted, adopted, episodes} =
+        adopt_now(tasks, "t1418:1", advanced(:continue, steps, cannot), 1418, 9_000)
+
+      assert episodes == []
+
+      assert %{
+               "steps" => ^steps,
+               "note" => "It went as it went.",
+               "waiting" => nil,
+               "rejected_in_row" => 0,
+               "head_failures" => 0,
+               "head_since_ms" => 9_000,
+               "log" => [%{"outcome" => "failed"}]
+             } = task(adopted, "t1418:1")
+
+      assert task(adopted, "t1418:2") == task(tasks, "t1418:2")
+      assert adopted["counts"]["advanced"] == 1
+      assert adopted["counts"]["cannot"] == 1
+      assert json(adopted) == adopted
+
+      # 推进在途时任务已被关掉（到期）：gone，原样返回、不计数。
+      basis = Tasks.basis(adopted, "t1418:1")
+      {expired, _episodes} = Tasks.tick(adopted, 1421, 9_000)
+
+      assert Tasks.adopt(expired, "t1418:1", basis, advanced(:continue, steps), 1421, 9_000) ==
+               {:gone, expired, []}
+    end
+
+    test "done / drop：关为 done / dropped，note 进小结；经历是标准句后接 note，带任务里的人" do
+      tasks = opened_tasks()
+
+      {:adopted, done, [episode]} =
+        adopt_now(tasks, "t1418:2", advanced(:done, [], nil, "He heard me."), 1419, 9_000)
+
+      assert Enum.map(done["open"], & &1["id"]) == ["t1418:1"]
+
+      assert done["closed"] == [
+               %{
+                 "id" => "t1418:2",
+                 "goal" => "Ask Corvin why",
+                 "result" => "done",
+                 "note" => "He heard me.",
+                 "closed_day" => 1419,
+                 "completed" => 0
+               }
+             ]
+
+      assert episode == %{
+               "id" => "task:t1418:2:done",
+               "at_ms" => 9_000,
+               "text" => ~s|I finished my task "Ask Corvin why". He heard me.|,
+               "tags" => ["kind:task", "actor:1"]
+             }
+
+      assert %{"advanced" => 1, "done" => 1, "cannot" => 0} = done["counts"]
+
+      {:adopted, dropped, [episode]} =
+        adopt_now(tasks, "t1418:1", advanced(:drop, [], nil, "No stone left."), 1418, 9_000)
+
+      assert [%{"id" => "t1418:1", "result" => "dropped"}] = dropped["closed"]
+      assert episode["text"] == ~s|I gave up my task "Rebuild my hut". No stone left.|
+      assert dropped["counts"]["dropped"] == 1
+    end
+  end
+
+  describe "adopt/6：推进在途时任务已经变了（比对后采用）" do
+    test "反例：采石失败起推进，写作在途时当头步做成、前移——旧应答把同一份步骤再写一遍，不采用，步骤不换回" do
+      failed =
+        step!(opened_tasks(), {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+
+      basis = Tasks.basis(failed, "t1418:1")
+      assert basis == %{"steps" => rebuild()["steps"], "completed" => 0}
+
+      # 写作在途：Jev 又选了 gather_stone 并做成 → 前移、completed + 1、偏差 failed 已化解。
+      moved = step!(failed, {"gather_stone", nil}, :completed, 5_000)
+
+      assert %{"steps" => [%{"kind" => "build_hut"}], "completed" => 1, "waiting" => nil} =
+               task(moved, "t1418:1")
+
+      # 应答是对起推进那一刻写的（从采石重来，同 A01）：stale，任务原样、只计 stale。
+      stale_answer =
+        advanced(:continue, rebuild()["steps"], %{"want" => "rest", "why" => "Tired."})
+
+      assert {:stale, landed, []} =
+               Tasks.adopt(moved, "t1418:1", basis, stale_answer, 1418, 9_000)
+
+      assert landed["open"] == moved["open"]
+      assert landed["counts"] == %{moved["counts"] | "stale" => 1}
+    end
+
+    test "反例：只剩一步、在等 heard，写作在途时这一步做完——done 也不采用，任务开着、waiting 原样留着" do
+      tasks =
+        opened_tasks()
+        |> step!({"confront_wrecker", nil}, :completed, 2_000)
+        |> Tasks.note_news(1, "heard")
+
+      basis = Tasks.basis(tasks, "t1418:2")
+      done = step!(tasks, {"speak_to", %{"actor" => 1}}, :completed, 5_000)
+
+      assert %{"steps" => [], "completed" => 2, "waiting" => "heard"} = task(done, "t1418:2")
+
+      assert {:stale, landed, []} =
+               Tasks.adopt(
+                 done,
+                 "t1418:2",
+                 basis,
+                 advanced(:done, [], nil, "Asked."),
+                 1418,
+                 9_000
+               )
+
+      assert landed["open"] == done["open"]
+      assert %{"stale" => 1, "advanced" => 0, "done" => 0, "rejected" => 0} = landed["counts"]
+    end
+
+    test "只有 waiting、log、连续失败变了（步骤与完成数没变）：照常采用" do
+      failed =
+        step!(opened_tasks(), {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+
+      basis = Tasks.basis(failed, "t1418:1")
+      again = step!(failed, {"gather_stone", nil}, {:interrupted, "to talk"}, 3_000)
+      again = step!(again, {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 4_000)
+      assert task(again, "t1418:1")["head_failures"] == 2
+
+      steps = [checked_step("build_hut")]
+
+      assert {:adopted, adopted, []} =
+               Tasks.adopt(again, "t1418:1", basis, advanced(:continue, steps), 1418, 9_000)
+
+      assert %{"steps" => ^steps, "waiting" => nil} = task(adopted, "t1418:1")
+      assert %{"advanced" => 1, "stale" => 0} = adopted["counts"]
+    end
+  end
+
+  describe "reject/4 与 fail/1：没有采用的推进" do
+    test "不合格：任务不动、waiting 留着、连续不合格加一；连续第 3 次关为 stuck 并写经历" do
+      tasks =
+        step!(opened_tasks(), {"gather_stone", nil}, {:failed, "gather", "exhausted"}, 2_000)
+
+      {once, []} = Tasks.reject(tasks, "t1418:1", 1418, 3_000)
+      {twice, []} = Tasks.reject(once, "t1418:1", 1418, 4_000)
+
+      assert task(twice, "t1418:1") == %{task(tasks, "t1418:1") | "rejected_in_row" => 2}
+      assert twice["counts"]["rejected"] == 2
+
+      {stuck, [episode]} = Tasks.reject(twice, "t1418:1", 1419, 5_000)
+      assert Enum.map(stuck["open"], & &1["id"]) == ["t1418:2"]
+      assert [%{"id" => "t1418:1", "result" => "stuck", "closed_day" => 1419}] = stuck["closed"]
+      assert %{"rejected" => 3, "stuck" => 1} = stuck["counts"]
+
+      assert episode == %{
+               "id" => "task:t1418:1:stuck",
+               "at_ms" => 5_000,
+               "text" =>
+                 ~s|I could not settle on a next step for my task "Rebuild my hut", so I set it aside.|,
+               "tags" => ["kind:task"]
+             }
+    end
+
+    test "写作失败：只计数，任务与 waiting 不动" do
+      tasks = Tasks.note_news(opened_tasks(), 1, "heard")
+      failed = Tasks.fail(tasks)
+
+      assert failed["open"] == tasks["open"]
+      assert failed["counts"] == %{tasks["counts"] | "failed" => 1}
+    end
   end
 end
