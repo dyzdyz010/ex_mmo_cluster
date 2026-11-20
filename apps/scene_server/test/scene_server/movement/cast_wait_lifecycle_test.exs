@@ -38,10 +38,17 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
 
     File.mkdir_p!(Path.join(root, "prefabs"))
 
-    File.cp!(
-      Path.join([@fixtures, "combustion", @material <> ".json"]),
-      Path.join(root, "properties.json")
-    )
+    material = Path.join([@fixtures, "combustion", @material <> ".json"])
+
+    # 用例可用 `@tag holdables:` 给材料夹具加持物表（法杖普攻 basic_spell + basic_windup_s）；默认原字节。
+    case context do
+      %{holdables: rows} ->
+        properties = Map.put(Jason.decode!(File.read!(material)), "holdables", rows)
+        File.write!(Path.join(root, "properties.json"), Jason.encode!(properties))
+
+      _ ->
+        File.cp!(material, Path.join(root, "properties.json"))
+    end
 
     File.cp!(
       Path.join([@fixtures, "combustion", "environment-radiation.json"]),
@@ -443,10 +450,74 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     }
 
     tag = make_ref()
+    started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
-    # 前摇 1.93 s 由 Player 的真实定时器推进。
+
+    # 本夹具没有持物表：前摇按成本模型 1.9299 s（独立复算）由 Player 的真实定时器推进。
     assert_receive {^tag, {:ok, %{outcome: nil, caster: caster}}}, 10_000
+    assert System.monotonic_time(:millisecond) - started >= 1_930
     # 独立复算的光弹扣款 9 941 697 mJ：497 084 850 − 9 941 697 = 487 143 153 mJ。
+    assert caster.spent_j == 9941.697
+    assert caster.energy_j == 487_143.153
+  end
+
+  # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户定）：属性目录持物表声明光弹为 basic_spell、
+  # basic_windup_s 0.3，同一程序经真实 Player 施放时 World 给 0.3 s，Player 定时器 ceil(0.3 × 1000) = 300 ms 后结算；
+  # 扣款仍是成本模型的 9 941 697 mJ。上界 1 500 ms 远低于成本模型前摇 1 930 ms，旧规则会红。
+  @tag magic: @bolt_magic
+  @tag holdables: [
+         %{
+           "id" => "staff",
+           "display_name" => "法杖",
+           "basic_windup_s" => 0.3,
+           "skill_tool_ids" => [],
+           "basic_spell" => %{
+             "v" => 1,
+             "target" => %{"kind" => "aim"},
+             "emit" => "hand",
+             "steps" => [
+               %{
+                 "sym" => "form.semblance",
+                 "args" => %{
+                   "shape" => 0,
+                   "radius_m" => 0.05,
+                   "mass_kg" => 0.01,
+                   "temperature_k" => 293.15,
+                   "glow_w" => 100,
+                   "lifetime_s" => 1
+                 }
+               },
+               %{"sym" => "act.throw", "args" => %{"speed_mps" => 30}},
+               %{"sym" => "act.break_on_hit", "args" => %{}}
+             ]
+           }
+         }
+       ]
+  test "法杖普攻固定前摇：真实 Player 按 basic_windup_s 0.3 s 结算光弹，扣款仍 cost_mj", c do
+    assert {:ok, %{energy_j: 497_084.85}} =
+             World.send_caster_state(c.world, 1001, 0, {self(), c.identity})
+
+    [%{"basic_spell" => spell}] = c.holdables
+
+    request = %{
+      request()
+      | catalog_digest: Base.decode16!(@bolt_magic, case: :lower),
+        direction: {0.0, -1.0, 0.0},
+        program: Jason.encode!(spell)
+    }
+
+    ingress = %{
+      caster_recipient: {self(), make_ref()},
+      received_us: System.monotonic_time(:microsecond),
+      clock_node: node()
+    }
+
+    tag = make_ref()
+    started = System.monotonic_time(:millisecond)
+    Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
+    assert_receive {^tag, {:ok, %{outcome: nil, caster: caster}}}, 10_000
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert elapsed >= 300 and elapsed < 1_500
     assert caster.spent_j == 9941.697
     assert caster.energy_j == 487_143.153
   end

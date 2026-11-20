@@ -40,6 +40,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
   # 独立复算的整数（见 moduledoc）。
   @cost_mj 9_941_697
   @grant_mj 497_084_850
+  # 法杖普攻作者前摇（用户 2026-11-20 定）；与该魔法目录 release_lead_s 0.3 相等，故广播各步缩放为 0。
+  @basic_windup_s 0.3
 
   @bolt %{"v" => 1, "target" => %{"kind" => "aim"}, "emit" => "hand",
     "steps" => [
@@ -53,7 +55,10 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     root = Path.join(System.tmp_dir!(), "magic_staff_bolt_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
-    File.cp!(Path.join([@fixtures, "combustion", @catalog <> ".json"]), Path.join(root, "properties.json"))
+    # 属性目录 = 材料夹具 + 法杖持物（作者表同 Voxim Docs/Gameplay/author_actions.py：basic_spell = 光弹、basic_windup_s 0.3）。
+    properties = Jason.decode!(File.read!(Path.join([@fixtures, "combustion", @catalog <> ".json"])))
+    holdables = [%{"id" => "staff", "display_name" => "法杖", "basic_spell" => @bolt, "basic_windup_s" => @basic_windup_s, "skill_tool_ids" => []}]
+    File.write!(Path.join(root, "properties.json"), Jason.encode!(Map.put(properties, "holdables", holdables)))
     File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
     File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
     w = start(root)
@@ -74,11 +79,20 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     %{w: w, root: root, a: a, digest: Base.decode16!(@magic, case: :lower)}
   end
 
-  defp start(root) do
+  defp start(root, opts \\ []) do
     start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: Path.join(root, "properties.json"),
       thermal_environment_path: Path.join(root, "environment.json"),
-      magic_catalog_path: Path.join(root, "magic.json")]}, id: :world)
+      magic_catalog_path: Path.join(root, "magic.json")] ++ opts}, id: :world)
+  end
+
+  # 只测试：投射物采样后端替身（prod 为 WorldServer.Movement.Projectile）：每个活投射物报一次"前进 50 ms、没有人物、
+  # 没有人物目标"的采样，形同真实后端的无命中结果；地形命中仍由 World 自己按飞行弦段判定。
+  defmodule MissBackend do
+    def poll(shots, _cv),
+      do: for({id, s} <- shots, do: {id, s.age_s, {:sample, s.age_s + 0.05, nil, nil, System.system_time(:microsecond)}})
+
+    def notify(_hit, _seq), do: :ok
   end
 
   defp restart(c), do: (:ok = stop_supervised(:world); %{c | w: start(c.root)})
@@ -141,6 +155,78 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert round(q.total_j * 1000) == @cost_mj
     assert Casting.initial_charge_mj() == @grant_mj
     assert @grant_mj == 50 * @cost_mj
+  end
+
+  # 报价（action 0）：只解析程序与报价，不校验目标；返回 0x83 视图。
+  defp quote_reply(c, bytes) do
+    seq = next()
+    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 0, catalog_digest: c.digest,
+      direction: @forward, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0,
+      semblance: {0, 0}, program: bytes}
+    {:ok, %{caster: caster}} = VoxelRegion.TestSupport.spell(c.w, Map.merge(c.a, %{received_us: 0, clock_node: node()}), request)
+    caster
+  end
+
+  test "普攻固定前摇：持物 basic_spell 报价与施放前摇 0.3 s、扣款仍 cost_mj；其余程序与差一字节的光弹照常按成本模型", c do
+    {:ok, _} = send_state(c.w, c.a)
+    bolt = Jason.encode!(@bolt)
+    q = quote_reply(c, bolt)
+    assert q.quote_windup_s == @basic_windup_s
+    assert_in_delta q.quote_j, 9941.697170433505, 1.0e-9
+
+    # 取能 1 MJ 预设（魔法目录 presets draw_1mj）：独立复算前摇 0.430375043716573 s（调整 0.130375 s + 出手 0.3 s）。
+    draw = Jason.encode!(%{"v" => 1, "target" => %{"kind" => "aim"}, "emit" => "at_target",
+      "steps" => [%{"sym" => "energy.draw", "args" => %{"energy_j" => 1_000_000}}]})
+    assert_in_delta quote_reply(c, draw).quote_windup_s, 0.430375043716573, 1.0e-12
+
+    # 与光弹只差一个字节（lifetime_s 1 → 2）：不是持物普攻，独立复算前摇 1.9299464613708297 s。
+    other = String.replace(bolt, ~s("lifetime_s":1), ~s("lifetime_s":2))
+    assert byte_size(other) == byte_size(bolt)
+    assert Enum.count(Enum.zip(:binary.bin_to_list(bolt), :binary.bin_to_list(other)), fn {x, y} -> x != y end) == 1
+    assert_in_delta quote_reply(c, other).quote_windup_s, 1.9299464613708297, 1.0e-12
+
+    # 施放：前摇计时 = 0.3 s，广播各步缩放到 Σ + release_lead_s 0.3 = 0.3（每步 0）；扣款不变 9 941 697 mJ。
+    log = ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, %{outcome: nil, caster: caster}} = bolt(c, c.a, 1_000_000)
+      send(self(), {:bolt, caster})
+    end)
+    assert_received {:bolt, caster}
+    assert caster.spent_j == 9941.697
+    assert log =~ "windup_s=0.3 "
+    assert log =~ "steps=[{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}]"
+    assert log =~ "spent_mj=#{@cost_mj} energy_mj=487143153"
+  end
+
+  # 回归（2026-11-20 法杖光弹首次真实实跑，Voxim Saved/Tests/staff-20261120/aim-02/server.log）：prod 日志级别 info 下，
+  # 投射物采样任务结果 `{任务引用, 结果}` 经输入闸门排队时日志 `kind=` 插入引用 → String.Chars 崩溃 → World 退出、
+  # 场景 canonical_incomplete、玩家会话 reason 5。本例以 info 级别、采样后端替身发射光弹：World 存活，采样结果以
+  # `kind=projectile_result` 排队提交，光弹撞靶石后从拟态表移除。
+  test "投射物采样结果在 info 日志级别经输入闸门提交，World 不崩", c do
+    :ok = stop_supervised(:world)
+    w = start(c.root, projectile_backend: MissBackend)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
+    c = %{c | w: w}
+    # 有人物生命代与位置的施法者（真实 Player 的 actor 形状，授权时刷新也带着）＋采样后端，光弹才走投射物采样
+    # （Casting：projectile_source）。
+    shooter = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5}, feet: {0.5, 1.0, 0.5}, tick_us: 16_667, life_generation: 1, position: {0.5, 1.0, 0.5}}
+    shooter = Map.put(shooter, :player, start_supervised!({Actor, shooter}, id: make_ref()))
+    {:ok, _} = send_state(w, shooter)
+    monitor = Process.monitor(w)
+
+    log = ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, %{outcome: nil, seq: seq}} = bolt(c, shooter, 1_000_000)
+      # 光弹 2/30 s 到靶面；等它被采样推进、撞靶、移出拟态表（World 若崩，observe 即退出）。
+      await = fn await, left ->
+        if Map.has_key?(observe(w).semblances, {seq, 0}) and left > 0,
+          do: (Process.sleep(20); await.(await, left - 1)),
+          else: Map.has_key?(observe(w).semblances, {seq, 0})
+      end
+      refute await.(await, 250)
+    end)
+
+    refute_received {:DOWN, ^monitor, :process, _, _}
+    assert log =~ "kind=projectile_result"
   end
 
   test "开户：send_caster_state 两次只充一次；冷重启与检查点后不再充，余额不变", c do

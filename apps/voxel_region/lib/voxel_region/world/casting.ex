@@ -149,7 +149,7 @@ defmodule VoxelRegion.World.Casting do
     with true <- state.magic != nil and state.magic.digest == request.catalog_digest,
          {:ok, program} <- Magic.Program.parse(request.program, state.magic),
          :ok <- warm_semblance(program, state.thermal.config["ambient_kelvin"]) do
-      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
+      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"]) |> basic_windup(state, program)
 
       if request.action == 0,
         do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0, quote.windup_s)}}, state},
@@ -159,6 +159,27 @@ defmodule VoxelRegion.World.Casting do
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  @doc """
+  持物普攻法术的固定前摇（Voxim 交互设计"2026-11-20 修订"，用户 2026-11-20 定）：程序与已发布属性目录某持物的
+  `basic_spell` 按魔法目录解析后相等，前摇即取该持物的作者值 `basic_windup_s`；其余程序照常用成本模型前摇。
+  判定只看程序本身（服务端不知道玩家拿着什么），所以同一程序从技能栏施放也是这个前摇——这是程序的规则，不是装备规则。
+  成本（总支出、扣款、走火）不变。广播的各步 `{调整 s, 注能 s}` 按同一比例缩放，使 Σ(调整 + 注能) + release_lead_s
+  等于该前摇：客户端由施放记录推算施法进度与姿态，必须与服务端计时一致。作者前摇须 ≥ 魔法目录 release_lead_s。
+  """
+  def basic_windup(quote, %{properties: nil}, _program), do: quote
+
+  def basic_windup(quote, state, program) do
+    case Enum.find(state.properties.basic_windups, fn {spell, _} -> Magic.Program.validate(spell, state.magic) == {:ok, program} end) do
+      nil ->
+        quote
+
+      {_, windup_s} ->
+        k = (windup_s - state.magic.release_lead_s) / Enum.sum(for {a, i} <- quote.steps, do: a + i)
+        %{quote | windup_s: windup_s, steps: for({a, i} <- quote.steps, do: {a * k, i * k})}
+    end
+  end
+
   def cast_spell(state, from, actor, request, program, quote) do
     with false <- Map.has_key?(state.pending_casts, actor.cid),
          {:ok, _checked, _state} <- check_cast(state, actor, request, program) do

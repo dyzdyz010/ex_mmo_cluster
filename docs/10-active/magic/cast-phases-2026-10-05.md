@@ -40,7 +40,7 @@ Replica 物化边界：kind2 和 nil 都从副本存活表删除；原始 kind2 
 
 正式镜像 `voxim-server:20261005-combat-projectile`，image id `sha256:5e23de6321af5edcc8fa18e6eb5ef5a566fc036a1b94e7827f60299cdb57e30a`，构建 exit0，日志 `combat-server-build.log`；Hello37，UE 目录 `71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7`。没有修改魔法 Cost 或目录参数。实际正式 Cost 对比由 `combat_speed_quote.exs` 执行：fireball 前摇 2.9759839847→2.0762897908 s，报价 445361.3299→438968.3333 J，日志 `combat-speed-quote.log`。镜像已交 Voxim 主任务开始真实双客户端闭环；本记录不把构建/模块绿灯写成双端或分发验收。
 
-## 法杖光弹：整数 mJ 施法者账与开户充能（2026-11-20，服务端已实现，客户端与真实双端待接）
+## 法杖光弹：整数 mJ 施法者账与开户充能（2026-11-20，服务端已实现；单客户端已实跑，待用户验收；双端未跑）
 
 Global system。法杖的能量就是既有的每角色施法者账 `World.caster_energy`，只有这一本账，不另设法杖账。
 
@@ -49,9 +49,20 @@ Global system。法杖的能量就是既有的每角色施法者账 `World.caste
 - **取能整数分账**（`Magic.Cost.draw/4`，唯一实现，入参全是 mJ）：`taken = min(round(请求 J × 1000), trunc(石 stored_j × 1000), round(容量 J × 1000) − 余额)`，`gained = round(η × taken)`，`loss = taken − gained`；石 `stored_j −= taken / 1000`，`caster_drawn_j += gained / 1000`，`draw_loss_j` 与石格热源 `+= loss / 1000`。
 - **迁移兼容**：来源 = 整数化之前已持久化的浮点 J 余额（如青岚生产日志、检查点）；原因 = 日志按键合并、不改写历史；规则 = `trunc(J × 1000)`（与魔法 v2 决策 P8 同一取整）；该键下次结算即写回整数；退出条件 = S1a A1 把施法者能量迁入 `Pages.character_row` 时一次性换算并删除该分支。
 - **开户一次性充能**：`World.send_caster_state`（Gate 在 QUIC 接纳时排一次，及客户端显式请求；NPC 不经过）在已加载魔法目录且账上**没有该 cid 的键**时，先提交一笔充能事务：`caster_energy: %{cid => 497_084_850}`，热账新增源项 `caster_granted_j += 497 084.85`（凭空注入、与 `caster_drawn_j` 同为施法者能量来源），主体 `{:character, cid}`，日志 `voxel_caster_grant seq=.. cid=.. granted_mj=..`。键随日志持久化，重连、冷重启、检查点后都不再充；已有键（含 0、旧浮点）不动。只读 `caster_state` 仍是纯读。`Access` 中该消息改归 `:character_intent`。
-- **光弹数值**（目录 `71ca543b…`、环境 293.15 K）：程序 `form.semblance{shape 0, radius_m 0.05, mass_kg 0.01, temperature_k 293.15, glow_w 100, lifetime_s 1} → act.throw{speed_mps 30} → act.break_on_hit{}`（普通 v1 施法意图，无目录变更、无服务端 holdable 解析）。真实 `Cost.quote` 与独立 Python 复算一致：总支出 9941.697170433505 J（物理 104.5 J）、前摇 1.9299314814115767 s → `cost_mj = 9_941_697`；充能 = 50 × cost_mj = `497_084_850` mJ（`World.Casting` 模块属性，唯一定义处）。
+- **光弹数值**（目录 `71ca543b…`、环境 293.15 K）：程序 `form.semblance{shape 0, radius_m 0.05, mass_kg 0.01, temperature_k 293.15, glow_w 100, lifetime_s 1} → act.throw{speed_mps 30} → act.break_on_hit{}`（普通 v1 施法意图；服务端只为固定前摇解析 holdable 的 basic_spell / basic_windup_s，见下）。真实 `Cost.quote` 与独立 Python 复算一致：总支出 9941.697170433505 J（物理 104.5 J）、前摇 1.9299314814115767 s → `cost_mj = 9_941_697`；充能 = 50 × cost_mj = `497_084_850` mJ（`World.Casting` 模块属性，唯一定义处）。
 - **线协议不变**：0x83 仍为 f64 J（`energy_j = 余额_mj / 1000`、`spent_j = spent_mj / 1000`），Hello 44 不变。`voxel_spell` 日志新增 `spent_mj=`、`energy_mj=`。
 - **战斗范围**：施法链路（Gate → `Player.cast_spell` → World）没有 `combat_scope` 判定；该判定只在伤害人物处（`Scene.tool_candidates`、`Player.receive_effect`、投射物命中采样）。
+- **普攻固定前摇 0.3 s（用户 2026-11-20 定）**：成本模型给光弹 1.93 s 前摇，作普攻太慢；只对持物普攻法术用作者定的固定前摇，其余法术不变，成本不变。
+  - 唯一来源：已发布属性目录 `holdables[].basic_windup_s`（s，> 0，只能随 `basic_spell` 出现；Voxim `Docs/Gameplay/author_actions.py` 作者表，法杖 0.3）。`Damage.load` 只取带 `basic_windup_s` 的 `{basic_spell, basic_windup_s}` 对为 `properties.basic_windups`，其余持物字段仍是客户端动作表；没有 `basic_windup_s` 的普攻照常按成本模型。
+  - 裁决（`World.Casting.basic_windup/3`，报价与施放共用 `prepare_spell` 一处）：请求程序与某个 `basic_spell` 按魔法目录 `Program.validate` 解析后**相等**（参数统一为浮点；不比原始字节——客户端 0x82 以 `%.17g` 重印数字，与目录字节不同），则 `windup_s := basic_windup_s`。服务端不知道玩家拿什么（装备在客户端），所以判定只看程序：同一程序从技能栏（M）施放也是 0.3 s——这是程序的规则，不是装备规则。改一个参数（如 lifetime_s 1→2，差一字节）即回到成本模型前摇。
+  - 成本不变：`total_j`、`cost_mj` 9 941 697、走火判定都用原报价。构型损耗公式里调整时长 T_adj = d·√(η/b) 是损耗最小的时长，强制 0.3 s 而照收最优时长的成本是用户定的玩法例外，不从公式推出。
+  - 广播的各步 `{调整 s, 注能 s}` 按同一比例 k = (basic_windup_s − release_lead_s) / Σ(调整 + 注能) 缩放：客户端施法进度条与姿态由施放记录的各步 + release_lead_s 推算，必须与服务端计时一致。现行魔法目录 release_lead_s 恰为 0.3，所以光弹各步为 0、只剩出手前置段。作者前摇须 ≥ release_lead_s（未加运行时防御，作者表注释写明）。
+  - 节奏：前摇 0.3 s 短于魔法目录 `cast_interval_ms` 500（间隔从上一次施放意图的接收时刻算，见 `Damage.admit_attack`），所以按住连发由 0.5 s 间隔决定；客户端按住/再按在间隔内等待，不提前发（否则 `cast_too_soon` 被拒并停止连发）。要更快只能改魔法目录间隔（影响所有法术），未改。
+  - 线协议、Hello 44、0x83 字段不变（0x83 `quote_windup_s` 报价即 0.3）。
+- **首次真实实跑（2026-11-20，Voxim `Saved/Tests/staff-20261120/`，本分支 native prod release，青岚世界副本、战斗关闭）**：
+  - aim-02 暴露既有 prod 崩溃：投射物采样任务结果 `{任务引用, 结果}` 经输入闸门排队时，`World.queue_ready_input/2` 的 info 日志 `kind=#{Admission.kind(...)}` 插入引用 → `String.Chars` 异常 → `VoxelRegion.World` 退出 → 两个场景 `canonical_incomplete`、玩家会话 reason 5。只在 info 日志级别（prod）且投射物采样到真实人物（Player actor 带 `life_generation`、配置了采样后端）时出现，测试环境默认 warning 级别、无后端，所以 CI 没覆盖到。修复：`Admission.kind/1` 对 `{引用, _}` 返回 `:projectile_result`（三处日志共用）；回归 `magic_staff_bolt_test`“投射物采样结果在 info 日志级别经输入闸门提交，World 不崩”（采样后端替身 + Player 形状施法者），去掉修复时按同一 `String.Chars` 崩溃红。
+  - 未修（另报）：World 崩溃时持久化了在飞投射物（带 `projectile_source`），冷重启恢复后立即向尚未启动的 Scene 采样 → `noproc` → `replica_snapshot_failed`，拓扑启动失败（run-04）。本次换干净部署 server2 继续。
+  - aim-04（server2，新角色）：开户 497 084.85 J；单击一发报价前摇 0.3 s、扣 9 941.697 J → 487 143.153 J；按住连发 4 发、松开时在途 1 发，每发同额，余额逐发 477 201.456 → 437 434.668 J；服务端 `voxel_cast_begin windup_s=0.3 steps=[{0.0, 0.0}, …]`、`voxel_spell spent_mj=9941697`；施放意图间隔 0.559／0.501／0.535 s（受 `cast_interval_ms` 500 限），施放→结果 0.318–0.519 s。取能未实跑（部署上没有已充能蓄能石）。
 
 ```mermaid
 flowchart LR
