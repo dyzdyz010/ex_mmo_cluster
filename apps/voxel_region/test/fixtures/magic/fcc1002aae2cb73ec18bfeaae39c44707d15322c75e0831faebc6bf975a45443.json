@@ -212,6 +212,7 @@
       "index": 34, "id": "cond.contact", "section": "rule.reading", "phase": 1,
       "params": [],
       "provides": ["reading:contact"],
+      "reading_source": "external",
       "requires_any": [["coupling:contact"], ["coupling:thermal"], ["motion:throw"], ["motion:transmit"]],
       "max_per_rule": 1,
       "units": 1, "precision": 0,
@@ -224,6 +225,7 @@
         {"name": "from", "class": "ref8", "refs_enabled": false}
       ],
       "provides": ["reading:timer"],
+      "reading_source": "self",
       "refs": [{"param": "from", "kind": "rule", "must_be": "earlier"}],
       "max_per_rule": 1,
       "units": 1, "precision": 0,
@@ -237,6 +239,7 @@
         {"name": "threshold_bp", "class": "lin16", "unit": "bp", "min": 1, "max": 9999}
       ],
       "provides": ["reading:load"],
+      "reading_source": "self",
       "units": 1, "precision": 0,
       "pose": [130, -45, 10, -20, 55, 100]
     },

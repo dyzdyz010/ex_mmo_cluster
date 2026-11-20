@@ -5,7 +5,7 @@ defmodule VoxelRegion.Magic.Cost do
 
   ## 结构报价（符号组合魔法 v2，切片 0b；目录 v5）
 
-  `quote_structure/3` 按设计 v2.9（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`，下称“设计”）
+  `quote_structure/3` 按设计 v2.10（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`，下称“设计”）
   §4.2 计价、§4.4 容量、§4.5 从零定义、§3.3 数值检查、§11.4.7 整数公式给出一个结构组的报价（施法者动作程序只有
   构造计价）；`staged_failure/3` 按 §5.5 / §3.6 判定建构在第几步中断、只结算第 1..k 步。落地决策见
   `docs/10-active/magic/2026-11-19-glyph-v2-server-landing.md`。
@@ -28,15 +28,16 @@ defmodule VoxelRegion.Magic.Cost do
   - **从零定义**（§4.5，v2.9 Q21(a)）：P1 没有〈仿〉，同组写入 c ≥ 2 类性质（目录 `property_class`）时按从零定义计价：
     单元 = Σ_{i=1..c} (1 + s_u·(i − 1))、精度 +s_p·(c − 1)、修复质量 Q = `repair_quality[2]`；s_u、s_p 取目录
     `scratch_unit_step`、`scratch_precision_step`。附加量随构造顺序累加：引入第 k 类（k ≥ 2）的那一步加 s_u·(k − 1)
-    单元与 s_p 精度。c ≤ 1 时 Q = `repair_quality[0]`（照原型或只写一类）。
+    单元与 s_p 精度，此后各步的 S_i·P_i 与 Ω 判定都含它（v2.10 E3 确认）。Q 只进运行期修复，不进构造计价；
+    c ≤ 1 时 Q = `repair_quality[0]`（照原型或只写一类）。
   - **物理能量**（§4.2 第 3 条、§11.4.7，整数 mJ）：〈蓄〉一步 E₀_op；〈热〉一步 max(0, E_th0)；〈投〉一步动能。
     E_th0_mJ = mass_g·c·(t0_dk − T_ref_dk)/10，T_ref_dk = round(T_amb·10)；E_kin_mJ = round(mass_g·v_mmps²/2e6)。
   - **入账**：总支出 = E_phys（整数）+ round(ΣL_i + hold)（f64 按公式书写次序求值，四舍五入、半数远离零到 mJ），
     残差 `loss_rounding_mj` 交 World 记入分区账目 `structure_rounding_mj`（§5.8）。
   - **运行期量**：x*、出生维持、T13 首拍出账、`detect_w` 与 `life_s` 全部经 `Magic.Structure` 公开的 §4.3 公式计算，
     不复制。
-  - **入口**（§4.2，v2.9 A5）：`entries_spoof` 数规则所读的外部读数种类，`entries_charge` 数没有〈印〉的〈纳〉；
-    判据见 `entries/2`。
+  - **入口**（§4.2，v2.9 A5、v2.10 E1/E2）：`entries_spoof` 数规则所读、目录 `reading_source = external` 的读数种类；
+    `entries_charge` P1 恒为 0；判据见 `entries/2`。
   - **数值检查**（§3.3，只在服务端）：只做本组符号在目录 `numeric_checks` 中声明过的检查，结果全部列在 `rejects`。
 
   ## v4 报价（迁移期保留，切片 1 删除）
@@ -100,9 +101,11 @@ defmodule VoxelRegion.Magic.Cost do
   一个结构组的报价。输入是已过字节层与签名层的合法程序（P1 只有 1 个结构组；多组的计价规则随 P2 定，此处函数子句
   不匹配即显式失败）。
 
-  施法者动作程序（〈取〉，`kind: :caster_action`）不建结构，只有构造计价：`units`、`precision`、`physical_mj`
-  （恒为 0：〈取〉的能量来自能源，不由施法者注入，§4.2 第 3 条的 E_phys 各项都不含它）、`loss_mj`、`total_mj`、
-  `loss_rounding_mj`、`windup_s`、`steps`，以及空的 `rejects`（§3.3 的数值检查都针对结构）。
+  施法者动作程序（〈取〉，`kind: :caster_action`）不建结构，只有构造计价（设计 v2.10 E4，§4.2、附录 A.12）：`units`、
+  `precision`（S·P = 1，即 0x83 的 `quote_s`）、`physical_mj`（恒为 0：〈取〉的能量来自能源，不由施法者注入）、
+  `loss_mj` = `total_mj`（构型损耗 + 出手前置维护）、`loss_rounding_mj`、`windup_s`、`steps`（`staged_failure/3`
+  照常判 `fail_step`），以及 `rejects`。E4 规定 `rejects` 只可能含 T6；P1 目录〈取〉不声明 `numeric_checks`，
+  所以这里恒为空表。0x83 的其余结构类字段对它填 0（§11.4.6）。
 
   参数与原决策稿 `quote_structure/4` 的差异及理由：施法者分辨 Ω_eff 不进报价，只交给 `staged_failure/3`——设计 §4.1
   要求报价时用当前 Ω_eff、出手时用出手瞬间的 Ω_eff 重裁，同一份报价要能按两个值判定；施放处读数合并为 `site/0`，
@@ -117,7 +120,7 @@ defmodule VoxelRegion.Magic.Cost do
   - 运行期报价（§4.2，显示用 f64，不入账）：`x0`、`x_star`、`p_maint_w`（出生时运行 + 修复 + 发光 + 活动）、
     `first_tick_min_mj`（撑过第一拍所需的最小 E₀_op，即 T13 的右侧，编辑器提示“至少需要 N J”）、`life_s`（能量切片
     求积；带热耦合、热端口高于环境者为不超过真实寿命的下界）、`detect_w`（静持可察觉功率）。
-  - 入口（§4.2，v2.9 A5）：`entries_charge`、`entries_spoof`（整数）。
+  - 入口（§4.2，v2.9 A5、v2.10 E1/E2）：`entries_charge`、`entries_spoof`（整数）。
   - `rejects`：全部数值检查违规（`reject/0`）；空表即可施放。
   """
   @spec quote_structure(Program.t(), Catalog.t(), site()) :: map()
@@ -155,7 +158,8 @@ defmodule VoxelRegion.Magic.Cost do
       e_cap_mj: round(rt.storage_density_j_per_m3 * volume * grade(group, "storage", rt) * 1000),
       e_min_mj: round(rt.min_energy_per_complexity_j * units * precision * 1000),
       # Φ_cap = φ_A·A·g_Φ（§4.4）。P1 目录只发布〈热〉phi_grade = 1（槽区间 [1, 1]，v2.9 A3），g_Φ ≡ 1，
-      # 所以这里不读该槽；P2 随〈容 吞吐〉开放 2、3 级时须在此乘上 g_Φ 并按 `units_by_param` 计单元。
+      # 所以这里不读该槽；P2 随〈容 吞吐〉开放 2、3 级时须在此乘上 g_Φ = grade_multipliers[grade − 1]
+      # （v2.10 E5，§4.4，与 `grade/3` 同一张倍率表）并按 `units_by_param` 计单元。
       phi_cap_w: rt.throughput_density_w_per_m2 * area,
       r_base_per_s:
         rt.repair_rate_per_s * repair_quality(placed, rt) * grade(group, "repair", rt),
@@ -454,28 +458,24 @@ defmodule VoxelRegion.Magic.Cost do
     }
   end
 
-  # 入口（§4.2，v2.9 A5；编辑器据此列“灌能入口 ×n、伪造信号入口 ×m”，§3.6）。
+  # 入口（§4.2，v2.9 A5、v2.10 E1/E2；编辑器据此列“灌能入口 ×n、伪造信号入口 ×m”，§3.6）。
   #
-  # - `entries_spoof`：规则所读外部读数的种类数。外部与否取自目录签名数据，不按符号 id 判断：T1（感知即耦合）
-  #   要求外部读数必须有提供它的耦合，所以读数段符号的签名声明了耦合要求（`requires_all` / `requires_any` /
-  #   `requires_by_param` 非空）即为外部读数（〈遇〉〈温〉〈明〉〈临〉〈至〉〈压〉）；读自身的〈时〉〈满〉〈扰〉没有这类声明，
-  #   不计。同一种读数在多条规则中出现只计 1。
-  # - `entries_charge`：没有〈印〉的〈纳〉数。P1 目录不发布〈纳〉〈印〉，也没有能标出“接收端口”与“选择性”的字段，
-  #   恒为 0；P2 发布二者时须在目录 schema 中加入对应数据，再在这里按数据计数。
+  # - `entries_spoof`：规则所读、目录 `reading_source = external` 的读数种类数；同一种读数在多条规则中出现只计 1。
+  #   只看这个显式字段，不从签名的耦合要求推断（v2.10 E2：P3 的〈至〉依赖参考锚而非耦合，推断会误判）。
+  # - `entries_charge`：P1 恒为 0（v2.10 E1 确认）。P2 开放〈纳〉前，目录按 v2.10 E1（§4.2、§11.4.5）加入符号字段
+  #   `entry` / `entry_by_param` 与 `seals`，届时这里按数据计数：本组 `entry = "charge"` 的符号数，本组有 `seals`
+  #   含 "charge" 的符号则为 0。
   defp entries(%Group{rules: rules}, catalog) do
     spoof =
       rules
       |> Enum.flat_map(& &1.readings)
       |> Enum.map(&catalog.symbols[&1.index])
-      |> Enum.filter(&external_reading?/1)
+      |> Enum.filter(&(&1.reading_source == :external))
       |> Enum.uniq_by(& &1.index)
       |> length()
 
     %{entries_charge: 0, entries_spoof: spoof}
   end
-
-  defp external_reading?(symbol),
-    do: symbol.requires_all != [] or symbol.requires_any != [] or symbol.requires_by_param != %{}
 
   # 运行 + 修复损耗（W）：P_run(E) + e_r·min(D, R_max)，D 按装载 x = E / E_cap（§4.3；P1 无供能）。
   defp upkeep_w(upkeep, load_mj, env, catalog) do

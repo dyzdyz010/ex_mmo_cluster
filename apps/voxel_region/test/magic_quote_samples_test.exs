@@ -16,7 +16,7 @@ defmodule VoxelRegion.MagicQuoteSamplesTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program}
 
-  @digest "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf"
+  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
   @catalog_path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @ir_samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @path Path.expand("fixtures/magic/quote-v2-samples.json", __DIR__)

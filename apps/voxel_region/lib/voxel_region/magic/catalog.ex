@@ -59,10 +59,12 @@ defmodule VoxelRegion.Magic.Catalog do
     `refs` 为 `[%{param: 槽名, kind: :group | :rule}]`（位置约束目前只有“严格在前”）。
     `property_class`：质段耦合写入的性质类别（设计 v2.9 §4.5 Q21(a)），`nil` 表示不写入性质类；同组写入两类以上
     时由 Cost 按“从零定义”计价。
+    `reading_source`：读数段符号读的是外部信号（`:external`，外人可伪造）还是结构自身（`:self`）（设计 v2.10 E2，
+    §4.2、§11.4.5）；只有读数段符号有，其余为 `nil`。Cost 据此数 `entries_spoof`。
     """
     @enforce_keys [:index, :id, :section, :phase, :params]
     defstruct [:index, :id, :section, :phase, :params, :max_per_group, :max_per_rule, :units, :precision, :pose,
-      :property_class,
+      :property_class, :reading_source,
       in_program: true, ranges_by_param: %{}, provides: [], provides_by_param: %{}, requires_all: [],
       requires_any: [], requires_by_param: %{}, excludes: [], unique_by: [], refs: [], numeric_checks: [],
       units_by_param: %{}, precision_by_param: %{}]
@@ -90,9 +92,12 @@ defmodule VoxelRegion.Magic.Catalog do
   @numeric_checks ~w(capacity domain first_tick ambient_floor thermal_step)
   # 性质类别（设计 v2.9 §4.5）：P1 发布 thermal（〈热〉）与 emission（〈辉〉），P2 起 appearance、mechanical。
   @property_classes ~w(thermal emission appearance mechanical)
+  # 读数来源（设计 v2.10 E2）：读数段符号必填。
+  @reading_sources %{"external" => :external, "self" => :self}
   @top_fields ~w(version caster construction limits quotas runtime semblance group_signature symbols reserved_symbols
     presets)
-  @symbol_fields ~w(index id section phase in_program property_class params ranges_by_param provides provides_by_param
+  @symbol_fields ~w(index id section phase in_program property_class reading_source params ranges_by_param provides
+    provides_by_param
     requires_all requires_any requires_by_param excludes max_per_group max_per_rule unique_by refs numeric_checks units
     units_by_param precision precision_by_param pose)
   @slot_fields ~w(name class unit min max enum bits zero_means_absent refs_enabled)
@@ -369,6 +374,20 @@ defmodule VoxelRegion.Magic.Catalog do
     check!(not Map.has_key?(entry, "property_class") or (section == :quality and property_class in @property_classes),
       "#{at}.property_class", "只允许质段符号取 #{Enum.join(@property_classes, "、")}")
 
+    # 读数段必填、其余段不得写（v2.10 E2）：外部与否只看这个字段，不从签名推断。
+    reading_source =
+      cond do
+        section != :reading ->
+          check!(not Map.has_key?(entry, "reading_source"), "#{at}.reading_source", "只允许读数段符号写")
+          nil
+
+        source = @reading_sources[entry["reading_source"]] ->
+          source
+
+        true ->
+          fail!("#{at}.reading_source", "读数段符号必填，取 external 或 self")
+      end
+
     %Symbol{
       index: index,
       id: id,
@@ -376,6 +395,7 @@ defmodule VoxelRegion.Magic.Catalog do
       phase: positive_integer!(entry["phase"], "#{at}.phase"),
       in_program: in_program,
       property_class: property_class,
+      reading_source: reading_source,
       params: params,
       ranges_by_param: ranges,
       provides: tags!(Map.get(entry, "provides", []), "#{at}.provides"),

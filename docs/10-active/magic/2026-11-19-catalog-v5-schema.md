@@ -1,6 +1,6 @@
 # 魔法目录 v5 schema（服务端起草）
 
-> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），v2.9 加入 `property_class`、两项从零定义步长并把〈热〉`phi_grade` 收为 [1, 1]（Q21(a)、A3），§7 各项均已由设计确认或改正。
+> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），v2.9 加入 `property_class`、两项从零定义步长并把〈热〉`phi_grade` 收为 [1, 1]（Q21(a)、A3），v2.10 加入读数段符号的 `reading_source`（E2），§7 各项均已由设计确认或改正。
 > 上游：决策稿 [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md) §3.1；设计 v2.6 §11.4.5 规定目录 v5 由服务端起草并冻结。
 > 唯一解释者：`apps/voxel_region/lib/voxel_region/magic/catalog.ex`（schema 与加载校验）、`program.ex`（IR v2 字节）、`signature.ex`（签名）。本文只描述字段，不复述字节规范；字节规范以设计 §11.4 为准。
 > Test-only 夹具：`apps/voxel_region/test/fixtures/magic/<sha256>.json`（P1 内容，见 §6）。
@@ -104,6 +104,7 @@ flowchart LR
 | `phase` | 是 | 阶段号（正整数）；只发布已开放阶段的符号（B4） |
 | `in_program` | 否，默认 true | false 表示该符号只用于编辑器、计价与字形，下标出现在程序任何 Glyph 位置都拒绝（〈否〉，N3） |
 | `property_class` | 否 | 质段耦合写入的性质类别（设计 v2.9 §4.5，Q21(a)），取值 `thermal`、`emission`、`appearance`、`mechanical`；只允许 `quality` 段符号写，其余段写即拒绝；不写 = 不写入性质类（字段缺省，不写 `null`）。同组写入 ≥ 2 个不同类别时 Cost 按“从零定义”计价（附加量随构造顺序在引入第 k 类的那一步累加）。P1：〈热〉= `thermal`、〈辉〉= `emission`，其余 12 个符号不写 |
+| `reading_source` | `rule.reading` 段必填，其余段不得写 | 读数来源（设计 v2.10 E2，§4.2、§11.4.5）：`external` = 读外部信号，外人可借此注入伪造信号；`self` = 读结构自身状态。Cost 的 `entries_spoof` = 本组规则所读、`reading_source = external` 的读数**种类**数，只看本字段，不从签名的耦合要求推断（P3〈至〉依赖参考锚而非耦合，推断会误判）。设计取值：〈遇〉〈温〉〈明〉〈临〉〈至〉〈压〉为 `external`，〈时〉〈满〉〈扰〉〈记〉为 `self`。P1：〈遇〉= `external`，〈时〉〈满〉= `self` |
 | `params` | 是 | 槽数组，**顺序即字节顺序**，P1 照抄设计 §11.4.2 槽表；见下表 |
 | `ranges_by_param` | 否 | `{枚举槽: {枚举名: {槽: [min, max]}}}`；必须覆盖该枚举的每个已发布值；“须为 0”写作 `[0, 0]` |
 | `provides` / `provides_by_param` | 否 | 本符号向本组提供的标签 / `{槽: {取值键: [标签]}}` |
@@ -117,6 +118,8 @@ flowchart LR
 | `units` / `units_by_param` | 是 / 否 | 计价单元 S；`units_by_param` 命中时取代 `units` |
 | `precision` / `precision_by_param` | 是 / 否 | 精度增量 π；同上 |
 | `pose` | 是 | 双支链 6 关节 (q1, q2, q3 \| q4, q5, q6)，存储为**整数度**（设计 §2.6 给出的就是度），5 的倍数、\|q\| ≤ 175；服务端加载时换算为弧度，客户端直接读本字段 |
+
+P2 开放〈纳〉〈印〉前，按设计 v2.10 E1（§4.2、§11.4.5）加入符号字段 `entry`（取值 `"charge"`，可按参数给出 `entry_by_param`）与 `seals`（封住的入口种类，如 `["charge"]`），`entries_charge` 届时按这两个字段计数；P1 恒为 0，目录现在出现这两个字段按未知字段拒绝。
 
 **取值键**（`*_by_param` 共用，设计 §3.2，v2.5 S2）：枚举槽取已发布的枚举名；`u8`、`lin16`、`dec`、`mask8` 槽取解码后、换算到内部单位的整数的十进制字符串（J 槽按 mJ，如 50 kJ 写 `"50000000"`；其余按槽单位）；任何已写入（非“未写”）的值另外匹配键 `"present"`，用于 `zero_means_absent` 槽（〈形〉`mass_g` 写入时提供 `mass`）。
 
@@ -146,7 +149,8 @@ flowchart LR
 
 ## 6. P1 Test-only 夹具
 
-- 文件：`test/fixtures/magic/77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf.json`（设计 v2.9 版；依次取代 `ce77caac…`、`64834aa5…`、`c6f60cdb…`）。
+- 文件：`test/fixtures/magic/fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443.json`（设计 v2.10 版；依次取代 `ce77caac…`、`64834aa5…`、`c6f60cdb…`、`77036cbc…`）。
+- v2.10 相对 `77036cbc…` 只加三个字段：〈遇〉34 `reading_source = "external"`，〈时〉35、〈满〉36 `reading_source = "self"`（E2）。程序字节不变；`ir-v2-samples.json` 与 `quote-v2-samples.json` 只更新 `catalog_digest`，报价数值不变。
 - v2.9 相对 `c6f60cdb…` 只改三处：〈热〉`phi_grade` 区间 [1, 3] → [1, 1]（A3）；〈热〉〈辉〉加 `property_class`；`runtime` 加 `scratch_unit_step`、`scratch_precision_step`。程序字节与 `ir-v2-samples.json` 的样本不变，只更新其 `catalog_digest`。
 - 离线报价样本 `test/fixtures/magic/quote-v2-samples.json`（带同一 `catalog_digest`）：9 个预设经 `Cost.quote_structure/3` 的报价与 T5/T13/T15 各一个反例，供客户端 U0 对接；由 `test/magic_quote_samples_test.exs` 生成并校验不漂移。
 - 14 个 P1 符号，下标取设计 §2.3 表序（〈容〉0x0017、〈满〉0x0024）；其余 47 个下标写入 `reserved_symbols`（含〈否〉0x0035）。签名按设计 §2.3、§3.1–3.3 写成数据。

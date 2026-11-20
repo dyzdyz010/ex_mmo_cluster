@@ -180,3 +180,4 @@ C1：阻塞后续切片
   - Q21(a)：目录加入 `property_class` 与 `scratch_*` 两个步长，〈热〉`phi_grade` 收为 [1, 1]；目录 digest `c6f60cdb…` → `77036cbc…`。
   - 新增离线报价样本 `quote-v2-samples.json`，供客户端 U0 使用。
   - WSL：8 个魔法测试文件 70 项通过。
+- 2026-11-19：v2.9/Q21 提交（`1d575fb6`，目录 `77036cbc…`）。设计 v2.10 答复 E1–E5：E2 读数段新增必填 `reading_source`（〈遇〉external，〈时〉〈满〉self），`entries_spoof` 改为按它统计；E3、E4 与实现一致，补测试。目录 digest 77036cbc… → `fcc1002a…`，报价数值不变（已先通知客户端）。遗留：E4 允许取能程序出现 T6，但目录〈取〉尚未声明 `domain` 检查，取能距离仍由 World 的 `spell_target` 判定，随切片 3 一并定。

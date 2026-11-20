@@ -1,5 +1,5 @@
 {
-  "catalog_digest": "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf",
+  "catalog_digest": "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443",
   "fields": {
     "detect_w": "静持可察觉功率（W，§4.2 v2.9 A5）",
     "e_cap_mj": "E_cap：储能硬上限（整数 mJ）",

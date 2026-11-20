@@ -3,9 +3,9 @@ defmodule VoxelRegion.MagicCostTest do
   只测试：结构报价 `Magic.Cost.quote_structure/3` 与分阶段失败 `staged_failure/3`（符号组合魔法 v2 切片 0b；
   决策稿测试矩阵第 3 条）。
 
-  - 契约：设计 v2.9（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.2 逐步计价、`life_s`、
-    `detect_w` 与 `entries`（A5）、§4.5 从零定义（Q21(a)）、§3.3 数值检查 T5/T6/T13/T14/T15、§3.6 与 §5.5 分阶段失败、
-    §11.4.7 整数公式与 b_floor。
+  - 契约：设计 v2.10（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.2 逐步计价、`life_s`、
+    `detect_w` 与 `entries`（A5；E2 按 `reading_source`）、§4.5 从零定义（Q21(a)；E3 计入步）、施法者动作报价（E4、
+    附录 A.12）、§3.3 数值检查 T5/T6/T13/T14/T15、§3.6 与 §5.5 分阶段失败、§11.4.7 整数公式与 b_floor。
   - 夹具：程序一律由冻结样本 `fixtures/magic/ir-v2-samples.json` 经真实 `Program.decode_ir/2` 解码；反例由样本
     改写槽字节得到（偏移按设计 §11.4.4 逐字节注释手数），同样经解码器接纳，都是玩家能写出的程序。
   - 施放处读数：环境 293.15 K（附录 A.1）；T15 的热环境取设计 A.7 的示意值 ε = 0.9、h = 10 W/(m²·K)，
@@ -18,7 +18,7 @@ defmodule VoxelRegion.MagicCostTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Structure}
 
-  @digest "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf"
+  @digest "fcc1002aae2cb73ec18bfeaae39c44707d15322c75e0831faebc6bf975a45443"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @ambient_k 293.15
@@ -109,7 +109,7 @@ defmodule VoxelRegion.MagicCostTest do
     assert q.e_min_mj == 1_000_000
   end
 
-  test "A5：detect_w = 泄漏热份额 × (出生 P_run + P_rep，env = 1) + 发光；entries_spoof 计外部读数种类（火球 1、定时火种 0）",
+  test "A5：detect_w = 泄漏热份额 × (出生 P_run + P_rep，env = 1) + 发光；entries_spoof 按 reading_source 计外部读数种类（v2.10 E2）",
        c do
     # A.2：灯 0.5 × (178 + 113) + 100 W；火球 0.5 × (690 + 241) W，无发光。手算各项取整到 1 W，容差按此。
     lamp = quote!(c, c.bytes["lamp"])
@@ -120,11 +120,31 @@ defmodule VoxelRegion.MagicCostTest do
     hot = quote!(c, c.bytes["lamp"], ambient_k: 500.0)
     assert hot.detect_w == lamp.detect_w and hot.p_maint_w > lamp.p_maint_w
 
-    # 〈遇〉是外部读数（需要耦合）；〈时〉〈满〉读自身，不计；过热保险火球〈遇〉+〈满〉仍为 1。P1 无〈纳〉，charge 恒为 0。
+    # 目录 reading_source：〈遇〉external；〈时〉〈满〉self，不计；过热保险火球〈遇〉+〈满〉仍为 1。P1 charge 恒为 0（E1）。
     for {id, spoof} <- [{"fireball", 1}, {"timed_ember", 0}, {"guarded_fireball", 1}, {"lamp", 0}] do
       assert Map.take(quote!(c, c.bytes[id]), [:entries_charge, :entries_spoof]) ==
                %{entries_charge: 0, entries_spoof: spoof},
              id
+    end
+
+    # 判据只看 reading_source，不从签名推断：同一目录只把〈遇〉改标 self（签名不变），火球即为 0；
+    # 把〈满〉改标 external，过热保险火球〈遇〉+〈满〉为 2。
+    relabel = fn id, source ->
+      Jason.decode!(File.read!(@path))
+      |> update_in(["symbols"], fn symbols ->
+        Enum.map(symbols, &if(&1["id"] == id, do: %{&1 | "reading_source" => source}, else: &1))
+      end)
+      |> Jason.encode!()
+      |> Catalog.decode()
+    end
+
+    for {id, source, preset, spoof} <- [
+          {"cond.contact", "self", "fireball", 0},
+          {"cond.load", "external", "guarded_fireball", 2}
+        ] do
+      catalog = relabel.(id, source)
+      q = Cost.quote_structure(program!(c.bytes[preset], catalog), catalog, @site)
+      assert q.entries_spoof == spoof, "#{id} → #{source}"
     end
   end
 
@@ -150,23 +170,49 @@ defmodule VoxelRegion.MagicCostTest do
 
     # 附加量在引入第 2 类的那一步进入构造（附 → 形 → 热 → 辉 → 蓄）。
     assert Enum.map(q.steps, & &1.complexity) == [0, 1, 2, 4.375, 4.375]
+
+    # v2.10 E3：Ω 中断按含附加量的逐步 S·P 判定。Ω_eff = 4.375 恰好建成；略低于它即在第 4 步〈辉〉中断，只扣第 1–4 步。
+    # Ω_eff = 3 也在第 4 步中断：若附加量不计入〈辉〉这一步（或推到最后一步），第 4 步只有 3 × 1 = 3，不会在此中断。
+    [_, _, _, glow, _] = q.steps
+    assert Cost.staged_failure(q, q.total_mj, 4.375) == nil
+    assert Cost.staged_failure(q, q.total_mj, 4.37) == {4, glow.spent_mj}
+    assert Cost.staged_failure(q, q.total_mj, 3.0) == {4, glow.spent_mj}
+    assert glow.spent_mj < q.total_mj
   end
 
-  test "施法者动作〈取〉：只有构造计价，物理能量 0，一步从静息到〈取〉姿态（§4.2）", c do
-    # 静息 (150, −120, −120 | 30, 120, 120)° 到〈取〉(155, −90, −95 | 25, 90, 95)°：d = √3100° = 0.9718 rad；
-    # S·P = 1 → b = b0 = 1000 W；T_adj = d·√(η/b0) = 0.1304 s，前摇 + 出手前置 0.3 s；损耗 2·d·√(η·b0) + b0·0.3 = 560.7 J。
+  test "施法者动作〈取〉：报价对拍附录 A.12——物理能量 0，loss = total = 调整损耗 + 出手前置，S·P = 1（v2.10 E4）", c do
+    # A.12：静息 (150, −120, −120 | 30, 120, 120)° 到〈取〉(155, −90, −95 | 25, 90, 95)°，d = 0.97176 rad；S·P = 1、
+    # 不计物理能量 → b = b0 = 1000 W；调整损耗 2·d·√(η·b) = 260.75 J，出手前置 b × 0.3 s = 300 J，合计 560.75 J；
+    # 前摇 d·√(η/b) + 0（注能）+ 0.3 = 0.1304 + 0.3 = 0.4304 s。容差取 A.12 的位数。
     for id <- ~w(draw_1mj draw_2mj) do
       {:ok, %Program{kind: :caster_action} = draw} = Program.decode_ir(c.bytes[id], c.catalog)
       q = Cost.quote_structure(draw, c.catalog, @site)
-      assert {q.units, q.precision, q.physical_mj, q.rejects} == {1, 1, 0, []}
+      # rejects 只可能含 T6；P1 目录〈取〉不声明 numeric_checks，所以为空。
+      assert {q.units * q.precision, q.physical_mj, q.rejects} == {1, 0, []}
 
-      assert [%{symbol: "energy.draw", part_index: 0, complexity: 1, inject_s: inject_s}] =
+      assert [
+               %{
+                 symbol: "energy.draw",
+                 part_index: 0,
+                 complexity: 1,
+                 inject_s: inject_s,
+                 adjust_s: adjust_s
+               }
+             ] =
                q.steps
 
       assert inject_s == 0
-      assert_in_delta q.windup_s, 0.1304 + 0.3, 0.0005
-      assert_in_delta q.total_mj / 1000, 560.7, 0.1
+      assert_in_delta adjust_s / :math.sqrt(18 / 1000), 0.97176, 0.00001
+      assert_in_delta adjust_s, 0.1304, 0.0001
+      assert_in_delta q.windup_s, 0.4304, 0.0001
+      # 报价不单列出手前置；按 A.12 的分解 260.75 + 300 比较合计。
+      assert_in_delta q.total_mj / 1000, 260.75 + 300.0, 0.01
       assert q.total_mj == q.loss_mj and hd(q.steps).spent_mj == q.total_mj
+
+      # fail_step 照常：余额不足以付构造费、或 Ω_eff < 1 时都在第 1 步中断。
+      assert Cost.staged_failure(q, q.total_mj, 16) == nil
+      assert Cost.staged_failure(q, q.total_mj - 1, 16) == {1, q.total_mj - 1}
+      assert Cost.staged_failure(q, q.total_mj, 0.9) == {1, q.total_mj}
     end
   end
 
