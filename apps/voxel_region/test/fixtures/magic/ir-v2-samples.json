@@ -1,6 +1,6 @@
 {
   "source": "TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.6 §11.4.4（逐字抽取，未改字节）",
-  "catalog_digest": "64834aa5c415b7de52e1f194eea4f40c73549f4e20f0937d01152bda15f1e5b2",
+  "catalog_digest": "c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b",
   "note": "IR v2 冻结样本：服务端持有的唯一判据；客户端测试读同一份字节。下标按目录 v5 夹具（= 设计 §2.3 表序，K3 冻结）。",
   "samples": [
     {

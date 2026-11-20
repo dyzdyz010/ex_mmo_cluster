@@ -1,6 +1,6 @@
 # 魔法目录 v5 schema（服务端起草）
 
-> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），§7 各项均已由设计确认或改正。
+> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），§7 各项均已由设计确认或改正。
 > 上游：决策稿 [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md) §3.1；设计 v2.6 §11.4.5 规定目录 v5 由服务端起草并冻结。
 > 唯一解释者：`apps/voxel_region/lib/voxel_region/magic/catalog.ex`（schema 与加载校验）、`program.ex`（IR v2 字节）、`signature.ex`（签名）。本文只描述字段，不复述字节规范；字节规范以设计 §11.4 为准。
 > Test-only 夹具：`apps/voxel_region/test/fixtures/magic/<sha256>.json`（P1 内容，见 §6）。
@@ -144,9 +144,9 @@ flowchart LR
 
 ## 6. P1 Test-only 夹具
 
-- 文件：`test/fixtures/magic/64834aa5c415b7de52e1f194eea4f40c73549f4e20f0937d01152bda15f1e5b2.json`（取代 0a 初版 `ce77caac….json`）。
+- 文件：`test/fixtures/magic/c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b.json`（取代 0a 初版 `ce77caac….json`）。
 - 14 个 P1 符号，下标取设计 §2.3 表序（〈容〉0x0017、〈满〉0x0024）；其余 47 个下标写入 `reserved_symbols`（含〈否〉0x0035）。签名按设计 §2.3、§3.1–3.3 写成数据。
-- `pose` 照抄设计 §2.6 的 14 个 P1 姿态（整数度；〈取〉保留 v4 姿态）。
+- `pose` 照抄设计 §2.6 的 14 个 P1 姿态（整数度；〈取〉保留 v4 姿态）。v2.8（字形辨识 G1）调整了〈遇〉34、〈时〉35、〈满〉36、〈散〉44 四个姿态，〈散〉所在响应层左三位改为 (−60, −45, 10)。
 - 预设：§11.4.5 清单的 9 组，按清单顺序：`draw_1mj`、`draw_2mj`、`lamp`、`fireball`、`hot_throw`、`scorch`、`dispel_pulse`、`timed_ember`、`guarded_fireball`。字节从设计 §11.4.4 逐字抽取；同一份字节另存 `test/fixtures/magic/ir-v2-samples.json`（带本目录 digest），供客户端测试读取。
 - `construction.b_floor = 1`；`quotas` / `runtime` 含 §11.4.5.1 建议补入的全部字段（§4 标 ★）。
 

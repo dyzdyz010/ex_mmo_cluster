@@ -213,7 +213,7 @@
       "requires_any": [["coupling:contact"], ["coupling:thermal"], ["motion:throw"], ["motion:transmit"]],
       "max_per_rule": 1,
       "units": 1, "precision": 0,
-      "pose": [130, -45, 10, -5, 45, 0]
+      "pose": [130, -45, 10, 45, 45, 0]
     },
     {
       "index": 35, "id": "cond.timer", "section": "rule.reading", "phase": 1,
@@ -225,7 +225,7 @@
       "refs": [{"param": "from", "kind": "rule", "must_be": "earlier"}],
       "max_per_rule": 1,
       "units": 1, "precision": 0,
-      "pose": [130, -45, 10, -15, 45, -35]
+      "pose": [130, -45, 10, -10, -5, -45]
     },
     {
       "index": 36, "id": "cond.load", "section": "rule.reading", "phase": 1,
@@ -236,13 +236,13 @@
       ],
       "provides": ["reading:load"],
       "units": 1, "precision": 0,
-      "pose": [130, -45, 10, -10, 10, -20]
+      "pose": [130, -45, 10, -20, 55, 100]
     },
     {
       "index": 44, "id": "resp.release", "section": "rule.response", "phase": 1,
       "params": [],
       "units": 0, "precision": 0,
-      "pose": [130, -15, 10, -10, 35, -20]
+      "pose": [-60, -45, 10, 5, 30, 15]
     },
     {
       "index": 54, "id": "int.disrupt", "section": "quality", "phase": 1,

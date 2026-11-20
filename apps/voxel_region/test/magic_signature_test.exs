@@ -15,7 +15,7 @@ defmodule VoxelRegion.MagicSignatureTest do
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Program}
 
-  @path Path.expand("fixtures/magic/64834aa5c415b7de52e1f194eea4f40c73549f4e20f0937d01152bda15f1e5b2.json", __DIR__)
+  @path Path.expand("fixtures/magic/c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
 
   setup_all do

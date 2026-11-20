@@ -5,7 +5,7 @@ defmodule VoxelRegion.MagicIrTest do
   - 契约：设计 v2.6 §11.4（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）的字节布局、
     §11.4.2 的 B1 槽检查顺序与 K1 `dec` 规范判据、§11.4.3 的拒绝清单与 K4 分层；目录 schema 见
     `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
-  - 夹具：`fixtures/magic/64834aa5….json` 是按 schema 手写的 Test-only 目录（P1 14 个符号与 47 个预留下标，
+  - 夹具：`fixtures/magic/c6f60cdb….json` 是按 schema 手写的 Test-only 目录（P1 14 个符号与 47 个预留下标，
     按 §2.3 表序冻结全部 61 个下标；姿态照抄 §2.6），不是 UE 发布物；`fixtures/magic/ir-v2-samples.json` 是从设计
     §11.4.4 逐字抽取的 9 组冻结字节（服务端持有的唯一判据）。
   - 判定：冻结样本的期望语义值抄自设计 §11.4.4 的逐字节注释；反例字节在样本上按注释偏移手工改写，期望原因与偏移手算。
@@ -17,7 +17,7 @@ defmodule VoxelRegion.MagicIrTest do
   alias VoxelRegion.Magic.{Catalog, Program}
   alias VoxelRegion.Magic.Program.{Glyph, Group, Rule}
 
-  @digest "64834aa5c415b7de52e1f194eea4f40c73549f4e20f0937d01152bda15f1e5b2"
+  @digest "c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @preset_ids ~w(draw_1mj draw_2mj lamp fireball hot_throw scorch dispel_pulse timed_ember guarded_fireball)
@@ -63,8 +63,10 @@ defmodule VoxelRegion.MagicIrTest do
     # 姿态照抄设计 §2.6（整数度，解码为弧度）：〈取〉保留 v4 姿态；〈满〉〈散〉各为条件层、响应层左支加各自右支。
     degrees = fn index -> Enum.map(c.catalog.symbols[index].pose, &round(&1 * 180 / :math.pi())) end
     assert degrees.(0) == [155, -90, -95, 25, 90, 95]
-    assert degrees.(36) == [130, -45, 10, -10, 10, -20]
-    assert degrees.(44) == [130, -15, 10, -10, 35, -20]
+    assert degrees.(36) == [130, -45, 10, -20, 55, 100]
+    assert degrees.(44) == [-60, -45, 10, 5, 30, 15]
+    assert degrees.(34) == [130, -45, 10, 45, 45, 0]
+    assert degrees.(35) == [130, -45, 10, -10, -5, -45]
     assert degrees.(54) == [80, -130, -35, 15, 80, 20]
 
     # K3：已发布 14 个 + 预留 47 个 = §2.3 表序全部 61 个下标；〈容〉〈满〉已发布，〈否〉只预留。
