@@ -68,7 +68,7 @@ flowchart LR
 | E6 | 分支合并 master、CI 全绿 | **已合并**（2026-11-20）：PR #11 在 `1069899a` 上 CI 全绿后转 ready，用户同意后快进推到 master（`29531ea4..1069899a`，216 提交，SHA 原样保留）；master 上 CI 见 §7 |
 | E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | **仓内完成**（`76c286db`，见 §7）；青岚落地属 E9。原定（用户 2026-11-20 定：app 4600m + Hindsight 2048m 同机；deploy/ 新建生产 Hindsight 镜像，补丁与模型烘入；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权）。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
 | E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | **放置完成**：登记包 `deploy/npc/qinglan/`（`9318cb16` + `2439fb12`），短排练 `e8r-02` R1–R4 过、R5（Hindsight 内存峰值触及 2048 MiB 限额，匿名 1183 MiB、余为页缓存，oom 0）不过，见 §7；对话 UI 在 L_Qinglan 静态核查已装配，实机验证并入 E9 打包冒烟 |
-| E8b | 本机长跑：生产限额（app 4600m + Hindsight 2048m）、3 人、6–12 h、跨一次每日重启；看内存走势、后台积压能否排空、每天花费与额度重置、重启后接着生活 | 用户 2026-11-20 同意加（原话：“可以”）；排在 E8 之后、E9 之前，起跑前报时长、花费上限与资源预算。依据：真实模型最长只跑过 37.4 min（M-4 截断），线上 24 h 运行无证据 |
+| E8b | 本机长跑：生产限额（app 4600m + Hindsight 2048m）、3 人、6–12 h、跨一次每日重启；看内存走势、后台积压能否排空、每天花费与额度重置、重启后接着生活 | **`e8b-01` 不通过（2026-11-20，原判保留）**：L3 运转、L4 召回不过——开跑第 7 min 起召回风暴（召回中位 11–15 s > 产品 10 s 超时，选择失败约 4000 次），三人 6 个整小时零选择；重启能清、后台一开始又复发。L1 存活、L2 内存（Hindsight 匿名峰值 1597 MiB）、L5 重启接着生活、L6 积压、L7 花费过。根因分析中，见 §7 |
 | E9 | 分发：冻结客户端 / 服务端 / 协议版本，镜像推送后本地同镜像 + 新打包客户端冒烟（含 NPC 说话主链路） | 按 Voxim 分发规则，未做 |
 
 ## 5. 测试矩阵（本层只验链路与量读数；阈值只在测试侧）
@@ -165,3 +165,13 @@ flowchart LR
   `e8r-02` R1–R4 过、**R5 不过**（Hindsight `memory.peak` 触及 2048 MiB 限额：匿名峰值 1183 MiB，其余是可回收文件页缓存，oom_kill 0，召回失败 0；匿名 15 min 内 641 → 1160 MiB 上升，E8b 看走势）。15 min 花费 $0.239（Hindsight 占 82%）。
   行为观察（冻结期不改）：`build` 不先走路，石砚 15 次 `out_of_reach`；作者料堆 15 min 内 24 → 6 格。明细见统筹页“第二十五个统筹会话的进展”。
   **客户端对话 UI**：L_Qinglan 的 `BP_QinglanController` 与测试图同用 `WBP_Dialogue`（静态核查），实机验证并入 E9 打包冒烟（另验与青岚 HUD 是否遮挡）。
+- 2026-11-20（第二十五个统筹会话）：**冻结的一项例外——`build` 先走到射程内**。用户看了 `e8r-02` 的行为观察后问“建造前不会先走过去这个为什么不修？”，统筹据此把它定为 happy path 缺陷、在冻结期内修（只此一项，不加新功能）。
+  新行为：`NpcServer.Skills.Build` 先照原样 `prefab_place`；权威回 `out_of_reach` 时按定义足迹（`World.prefab_cells/4`）经 `Blueprint.stands/2` 求站位，由近到远 `Travel.walk/2` 走过去再放；一个站位都走不到 → `unreachable`，走到过仍够不着 → `out_of_reach`；射程仍只由 World 判。
+  上面“E8 离线选点完成”一条里“`build` 不先走路须在 8 m 内”的约束随之解除（原文不改）；登记包 `build_steps` 的 criterion 删去“须先走过去”一句——**须在含此修复的 release 上登记**，旧 release 上用新文案会退回 `e8r-02` 的失败模式。
+  长跑 `e8b-01` 在修复前已起跑（release `0c9a01c9`），照跑完，其建造读数作修复前对照；修复的实跑验证另跑一轮短排练。料堆：用户说明“料堆被采的快这是现在创世才有的特权”，统筹理解为现阶段只有创世 NPC 能造料、普通居民采光料堆是预期状态，不处理，长跑只记剩余。
+- 2026-11-20（第二十五个统筹会话）：**E8b 长跑 `e8b-01` 不通过（原判保留）**。release `0c9a01c9`（建造修复前）、生产页表世界、E7 Hindsight、生产限额同钉 2 核、3 人、窗口 8 h（15:04–23:04Z）、21:00Z 只停起 release 一次（停机 51.4 s）。
+  **召回风暴**：15:11:49Z 起三人再无成功选择，`npc_select_failed {:mind_unavailable, :timeout}` 约 4005 次、`:pool_timeout` 91 次；召回中位 11–15 s、最长 33 s（产品心智召回超时 10 s），起于 Hindsight 做 `refresh_mental_model` 时，后台积压清空后不消退；Hindsight 平均 1.56 核。重启后 60–85 s 三人恢复选择，21:03Z 后台一开始即复发。
+  过的项：L1 存活（oom_kill 0）、L2 内存（release 峰值 2074 MiB；Hindsight 匿名峰值 1597 MiB < 2048，`memory.peak` 触限为页缓存，斜率 +9 MiB/h，但大部分时间空转、不代表正常负载）、L5（Bootstrap 三人 `{:ok,_}`、经历与任务重启前后连续）、L6（最老积压 762 s，settle 10 s 归 0）、L7（$0.599；北京零点换日账本归零、额度未误停）。资源全部回收、守护未触发、4266 未变。
+  **结论**：生产限额同机 2 核下，现形态不能证明“线上 24 h 能活”；E9 推迟到风暴修复并复测之后。根因分析子会话在查（是否“超时放弃 → 服务端照算 → 排队请求个个超时”的自持重试，及修法选项：产品侧重试退避 / 截止传播、Hindsight 并发与 CPU 隔离、或改 D-2 另放 Hindsight——后者需用户定）。
+  旁支：同轮日志 6 次 `{:unknown_activity, "speak_to:<cid>"}`，待查。建造修复已提交 `99296b54`（`e8b-01` 修复前对照：建成 1、`out_of_reach` 41），实跑验证并入风暴修复后的复测。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-01.md`、`runs/e8b-01/verdict.json`）。
+
