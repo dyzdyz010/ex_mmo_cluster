@@ -92,7 +92,9 @@
     "release_heat_fraction": 0.5,
     "thermal_sleep_delta_k": 5,
     "thermal_sleep_power_w": 100,
-    "quote_life_slices": 32
+    "quote_life_slices": 32,
+    "scratch_unit_step": 0.5,
+    "scratch_precision_step": 0.25
   },
   "semblance": {
     "specific_heat_j_per_kg_k": 500,
@@ -151,10 +153,10 @@
       "pose": [165, -80, -150, 5, 95, 85]
     },
     {
-      "index": 15, "id": "cpl.thermal", "section": "quality", "phase": 1,
+      "index": 15, "id": "cpl.thermal", "section": "quality", "phase": 1, "property_class": "thermal",
       "params": [
         {"name": "t0_dk", "class": "lin16", "unit": "dK", "min": 1000, "max": 25000},
-        {"name": "phi_grade", "class": "u8", "min": 1, "max": 3}
+        {"name": "phi_grade", "class": "u8", "min": 1, "max": 1}
       ],
       "provides": ["coupling:thermal"],
       "requires_all": ["mass"],
@@ -164,7 +166,7 @@
       "pose": [60, -85, -45, 0, 85, 25]
     },
     {
-      "index": 16, "id": "cpl.glow", "section": "quality", "phase": 1,
+      "index": 16, "id": "cpl.glow", "section": "quality", "phase": 1, "property_class": "emission",
       "params": [
         {"name": "power_w", "class": "dec", "unit": "W", "min": 1, "max": 2000}
       ],

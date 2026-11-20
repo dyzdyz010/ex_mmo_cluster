@@ -57,9 +57,12 @@ defmodule VoxelRegion.Magic.Catalog do
     签名字段只由 `Magic.Signature` 解释；`numeric_checks`、计价（`units`、`precision` 及其 `*_by_param`）与
     `pose`（弧度）由 Cost 消费。`*_by_param` 的形状为 `%{槽名 => %{取值键 => 值}}`，取值键规则见 schema 文档 §5。
     `refs` 为 `[%{param: 槽名, kind: :group | :rule}]`（位置约束目前只有“严格在前”）。
+    `property_class`：质段耦合写入的性质类别（设计 v2.9 §4.5 Q21(a)），`nil` 表示不写入性质类；同组写入两类以上
+    时由 Cost 按“从零定义”计价。
     """
     @enforce_keys [:index, :id, :section, :phase, :params]
     defstruct [:index, :id, :section, :phase, :params, :max_per_group, :max_per_rule, :units, :precision, :pose,
+      :property_class,
       in_program: true, ranges_by_param: %{}, provides: [], provides_by_param: %{}, requires_all: [],
       requires_any: [], requires_by_param: %{}, excludes: [], unique_by: [], refs: [], numeric_checks: [],
       units_by_param: %{}, precision_by_param: %{}]
@@ -85,10 +88,12 @@ defmodule VoxelRegion.Magic.Catalog do
   @class_max %{dec: 4095 * 10 ** 15, lin16: 0xFFFF, u8: 0xFF}
   # 计价层数值检查名（设计 §3.3）：T5 capacity、T6 domain、T13 first_tick、T14 ambient_floor、T15 thermal_step。
   @numeric_checks ~w(capacity domain first_tick ambient_floor thermal_step)
+  # 性质类别（设计 v2.9 §4.5）：P1 发布 thermal（〈热〉）与 emission（〈辉〉），P2 起 appearance、mechanical。
+  @property_classes ~w(thermal emission appearance mechanical)
   @top_fields ~w(version caster construction limits quotas runtime semblance group_signature symbols reserved_symbols
     presets)
-  @symbol_fields ~w(index id section phase in_program params ranges_by_param provides provides_by_param requires_all
-    requires_any requires_by_param excludes max_per_group max_per_rule unique_by refs numeric_checks units
+  @symbol_fields ~w(index id section phase in_program property_class params ranges_by_param provides provides_by_param
+    requires_all requires_any requires_by_param excludes max_per_group max_per_rule unique_by refs numeric_checks units
     units_by_param precision precision_by_param pose)
   @slot_fields ~w(name class unit min max enum bits zero_means_absent refs_enabled)
   @quotas ~w(structures_per_caster folded_per_caster flights_per_caster region_budget_units region_reserve_units
@@ -96,14 +101,16 @@ defmodule VoxelRegion.Magic.Catalog do
     structure_weight_per_sensing_coupling structures_per_npc npc_budget_ratio region_flight_slots_base
     awake_thermal_nodes_per_region triggers_per_region_tick triggers_per_caster_tick quotes_per_caster_per_s
     present_floor_structures region_flight_slots_per_present)a
-  # 末尾 14 项是设计 v2.3 §11.4.5.1 建议补入的常数（名称与值照抄该表）。
+  # `windup_interrupt_dose` 起的 14 项是设计 v2.3 §11.4.5.1 建议补入的常数（名称与值照抄该表）；
+  # 末尾 2 项是设计 v2.9 §4.5（Q21(a)）从零定义计价的单元与精度步长。
   @runtime ~w(run_loss_ratio reference_volume_m3 disruption_rate_per_s disruption_load_gain repair_rate_per_s
     repair_unit_cost_j coherence_loss_per_debt segment_debt_limit coherence_min min_energy_per_complexity_j
     storage_density_j_per_m3 throughput_density_w_per_m2 env_temperature_gain env_neighbor_gain env_embedded_gain
     disruption_dose_gain release_dose_ratio leak_deposit_max_j leak_deposit_temperature_k thermal_step_min_ms
     thermal_check_temperature_k windup_interrupt_dose env_neighbor_radius_m env_neighbor_max env_temperature_ref_k
     env_temperature_scale_k release_dose_radius_m overline_leak_factor dropout_debt_scale dropout_max
-    leak_heat_fraction release_heat_fraction thermal_sleep_delta_k thermal_sleep_power_w quote_life_slices)a
+    leak_heat_fraction release_heat_fraction thermal_sleep_delta_k thermal_sleep_power_w quote_life_slices
+    scratch_unit_step scratch_precision_step)a
 
   @doc "读取并校验已发布目录文件；返回带 digest 的不可变值。"
   def load(path), do: decode(File.read!(path))
@@ -357,12 +364,18 @@ defmodule VoxelRegion.Magic.Catalog do
     check!(is_list(checks) and Enum.all?(checks, &(&1 in @numeric_checks)), "#{at}.numeric_checks",
       "只允许 #{Enum.join(@numeric_checks, "、")}")
 
+    # 可选；只有质段耦合写入性质类，其余符号不写（§4.5）。
+    property_class = entry["property_class"]
+    check!(not Map.has_key?(entry, "property_class") or (section == :quality and property_class in @property_classes),
+      "#{at}.property_class", "只允许质段符号取 #{Enum.join(@property_classes, "、")}")
+
     %Symbol{
       index: index,
       id: id,
       section: section,
       phase: positive_integer!(entry["phase"], "#{at}.phase"),
       in_program: in_program,
+      property_class: property_class,
       params: params,
       ranges_by_param: ranges,
       provides: tags!(Map.get(entry, "provides", []), "#{at}.provides"),

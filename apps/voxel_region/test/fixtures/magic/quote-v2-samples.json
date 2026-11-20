@@ -1,0 +1,633 @@
+{
+  "catalog_digest": "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf",
+  "fields": {
+    "detect_w": "静持可察觉功率（W，§4.2 v2.9 A5）",
+    "e_cap_mj": "E_cap：储能硬上限（整数 mJ）",
+    "e_min_mj": "E_min：最低运行储能（整数 mJ）；0x83 的 e_min_j = e_min_mj / 1000",
+    "entries_charge": "无〈印〉的〈纳〉数（P1 恒为 0）",
+    "entries_spoof": "规则所读外部读数的种类数",
+    "first_tick_min_mj": "撑过第一拍所需的最低 E₀_op（整数 mJ）；0x83 的 first_tick_min_j = 本值 / 1000",
+    "life_s": "预计寿命（模拟秒，能量切片求积；带热耦合者为下界）",
+    "loss_mj": "构型损耗（整数 mJ，含出手前置）",
+    "p_maint_w": "出生时维持功率：运行 + 修复 + 发光 + 活动（W）",
+    "physical_mj": "E_phys：物理能量（整数 mJ；〈取〉为 0）",
+    "precision": "P：精度系数 1 + Σπ；0x83 的 quote_s = units × precision",
+    "rejects": "数值检查违规（§3.3），check 为目录 numeric_checks 的名字，detail 为比较的两侧；空表即可施放",
+    "steps": "按 §3.5 自动构造顺序的各步：symbol、part_index、adjust_s、inject_s（s）、complexity（到本步为止的 S·P）、spent_mj（到本步为止的累计支出，整数 mJ）；fail_step 由 Cost.staged_failure/3 按 Ω_eff 与余额从这里判定",
+    "total_mj": "总支出 = physical_mj + loss_mj（整数 mJ）；0x83 的 quote_j = total_mj / 1000",
+    "units": "S：结构单元数（含 §4.5 从零定义附加量）",
+    "volume_m3": "V：体积（m³）",
+    "windup_s": "前摇（s，含出手前置）",
+    "x0": "出生装载比",
+    "x_star": "稳态线 x*（施放处温度定的 env，不含邻近干扰）"
+  },
+  "float_decimals": 6,
+  "generator": "apps/voxel_region/test/magic_quote_samples_test.exs；重新生成（仅 Linux）：cd apps/voxel_region && WRITE_MAGIC_QUOTE_SAMPLES=1 mix test --no-start test/magic_quote_samples_test.exs",
+  "ir_samples": "ir-v2-samples.json（程序字节的唯一来源；presets[].program_hex 照抄）",
+  "presets": [
+    {
+      "design": "取能 1 MJ",
+      "id": "draw_1mj",
+      "kind": "caster_action",
+      "program_hex": "020001000033e8",
+      "quote": {
+        "loss_mj": 560750,
+        "physical_mj": 0,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.130375,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 560750,
+            "symbol": "energy.draw"
+          }
+        ],
+        "total_mj": 560750,
+        "units": 1,
+        "windup_s": 0.430375
+      }
+    },
+    {
+      "design": "取能 2 MJ",
+      "id": "draw_2mj",
+      "kind": "caster_action",
+      "program_hex": "020001000037d0",
+      "quote": {
+        "loss_mj": 560750,
+        "physical_mj": 0,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.130375,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 560750,
+            "symbol": "energy.draw"
+          }
+        ],
+        "total_mj": 560750,
+        "units": 1,
+        "windup_s": 0.430375
+      }
+    },
+    {
+      "design": "灯：〈握〉〈形 球 0.15 m〉〈辉 100 W〉〈蓄 50 kJ〉",
+      "id": "lamp",
+      "kind": "structure",
+      "program_hex": "020101000700010002000096000000000000010010006401001b21f40000",
+      "quote": {
+        "detect_w": 245.524519,
+        "e_cap_mj": 226194671,
+        "e_min_mj": 500000,
+        "entries_charge": 0,
+        "entries_spoof": 0,
+        "first_tick_min_mj": 695525,
+        "life_s": 131.702826,
+        "loss_mj": 3612968,
+        "p_maint_w": 391.049037,
+        "physical_mj": 50000000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.143393,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 286787,
+            "symbol": "anchor.hand"
+          },
+          {
+            "adjust_s": 0.200956,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 870689,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.094355,
+            "complexity": 2,
+            "inject_s": 0.0,
+            "part_index": 2,
+            "spent_mj": 1521539,
+            "symbol": "cpl.glow"
+          },
+          {
+            "adjust_s": 0.118503,
+            "complexity": 2,
+            "inject_s": 0.05,
+            "part_index": 3,
+            "spent_mj": 53612968,
+            "symbol": "energy.load"
+          }
+        ],
+        "total_mj": 53612968,
+        "units": 2,
+        "volume_m3": 0.014137,
+        "windup_s": 0.907207,
+        "x0": 0.221049,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "火球：〈握〉〈形 球 0.25 m，0.5 kg〉〈热 2000 K〉〈蓄 20 kJ〉〈投 12 m/s〉｜当〈遇〉则〈散〉",
+      "id": "fireball",
+      "kind": "structure",
+      "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0010001002201002c00",
+      "quote": {
+        "detect_w": 465.951143,
+        "e_cap_mj": 1047197551,
+        "e_min_mj": 1000000,
+        "entries_charge": 0,
+        "entries_spoof": 1,
+        "first_tick_min_mj": 1465951,
+        "life_s": 20.520222,
+        "loss_mj": 15921636,
+        "p_maint_w": 931.902286,
+        "physical_mj": 446736000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.143393,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 286787,
+            "symbol": "anchor.hand"
+          },
+          {
+            "adjust_s": 0.129312,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 1194196,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.064037,
+            "complexity": 2,
+            "inject_s": 0.4267,
+            "part_index": 2,
+            "spent_mj": 431899853,
+            "symbol": "cpl.thermal"
+          },
+          {
+            "adjust_s": 0.082455,
+            "complexity": 2,
+            "inject_s": 0.02,
+            "part_index": 3,
+            "spent_mj": 453245708,
+            "symbol": "energy.load"
+          },
+          {
+            "adjust_s": 0.033715,
+            "complexity": 3,
+            "inject_s": 3.6e-5,
+            "part_index": 4,
+            "spent_mj": 453981401,
+            "symbol": "act.throw"
+          },
+          {
+            "adjust_s": 0.04108,
+            "complexity": 4,
+            "inject_s": 0.0,
+            "part_index": 5,
+            "spent_mj": 455115925,
+            "symbol": "cond.contact"
+          },
+          {
+            "adjust_s": 0.123079,
+            "complexity": 4,
+            "inject_s": 0.0,
+            "part_index": 6,
+            "spent_mj": 462657636,
+            "symbol": "resp.release"
+          }
+        ],
+        "total_mj": 462657636,
+        "units": 4,
+        "volume_m3": 0.06545,
+        "windup_s": 1.363808,
+        "x0": 0.426567,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "炽热投掷：〈握〉〈形 球 0.4 m，2 kg〉〈热 2000 K，phi_grade 1〉〈蓄 120 kJ〉〈投 12 m/s〉",
+      "id": "hot_throw",
+      "kind": "structure",
+      "program_hex": "0201010007000100020001900000000007d001000f4e200101001b24b001001e2ee000",
+      "quote": {
+        "detect_w": 1049.995446,
+        "e_cap_mj": 4289321170,
+        "e_min_mj": 750000,
+        "entries_charge": 0,
+        "entries_spoof": 0,
+        "first_tick_min_mj": 1799995,
+        "life_s": 57.528002,
+        "loss_mj": 67325865,
+        "p_maint_w": 2099.990891,
+        "physical_mj": 1826944000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.143393,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 286787,
+            "symbol": "anchor.hand"
+          },
+          {
+            "adjust_s": 0.060468,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 2227284,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.032928,
+            "complexity": 2,
+            "inject_s": 1.7068,
+            "part_index": 2,
+            "spent_mj": 1757436047,
+            "symbol": "cpl.thermal"
+          },
+          {
+            "adjust_s": 0.042151,
+            "complexity": 2,
+            "inject_s": 0.12,
+            "part_index": 3,
+            "spent_mj": 1883126346,
+            "symbol": "energy.load"
+          },
+          {
+            "adjust_s": 0.019039,
+            "complexity": 3,
+            "inject_s": 1.44e-4,
+            "part_index": 4,
+            "spent_mj": 1894269865,
+            "symbol": "act.throw"
+          }
+        ],
+        "total_mj": 1894269865,
+        "units": 3,
+        "volume_m3": 0.268083,
+        "windup_s": 2.424923,
+        "x0": 0.425895,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "灼点：〈附 准星格面〉〈形 球 0.25 m，0.66 kg〉〈热 1500 K，phi_grade 1〉〈蓄 15 kJ〉",
+      "id": "scorch",
+      "kind": "structure",
+      "program_hex": "0201010008ff000100020000fa00000000029401000f3a980101001b15dc0000",
+      "quote": {
+        "detect_w": 292.93923,
+        "e_cap_mj": 1047197551,
+        "e_min_mj": 500000,
+        "entries_charge": 0,
+        "entries_spoof": 0,
+        "first_tick_min_mj": 792939,
+        "life_s": 24.922575,
+        "loss_mj": 8420404,
+        "p_maint_w": 585.878459,
+        "physical_mj": 413244000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.168856,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 337711,
+            "symbol": "anchor.surface"
+          },
+          {
+            "adjust_s": 0.123438,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 1203902,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.064405,
+            "complexity": 2,
+            "inject_s": 0.398244,
+            "part_index": 2,
+            "spent_mj": 403210016,
+            "symbol": "cpl.thermal"
+          },
+          {
+            "adjust_s": 0.083011,
+            "complexity": 2,
+            "inject_s": 0.015,
+            "part_index": 3,
+            "spent_mj": 421664404,
+            "symbol": "energy.load"
+          }
+        ],
+        "total_mj": 421664404,
+        "units": 2,
+        "volume_m3": 0.06545,
+        "windup_s": 1.152953,
+        "x0": 0.394619,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "驱散脉冲：〈附 准星格面〉〈形 球 0.2 m〉〈乱 100 kW，3 m〉〈蓄 60 kJ〉",
+      "id": "dispel_pulse",
+      "kind": "structure",
+      "program_hex": "0201010008ff000100020000c800000000000001003623e80bb801001b22580000",
+      "quote": {
+        "detect_w": 171.909311,
+        "e_cap_mj": 536165146,
+        "e_min_mj": 500000,
+        "entries_charge": 0,
+        "entries_spoof": 0,
+        "first_tick_min_mj": 50671909,
+        "life_s": 0.593005,
+        "loss_mj": 3960809,
+        "p_maint_w": 100343.818622,
+        "physical_mj": 60000000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.168856,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 337711,
+            "symbol": "anchor.surface"
+          },
+          {
+            "adjust_s": 0.157376,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 1017108,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.085004,
+            "complexity": 2,
+            "inject_s": 0.0,
+            "part_index": 2,
+            "spent_mj": 1758907,
+            "symbol": "int.disrupt"
+          },
+          {
+            "adjust_s": 0.064048,
+            "complexity": 2,
+            "inject_s": 0.06,
+            "part_index": 3,
+            "spent_mj": 63960809,
+            "symbol": "energy.load"
+          }
+        ],
+        "total_mj": 63960809,
+        "units": 2,
+        "volume_m3": 0.03351,
+        "windup_s": 0.835283,
+        "x0": 0.111906,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "定时火种：〈附 准星格面〉〈形 块，三轴半边长 0.15 m〉〈蓄 200 kJ〉｜当〈时 30 s〉则〈散〉",
+      "id": "timed_ember",
+      "kind": "structure",
+      "program_hex": "0201010008ff000100020100960096009600000001001b27d00001000100230bb8ff01002c00",
+      "quote": {
+        "detect_w": 212.462872,
+        "e_cap_mj": 432000000,
+        "e_min_mj": 500000,
+        "entries_charge": 0,
+        "entries_spoof": 0,
+        "first_tick_min_mj": 712463,
+        "life_s": 572.256768,
+        "loss_mj": 6911570,
+        "p_maint_w": 424.925744,
+        "physical_mj": 200000000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.168856,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 337711,
+            "symbol": "anchor.surface"
+          },
+          {
+            "adjust_s": 0.167254,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 976984,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.163755,
+            "complexity": 1,
+            "inject_s": 0.2,
+            "part_index": 2,
+            "spent_mj": 202187735,
+            "symbol": "energy.load"
+          },
+          {
+            "adjust_s": 0.14772,
+            "complexity": 2,
+            "inject_s": 0.0,
+            "part_index": 3,
+            "spent_mj": 203527705,
+            "symbol": "cond.timer"
+          },
+          {
+            "adjust_s": 0.223041,
+            "complexity": 2,
+            "inject_s": 0.0,
+            "part_index": 4,
+            "spent_mj": 206911570,
+            "symbol": "resp.release"
+          }
+        ],
+        "total_mj": 206911570,
+        "units": 2,
+        "volume_m3": 0.027,
+        "windup_s": 1.370626,
+        "x0": 0.462963,
+        "x_star": 0.612372
+      }
+    },
+    {
+      "design": "过热保险火球：火球 + 规则 1：当〈满 相干 低于 0.5〉则〈散〉（规则 0：〈遇〉→〈散〉）",
+      "id": "guarded_fireball",
+      "kind": "structure",
+      "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0020001002201002c00010100240101138801002c00",
+      "quote": {
+        "detect_w": 559.718865,
+        "e_cap_mj": 1047197551,
+        "e_min_mj": 1250000,
+        "entries_charge": 0,
+        "entries_spoof": 1,
+        "first_tick_min_mj": 1809719,
+        "life_s": 16.840455,
+        "loss_mj": 25333400,
+        "p_maint_w": 1119.437729,
+        "physical_mj": 446736000,
+        "precision": 1,
+        "rejects": [],
+        "steps": [
+          {
+            "adjust_s": 0.143393,
+            "complexity": 0,
+            "inject_s": 0.0,
+            "part_index": 0,
+            "spent_mj": 286787,
+            "symbol": "anchor.hand"
+          },
+          {
+            "adjust_s": 0.129312,
+            "complexity": 1,
+            "inject_s": 0.0,
+            "part_index": 1,
+            "spent_mj": 1194196,
+            "symbol": "form.semblance"
+          },
+          {
+            "adjust_s": 0.064037,
+            "complexity": 2,
+            "inject_s": 0.4267,
+            "part_index": 2,
+            "spent_mj": 431899853,
+            "symbol": "cpl.thermal"
+          },
+          {
+            "adjust_s": 0.082455,
+            "complexity": 2,
+            "inject_s": 0.02,
+            "part_index": 3,
+            "spent_mj": 453245708,
+            "symbol": "energy.load"
+          },
+          {
+            "adjust_s": 0.033715,
+            "complexity": 3,
+            "inject_s": 3.6e-5,
+            "part_index": 4,
+            "spent_mj": 453981401,
+            "symbol": "act.throw"
+          },
+          {
+            "adjust_s": 0.04108,
+            "complexity": 4,
+            "inject_s": 0.0,
+            "part_index": 5,
+            "spent_mj": 455115925,
+            "symbol": "cond.contact"
+          },
+          {
+            "adjust_s": 0.123079,
+            "complexity": 4,
+            "inject_s": 0.0,
+            "part_index": 6,
+            "spent_mj": 458515044,
+            "symbol": "resp.release"
+          },
+          {
+            "adjust_s": 0.117979,
+            "complexity": 5,
+            "inject_s": 0.0,
+            "part_index": 7,
+            "spent_mj": 462658317,
+            "symbol": "cond.load"
+          },
+          {
+            "adjust_s": 0.117979,
+            "complexity": 5,
+            "inject_s": 0.0,
+            "part_index": 8,
+            "spent_mj": 472069400,
+            "symbol": "resp.release"
+          }
+        ],
+        "total_mj": 472069400,
+        "units": 5,
+        "volume_m3": 0.06545,
+        "windup_s": 1.599766,
+        "x0": 0.426567,
+        "x_star": 0.612372
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "design": "T5：火球改为 0.15 m 球，装载超过储能硬上限",
+      "id": "t5_capacity",
+      "program_hex": "0201010007000100020000960000000001f401000f4e200101001b17d001001e2ee0010001002201002c00",
+      "rejects": [
+        {
+          "check": "capacity",
+          "detail": {
+            "e_cap_mj": 226194671,
+            "load_mj": 446700000
+          }
+        }
+      ]
+    },
+    {
+      "design": "T13：灯的〈蓄〉改为 600 J，撑不过第一拍",
+      "id": "t13_first_tick",
+      "program_hex": "020101000700010002000096000000000000010010006401001b02580000",
+      "rejects": [
+        {
+          "check": "first_tick",
+          "detail": {
+            "e_op_mj": 600000,
+            "required_mj": 683482
+          }
+        }
+      ]
+    },
+    {
+      "design": "T15：火球改为 0.05 m、10 g、1500 K、〈蓄〉1.5 kJ，热节点稳定步长不足 25 ms",
+      "id": "t15_thermal_step",
+      "program_hex": "02010100070001000200003200000000000a01000f3a980101001b05dc01001e2ee0010001002201002c00",
+      "rejects": [
+        {
+          "check": "thermal_step",
+          "detail": {
+            "c_th_j_per_k": 5.0,
+            "g_max_w_per_k": 163.3498,
+            "min_ms": 25,
+            "step_ms": 13.774122
+          }
+        }
+      ]
+    }
+  ],
+  "site": {
+    "ambient_k": 293.15,
+    "emissivity": 0.9,
+    "exchange_w_per_m2_k": 10.0,
+    "formation_distance_m": 3.0
+  },
+  "source": "TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.9 §4.2、§11.4.6；由服务端 Magic.Cost.quote_structure/3 算出",
+  "units_note": "能量一律为整数 mJ（键名后缀 _mj）；时间为 s（_s）；功率为 W（_w）；体积为 m³；其余无量纲。浮点量已按 float_decimals 位小数四舍五入（Elixir Float.round/2），比较时双方同样处理。施法者动作（kind = caster_action）只有构造计价字段。"
+}

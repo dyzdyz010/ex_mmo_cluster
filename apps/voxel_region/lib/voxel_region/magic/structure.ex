@@ -2,7 +2,7 @@ defmodule VoxelRegion.Magic.Structure do
   @moduledoc """
   符号组合魔法 v2（切片 0c）：运行中结构对象的纯值步进。
 
-  设计来源：TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.7（下称“设计”）§4.3、§5.1–5.5、§5.8、
+  设计来源：TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.9（下称“设计”）§4.3、§5.1–5.5、§5.8、
   §7.3；落地决策见 `docs/10-active/magic/2026-11-19-glyph-v2-server-landing.md`（D3 整数 mJ 即真值、D4 按热提交拍号推进）。
   运行期常数全部读目录 v5 `runtime`（schema 文档 §4）；本模块只保留设计正文写死、目录没有字段的归一常数。
 
@@ -13,16 +13,30 @@ defmodule VoxelRegion.Magic.Structure do
   ## 职责边界
 
   本模块只做纯计算：不读 World、不发消息、不写世界、不读墙钟、不用随机源（铁律 5）。调用方（World 的热提交点）
-  在每次热提交后按结构 id 升序调用 `step/4`，把显式读数交进来，再把返回的 **请求** 与热结算放进同一笔 commit。
-  暂停或积压冻结时调用方不调用即可，本模块没有“暂停”概念（D4）。
+  每拍先用**拍首**的结构值为每个目标取齐干预场（`disruption_field/4`），再调用各结构的 `step/4`，把显式读数交进来，
+  最后把返回的 **请求** 与热结算放进同一笔 commit。暂停或积压冻结时调用方不调用即可，本模块没有“暂停”概念（D4）。
 
   ```mermaid
   flowchart LR
-    W[World 热提交点] -->|拍号 + 环境读数 + 净热 + 供能 + 干预场| S[Structure.step/4]
+    W[World 热提交点] -->|拍首结构值| F[disruption_field/4<br/>t_eff 由拍首 E_op 定]
+    F -->|本拍干预场| W
+    W -->|拍号 + 环境读数 + 净热 + 供能 + 干预场| S[Structure.step/4]
     S -->|新结构值| W
     S -->|沉积/热释放/施法者侧热 请求| W
     S -->|事件、触发、账目、观测量| W
   ```
+
+  ## 干预活动拍首预付（设计 §5.3 第 0′ 步、§5.3.3，v2.9 A1）
+
+  发出者（带〈乱〉的结构）本拍的活动在任何结构步进之前、按它自己的拍首 E_op 预付：
+  t_eff = min(名义存续, max(0, E_op拍首 − E_min) ÷ P_act)，扣除 t_eff × P_act。t_eff 只依赖发出者自身的拍首状态，
+  所以由同一个私有函数（`prepayment/2`）算出，`disruption_field/4` 用它给目标场的存续，发出者自己的 `step/4` 在第一步
+  用它扣款，二者按构造一致。`disruption_field/4` 只接受拍首状态（`tick = last_tick + 1` 的运行中结构），对已步进的
+  结构没有匹配子句、显式失败——这样“结果与处理顺序无关”由函数契约保证，不依赖 World 按 id 升序步进。
+
+  不另设公开的 `prepay_activity` 函数，理由：预付额是拍首状态的纯函数，在发出者自己的 `step/4` 里第一步扣除与
+  “第 0′ 步立即扣除”逐位等价（第 0′ 步与第 3 步之间没有任何量读发出者的 E_op；热内核限流参数按第 0 步的值取）；
+  单独的预付函数则要在结构里记“本拍已预付”的标记、让 `step/4` 依赖调用先后，并多出一份账目输出。
 
   ## 能量与账目（整数 mJ）
 
@@ -34,15 +48,15 @@ defmodule VoxelRegion.Magic.Structure do
   动能单列，只经 `settle_kinetic/1` 与终止释放离开结构，一律在落点或命中点所在格沉积为热、不进热份额
   （设计 §5.3.3 R7③）；该出口是动量接触（决策稿风险 4）将要替换的唯一位置。
 
-  出账细则按设计 §5.3.3：储能不足时按 泄漏 → 发光 → 活动 的顺序支付、E_op 不为负，活动未付足时该拍的场按
-  t_eff = 实付活动能 ÷ P_act 缩短（R7②）；活动能整笔计为灵炁辐射 `activity_mj`，不进 pending_leak（R3）；
+  出账细则按设计 §5.3.3：活动在拍首预付（见上节，A1）；其余出账按 泄漏 → 发光 的顺序从预付后的余额支付、E_op
+  不为负，未付的部分不发生（R7②）；活动能整笔计为灵炁辐射 `activity_mj`，不进 pending_leak（R3）；
   R_max 中的供能取施法者本拍推送的链功率（R7④）；〈散〉不收调整耗散（R7①）。
 
   ## 每拍顺序（设计 §5.3，P1 范围）
 
-  第 2 步热 → 第 3 步供能 → 第 1、5 步 env、装载、扰乱、修复上限 → 第 6 步修复与欠账（含干预剂量与邻近终止释放剂量）
-  → 第 7 步出账 → 第 8 步泄漏沉积 → 第 10 步终止检查 → 第 12 步条件求值。第 0 步与热内核限流属于切片 1；
-  第 4 步〈汲〉、第 9 步分段与泄放口为 P2；第 11 步热节点休眠需要接触节点温差，由 World 侧判定（切片 1/5）。
+  第 0′ 步活动预付 → 第 2 步热 → 第 3 步供能 → 第 1、5 步 env、装载、扰乱、修复上限 → 第 6 步修复与欠账（含干预剂量
+  与邻近终止释放剂量）→ 第 7 步出账 → 第 8 步泄漏沉积 → 第 10 步终止检查 → 第 12 步条件求值。第 0 步与热内核限流属于
+  切片 1；第 4 步〈汲〉、第 9 步分段与泄放口为 P2；第 11 步热节点休眠需要接触节点温差，由 World 侧判定（切片 1/5）。
 
   ## 终止类型（设计 §5.5、§11.3）
 
@@ -106,7 +120,7 @@ defmodule VoxelRegion.Magic.Structure do
 
   @typedoc """
   一个干预场在本拍对某个目标的作用（`disruption_field/4` 的结果）：`env` 是环境因子增量，`seconds` 是本拍内
-  从拍首起的存续时长（0 < seconds ≤ 0.5）。
+  从拍首起的存续时长，即发出者拍首预付的 t_eff（0 < seconds ≤ 0.5）。
   """
   @type field :: %{env: float(), seconds: float()}
 
@@ -209,11 +223,9 @@ defmodule VoxelRegion.Magic.Structure do
     e_th_mj: 0,
     kinetic_mj: 0,
     pending_leak_mj: 0,
-    # 耦合：发光功率（W）；干预活动 %{power_w, radius_m, duration_s}
+    # 耦合：发光功率（W）；干预活动 %{power_w, radius_m, duration_s}（duration_s 为名义存续 τ）
     glow_w: 0,
     activity: nil,
-    # 最近一次步进的那一拍里，本结构发出的场实际存续的秒数（实付活动折算的 t_eff，§5.3.3 R7②）
-    field_s: 0.0,
     # 欠账（1e-6 相干度）与其中来自干预剂量的部分
     debt_micro: 0,
     debt_int_micro: 0,
@@ -383,6 +395,10 @@ defmodule VoxelRegion.Magic.Structure do
     rt = catalog.runtime
     before = stored_mj(s)
 
+    # 第 0′ 步：干预活动按拍首 E_op 预付并立即扣除（§5.3.3 v2.9 A1）；目标收到的场存续即同一个 t_eff。
+    {activity, field_s} = prepayment(s, tick)
+    s = %{s | e_op_mj: s.e_op_mj - activity}
+
     # 第 2 步：热份额吃进内核净热（换算 mJ 时四舍五入、半数远离零，残差单列）。
     heat_mj = round(net_heat_j * 1000)
     s = %{s | e_th_mj: s.e_th_mj + heat_mj}
@@ -399,14 +415,10 @@ defmodule VoxelRegion.Magic.Structure do
     debt = line.debt + release_debt(s, x, release_doses, catalog)
 
     # 第 7 步：出账。运行损耗按本拍装载计；泄漏部分（运行、修复、越线、偿还）进 pending_leak。
-    # 储能不足时按 泄漏 → 发光 → 活动 的顺序支付，E_op 不为负；未付的部分不发生（§5.3.3 R7②）。
+    # 活动已在第 0′ 步预付；其余按 泄漏 → 发光 的顺序从余额支付，E_op 不为负；未付的部分不发生（§5.3.3 R7②）。
     run_j = running_loss_w(s, load_mj(s), catalog) * @tick_s
     leak_mj = round((run_j + line.repair_j + line.overline_j + line.repay_j) * 1000)
-    nominal_field_s = nominal_field_seconds(s, tick)
-    activity_due = activity_mj(s, nominal_field_s)
-
-    {[leak_paid, light, activity], e_op} =
-      pay([leak_mj, s.glow_w * @tick_ms, activity_due], s.e_op_mj)
+    {[leak_paid, light], e_op} = pay([leak_mj, s.glow_w * @tick_ms], s.e_op_mj)
 
     debt_micro = round(debt * @micro)
 
@@ -415,7 +427,6 @@ defmodule VoxelRegion.Magic.Structure do
       | e_op_mj: e_op,
         pending_leak_mj: s.pending_leak_mj + leak_paid,
         last_tick: tick,
-        field_s: field_seconds_paid(s, activity, activity_due, nominal_field_s),
         debt_micro: debt_micro,
         debt_int_micro: min(debt_micro, round(line.debt_int * @micro))
     }
@@ -438,7 +449,7 @@ defmodule VoxelRegion.Magic.Structure do
       coherence: coherence(s, rt),
       dose: line.dose,
       leak_w: leak_paid / @tick_ms,
-      field_s: s.field_s
+      field_s: field_s
     }
 
     inflow = %{heat_mj: heat_mj, feed_mj: offered}
@@ -674,24 +685,25 @@ defmodule VoxelRegion.Magic.Structure do
   @doc """
   干预结构（〈乱〉）在拍 `tick` 对距离 `distance_m` 处目标的作用；无作用时为 `nil`。
 
-  env 增量 = a_X·(P_act / 1 kW)·(1 − d/r)²（平方型衰减、到半径边缘为零），存续时长从拍首起计：
+  env 增量 = a_X·(P_act / 1 kW)·(1 − d/r)²（平方型衰减、到半径边缘为零）；存续时长是发出者本拍拍首预付的
+  t_eff = min(名义存续, max(0, E_op拍首 − E_min) ÷ P_act)，从拍首起计（§5.3.3 v2.9 A1；A.4 驱散脉冲：第 1 拍 0.5 s、
+  第 2 拍 0.0933 s）。发出者自己的 `step/4` 扣的正是这笔预付，二者由同一函数算出。
 
-  - 发出者本拍尚未步进（`tick = last_tick + 1`）：名义时长 = 本拍内 τ 的剩余部分（A.4：τ = 0.595 s 时第 1 拍 0.5 s、
-    第 2 拍 0.095 s）。
-  - 发出者本拍已步进（`tick = last_tick`，含在本拍终止）：实付活动能折算的 t_eff = 实付活动能 ÷ P_act
-    （§5.3.3 R7②；活动付足时等于名义时长）。
-
-  World 按 §5.8 的 id 升序步进，步进每个目标时向各发出者取当时的场：比目标 id 小的发出者已步进、给 t_eff，
-  比目标 id 大的尚未步进、给名义时长。二者只在发出者活动未付足的那一拍（即它断供终止的那一拍）不同。
+  `s` 必须是发出者在拍 `tick` 的**拍首**状态（运行中且 `tick = last_tick + 1`）：World 在本拍任何结构步进之前为全部
+  目标取齐场，所以结果与结构的处理顺序无关。对已步进或已终止的发出者没有匹配子句，显式失败。
   场不作用于发出它的结构自身（§7.3 R2）：World 不把发出者自己的场交给它的 `step/4`。
   """
   @spec disruption_field(t(), number(), non_neg_integer(), Catalog.t()) :: field() | nil
   def disruption_field(%__MODULE__{activity: nil}, _distance_m, _tick, %Catalog{}), do: nil
 
-  def disruption_field(%__MODULE__{activity: activity} = s, distance_m, tick, %Catalog{
-        runtime: rt
-      }) do
-    seconds = field_seconds(s, tick)
+  def disruption_field(
+        %__MODULE__{status: :running, last_tick: last, activity: activity} = s,
+        distance_m,
+        tick,
+        %Catalog{runtime: rt}
+      )
+      when tick == last + 1 do
+    {_prepaid_mj, seconds} = prepayment(s, tick)
 
     if seconds > 0 and distance_m < activity.radius_m do
       falloff = 1 - distance_m / activity.radius_m
@@ -703,36 +715,20 @@ defmodule VoxelRegion.Magic.Structure do
     end
   end
 
-  # 见 `disruption_field/4`：未步进的运行中发出者给名义时长，已步进的给本拍记录的 t_eff。其余情况（已在更早的拍终止、
-  # 拍号不连续）没有匹配子句，显式失败。
-  defp field_seconds(%__MODULE__{status: :running, last_tick: last} = s, tick)
-       when tick == last + 1,
-       do: nominal_field_seconds(s, tick)
+  # 第 0′ 步的预付（§5.3.3 v2.9 A1），只读拍首状态：返回 {预付活动能 mJ, t_eff 秒}。
+  # 预付额 = min(名义存续内的活动能, max(0, E_op − E_min))，整数 mJ；t_eff = 预付额 ÷ P_act（mJ / W = ms），
+  # 所以扣款与场的存续逐位对应。无〈乱〉时为 {0, 0.0}。
+  defp prepayment(%__MODULE__{activity: nil}, _tick), do: {0, 0.0}
 
-  defp field_seconds(%__MODULE__{last_tick: tick, field_s: seconds}, tick), do: seconds
-
-  @doc """
-  一个干预场在一拍内给目标带来的毛剂量（A.4 每拍公式，不扣偿还）：
-  max(0, D(env + Δenv) − R_max)·t − max(0, D(env) − R_max)·t，D、R_max 按目标当前装载与 `feed_w` 计（§4.3）。
-  `step/4` 用同一段函数计算 `debt_int` 与观测量 `dose`；净欠账（扣去同拍线内段的偿还）见 `step/4` 后的 `debt_micro`。
-  """
-  @spec dose(t(), field(), %{env: number(), feed_w: non_neg_integer()}, Catalog.t()) :: float()
-  def dose(%__MODULE__{} = s, field, %{env: env, feed_w: feed_w}, %Catalog{} = catalog) do
-    line(%{s | debt_micro: 0, debt_int_micro: 0}, load_ratio(s), env, [field], feed_w, catalog).dose
+  defp prepayment(%__MODULE__{activity: activity} = s, tick) do
+    nominal_mj = round(activity.power_w * nominal_field_seconds(s, tick) * 1000)
+    prepaid_mj = min(nominal_mj, max(0, s.e_op_mj - s.e_min_mj))
+    {prepaid_mj, prepaid_mj / activity.power_w / 1000}
   end
 
-  # 名义存续时长：τ = (E₀_op − E_min) / P_act 在拍 `tick` 内剩余的部分（无〈乱〉时为 0）。
-  defp nominal_field_seconds(%__MODULE__{activity: nil}, _tick), do: 0.0
-
+  # 名义存续时长：τ = (E₀_op − E_min) / P_act 在拍 `tick` 内剩余的部分（A.4：τ = 0.595 s 时第 1 拍 0.5 s、第 2 拍 0.095 s）。
   defp nominal_field_seconds(%__MODULE__{activity: activity, born_tick: born}, tick),
     do: min(@tick_s, max(0.0, activity.duration_s - (tick - born - 1) * @tick_s))
-
-  defp activity_mj(%__MODULE__{activity: nil}, _seconds), do: 0
-  defp activity_mj(s, seconds), do: round(s.activity.power_w * seconds * 1000)
-
-  # 本拍场实际存续的秒数：活动付足时等于名义时长；未付足时 t_eff = 实付 mJ ÷ P_act（mJ / W = ms）。
-  defp field_seconds_paid(_s, due, due, nominal_s), do: nominal_s
-  defp field_seconds_paid(s, paid, _due, _nominal_s), do: paid / s.activity.power_w / 1000
 
   # ---------------------------------------------------------------------------
   # §4.3 运行期公式（唯一定义处；报价 `Magic.Cost` 调用这里而不是复制）

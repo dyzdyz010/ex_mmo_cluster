@@ -2,21 +2,23 @@ defmodule VoxelRegion.MagicStructureTest do
   @moduledoc """
   只测试：结构对象的纯值步进 `Magic.Structure`（符号组合魔法 v2 切片 0c；决策稿测试矩阵第 4 条）。
 
-  - 契约：设计 v2.7（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.3 运行期公式与拍内分段（R1）、
-    §5.3 每拍步进与 §5.3.3 出账细则（R7②：活动未付足时场按 t_eff 缩短）、§5.4 读数丢失不消费读数（R5）、
-    §5.5 终止类型（R4）、§5.8 整数 mJ 与确定性、§7.3 每拍计入的驱散剂量。
+  - 契约：设计 v2.9（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.3 运行期公式与拍内分段（R1）、
+    §5.3 每拍步进与 §5.3.3 出账细则（A1：干预活动按拍首 E_op 预付，场存续 t_eff 与处理顺序无关）、§5.4 读数丢失
+    不消费读数（R5）、§5.5 终止类型（R4）、§5.8 整数 mJ 与确定性、§7.3 每拍计入的驱散剂量。
   - 夹具：结构组由冻结样本 `fixtures/magic/ir-v2-samples.json` 经真实 `Program.decode_ir/2` 解码（灯、火球、驱散脉冲、
     定时火种、过热保险火球）；持续扰乱场的 5 kW〈乱〉由驱散脉冲字节改写两个 dec 槽得到，同样经解码器接纳。
     报价是真实 `Cost.quote_structure/3` 的产出（施放处 293.15 K；报价本身的期望值由 `magic_cost_test.exs` 覆盖）。
-  - 判定：期望值取设计附录 A.2–A.4 的手算数（灯寿命 132 s、x* 0.61 / 0.25、A.4 净欠账与毛剂量），容差写在各用例里；
-    账目闭合与逐位一致是不变量。读数丢失的用例按 hash(id, tick) 逐个 id 搜索丢失的实例，不复制 hash 算法。
-  - 不覆盖：热内核限流与真实净热（切片 1/5，这里净热是显式输入）、World 提交、多段与 P2 符号。
+  - 判定：期望值取设计附录 A.2–A.4 的数（灯寿命 132 s、x* 0.61 / 0.25、A.4 v2.9 逐拍净欠账与 t_eff），容差按文档
+    给出的位数，写在各用例里；账目闭合与逐位一致是不变量。读数丢失的用例按 hash(id, tick) 逐个 id 搜索丢失的实例，
+    不复制 hash 算法。干预场一律由发出者的拍首状态取（`disruption_field/4` 的契约）。
+  - 不覆盖：热内核限流与真实净热（切片 1/5，这里净热是显式输入）、World 提交、多段与 P2 符号；前摇打断剂量
+    （施法者处，A.4 末行）的消费方在切片 1（Player，D7），这里只验证它所依赖的 t_eff 合计 0.593 s。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Structure}
 
-  @digest "c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b"
+  @digest "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @ambient_k 293.15
@@ -49,7 +51,6 @@ defmodule VoxelRegion.MagicStructureTest do
 
     %{
       catalog: catalog,
-      field_bytes: field,
       groups: Map.new(programs, fn {id, %Program{groups: [group]}} -> {id, group} end),
       quotes:
         Map.new(programs, fn {id, program} ->
@@ -140,40 +141,78 @@ defmodule VoxelRegion.MagicStructureTest do
     assert_in_delta out.metrics.steady_load, 0.25, 0.001
   end
 
-  # ---- A.4 驱散剂量（〈乱 100 kW，3 m〉〈蓄 60 kJ〉，τ = 0.595 s） ----
+  # ---- A.4 驱散剂量（〈乱 100 kW，3 m〉〈蓄 60 kJ〉，名义 τ = 0.595 s；v2.9 逐拍口径） ----
 
-  # 脉冲两拍内给目标的总剂量，目标装载按出生值（A.4 口径）。
-  defp pulse_dose(c, target, distance_m, feed_w) do
+  test "A1：脉冲按拍首 E_op 预付活动，t_eff 第 1 拍 0.5 s、第 2 拍 0.0933 s，合计 0.593 s（名义 0.595 s）", c do
     p = pulse(c)
+    assert Structure.disruption_field(p, 0, 1, c.catalog).seconds == 0.5
 
-    Enum.reduce(1..3, {p, 0.0}, fn tick, {p, total} ->
-      field =
-        if p.status == :running, do: Structure.disruption_field(p, distance_m, tick, c.catalog)
+    # 第 1 拍：预付 100 kW × 0.5 s = 50 kJ；发出者自己扣的就是目标收到的那个 t_eff。
+    {p, out} = Structure.step(p, inputs(), 1, c.catalog)
+    assert out.metrics.field_s == 0.5 and out.ledger.out.activity_mj == 50_000_000
+    assert_closed(out)
 
-      dose =
-        if field,
-          do: Structure.dose(target, field, %{env: 1, feed_w: feed_w}, c.catalog),
-          else: 0.0
+    # 第 2 拍：第 1 拍的泄漏约 0.17 kJ 使可预付的能量从 9.5 kJ 降为约 9.33 kJ（§5.3.3），短于名义 0.095 s。
+    second = Structure.disruption_field(p, 0, 2, c.catalog).seconds
+    assert_in_delta second, 0.0933, 0.00005
+    assert_in_delta 0.5 + second, 0.593, 0.0005
 
-      p =
-        if p.status == :running,
-          do: elem(Structure.step(p, inputs(), tick, c.catalog), 0),
-          else: p
+    {p, out} = Structure.step(p, inputs(), 2, c.catalog)
+    assert out.metrics.field_s == second
+    assert out.ledger.out.activity_mj == round(second * 100_000 * 1000)
+    assert_closed(out)
+    # 预付到 E_min 为止，其后的泄漏使 E_op < E_min：第 2 拍断供衰竭。
+    assert p.status == {:terminated, :exhausted}
 
-      {p, total + dose}
-    end)
-    |> elem(1)
+    # 契约：场只能由拍首状态取；已步进的发出者没有匹配子句，World 无法按处理顺序取到不同的场。
+    assert_raise FunctionClauseError, fn -> Structure.disruption_field(p, 0, 2, c.catalog) end
   end
 
-  test "A.4 毛剂量（不扣偿还）：灯正中 1.407、1 m 0.617，火球 1 m 0.905，300 W 供能的灯正中 1.369", c do
-    assert_in_delta pulse_dose(c, lamp(c), 0, 0), 1.407, 0.002
-    assert_in_delta pulse_dose(c, lamp(c), 1, 0), 0.617, 0.002
-    assert_in_delta pulse_dose(c, fireball(c), 1, 0), 0.905, 0.002
-    assert_in_delta pulse_dose(c, lamp(c), 0, 300), 1.369, 0.002
+  test "A1：同一拍内结构的处理顺序不同，结果逐位相同（两个脉冲互相作用，另有一盏灯）", c do
+    # 两个脉冲相距 1 m、灯在二者之间各 0.5 m；每拍先由拍首状态取齐全部场，再按给定顺序步进。
+    start = %{
+      a: born(c, "dispel_pulse", {3, 0}),
+      b: born(c, "dispel_pulse", {5, 0}),
+      lamp: lamp(c)
+    }
+
+    distance = %{{:a, :b} => 1.0, {:b, :a} => 1.0, {:a, :lamp} => 0.5, {:b, :lamp} => 0.5}
+
+    run = fn order ->
+      Enum.reduce(1..3, start, fn tick, world ->
+        fields =
+          Map.new(Map.keys(world), fn target ->
+            emitted =
+              for {emitter, s} <- world, emitter != target, s.status == :running do
+                Structure.disruption_field(s, distance[{emitter, target}], tick, c.catalog)
+              end
+              |> Enum.reject(&is_nil/1)
+
+            {target, emitted}
+          end)
+
+        Enum.reduce(order, world, fn name, acc ->
+          s = acc[name]
+
+          if s.status == :running,
+            do:
+              Map.put(
+                acc,
+                name,
+                elem(Structure.step(s, inputs(fields: fields[name]), tick, c.catalog), 0)
+              ),
+            else: acc
+        end)
+      end)
+    end
+
+    forward = run.([:a, :b, :lamp])
+    assert run.([:lamp, :b, :a]) == forward
+    assert forward.lamp.debt_micro > 0
   end
 
-  # 同拍内脉冲与目标一起步进：World 先按拍首状态算全部场，再按 id 升序步进（脉冲不吃自己的场）。
-  defp under_pulse(c, target, distance_m, ticks) do
+  # 同拍内脉冲与目标一起步进：World 先按拍首状态取场，再步进（脉冲不吃自己的场）；目标可带供能 `feed_w`。
+  defp under_pulse(c, target, distance_m, ticks, feed_w \\ 0) do
     Enum.reduce(1..ticks, {pulse(c), target, []}, fn tick, {p, t, outs} ->
       fields =
         if p.status == :running,
@@ -187,30 +226,39 @@ defmodule VoxelRegion.MagicStructureTest do
 
       {t, out} =
         if t.status == :running,
-          do: Structure.step(t, inputs(fields: fields), tick, c.catalog),
+          do: Structure.step(t, inputs(fields: fields, feed_w: feed_w), tick, c.catalog),
           else: {t, nil}
 
       {p, t, if(out, do: [out | outs], else: outs)}
     end)
   end
 
-  test "A.4 结果：未供能的灯正中被驱散、1 m 处存活且净欠账 0.606；火球 1 m 处被驱散；脉冲约 0.6 s 后衰竭（按拍取整 1.0 s）", c do
-    {p, lamp_center, outs} = under_pulse(c, lamp(c), 0, 4)
-    assert lamp_center.status == {:terminated, :dispelled}
-    Enum.each(outs, &assert_closed/1)
-    assert p.status == {:terminated, :exhausted}
-    assert p.last_tick == 2
+  defp debt(s), do: s.debt_micro / 1.0e6
 
-    # v2.7 R1：第 2 拍场在 0.095 s 结束，其后 0.405 s 线内段偿还，1 m 处净欠账 0.606（毛剂量 0.617 见上一用例）。
-    # A.4 按出生装载 x 0.221 计；逐拍步进时第 1 拍的越线泄漏约 4.9 kJ 使第 2 拍 x 降到 0.198，手算净欠账 0.6027，
-    # 所以容差取 0.004。
+  test "A.4（v2.9 逐拍）：灯正中 1.182 第 1 拍驱散、1 m 处 0.601 存活；火球 1 m 0.76 驱散；供能 300 W / 3 kW 的灯正中 1.152 / 0.877",
+       c do
+    {p, lamp_center, outs} = under_pulse(c, lamp(c), 0, 4)
+    assert {lamp_center.status, lamp_center.last_tick} == {{:terminated, :dispelled}, 1}
+    assert_in_delta debt(lamp_center), 1.182, 0.0005
+    Enum.each(outs, &assert_closed/1)
+    assert {p.status, p.last_tick} == {{:terminated, :exhausted}, 2}
+
+    # 脉冲在第 2 拍 0.0933 s 结束，之后的线内段偿还；脉冲结束时的净欠账。
     {_, lamp_1m, _} = under_pulse(c, lamp(c), 1, 2)
     assert lamp_1m.status == :running
-    assert_in_delta lamp_1m.debt_micro / 1.0e6, 0.606, 0.004
+    assert_in_delta debt(lamp_1m), 0.601, 0.0005
 
     {_, fireball_1m, outs} = under_pulse(c, fireball(c), 1, 4)
-    assert fireball_1m.status == {:terminated, :dispelled}
+    assert {fireball_1m.status, fireball_1m.last_tick} == {{:terminated, :dispelled}, 1}
+    assert_in_delta debt(fireball_1m), 0.76, 0.005
     Enum.each(outs, &assert_closed/1)
+
+    # 短脉冲供能挡不住：两者都在第 1 拍终止。
+    for {feed_w, expected} <- [{300, 1.152}, {3000, 0.877}] do
+      {_, fed, _} = under_pulse(c, lamp(c), 0, 2, feed_w)
+      assert {fed.status, fed.last_tick} == {{:terminated, :dispelled}, 1}
+      assert_in_delta debt(fed), expected, 0.0005
+    end
   end
 
   # ---- 持续扰乱场与供能（A.4 末段） ----
@@ -410,47 +458,5 @@ defmodule VoxelRegion.MagicStructureTest do
     assert {_tick, guarded, out} = until_triggered(guarded, 4..30, c, fields)
     assert guarded.status == :running
     assert [%{priority: 1, outcome: :met, responses: [%{id: "resp.release"}]}] = out.triggered
-  end
-
-  # ---- 活动未付足时场按 t_eff 缩短（§5.3.3 v2.7 R7②） ----
-
-  test "R7②：活动能未付足的那一拍，场的存续按 t_eff = 实付活动能 ÷ P_act 缩短；付足的拍为名义时长", c do
-    # 5 kW 持续场：τ 按出生值约 60 s，但泄漏先付，运转储能在 τ 之前耗尽。最后一拍的拍首储能若不够“泄漏 + 2.5 kJ
-    # 活动”，活动只付一部分；够付但付后低于 E_min 则整付后终止。〈蓄〉在 300.0–301.0 kJ 间按 100 J 逐个取（dec e = 2，
-    # 偏移 29），找到第一个最后一拍未付足的实例。
-    {tick, before, after_step, out} =
-      Enum.find_value(3000..3010, fn m ->
-        program = program!(patch(c.field_bytes, 29, <<2::4, m::12>>), c.catalog)
-        quote = Cost.quote_structure(program, c.catalog, @site)
-        p = Structure.new({3, 0}, hd(program.groups), quote, 0)
-
-        Enum.reduce_while(1..200, p, fn tick, p ->
-          {next, out} = Structure.step(p, inputs(), tick, c.catalog)
-
-          cond do
-            next.status == :running ->
-              assert out.metrics.field_s == 0.5 and out.ledger.out.activity_mj == 2_500_000
-              {:cont, next}
-
-            out.ledger.out.activity_mj < 2_500_000 ->
-              {:halt, {tick, p, next, out}}
-
-            true ->
-              {:halt, nil}
-          end
-        end)
-      end)
-
-    assert after_step.status == {:terminated, :exhausted}
-    nominal = Structure.disruption_field(before, 1, tick, c.catalog)
-    assert nominal.seconds == 0.5
-    paid_mj = out.ledger.out.activity_mj
-    assert out.metrics.field_s == paid_mj / 5000 / 1000 and out.metrics.field_s < 0.5
-
-    # 发出者本拍已步进（且已终止）：World 取到的是 t_eff 的场，env 增量不变。
-    case Structure.disruption_field(after_step, 1, tick, c.catalog) do
-      nil -> assert paid_mj == 0
-      shortened -> assert shortened == %{nominal | seconds: out.metrics.field_s}
-    end
   end
 end

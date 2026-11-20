@@ -1,6 +1,6 @@
 # 魔法目录 v5 schema（服务端起草）
 
-> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），§7 各项均已由设计确认或改正。
+> 状态：**切片 0a**，随 `Magic.Catalog` 版本 5 解码一起落地；已按设计 v2.6 更新、v2.8 调整 4 个姿态（姿态、9 个预设、`b_floor`、§11.4.5.1 新常数、K3 全部下标冻结），v2.9 加入 `property_class`、两项从零定义步长并把〈热〉`phi_grade` 收为 [1, 1]（Q21(a)、A3），§7 各项均已由设计确认或改正。
 > 上游：决策稿 [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md) §3.1；设计 v2.6 §11.4.5 规定目录 v5 由服务端起草并冻结。
 > 唯一解释者：`apps/voxel_region/lib/voxel_region/magic/catalog.ex`（schema 与加载校验）、`program.ex`（IR v2 字节）、`signature.ex`（签名）。本文只描述字段，不复述字节规范；字节规范以设计 §11.4 为准。
 > Test-only 夹具：`apps/voxel_region/test/fixtures/magic/<sha256>.json`（P1 内容，见 §6）。
@@ -48,7 +48,7 @@ flowchart LR
 ## 4. `quotas` 与 `runtime`
 
 全部为正数；名称带单位后缀；未列出的字段一律拒绝。0a 只解码，语义由 Cost（0b）、Structure（0c）与切片 9 消费。
-共 `quotas` 19 项、`runtime` 37 项（35 个数 + 2 个三元组）。设计 §11.4.5.1 核对了原有的 17 + 23 项（设计写作“17 + 25”，按名称逐项数实为 23）并确认名称、语义、P1 值一致；表中标 ★ 的是该节建议补入、本次照抄名称与值加入的字段。
+共 `quotas` 19 项、`runtime` 39 项（37 个数 + 2 个三元组）。设计 §11.4.5.1 核对了原有的 17 + 23 项（设计写作“17 + 25”，按名称逐项数实为 23）并确认名称、语义、P1 值一致；表中标 ★ 的是该节建议补入、本次照抄名称与值加入的字段，标 ☆ 的是设计 v2.9（§4.5，Q21(a)）加入的字段。
 
 | `quotas` 字段 | 设计量 | P1 值 |
 |---|---|---|
@@ -91,6 +91,7 @@ flowchart LR
 | ★ `release_heat_fraction` | 终止释放中作为热的份额（§5.5） | 0.5 |
 | ★ `thermal_sleep_delta_k` / `thermal_sleep_power_w` | 热节点休眠阈值（§5.3.2） | 5 / 100 |
 | ★ `quote_life_slices` | `life_s` 能量切片求积段数（§4.2） | 32 |
+| ☆ `scratch_unit_step` / `scratch_precision_step` | 从零定义 c 类：单元 Σ(1 + s_u·(i − 1))、精度 +s_p·(c − 1)（§4.5）；Q 取 `repair_quality[2]` | 0.5 / 0.25 |
 
 `Magic.Structure` 与 `Magic.Cost` 读取上表全部 `runtime` 字段，不再持有同值模块常数（0b）；只保留设计正文写死、目录没有字段的归一常数（邻居与剂量的 1 kW、释放剂量的 1 kJ、过载线 0.8·x*、〈满〉的 1/32 量化）。`env_neighbor_max` 由 World 选邻居时使用；`thermal_sleep_*`、`windup_interrupt_dose` 的消费方在切片 1。
 ## 5. 符号表 `symbols[]`
@@ -102,6 +103,7 @@ flowchart LR
 | `section` | 是 | `caster_action`、`anchor.form`、`anchor.ref`、`shape`、`quality`、`energy`、`motion`、`rule.reading`、`rule.response` |
 | `phase` | 是 | 阶段号（正整数）；只发布已开放阶段的符号（B4） |
 | `in_program` | 否，默认 true | false 表示该符号只用于编辑器、计价与字形，下标出现在程序任何 Glyph 位置都拒绝（〈否〉，N3） |
+| `property_class` | 否 | 质段耦合写入的性质类别（设计 v2.9 §4.5，Q21(a)），取值 `thermal`、`emission`、`appearance`、`mechanical`；只允许 `quality` 段符号写，其余段写即拒绝；不写 = 不写入性质类（字段缺省，不写 `null`）。同组写入 ≥ 2 个不同类别时 Cost 按“从零定义”计价（附加量随构造顺序在引入第 k 类的那一步累加）。P1：〈热〉= `thermal`、〈辉〉= `emission`，其余 12 个符号不写 |
 | `params` | 是 | 槽数组，**顺序即字节顺序**，P1 照抄设计 §11.4.2 槽表；见下表 |
 | `ranges_by_param` | 否 | `{枚举槽: {枚举名: {槽: [min, max]}}}`；必须覆盖该枚举的每个已发布值；“须为 0”写作 `[0, 0]` |
 | `provides` / `provides_by_param` | 否 | 本符号向本组提供的标签 / `{槽: {取值键: [标签]}}` |
@@ -144,7 +146,9 @@ flowchart LR
 
 ## 6. P1 Test-only 夹具
 
-- 文件：`test/fixtures/magic/c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b.json`（取代 0a 初版 `ce77caac….json`）。
+- 文件：`test/fixtures/magic/77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf.json`（设计 v2.9 版；依次取代 `ce77caac…`、`64834aa5…`、`c6f60cdb…`）。
+- v2.9 相对 `c6f60cdb…` 只改三处：〈热〉`phi_grade` 区间 [1, 3] → [1, 1]（A3）；〈热〉〈辉〉加 `property_class`；`runtime` 加 `scratch_unit_step`、`scratch_precision_step`。程序字节与 `ir-v2-samples.json` 的样本不变，只更新其 `catalog_digest`。
+- 离线报价样本 `test/fixtures/magic/quote-v2-samples.json`（带同一 `catalog_digest`）：9 个预设经 `Cost.quote_structure/3` 的报价与 T5/T13/T15 各一个反例，供客户端 U0 对接；由 `test/magic_quote_samples_test.exs` 生成并校验不漂移。
 - 14 个 P1 符号，下标取设计 §2.3 表序（〈容〉0x0017、〈满〉0x0024）；其余 47 个下标写入 `reserved_symbols`（含〈否〉0x0035）。签名按设计 §2.3、§3.1–3.3 写成数据。
 - `pose` 照抄设计 §2.6 的 14 个 P1 姿态（整数度；〈取〉保留 v4 姿态）。v2.8（字形辨识 G1）调整了〈遇〉34、〈时〉35、〈满〉36、〈散〉44 四个姿态，〈散〉所在响应层左三位改为 (−60, −45, 10)。
 - 预设：§11.4.5 清单的 9 组，按清单顺序：`draw_1mj`、`draw_2mj`、`lamp`、`fireball`、`hot_throw`、`scorch`、`dispel_pulse`、`timed_ember`、`guarded_fireball`。字节从设计 §11.4.4 逐字抽取；同一份字节另存 `test/fixtures/magic/ir-v2-samples.json`（带本目录 digest），供客户端测试读取。

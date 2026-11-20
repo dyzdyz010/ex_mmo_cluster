@@ -5,7 +5,7 @@ defmodule VoxelRegion.MagicIrTest do
   - 契约：设计 v2.6 §11.4（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）的字节布局、
     §11.4.2 的 B1 槽检查顺序与 K1 `dec` 规范判据、§11.4.3 的拒绝清单与 K4 分层；目录 schema 见
     `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
-  - 夹具：`fixtures/magic/c6f60cdb….json` 是按 schema 手写的 Test-only 目录（P1 14 个符号与 47 个预留下标，
+  - 夹具：`fixtures/magic/77036cbc….json` 是按 schema 手写的 Test-only 目录（P1 14 个符号与 47 个预留下标，
     按 §2.3 表序冻结全部 61 个下标；姿态照抄 §2.6），不是 UE 发布物；`fixtures/magic/ir-v2-samples.json` 是从设计
     §11.4.4 逐字抽取的 9 组冻结字节（服务端持有的唯一判据）。
   - 判定：冻结样本的期望语义值抄自设计 §11.4.4 的逐字节注释；反例字节在样本上按注释偏移手工改写，期望原因与偏移手算。
@@ -17,7 +17,7 @@ defmodule VoxelRegion.MagicIrTest do
   alias VoxelRegion.Magic.{Catalog, Program}
   alias VoxelRegion.Magic.Program.{Glyph, Group, Rule}
 
-  @digest "c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b"
+  @digest "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @preset_ids ~w(draw_1mj draw_2mj lamp fireball hot_throw scorch dispel_pulse timed_ember guarded_fireball)
@@ -58,7 +58,12 @@ defmodule VoxelRegion.MagicIrTest do
     assert {c.catalog.runtime.windup_interrupt_dose, c.catalog.runtime.env_neighbor_radius_m,
             c.catalog.runtime.env_neighbor_max, c.catalog.runtime.thermal_sleep_delta_k,
             c.catalog.runtime.thermal_sleep_power_w, c.catalog.runtime.quote_life_slices} == {0.3, 8, 16, 5, 100, 32}
-    assert {map_size(c.catalog.quotas), map_size(c.catalog.runtime)} == {19, 37}
+    assert {map_size(c.catalog.quotas), map_size(c.catalog.runtime)} == {19, 39}
+    # 设计 v2.9：〈热〉phi_grade 只发布 1 级（A3）；Q21(a) 的性质类与从零定义步长。只有〈热〉〈辉〉写 property_class。
+    assert Enum.find(c.catalog.symbols[15].params, &(&1.name == "phi_grade")) |> Map.take([:min, :max]) == %{min: 1, max: 1}
+    assert {c.catalog.runtime.scratch_unit_step, c.catalog.runtime.scratch_precision_step} == {0.5, 0.25}
+    assert for({_, s} <- c.catalog.symbols, s.property_class, into: %{}, do: {s.id, s.property_class}) ==
+             %{"cpl.thermal" => "thermal", "cpl.glow" => "emission"}
 
     # 姿态照抄设计 §2.6（整数度，解码为弧度）：〈取〉保留 v4 姿态；〈满〉〈散〉各为条件层、响应层左支加各自右支。
     degrees = fn index -> Enum.map(c.catalog.symbols[index].pose, &round(&1 * 180 / :math.pi())) end
@@ -109,6 +114,11 @@ defmodule VoxelRegion.MagicIrTest do
       # 新字段必填；拼错的字段仍按未知字段拒绝。
       update_in(c.data, ["construction"], &Map.delete(&1, "b_floor")),
       put_in(c.data, ["runtime", "quote_life_slice"], 32),
+      update_in(c.data, ["runtime"], &Map.delete(&1, "scratch_unit_step")),
+      # property_class 只允许质段符号取已定义的类别。
+      symbol(c.data, "cpl.glow", &Map.put(&1, "property_class", "light")),
+      symbol(c.data, "energy.load", &Map.put(&1, "property_class", "thermal")),
+      symbol(c.data, "cpl.glow", &Map.put(&1, "property_class", nil)),
       # ref8 槽须有 refs 声明（S4：非 0xFF 值只由签名层判）。
       symbol(c.data, "anchor.surface", &Map.delete(&1, "refs")),
       # K3 预留表：下标与已发布符号重复、id 与已发布符号重复、表序留空洞、预留项重复。
@@ -257,6 +267,8 @@ defmodule VoxelRegion.MagicIrTest do
       {patch(lamp, 21, <<0x112C::16>>), {:noncanonical_dec, 21, "power_w"}},
       # 量化越界：2001 W > 2000；4095×10^15 J 用整数比较，不溢出。
       {patch(lamp, 21, <<0x07D1::16>>), {:out_of_range, 21, "power_w", 2001}},
+      # P1 只发布 phi_grade = 1（设计 v2.9 A3）；火球偏移 23 是 phi_grade。
+      {patch(fireball, 23, <<2>>), {:out_of_range, 23, "phi_grade", 2}},
       {patch(lamp, 26, <<0xFFFF::16>>), {:out_of_range, 26, "energy_j", 4095 * 10 ** 15}},
       # zero_means_absent 只豁免 0：写入 5 g 仍按 [10, 50000] 检查。
       {patch(lamp, 16, <<5::16>>), {:out_of_range, 16, "mass_g", 5}},

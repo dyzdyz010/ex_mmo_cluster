@@ -3,20 +3,22 @@ defmodule VoxelRegion.MagicCostTest do
   只测试：结构报价 `Magic.Cost.quote_structure/3` 与分阶段失败 `staged_failure/3`（符号组合魔法 v2 切片 0b；
   决策稿测试矩阵第 3 条）。
 
-  - 契约：设计 v2.7（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.2 逐步计价与 `life_s`、
-    §3.3 数值检查 T5/T6/T13/T14/T15、§3.6 与 §5.5 分阶段失败、§11.4.7 整数公式与 b_floor。
+  - 契约：设计 v2.9（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）§4.2 逐步计价、`life_s`、
+    `detect_w` 与 `entries`（A5）、§4.5 从零定义（Q21(a)）、§3.3 数值检查 T5/T6/T13/T14/T15、§3.6 与 §5.5 分阶段失败、
+    §11.4.7 整数公式与 b_floor。
   - 夹具：程序一律由冻结样本 `fixtures/magic/ir-v2-samples.json` 经真实 `Program.decode_ir/2` 解码；反例由样本
     改写槽字节得到（偏移按设计 §11.4.4 逐字节注释手数），同样经解码器接纳，都是玩家能写出的程序。
   - 施放处读数：环境 293.15 K（附录 A.1）；T15 的热环境取设计 A.7 的示意值 ε = 0.9、h = 10 W/(m²·K)，
     World 的实值由切片 1 接线时传入。
-  - 判定：期望值取设计（v2.8）正文与附录 A 的数字（A.3、A.7、A.8、A.10），容差按文档给出的位数；不复制产品公式。
-  - 不覆盖：多组程序（P2）、〈链〉供能、`detect_w` 与 `entries`（设计未给定义，见决策稿进度日志）。
+  - 判定：期望值取设计（v2.9）正文与附录 A 的数字（A.2、A.3、A.7、A.8、A.10、§4.5 的例子），容差按文档给出的位数；
+    不复制产品公式。
+  - 不覆盖：多组程序（P2）、〈链〉供能、`entries_charge`（P1 目录没有〈纳〉〈印〉，恒为 0）。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Structure}
 
-  @digest "c6f60cdbcdcc287d71301ed415a0782d8968cc9c7376cb49aed7d2a0ab5e421b"
+  @digest "77036cbc08e1e1dd0139f81c32ba45160c730256d8ced6715f20684f368957bf"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @ambient_k 293.15
@@ -56,8 +58,9 @@ defmodule VoxelRegion.MagicCostTest do
 
   # ---- 造价与前摇（附录 A.10，v2.3 姿态） ----
 
-  test "7 个 P1 预设：造价、前摇与构造顺序对拍 A.10（v2.8 姿态），单元数对拍 A.3，全部通过数值检查", c do
-    # {造价 kJ, 前摇 s, S, 构造顺序}；火球、过热保险火球、定时火种取 v2.8 G1 重算值。
+  test "7 个 P1 预设：造价、前摇与构造顺序对拍 A.10（v2.9），单元数对拍 A.3，全部通过数值检查", c do
+    # {造价 kJ, 前摇 s, S, 构造顺序}；火球、过热保险火球、定时火种取 v2.8 G1 重算值，炽热投掷、灼点取 v2.9 D1 改正值。
+    # 7 个预设都只写一类性质，不触发 §4.5 的从零定义附加量（Q21(a)），所以造价与 v2.8 相同。
     expected = %{
       "lamp" => {53.6, 0.91, 2, ~w(anchor.hand form.semblance cpl.glow energy.load)},
       "fireball" =>
@@ -67,25 +70,19 @@ defmodule VoxelRegion.MagicCostTest do
         {472.1, 1.60, 5,
          ~w(anchor.hand form.semblance cpl.thermal energy.load act.throw cond.contact resp.release cond.load resp.release)},
       "hot_throw" =>
-        {1894.5, 2.43, 3, ~w(anchor.hand form.semblance cpl.thermal energy.load act.throw)},
-      "scorch" => {421.8, 1.15, 2, ~w(anchor.surface form.semblance cpl.thermal energy.load)},
+        {1894.27, 2.43, 3, ~w(anchor.hand form.semblance cpl.thermal energy.load act.throw)},
+      "scorch" => {421.66, 1.15, 2, ~w(anchor.surface form.semblance cpl.thermal energy.load)},
       "timed_ember" =>
         {206.9, 1.37, 2, ~w(anchor.surface form.semblance energy.load cond.timer resp.release)},
       "dispel_pulse" => {64.0, 0.84, 2, ~w(anchor.surface form.semblance int.disrupt energy.load)}
     }
 
-    # 造价容差 0.1 kJ（A.10 的位数）。例外：炽热投掷与灼点在 A.10 的“零路径”列就比按 §4.2 逐步计价的结果高
-    # 0.19 / 0.13 kJ（其余 5 组零路径逐位一致），差异不来自姿态路径；已报 worldbook 待核，这两组暂按 0.25 kJ 判。
-    tolerance_kj = %{"hot_throw" => 0.25, "scorch" => 0.25}
-
+    # 造价容差 0.1 kJ（A.10 的位数；v2.9 D1 改正后 7 组全部适用）。
     for id <- @presets do
       {kj, windup_s, units, order} = expected[id]
       q = quote!(c, c.bytes[id])
 
-      assert_in_delta q.total_mj / 1.0e6,
-                      kj,
-                      Map.get(tolerance_kj, id, 0.1),
-                      "#{id} 造价 #{q.total_mj / 1.0e6} kJ"
+      assert_in_delta q.total_mj / 1.0e6, kj, 0.1, "#{id} 造价 #{q.total_mj / 1.0e6} kJ"
 
       assert_in_delta q.windup_s, windup_s, 0.01, "#{id} 前摇 #{q.windup_s} s"
       assert q.units == units and q.precision == 1, id
@@ -110,6 +107,67 @@ defmodule VoxelRegion.MagicCostTest do
     assert_in_delta q.x0, 0.427, 0.001
     assert_in_delta q.x_star, 0.612, 0.001
     assert q.e_min_mj == 1_000_000
+  end
+
+  test "A5：detect_w = 泄漏热份额 × (出生 P_run + P_rep，env = 1) + 发光；entries_spoof 计外部读数种类（火球 1、定时火种 0）",
+       c do
+    # A.2：灯 0.5 × (178 + 113) + 100 W；火球 0.5 × (690 + 241) W，无发光。手算各项取整到 1 W，容差按此。
+    lamp = quote!(c, c.bytes["lamp"])
+    fireball = quote!(c, c.bytes["fireball"])
+    assert_in_delta lamp.detect_w, 0.5 * (178 + 113) + 100, 1.0
+    assert_in_delta fireball.detect_w, 0.5 * (690 + 241), 1.0
+    # 口径固定为 env = 1：施法处更热不改变 detect_w（只改变 p_maint_w）。
+    hot = quote!(c, c.bytes["lamp"], ambient_k: 500.0)
+    assert hot.detect_w == lamp.detect_w and hot.p_maint_w > lamp.p_maint_w
+
+    # 〈遇〉是外部读数（需要耦合）；〈时〉〈满〉读自身，不计；过热保险火球〈遇〉+〈满〉仍为 1。P1 无〈纳〉，charge 恒为 0。
+    for {id, spoof} <- [{"fireball", 1}, {"timed_ember", 0}, {"guarded_fireball", 1}, {"lamp", 0}] do
+      assert Map.take(quote!(c, c.bytes[id]), [:entries_charge, :entries_spoof]) ==
+               %{entries_charge: 0, entries_spoof: spoof},
+             id
+    end
+  end
+
+  test "Q21(a) 从零定义：灼点加〈辉〉写入两类性质，单元 +0.5、精度 +0.25、Q = 0.7；S·P 4.38、x* 0.32（§4.5）", c do
+    # 灼点质段（偏移 19 n_qual，20–24〈热〉）后插入〈辉 100 W〉（下标 0x0010，dec(0, 100)），按规范顺序排在〈热〉之后。
+    scorch = c.bytes["scorch"]
+
+    glowing =
+      binary_part(scorch, 0, 19) <>
+        <<2>> <>
+        binary_part(scorch, 20, 5) <> <<0x0010::16, 0x0064::16>> <> binary_part(scorch, 25, 7)
+
+    plain = quote!(c, scorch)
+    q = quote!(c, glowing)
+
+    # 〈辉〉自身 1 单元，加从零定义第 2 类的 0.5；精度 +0.25；修复基值 r0·Q 由 0.05 /s 变为 0.05 × 0.7。
+    assert q.units - plain.units == 1.5 and q.precision - plain.precision == 0.25
+    assert_in_delta q.r_base_per_s / plain.r_base_per_s, 0.7, 1.0e-12
+
+    # §4.5 的例子〈形〉〈热〉〈辉〉〈蓄〉：S·P 由 3 变为 4.38（= 3.5 × 1.25，文档取两位），x* 由 0.61 降到 0.32。
+    assert q.units * q.precision == 4.375
+    assert_in_delta q.x_star, 0.32, 0.005
+
+    # 附加量在引入第 2 类的那一步进入构造（附 → 形 → 热 → 辉 → 蓄）。
+    assert Enum.map(q.steps, & &1.complexity) == [0, 1, 2, 4.375, 4.375]
+  end
+
+  test "施法者动作〈取〉：只有构造计价，物理能量 0，一步从静息到〈取〉姿态（§4.2）", c do
+    # 静息 (150, −120, −120 | 30, 120, 120)° 到〈取〉(155, −90, −95 | 25, 90, 95)°：d = √3100° = 0.9718 rad；
+    # S·P = 1 → b = b0 = 1000 W；T_adj = d·√(η/b0) = 0.1304 s，前摇 + 出手前置 0.3 s；损耗 2·d·√(η·b0) + b0·0.3 = 560.7 J。
+    for id <- ~w(draw_1mj draw_2mj) do
+      {:ok, %Program{kind: :caster_action} = draw} = Program.decode_ir(c.bytes[id], c.catalog)
+      q = Cost.quote_structure(draw, c.catalog, @site)
+      assert {q.units, q.precision, q.physical_mj, q.rejects} == {1, 1, 0, []}
+
+      assert [%{symbol: "energy.draw", part_index: 0, complexity: 1, inject_s: inject_s}] =
+               q.steps
+
+      assert inject_s == 0
+      assert_in_delta q.windup_s, 0.1304 + 0.3, 0.0005
+      assert_in_delta q.total_mj / 1000, 560.7, 0.1
+      assert q.total_mj == q.loss_mj and hd(q.steps).spent_mj == q.total_mj
+    end
   end
 
   test "b_floor：第一步只有形成锚（0 单元、无体积与能量），维护功率取 b0，调整时长有限（§11.4.7）", c do
@@ -258,7 +316,7 @@ defmodule VoxelRegion.MagicCostTest do
     end)
   end
 
-  test "life_s：无热耦合结构与逐拍模拟相差 ≤ 0.5%；有热耦合者为偏短 16–25% 的保守下界（A.8）", c do
+  test "life_s：无热耦合结构与逐拍模拟相差 ≤ 0.5%；带热耦合者偏短约 15–30%，以 Structure 逐拍为准（§4.2、A.8，v2.9 D2）", c do
     # {A.8 求积值 s, 是否带热耦合}
     for {id, documented} <- [{"lamp", 131.7}, {"timed_ember", 572.3}] do
       life = quote!(c, c.bytes[id]).life_s
@@ -267,11 +325,13 @@ defmodule VoxelRegion.MagicCostTest do
       assert abs(life / simulated - 1) <= 0.005, "#{id}: 求积 #{life} s，逐拍 #{simulated} s"
     end
 
+    # 契约只有一条：热端口高于环境时求积值 ≤ 真实寿命；偏短幅度取决于热份额的流出速度，文档写作“约 15–30%”
+    # （服务端 0b 实测火球 −17.9%、灼点 −20.9%、炽热投掷 −25.3%），所以比值判在 [0.70, 0.85]。
     for {id, documented} <- [{"fireball", 20.5}, {"scorch", 24.9}, {"hot_throw", 57.5}] do
       life = quote!(c, c.bytes[id]).life_s
       assert_in_delta life / documented, 1.0, 0.01, "#{id} life_s #{life}"
       ratio = life / simulated_life_s(c, id)
-      assert ratio >= 0.74 and ratio <= 0.85, "#{id}: 求积 / 逐拍 = #{ratio}"
+      assert ratio >= 0.70 and ratio <= 0.85, "#{id}: 求积 / 逐拍 = #{ratio}"
     end
 
     # 驱散脉冲：求积值即真实存续 τ = (E₀ − E_min) / P_act = 0.595 s。

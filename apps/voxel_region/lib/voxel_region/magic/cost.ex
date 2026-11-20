@@ -5,9 +5,10 @@ defmodule VoxelRegion.Magic.Cost do
 
   ## 结构报价（符号组合魔法 v2，切片 0b；目录 v5）
 
-  `quote_structure/3` 按设计 v2.7（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`，下称“设计”）
-  §4.2 计价、§4.4 容量、§3.3 数值检查、§11.4.7 整数公式给出一个结构组的报价；`staged_failure/3` 按 §5.5 / §3.6
-  判定建构在第几步中断、只结算第 1..k 步。落地决策见 `docs/10-active/magic/2026-11-19-glyph-v2-server-landing.md`.
+  `quote_structure/3` 按设计 v2.9（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`，下称“设计”）
+  §4.2 计价、§4.4 容量、§4.5 从零定义、§3.3 数值检查、§11.4.7 整数公式给出一个结构组的报价（施法者动作程序只有
+  构造计价）；`staged_failure/3` 按 §5.5 / §3.6 判定建构在第几步中断、只结算第 1..k 步。落地决策见
+  `docs/10-active/magic/2026-11-19-glyph-v2-server-landing.md`。
 
   ```mermaid
   flowchart LR
@@ -23,12 +24,19 @@ defmodule VoxelRegion.Magic.Cost do
   - **逐步计价**（§4.2、§11.4.7）：q_0 = 目录 `rest_pose`，d_i = ‖q_i − q_{i−1}‖₂；S_i、P_i 为前 i 步的单元与精度
     （P = 1 + Σπ），体积项 V/V_ref 在〈形〉一步加入，H_i 为前 i 步物理能量；
     b_i = b0·max(b_floor, S_i·P_i + V_i/V_ref + H_i/E_ref)^α；调整 T_adj = d_i·√(η/b_i)、注能 T_inj = E_i / P_max、
-    本步损耗 L_i = 2·d_i·√(η·b_i) + b_i·T_inj；出手前置 hold = b_final·release_lead_s 计入最后一步。
+    本步损耗 L_i = 2·d_i·√(η·b_i) + b_i·T_inj；出手前置 hold = b_final·release_lead_s 并入最后一步（§4.2，v2.9 A6）。
+  - **从零定义**（§4.5，v2.9 Q21(a)）：P1 没有〈仿〉，同组写入 c ≥ 2 类性质（目录 `property_class`）时按从零定义计价：
+    单元 = Σ_{i=1..c} (1 + s_u·(i − 1))、精度 +s_p·(c − 1)、修复质量 Q = `repair_quality[2]`；s_u、s_p 取目录
+    `scratch_unit_step`、`scratch_precision_step`。附加量随构造顺序累加：引入第 k 类（k ≥ 2）的那一步加 s_u·(k − 1)
+    单元与 s_p 精度。c ≤ 1 时 Q = `repair_quality[0]`（照原型或只写一类）。
   - **物理能量**（§4.2 第 3 条、§11.4.7，整数 mJ）：〈蓄〉一步 E₀_op；〈热〉一步 max(0, E_th0)；〈投〉一步动能。
     E_th0_mJ = mass_g·c·(t0_dk − T_ref_dk)/10，T_ref_dk = round(T_amb·10)；E_kin_mJ = round(mass_g·v_mmps²/2e6)。
   - **入账**：总支出 = E_phys（整数）+ round(ΣL_i + hold)（f64 按公式书写次序求值，四舍五入、半数远离零到 mJ），
     残差 `loss_rounding_mj` 交 World 记入分区账目 `structure_rounding_mj`（§5.8）。
-  - **运行期量**：x*、出生维持、T13 首拍出账与 `life_s` 全部经 `Magic.Structure` 公开的 §4.3 公式计算，不复制。
+  - **运行期量**：x*、出生维持、T13 首拍出账、`detect_w` 与 `life_s` 全部经 `Magic.Structure` 公开的 §4.3 公式计算，
+    不复制。
+  - **入口**（§4.2，v2.9 A5）：`entries_spoof` 数规则所读的外部读数种类，`entries_charge` 数没有〈印〉的〈纳〉；
+    判据见 `entries/2`。
   - **数值检查**（§3.3，只在服务端）：只做本组符号在目录 `numeric_checks` 中声明过的检查，结果全部列在 `rejects`。
 
   ## v4 报价（迁移期保留，切片 1 删除）
@@ -55,7 +63,8 @@ defmodule VoxelRegion.Magic.Cost do
     只按施法者所在格温度，不含邻近干扰）。
   - `formation_distance_m`：施法者到形成位置的距离（〈握〉为 0；〈附〉为准星格面），T6 `domain` 用。
   - `emissivity`、`exchange_w_per_m2_k`：World 热环境的发射率与线性换热系数（`world/thermal.ex` 的 `emissivity`、
-    `environment_w_per_m2_k`），T15 `thermal_step` 的 g_max 用（设计 A.7“实算用 World 的值”）。
+    `environment_w_per_m2_k`），T15 `thermal_step` 的 g_max 用。设计 v2.9 A2 确认二者属于 World 的热环境参数、
+    不进目录，报价时由 World 传入（§3.3 T15、附录 A.7），以免形成第二份真值。
   """
   @type site :: %{
           ambient_k: number(),
@@ -91,6 +100,10 @@ defmodule VoxelRegion.Magic.Cost do
   一个结构组的报价。输入是已过字节层与签名层的合法程序（P1 只有 1 个结构组；多组的计价规则随 P2 定，此处函数子句
   不匹配即显式失败）。
 
+  施法者动作程序（〈取〉，`kind: :caster_action`）不建结构，只有构造计价：`units`、`precision`、`physical_mj`
+  （恒为 0：〈取〉的能量来自能源，不由施法者注入，§4.2 第 3 条的 E_phys 各项都不含它）、`loss_mj`、`total_mj`、
+  `loss_rounding_mj`、`windup_s`、`steps`，以及空的 `rejects`（§3.3 的数值检查都针对结构）。
+
   参数与原决策稿 `quote_structure/4` 的差异及理由：施法者分辨 Ω_eff 不进报价，只交给 `staged_failure/3`——设计 §4.1
   要求报价时用当前 Ω_eff、出手时用出手瞬间的 Ω_eff 重裁，同一份报价要能按两个值判定；施放处读数合并为 `site/0`，
   因为 T6 需要形成距离、T15 需要 World 的热环境系数，二者都不在目录里。
@@ -103,10 +116,22 @@ defmodule VoxelRegion.Magic.Cost do
     `windup_s`、`steps`（`step/0` 列表）。
   - 运行期报价（§4.2，显示用 f64，不入账）：`x0`、`x_star`、`p_maint_w`（出生时运行 + 修复 + 发光 + 活动）、
     `first_tick_min_mj`（撑过第一拍所需的最小 E₀_op，即 T13 的右侧，编辑器提示“至少需要 N J”）、`life_s`（能量切片
-    求积；带热耦合者为保守下界）。
+    求积；带热耦合、热端口高于环境者为不超过真实寿命的下界）、`detect_w`（静持可察觉功率）。
+  - 入口（§4.2，v2.9 A5）：`entries_charge`、`entries_spoof`（整数）。
   - `rejects`：全部数值检查违规（`reject/0`）；空表即可施放。
   """
   @spec quote_structure(Program.t(), Catalog.t(), site()) :: map()
+  def quote_structure(%Program{kind: :caster_action, action: %Glyph{} = action}, catalog, _site) do
+    {placed, _pose} = nearest_first([{action, 0}], catalog.construction.rest_pose, catalog, [])
+
+    %{
+      units: Enum.sum(Enum.map(placed, & &1.units)),
+      precision: 1 + Enum.sum(Enum.map(placed, & &1.precision)),
+      rejects: []
+    }
+    |> Map.merge(construction(placed, %{}, 0.0, catalog))
+  end
+
   def quote_structure(
         %Program{kind: :structure, groups: [%Group{} = group]},
         %Catalog{} = catalog,
@@ -129,8 +154,11 @@ defmodule VoxelRegion.Magic.Cost do
       volume_m3: volume,
       e_cap_mj: round(rt.storage_density_j_per_m3 * volume * grade(group, "storage", rt) * 1000),
       e_min_mj: round(rt.min_energy_per_complexity_j * units * precision * 1000),
+      # Φ_cap = φ_A·A·g_Φ（§4.4）。P1 目录只发布〈热〉phi_grade = 1（槽区间 [1, 1]，v2.9 A3），g_Φ ≡ 1，
+      # 所以这里不读该槽；P2 随〈容 吞吐〉开放 2、3 级时须在此乘上 g_Φ 并按 `units_by_param` 计单元。
       phi_cap_w: rt.throughput_density_w_per_m2 * area,
-      r_base_per_s: rt.repair_rate_per_s * hd(rt.repair_quality) * grade(group, "repair", rt),
+      r_base_per_s:
+        rt.repair_rate_per_s * repair_quality(placed, rt) * grade(group, "repair", rt),
       e_th0_mj: thermal.e_th0_mj,
       c_th_j_per_k: thermal.c_th_j_per_k,
       t_ref_k: t_ref_dk / 10,
@@ -149,6 +177,7 @@ defmodule VoxelRegion.Magic.Cost do
     upkeep
     |> Map.merge(construction)
     |> Map.merge(runtime)
+    |> Map.merge(entries(group, catalog))
     |> Map.put(
       :rejects,
       rejects(placed, group, upkeep, thermal, runtime, shape.params, site, catalog)
@@ -160,7 +189,9 @@ defmodule VoxelRegion.Magic.Cost do
   S_k·P_k 超过 `resolution`（Ω_eff），或到第 k 步为止的累计支出超过可用余额 `available_mj`。
 
   返回 `nil`（建成，按报价 `total_mj` 结算），或 `{k, spent_mj}`：k 从 1 起；第 1..k 步的注能与构型损耗照付，
-  余额不足时付到耗尽为止，即 spent_mj = min(可用余额, 第 k 步累计支出)。其余步不发生、不扣费。
+  其余步不发生、不扣费。设计 v2.9 A6（§4.2 报价接口约定、§5.5）确认的扣费：余额耗尽时付到耗尽为止，即
+  spent_mj = min(可用余额, 第 1..k 步累计支出)；Ω 不足时扣第 1..k 步累计支出（此时余额足够，min 取后者）。
+  出手前置维护费已并入最后一步的累计支出（见 `construction/4`）。报价时与出手时各以当时的 Ω_eff 调用一次。
   """
   @spec staged_failure(map(), integer(), number()) :: nil | {pos_integer(), non_neg_integer()}
   def staged_failure(%{steps: steps}, available_mj, resolution) do
@@ -174,7 +205,8 @@ defmodule VoxelRegion.Magic.Cost do
 
   # ---- 部件与构造顺序（§3.5）----
 
-  # 本组全部部件，按构造顺序排好：{符号, glyph, 部件序号, 单元, 精度}。部件序号是规范字节中的 0 起序号（签名同一编号）。
+  # 本组全部部件，按构造顺序排好：{符号, glyph, 部件序号, 单元, 精度, 性质类}，单元与精度已含从零定义的附加量。
+  # 部件序号是规范字节中的 0 起序号（签名同一编号）。
   defp placements(%Group{} = group, catalog) do
     segments =
       [
@@ -197,8 +229,49 @@ defmodule VoxelRegion.Magic.Cost do
         nearest_first(segment, pose, catalog, [])
       end)
 
-    ordered
+    from_scratch(ordered, catalog)
   end
+
+  # 从零定义的附加量（§4.5，v2.9 Q21(a)）：按构造顺序，引入第 k 个不同性质类（k ≥ 2）的部件加
+  # scratch_unit_step·(k − 1) 单元与 scratch_precision_step 精度；合计即 s_u·c(c − 1)/2 与 s_p·(c − 1)。
+  # 只写一类（或不写）时没有附加量。P1 没有〈仿〉，所以写入的性质类都按从零计；P2 的原型分组随〈仿〉一起实现。
+  defp from_scratch(ordered, %Catalog{runtime: rt}) do
+    {parts, _classes} =
+      Enum.map_reduce(ordered, MapSet.new(), fn %{property_class: class} = part, classes ->
+        if class == nil or MapSet.member?(classes, class) do
+          {part, classes}
+        else
+          k = MapSet.size(classes) + 1
+
+          part =
+            if k >= 2,
+              do: %{
+                part
+                | units: part.units + rt.scratch_unit_step * (k - 1),
+                  precision: part.precision + rt.scratch_precision_step
+              },
+              else: part
+
+          {part, MapSet.put(classes, class)}
+        end
+      end)
+
+    parts
+  end
+
+  # 修复质量 Q（§4.3、§4.5）：同组写入 ≥ 2 类性质为从零定义 `repair_quality[2]`，否则 `repair_quality[0]`。
+  # `repair_quality[1]`（含偏离）随 P2 的〈偏〉启用。
+  defp repair_quality(placed, %{repair_quality: [whole, _deviated, scratch]}) do
+    if property_classes(placed) >= 2, do: scratch, else: whole
+  end
+
+  defp property_classes(placed),
+    do:
+      placed
+      |> Enum.map(& &1.property_class)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> length()
 
   # 段内贪心：每次取与上一字形姿态最近的部件；`Enum.min_by` 在并列时取列表中靠前者，即目录序（规范字节序）。
   defp nearest_first([], pose, _catalog, acc), do: {Enum.reverse(acc), pose}
@@ -217,7 +290,8 @@ defmodule VoxelRegion.Magic.Cost do
       pose: symbol.pose,
       distance: distance(symbol.pose, pose),
       units: by_param(symbol.units_by_param, glyph, symbol, symbol.units),
-      precision: by_param(symbol.precision_by_param, glyph, symbol, symbol.precision)
+      precision: by_param(symbol.precision_by_param, glyph, symbol, symbol.precision),
+      property_class: symbol.property_class
     }
 
     nearest_first(List.delete(segment, next), symbol.pose, catalog, [part | acc])
@@ -287,7 +361,7 @@ defmodule VoxelRegion.Magic.Cost do
          }}
       end)
 
-    # 出手前置：最终定形到出手帧的维护 b_final·release_lead_s，计入最后一步。
+    # 出手前置：最终定形到出手帧的维护 b_final·release_lead_s，并入最后一步（§4.2 报价接口约定，v2.9 A6 确认）。
     loss_j = last.loss_j + last.b_w * c.release_lead_s
     loss_mj = round(loss_j * 1000)
     steps = List.update_at(steps, -1, &%{&1 | spent_mj: last.physical_mj + loss_mj})
@@ -364,14 +438,44 @@ defmodule VoxelRegion.Magic.Cost do
       (born_upkeep_w + born.glow_w) * tick_s +
         activity_w * min(tick_s, if(born.activity, do: born.activity.duration_s, else: 0))
 
+    # 静持可察觉功率（§4.2，v2.9 A5）：leak_heat_fraction × (出生时 P_run + P_rep，env = 1) + glow_w。
+    # 热端口自身的放热是效果本身，不计入；活动整笔计为灵炁辐射（§5.3.3 R3），也不计入。
+    detect_w =
+      catalog.runtime.leak_heat_fraction *
+        upkeep_w(upkeep, born_load, 1, catalog) + born.glow_w
+
     %{
       x0: born_load / upkeep.e_cap_mj,
       x_star: Structure.steady_load(upkeep, env, 0, catalog),
       p_maint_w: born_upkeep_w + born.glow_w + activity_w,
       first_tick_min_mj: upkeep.e_min_mj + round(first_tick_j * 1000),
-      life_s: life_s(born, upkeep, env, born.glow_w + activity_w, catalog)
+      life_s: life_s(born, upkeep, env, born.glow_w + activity_w, catalog),
+      detect_w: detect_w
     }
   end
+
+  # 入口（§4.2，v2.9 A5；编辑器据此列“灌能入口 ×n、伪造信号入口 ×m”，§3.6）。
+  #
+  # - `entries_spoof`：规则所读外部读数的种类数。外部与否取自目录签名数据，不按符号 id 判断：T1（感知即耦合）
+  #   要求外部读数必须有提供它的耦合，所以读数段符号的签名声明了耦合要求（`requires_all` / `requires_any` /
+  #   `requires_by_param` 非空）即为外部读数（〈遇〉〈温〉〈明〉〈临〉〈至〉〈压〉）；读自身的〈时〉〈满〉〈扰〉没有这类声明，
+  #   不计。同一种读数在多条规则中出现只计 1。
+  # - `entries_charge`：没有〈印〉的〈纳〉数。P1 目录不发布〈纳〉〈印〉，也没有能标出“接收端口”与“选择性”的字段，
+  #   恒为 0；P2 发布二者时须在目录 schema 中加入对应数据，再在这里按数据计数。
+  defp entries(%Group{rules: rules}, catalog) do
+    spoof =
+      rules
+      |> Enum.flat_map(& &1.readings)
+      |> Enum.map(&catalog.symbols[&1.index])
+      |> Enum.filter(&external_reading?/1)
+      |> Enum.uniq_by(& &1.index)
+      |> length()
+
+    %{entries_charge: 0, entries_spoof: spoof}
+  end
+
+  defp external_reading?(symbol),
+    do: symbol.requires_all != [] or symbol.requires_any != [] or symbol.requires_by_param != %{}
 
   # 运行 + 修复损耗（W）：P_run(E) + e_r·min(D, R_max)，D 按装载 x = E / E_cap（§4.3；P1 无供能）。
   defp upkeep_w(upkeep, load_mj, env, catalog) do
@@ -485,8 +589,9 @@ defmodule VoxelRegion.Magic.Cost do
       else: []
   end
 
-  # 接触导热上限：沿每个轴取“该轴接触面积 / 该轴半程”的最大值乘拟态导热率。接触面积 = 包围盒另两轴的全长之积 ×
-  # 形状系数，路径 = 该轴半程（`Semblance.conductance/5` 的 r / k_s 同一串联式的拟态一侧）。球得 k·πr²/r = k·π·r（A.7）。
+  # 接触导热上限 g_contact = k_s · max_轴(该轴法向面积 ÷ 该轴半程)（设计 v2.9 A2：§3.3 T15、附录 A.7）。接触面积 =
+  # 包围盒另两轴的全长之积 × 形状系数，路径 = 该轴半程（`Semblance.conductance/5` 的 r / k_s 同一串联式的拟态一侧）。
+  # 半尺寸 a、b、c 时：块 = k_s·max(4bc/a, 4ac/b, 4ab/c)；板同块（第三轴取半厚）；球 = k_s·(π/4)·4r²/r = k_s·π·r。
   defp contact_conductance(%{"shape" => "sphere", "size1_mm" => r}, k),
     do: box_conductance("sphere", {r, r, r}, k)
 
