@@ -55,8 +55,10 @@
   `Brain.Tree` 是最小行为树后端（纯函数，叶子 `act` 经 `Abilities.command/4` 构造命令，与 LLM 共用同一份能力定义）；
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
-  内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位与 expand 走向地块都用它。目标也可以是一个角色（`entity_id` +
+  内置 `build`（放已发布定义，`Skills.Build`：先原样 `prefab_place`，权威回 `out_of_reach` 时按 `World.prefab_cells/4` 的足迹（与放置同一几何的定义格，不含附件格；只有附件的定义直接以
+  `out_of_reach` 结束）求
+  `Blueprint.stands/2` 站位，由近到远经 `Travel.walk/2` 走过去再放；已在射程内不走路，站位都走不到以 `unreachable` 结束）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位、expand 走向地块与 build 够不着时走向足迹站位都用它。目标也可以是一个角色（`entity_id` +
   `entity_epoch`）：每段开头 `get_target_status` 重读他的位置，水平 2.0 米内算到，否则朝他这一侧 1.5 米的落脚点走一段；段数预算 =
   起步时段数 + 2，用完 `target_moved`，他离开观察 `stale_target`）、`expand`（在作者划定的区域里找地块、地表略有起伏先平整、缺料自己采、放下已发布定义，
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
@@ -407,7 +409,7 @@ brain: {NpcServer.Brain.Tree, %{
 所以每工地每轮最多两次尝试，每次最多 gather 一次、build 重试一次。
 每个放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`（材料单取不到时没有 context）；一轮巡完等 `revisit_ticks`。
 主循环零 LLM，进度不存档，以权威为准：Body 重启后从头巡，已建的工地表现为 occupied → 自家锚点 → 跳过。
-作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
+作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内（不在时 `build` 会自己再走到足迹站位；之后若缺料，`gather` 从足迹站位出发，那里不在“站位两两不超过 reach”的保证内，可能 `too_far`）；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
 采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
 探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
 

@@ -17,7 +17,7 @@ defmodule NpcServer.Skills.Travel do
   `target_moved`（目标走远了，不追、不预测）；目标离开观察或换了代次 → `stale_target`；到达只算水平距离。
   寻路只看地形，不避让他人。
 
-  调用方：扩张技能走向候选地块（`walk/2`）、Settler 回工地站位（树的 `travel` 叶子）、统一形态 NPC 的去处与“去找某人”候选
+  调用方：扩张技能走向候选地块（`walk/2`）、建造技能够不着时走向足迹站位（`walk/2`，`NpcServer.Skills.Build`）、Settler 回工地站位（树的 `travel` 叶子）、统一形态 NPC 的去处与“去找某人”候选
   （`NpcServer.Trees.npc/1`）、LLM 走远路（技能条目）。只经 Body 原子动作（`NpcServer.Skill.call/2`），不读写 World。
   """
   @behaviour NpcServer.Skill

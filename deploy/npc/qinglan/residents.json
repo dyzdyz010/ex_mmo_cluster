@@ -4,7 +4,7 @@
   "activities": [
     {
       "name": "build_steps",
-      "criterion": "Build the stone steps at (-5, 516, 24) on the road shoulder west of the spawn square, or rebuild them if they are gone. Only one set of steps fits there. It takes 14680064 units of material 11 (stone). I can only build while standing near that spot (beside the steps or at the west gate); if I am anywhere else, I have to walk there first.",
+      "criterion": "Build the stone steps at (-5, 516, 24) on the road shoulder west of the spawn square, or rebuild them if they are gone. Only one set of steps fits there. It takes 14680064 units of material 11 (stone).",
       "skill": "build",
       "place_name": "stone steps",
       "args": {

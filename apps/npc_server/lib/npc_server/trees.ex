@@ -36,7 +36,9 @@ defmodule NpcServer.Trees do
 
   作者保证：定义（宏格或 micro 构件均可）占着锚点格（`anchor_micro` 所在的 macro 格，否则 occupied 时认不出是自家）；各站位与采石盒站位
   两两水平距离不超过 `Perception.reach()`（维护工地时是单程 move_to，不做分段与长途寻路）；配了扩张时，扩张区域（含外扩 2 格的站位）
-  也在这个范围里，否则远处扩张出来的工地在维护时 `too_far`、本轮跳过（`expand` 自己找地时会分段走）；站位离锚点格在工具射程内。
+  也在这个范围里，否则远处扩张出来的工地在维护时 `too_far`、本轮跳过（`expand` 自己找地时会分段走）；站位离锚点格在工具射程内
+  （不在时 `build` 会自己再走到足迹站位，见 `NpcServer.Skills.Build`；之后若缺料，`gather` 从足迹站位出发，那里不在上面
+  “站位两两不超过 reach” 的保证内，可能 `too_far`）。
   被占一律跳过、不清场。
   """
 
