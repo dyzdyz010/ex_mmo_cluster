@@ -67,7 +67,7 @@ flowchart LR
 | E5 | 生产网络路径（HTTP/2 直连 DeepSeek）下 N 人同场无排队失败、无取消残留 | 未测（实跑都经本机明文代理，走 HTTP/1）；M-1 改一轮直连 |
 | E6 | 分支合并 master、CI 全绿 | **已合并**（2026-11-20）：PR #11 在 `1069899a` 上 CI 全绿后转 ready，用户同意后快进推到 master（`29531ea4..1069899a`，216 提交，SHA 原样保留）；master 上 CI 见 §7 |
 | E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | **仓内完成**（`76c286db`，见 §7）；青岚落地属 E9。原定（用户 2026-11-20 定：app 4600m + Hindsight 2048m 同机；deploy/ 新建生产 Hindsight 镜像，补丁与模型烘入；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权）。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
-| E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | 未做；对话 UI 只在测试地图实跑过 |
+| E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | **放置完成**：登记包 `deploy/npc/qinglan/`（`9318cb16` + `2439fb12`），短排练 `e8r-02` R1–R4 过、R5（Hindsight 内存峰值触及 2048 MiB 限额，匿名 1183 MiB、余为页缓存，oom 0）不过，见 §7；对话 UI 在 L_Qinglan 静态核查已装配，实机验证并入 E9 打包冒烟 |
 | E8b | 本机长跑：生产限额（app 4600m + Hindsight 2048m）、3 人、6–12 h、跨一次每日重启；看内存走势、后台积压能否排空、每天花费与额度重置、重启后接着生活 | 用户 2026-11-20 同意加（原话：“可以”）；排在 E8 之后、E9 之前，起跑前报时长、花费上限与资源预算。依据：真实模型最长只跑过 37.4 min（M-4 截断），线上 24 h 运行无证据 |
 | E9 | 分发：冻结客户端 / 服务端 / 协议版本，镜像推送后本地同镜像 + 新打包客户端冒烟（含 NPC 说话主链路） | 按 Voxim 分发规则，未做 |
 
@@ -160,3 +160,8 @@ flowchart LR
 - 2026-11-20：**E8 统筹裁定**（用户授权统筹自行推进，原话：“之后都同意，不要问我了”；以下两条用户可推翻）：
   ① 建造用纯石料定义 `324e53ee`（作者定义 “Jiangnan Steps”，庭院石阶，锚点微格 [−40,4135,192]）代替 `079f`（实为园林构件 “ScholarRock Clipped 02”、需 252 微格石灰石，编辑盒内无天然石灰石、生产不能补料，建造必然 `insufficient_material`）。活动名与 criterion 按石阶写，不叫小屋。理由：happy path 上唯一能建成的现成定义；另作纯石料小屋是新内容，冻结期不做。
   ② 采集用射程内唯一的石料——布局给玩家的作者料堆 Stone A / B（不会再生，约 3 次采集后采光，之后 `gather` 以 `exhausted` 结束），criterion 写“只在不够建造时才采”；不换到约 74 m 外未核的天然陡坡（会把活动区拉成两片）。料堆消耗与玩家影响由 E8b 长跑观察。
+- 2026-11-20（第二十五个统筹会话）：**E8 登记包与短排练**。登记包 `deploy/npc/qinglan/`（`residents.json` 石砚 / 柳莺 / 林眺三卡共用一份活动表；`register.exs` 经 rpc 登记、以石砚会话把 `324e53ee` 发布为 `stone steps`），独立评审后提交 `9318cb16`。
+  短排练（Test-only，生产页表世界 + E7 Hindsight 镜像 + 生产限额形态 + DeepSeek 直连，`.demo/observe/npc-e8-20261120/rehearsal/`）：`e8r-01` R1 不过（出生点 y = 516 陷地，`find_spawn` 探针是胶囊中心），修为 518（`2439fb12`）；
+  `e8r-02` R1–R4 过、**R5 不过**（Hindsight `memory.peak` 触及 2048 MiB 限额：匿名峰值 1183 MiB，其余是可回收文件页缓存，oom_kill 0，召回失败 0；匿名 15 min 内 641 → 1160 MiB 上升，E8b 看走势）。15 min 花费 $0.239（Hindsight 占 82%）。
+  行为观察（冻结期不改）：`build` 不先走路，石砚 15 次 `out_of_reach`；作者料堆 15 min 内 24 → 6 格。明细见统筹页“第二十五个统筹会话的进展”。
+  **客户端对话 UI**：L_Qinglan 的 `BP_QinglanController` 与测试图同用 `WBP_Dialogue`（静态核查），实机验证并入 E9 打包冒烟（另验与青岚 HUD 是否遮挡）。

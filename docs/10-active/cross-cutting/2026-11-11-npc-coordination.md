@@ -61,6 +61,14 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - C 结果（只读，二进制资产按字符串检索，属强推断）：`L_Qinglan` → `BP_QinglanGameMode` → `BP_QinglanController`（父类 `AVoximPlayerController`），`DialogueClass` = `WBP_Dialogue_C`，与测试图 `L_GameplayDemo` 的 `BP_GameplayController` 同一资产、C++ 全共用、无地图开关
   （`../Voxim/Source/Voxim/VoximPlayerController.cpp:114-122`；作者脚本 `../Voxim/Docs/NPC/author_dialogue.py:106`）。**E9 冒烟要补**：对话阅读区与 `WBP_QinglanHUD` 是否遮挡（截图看）、打包版输入链（`ReplayInputs` 只在 Editor 编译，打包客户端用真实键鼠或 `-ExecCmds` 调 `Voxim.Dialogue.Say` / `Status`）。
   另：`../Voxim/Docs/NPC/targeting-integration.md:51`“Qinglan 分发控制器尚未组合”已过时（客户端仓，E9 时顺带更正）。
+- A 登记包：`9318cb16`（独立评审无阻塞、6 条应修已改）；短排练查出出生点 y 缺陷后 `2439fb12` 改为 518。
+- B 短排练（证据 `.demo/observe/npc-e8-20261120/rehearsal/`，plan.md 附录 B–D）：
+  - `e8r-01`（release `9318cb16`）：**R1 不通过，原判保留**——登记包出生点 y = 516 = 地面块 515 顶面，`find_spawn` 的探针是胶囊中心，胶囊底陷地，`:not_found`，会话以原因 10 反复结束，石砚 30 s 拿不到会话、未发布。窗口未开、花费 $0。选点判据 `e8_site.exs` 与驱动 P2 都按“地表 + 1”推算没查出来，已改为调产品入场路径读回落点（新增 `site/spawn_landing.exs`），反例 y = 516 必被拒。
+  - `e8r-02`（release `2439fb12`，`/home/dyz/npc-e8-20261120b/voxim_server`，14:05–14:26 UTC，窗口 900 s 未截断）：**R1–R4 过、R5 不过（原判保留）**。R1 发布 `stone steps` 由石砚会话完成、三人登记 3.0 s；R2 三人都到过去处；R3 采集完成 2 / `exhausted` 4、石阶建成 1 次、之后 `occupied` 6；R4 召回失败 0（召回 p90 5.6 s、最长 12.1 s）。
+    **R5**：Hindsight `memory.peak` = 2048 MiB = 限额（`memory.events max` 764、oom_kill 0、全程在跑）；统筹复读 `limits.jsonl`：匿名内存峰值 1183 MiB，其余约 800 MiB 是文件页缓存（多为 inactive），内核在限额处回收的是缓存——但匿名内存 15 min 内 641 → 1160 MiB 在涨，是预热还是持续增长由 E8b 判。release 峰值 2076 MiB（启动加载世界），未过 3400 告警线。
+    读数：选择 67 次（石砚 32 / 柳莺 17 / 林眺 18），Jev 中位 1310 ms；花费产品 $0.044 + Hindsight $0.195 = $0.239（209 万 token）；料堆天然石 24 → 6 格（15 min 内）；排空后 pending 0、一份 `refresh_mental_model` 仍在做。
+    **行为观察（功能冻结，不改，记作上线后改进）**：石砚 17 次选建造，15 次 `out_of_reach`（采完 / 走开后不在射程，`build` 不先走路，criterion 的提示不起作用），白耗选择；料堆首日即近采光（玩家共用的作者料堆，统筹裁定 ② 的代价比预估来得快）。
+  - 资源：两轮守护均未触发，4266 记录号 128241 未变，Windows UDP 88 → 92，release / scope / 私有 PG 容器 / Hindsight 容器与卷 / 看门狗全部回收，泄漏扫描 0 命中。
 
 ### 第二十四个统筹会话的进展（2026-11-20 起）——上面第二十三 → 第二十四交接里“下一步”各项的状态以这里为准
 
