@@ -17,6 +17,21 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 交接（2026-11-20，第二十三个统筹会话 → 第二十四个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-24-brief.md`
+
+**一句话**：任务层 T-1 完成（T-1a `c846bbcf`、T-1b `6dd4db70`、真实短场景 `task1-03` 通过），新增 Test-only 世界钟偏移（`02bcc8f0`），**功能冻结**；结论提交 `bf59b4d0` 已推送。明细见紧接着的“第二十三个统筹会话的进展”与任务层稿 §7 末条。
+
+**下一步**（用户 2026-11-20 原话：“旧 release 和构建目录都删掉，开始做 E6，开新会话”）：进青岚清单 **E6 合并 master、CI 全绿** → E7 部署配置 → E8 青岚放置 → E9 分发（扩人数稿 §4）。
+- E6 起点：本分支比 `origin/master`（`29531ea4`）多 215 提交、落后 0，可快进；PR #11 draft。合并 / PR 转 ready 属对外动作，先报用户。
+- 工作区里 `ci.yml` 与两个测试文件是**魔法侧**未提交改动，不碰；本线按路径提交。
+- 上线前建议顺手修（未排）：花费额度 `land/3` 转停时 `pending` 未重置；`npc_plan` / `npc_task` 的 `end` 行在 DeepSeek 下 token 字段恒为 nil；常驻 Hindsight flashrank 缓存路径（重建常驻容器时改，勿擅自重建）；
+  回顾 / 推进出向 4096 的截断（`task1-02` 出现一次）随实跑观察。主机 Tcpip 4266 几乎每天一次、未归因，E7 部署前建议查源头。
+- 上线后：T-2（`look_for` / `seen`；A17 被拒样本要重选）、稿 B（S-1a 在旁支 `npc-skill-s1a-20261119`，兄弟 worktree `D:/hemifuture/ex_mmo_cluster-npc-skill`，`d77f8b97` + `f66b1795`，随 S-1b 挑入）、稿 A T-A5、X-1。
+
+**环境（交接时）**：没有在跑的 release、beam（本线）、私有库、私有 Hindsight、scope、起跑器；UDP 约 85–90，Tcpip 4266 记录号 128241。常驻容器 `npc-s1g-hindsight-20261118`、`npc-dev-pg-20261117` 不动。
+现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（指纹 `02bcc8f0`，含偏移）；烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`。
+已按用户要求删除：旧 release `~/npc-t1live-20261119`、`~/npc-scale-20261118`、`~/npc-current-20261118`、`~/npc-final-20261118` 与全部 `~/npc-build-*` 构建目录；`~/npc-build`（OTP 工具链源码）未删。
+
 ### 交接（2026-11-19，第二十二个统筹会话 → 第二十三个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-23-brief.md`
 
 **一句话**：花费额度 T4 通过；用户定了**长程任务闭环（任务层）**的概念与细节，新稿 `2026-11-19-npc-long-task-loop-decision.md`（§6 全按建议）；稿 A 批 1（eat / craft，门槛由 World 一处定义）、
