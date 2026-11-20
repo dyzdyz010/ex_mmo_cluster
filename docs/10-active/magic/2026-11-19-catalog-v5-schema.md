@@ -92,7 +92,7 @@ flowchart LR
 | ★ `thermal_sleep_delta_k` / `thermal_sleep_power_w` | 热节点休眠阈值（§5.3.2） | 5 / 100 |
 | ★ `quote_life_slices` | `life_s` 能量切片求积段数（§4.2） | 32 |
 
-`Magic.Structure`（0c）目前仍以模块常数持有 env、剂量、越线、失准、切片数等值，改为读本目录字段属于 Structure 自己的后续改动，不在 0a 夹具更新范围内。
+`Magic.Structure` 与 `Magic.Cost` 读取上表全部 `runtime` 字段，不再持有同值模块常数（0b）；只保留设计正文写死、目录没有字段的归一常数（邻居与剂量的 1 kW、释放剂量的 1 kJ、过载线 0.8·x*、〈满〉的 1/32 量化）。`env_neighbor_max` 由 World 选邻居时使用；`thermal_sleep_*`、`windup_interrupt_dose` 的消费方在切片 1。
 ## 5. 符号表 `symbols[]`
 
 | 字段 | 必填 | 语义 |
