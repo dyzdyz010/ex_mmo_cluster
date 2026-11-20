@@ -32,6 +32,25 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（指纹 `02bcc8f0`，含偏移）；烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`。
 已按用户要求删除：旧 release `~/npc-t1live-20261119`、`~/npc-scale-20261118`、`~/npc-current-20261118`、`~/npc-final-20261118` 与全部 `~/npc-build-*` 构建目录；`~/npc-build`（OTP 工具链源码）未删。
 
+### 交接（2026-11-20，第二十四个统筹会话 → 第二十五个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-25-brief.md`
+
+**一句话**：E6 完成（PR #11 快进合入 master `1069899a`，master CI 重跑后全绿）；E7 仓内完成（`76c286db`）；E8 生产真实世界离线选点完成、建造定义与石料来源由统筹裁定（`0c1f45a9`）；新增 E8b 本机长跑。明细见扩人数稿 §7 2026-11-20 各条与下面“第二十四个统筹会话的进展”。
+
+**用户授权（2026-11-20，原话：“同意，之后都同意，不要问我了”）**：E8 起的后续步骤统筹自行推进、不逐步询问，每步先在对话里说明再做；写生产 / 部署 / 合 master 前仍先报用户。
+
+**下一步（按此顺序）**
+1. **E8 收尾 · 登记包 + 本机短排练**：
+   - 产品侧登记包（进仓，非 `.demo`）：3 张人格卡（能力相同、倾向不同——用户原话：“一个npc是具备上述两种人所有的能力的……只是活动倾向不同”）+ 同一份活动表（取自 `.demo/observe/npc-e8-20261120/site/site-alt-steps.json`：5 个去处、采集盒、石阶 `324e53ee` 建造），以 `Registry.put` 经 rpc 登记的脚本与 README 一节（建议 `deploy/` 下，写清生产登记前对新导出重跑 `e8_site.exs calc` 与发布一次所选定义）。
+   - Test-only 短排练（≤ 20 min、3 人、真实 DeepSeek、花费停止线设低）：在还原的生产页表世界上（复用 `site/deploy.sh`），Hindsight 用 E7 新镜像 `voxim-hindsight:e7-0.10.3-20261120`（顺带端到端验 E7 镜像），判：3 人登记成功、各自走到去处、至少一次采集 / 建造步骤有结构化结局、召回失败 0、release 与 Hindsight 内存峰值低于 4600m / 2048m。先离线干跑再实跑；UDP / 4266 守护照旧。
+   - 客户端对话 UI 在 `L_Qinglan` 上与真实 NPC 对话：E8 定义要求，尚无证据；可与 E9 打包客户端冒烟合并，或排练后单独一轮（先定）。
+2. **E8b 本机长跑**（生产限额 app 4600m + Hindsight 2048m、3 人、6–12 h、跨一次每日重启）：起跑前在对话里报时长、花费上限、资源预算。
+3. **E9 分发**：含 E7 的青岚落地待办（扩人数稿 §7 “E9 落地待办”）、RUNBOOK 属性目录身份更正为 `e6db8dee…`、生产核对 `VOXIM_PRODUCTION_MATERIALS` 含 11 / prefab 目录含 `324e53ee` / 所选定义发布一次 / 编辑盒。动生产前先报用户。
+
+**环境（交接时）**：没有在跑的 release、beam、私有库、私有 Hindsight（本线）；UDP 约 88–90，Tcpip 4266 记录号 128241 未变；常驻容器 `npc-s1g-hindsight-20261118`、`npc-dev-pg-20261117` 不动。
+现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（`02bcc8f0`）；E7 镜像 `voxim-hindsight:e7-0.10.3-20261120`（Windows Docker，id `1b1ffd98…`）。生产导出（只读、不入库）`.demo/observe/npc-e8-20261120/`。
+生产主机：腾讯云 `dyz@192.144.200.208`，密钥 `C:/Users/DYZ/.ssh/voxim_qinglan_tencent_ed25519`（`../Voxim/Launcher/README.md:172`），compose `/data/voxim_qinglan/`，容器 `voxim_qinglan-app-1`（`voxim-server:20261112-qinglan`）/ `voxim_qinglan-db-1`。生产上不要用整世界盒调 `simulation_snapshot`（会阻塞 World 数分钟）。
+魔法侧未提交改动（`ci.yml`、两个 `*_test.exs`）仍在工作区，不碰。本分支在 master 之后多了 E7 / 文档提交，PR #11 已合，再合 master 时先报用户。
+
 ### 第二十四个统筹会话的进展（2026-11-20 起）——上面第二十三 → 第二十四交接里“下一步”各项的状态以这里为准
 
 - **E6 完成合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871）；用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR merged。
