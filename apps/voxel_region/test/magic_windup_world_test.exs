@@ -156,14 +156,14 @@ defmodule VoxelRegion.MagicWindupWorldTest do
 
     {actor, request} = request(c, @leaf_micro, heat(), 2_000_000)
     seq0 = World.seq(c.w)
-    before_us = System.system_time(:microsecond)
+    before_us = MmoContracts.ServerTime.server_us()
     task = Task.async(fn -> World.spell_intent(c.w, actor, request) end)
 
     start_seq = seq0 + 1
     assert_receive {:canonical_delta, %{transaction_seq: ^start_seq, transaction: %{casts: %{@cid => record}}}}, 5_000
     assert record.live == 1
     assert record.program == request.program
-    assert record.t0_us >= before_us and record.t0_us <= System.system_time(:microsecond)
+    assert record.t0_us >= before_us and record.t0_us <= MmoContracts.ServerTime.server_us()
     # 出发点 = 眼 + 0.5 m × 瞄准方向（与投掷拟态手边同一来源）。
     {dx, dy, dz} = request.direction
     for {a, e} <- Enum.zip(Tuple.to_list(record.origin), [0.5 + 0.5 * dx, 2.5 + 0.5 * dy, 0.5 + 0.5 * dz]),

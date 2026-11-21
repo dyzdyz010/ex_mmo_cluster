@@ -249,11 +249,11 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
       flight_s: 0.08,
       lifetime_s: 1.0,
       radius_m: 0.2,
-      t0_us: System.system_time(:microsecond) - 100_000
+      t0_us: MmoContracts.ServerTime.server_us() - 100_000
     }
 
     [{_, _, {:sample, age, actor, {_, target}, sampled_us}}] =
-      WorldServer.Movement.Projectile.poll([{{50, 0}, shot}], 123)
+      WorldServer.Movement.Projectile.poll([{{50, 0}, shot}], {MmoContracts.ServerTime, nil})
 
     assert age >= 0.1 and age > shot.flight_s
     assert sampled_us >= shot.t0_us + 100_000

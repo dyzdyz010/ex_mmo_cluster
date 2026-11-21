@@ -649,6 +649,8 @@ defmodule VoxelRegion.World do
         # 缓存容量由Cache维护；二进制GC阈值沿用VM策略，不由缓存预算抬高回收下限。
         state = %{
           clock: Keyword.get(opts, :clock, {Clock, nil}),
+          # 发给客户端的施放／拟态时刻与 Scene 移动时间回复同一条线（MmoContracts.ServerTime）；测试可注入单调时钟。
+          server_clock: Keyword.get(opts, :server_clock, {MmoContracts.ServerTime, nil}),
           circuit_component_limit: VoxelRegion.World.CircuitAdmission.configure(opts),
           source: source,
           source_state: source_state,

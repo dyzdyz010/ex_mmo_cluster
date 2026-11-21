@@ -20,7 +20,7 @@ defmodule VoxelRegion.ProjectileOrderTest do
     semblances = Map.put(semblances, {41, 0}, %{})
     refute Map.keys(semblances) == Enum.sort(Map.keys(semblances))
 
-    state = %{projectile_task: nil, projectile_backend: Backend, cv: 7, thermal: %{semblances: semblances}}
+    state = %{projectile_task: nil, projectile_backend: Backend, server_clock: {MmoContracts.ServerTime, nil}, thermal: %{semblances: semblances}}
     assert Task.await(Projectiles.poll(state).projectile_task) == ids
   end
 end

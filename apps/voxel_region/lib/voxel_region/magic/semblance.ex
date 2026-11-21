@@ -6,7 +6,7 @@ defmodule VoxelRegion.Magic.Semblance do
   记录（World 持有于 `thermal.semblances`，id = {创建事务 seq, n}）：
   施法者 caster、形状 shape（0 球 / 1 立方，radius_m 为半径或半边长）、质量 mass_kg、热容 capacity（= 质量 × 目录比热，J/K）、
   温度 temperature_k、发光 glow_w、寿命 lifetime_s、已存在模拟时长 age_s、飞行中动能 kinetic_j、
-  运动 origin / velocity / t0_us（服务端墙钟 µs，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
+  运动 origin / velocity / t0_us（服务器时间线 µs，`MmoContracts.ServerTime`，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
   命中 contact（nil 或 `%{target, key, cell}`：弹道命中的热节点，作为散解时剩余能量的落点）。可选 `break_on_hit: true`
   由〈触散〉编译而来，碰撞端点散解；没有该键的既有记录保持驻留。solid 恒为 false（实体拟态是增量 5）。
 

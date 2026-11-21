@@ -33,9 +33,9 @@ defmodule VoxelRegion.World.Projectiles do
     for x <- min(ax,bx)..max(ax,bx), y <- min(ay,by)..max(ay,by), z <- min(az,bz)..max(az,bz), do: {x,y,z}
   end
 
-  @doc "投射物原有t0/age是唯一墙钟与模型前沿；写回等待不改锚点，下一采样仍覆盖原缺口。"
+  @doc "投射物原有t0/age是唯一服务器时间线与模型前沿；写回等待不改锚点，下一采样仍覆盖原缺口。"
   def progress(state) do
-    now = System.system_time(:microsecond)
+    now = MmoContracts.ServerTime.server_us(state.server_clock)
     for {id, shot} <- shots(state) do
       target = if Map.has_key?(shot, :impact_delivery), do: shot.age_s,
         else: min(max((now - shot.t0_us) / 1.0e6, shot.age_s), shot.lifetime_s)
@@ -75,8 +75,8 @@ defmodule VoxelRegion.World.Projectiles do
       [] -> state
       shots ->
         backend = state.projectile_backend
-        cv = state.cv
-        %{state | projectile_task: Task.async(fn -> backend.poll(shots, cv) end)}
+        clock = state.server_clock
+        %{state | projectile_task: Task.async(fn -> backend.poll(shots, clock) end)}
     end
   end
   def poll(state), do: state

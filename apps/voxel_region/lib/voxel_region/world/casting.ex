@@ -206,12 +206,12 @@ defmodule VoxelRegion.World.Casting do
     end
   end
 
-  # 施放记录：t0 = World 墙钟（与拟态 t0_us 同源），出发点 = 手边（与投掷拟态同一来源），程序字节原样。
+  # 施放记录：t0 = 服务器时间线（与 Scene 时间回复、拟态 t0_us 同源），出发点 = 手边（与投掷拟态同一来源），程序字节原样。
   def begin_cast(state, from, actor, request, program, quote) do
     {dx, dy, dz} = request.direction
     {ex, ey, ez} = actor.eye
 
-    record = %{live: 1, t0_us: System.system_time(:microsecond), steps: quote.steps, program: request.program,
+    record = %{live: 1, t0_us: MmoContracts.ServerTime.server_us(state.server_clock), steps: quote.steps, program: request.program,
       origin: {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}}
 
     case commit_casts(state, {:character, actor.cid}, %{actor.cid => record}) do
@@ -469,7 +469,7 @@ defmodule VoxelRegion.World.Casting do
             else
               launch
             end
-          s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, System.system_time(:microsecond)))
+          s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, MmoContracts.ServerTime.server_us(before.server_clock)))
 
           thermal =
             thermal

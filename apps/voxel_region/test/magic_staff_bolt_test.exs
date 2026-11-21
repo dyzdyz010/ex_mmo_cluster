@@ -231,6 +231,44 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert log =~ "kind=projectile_result"
   end
 
+  # 只测试：单调时钟比墙钟走快的主机（2026-11-21 devenv：Scene 运行 49 220 s 后 Scene 时间 − 墙钟 = +2.025 s，
+  # 客户端算出光弹 τ ≈ 2 s 只显示已落地；Voxim Saved/Tests/devenv-20261120/projectile-delay-20261121/）。
+  # 偏移在 World 启动后才加，等同于启动以来单调比墙钟多走 2 s。
+  defmodule AheadClock do
+    def now(ref), do: System.monotonic_time(:microsecond) + :atomics.get(ref, 1)
+  end
+
+  # 回归：施放记录 t0 与拟态 t0（客户端插值起点）必须在 Scene 移动时间回复所在的同一条线上，不读墙钟。
+  # 期望依据：Scene 时间 = 启动零点 + 同一单调时钟增量（SceneServer.Movement.Clock.sample），这里按该定义独立写出。
+  test "单调与墙钟漂移 2 s：施放记录与光弹拟态 t0 跟随 Scene 时间线，不跟墙钟", c do
+    ahead = :atomics.new(1, signed: true)
+    :ok = stop_supervised(:world)
+    w = start(c.root, projectile_backend: MissBackend, server_clock: {AheadClock, ahead})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
+    c = %{c | w: w}
+    {scene_origin, scene_mono} = {System.system_time(:microsecond), AheadClock.now(ahead)}
+    scene_now = fn -> scene_origin + AheadClock.now(ahead) - scene_mono end
+    :atomics.put(ahead, 1, 2_000_000)
+
+    shooter = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5}, feet: {0.5, 1.0, 0.5}, tick_us: 16_667, life_generation: 1, position: {0.5, 1.0, 0.5}}
+    shooter = Map.put(shooter, :player, start_supervised!({Actor, shooter}, id: make_ref()))
+    {:ok, _} = send_state(w, shooter)
+
+    # 朝天发射（瞄空照常接纳）：寿命 1 s 内不落地，拟态仍在表里可读。
+    before = scene_now.()
+    log = ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, %{outcome: nil, seq: seq}} = bolt(c, shooter, 1_000_000, {0.0, 1.0, 0.0})
+      send(self(), {:semblance, observe(w).semblances[{seq, 0}]})
+    end)
+    later = scene_now.()
+    assert_received {:semblance, %{t0_us: semblance_t0}}
+    [_, cast_t0] = Regex.run(~r/voxel_cast_begin .* t0_us=(\d+)/, log)
+    # 容差只吸收测试进程内单调与墙钟的毫秒级相对漂移；缺陷信号是 2 s。
+    for t0 <- [String.to_integer(cast_t0), semblance_t0],
+        do: assert(t0 >= before - 100_000 and t0 <= later + 100_000, "t0 #{t0} 不在 Scene 时间 [#{before}, #{later}]")
+  end
+
   test "开户：send_caster_state 两次只充一次；冷重启与检查点后不再充，余额不变", c do
     seq = World.seq(c.w)
     log = ExUnit.CaptureLog.capture_log(fn -> assert {:ok, %{energy_j: 497_084.85}} = send_state(c.w, c.a) end)

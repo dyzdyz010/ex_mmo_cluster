@@ -27,7 +27,7 @@ defmodule WorldServer.Movement.ProjectileSceneDownTest do
     assert [{{3, 0}, 0.25, {:delivered, {:retry, :target_unavailable}}}] =
              WorldServer.Movement.Projectile.poll(
                [{{3, 0}, %{age_s: 0.25, impact_delivery: hit}}],
-               7
+               {MmoContracts.ServerTime, nil}
              )
   end
 end
