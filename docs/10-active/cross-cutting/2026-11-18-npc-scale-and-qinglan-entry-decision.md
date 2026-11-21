@@ -174,4 +174,10 @@ flowchart LR
   过的项：L1 存活（oom_kill 0）、L2 内存（release 峰值 2074 MiB；Hindsight 匿名峰值 1597 MiB < 2048，`memory.peak` 触限为页缓存，斜率 +9 MiB/h，但大部分时间空转、不代表正常负载）、L5（Bootstrap 三人 `{:ok,_}`、经历与任务重启前后连续）、L6（最老积压 762 s，settle 10 s 归 0）、L7（$0.599；北京零点换日账本归零、额度未误停）。资源全部回收、守护未触发、4266 未变。
   **结论**：生产限额同机 2 核下，现形态不能证明“线上 24 h 能活”；E9 推迟到风暴修复并复测之后。根因分析子会话在查（是否“超时放弃 → 服务端照算 → 排队请求个个超时”的自持重试，及修法选项：产品侧重试退避 / 截止传播、Hindsight 并发与 CPU 隔离、或改 D-2 另放 Hindsight——后者需用户定）。
   旁支：同轮日志 6 次 `{:unknown_activity, "speak_to:<cid>"}`，待查。建造修复已提交 `99296b54`（`e8b-01` 修复前对照：建成 1、`out_of_reach` 41），实跑验证并入风暴修复后的复测。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-01.md`、`runs/e8b-01/verdict.json`）。
+- 2026-11-21（第二十五个统筹会话）：**E8b 第二轮 `e8b-02` 不通过（第 2 h 检查点停跑，原判保留）**。release `0cb563b5`（含 build 先走到射程内 `99296b54`、选择重问退避 `0cb563b5`），01:46:56Z 登记，02:46:58Z 第 1 h 末重启（停机 38.2 s，Bootstrap 三人 `{:ok,_}`），03:47Z 检查点 L3、L4 皆 False 即停。
+  - 前 20 min 正常；**建造修复生效**：石砚一次 World `out_of_reach` 后走过去建成石阶，此后只回 `occupied`（0–2 h 选建造 23、建成 1、占用 21、`out_of_reach` / `unreachable` 结局 0）。
+  - 02:06Z 起召回超时，02:16Z 起多数发问失败；**退避把失败期发问率压到每人 0.74–0.79 次/min（e8b-01 为 2.7–3.0）**，但交互召回中位 4.2 → 8.4 s，两小时客户端放弃召回 222 / 241 次，0–2 h 召回失败 204；第 1 h 石砚、柳莺零选择；重启后 5 min 内无人选择（L5 False，经历与登记连续性本身过）。
+  - **新读数**：同期 Hindsight 只用了钉给它的 2 核中的 0.86 核——瓶颈像是单次召回的串行耗时而非 CPU 吃满（推断，未证实；FlashRank 执行器 / 准入 / DB 待分阶段计时）。
+  - 未判（截断）：L1 / L2 / L6 / L7；部分读数：$1.003、oom_kill 0、release 峰值 2024 MiB、Hindsight 匿名峰值 1703 MiB。资源全部回收、守护未触发、4266 仍 128574。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-02.md`、`runs/e8b-02/checkpoint.json`）。
+  - **结论**：退避去掉了重试的自我放大，但召回本身在库长大后仍超时；下一步落在召回成本 / 容量（召回隔离稿 D-4 / D-3d），需用户定。候选方向：Hindsight 自带的 Jev 整组重排（`HINDSIGHT_API_RERANKER_PROVIDER=typesafe`，`engine/cross_encoder.py:984`，候选当 Choice 选项一次排完，超限分组并行 + 决赛；外部服务、重排调用不进 Hindsight LLM 追踪即花费额度看不到，需补计量）、减候选（`RERANKER_MAX_CANDIDATES`）、不重排（`rrf`）、产品侧少发召回、加核 / 拆机。先在 e8b-02 记忆库副本上离线对比（核·秒、延迟、token、结果重合）。E9 继续推迟。
 
