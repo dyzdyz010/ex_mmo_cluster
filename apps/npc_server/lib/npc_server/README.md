@@ -653,8 +653,27 @@ flowchart LR
   “我的建筑”现查 World 时路由或查询失败——不写“在”或“不在”；World 调用退出时发问 worker 随之退出，记 `select_worker_failed`）
   记为 `{:mind_unavailable, 细节}`，**不发 Jev 请求**，不把读不到的记忆当成“没有记忆”；新 NPC 的空 bank 召回为空是正常结果。
   HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
-  记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
-  新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）每 10 秒失败一次，属于这一条。
+  记 `npc_select_failed cid= reason=`（行格式是长跑判定解析器读的契约，不加字段），这一轮不执行任何活动，退避到期后照常再问；不换别的选择器、不取缺省活动。
+  新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）反复失败，属于这一条（间隔按下面的退避拉长）。
+- **重问节奏**（唯一 owner `Selector.pause/2`；召回隔离决策稿 D-3c 2026-11-20，原创决策）：树发问失败后下一个事件就重发
+  `choose_activity`。Runtime 收到它就起发问 worker，worker 先把刚结束那项活动的经历交给 Life（留着期间靠近的人不算进那项活动），
+  再等放行；Runtime 把放行留到间隔到期（到期前不读心智、不问 Jev），观察的 tick 比上一次看到的还小（钟回退）时按剩余等待重算
+  （新到期 = 当前 tick + max(原到期 − 回退前最后看到的 tick, 0)）。经历保存失败时立即以 rejected 结束，不等放行。
+
+  | 上一次 | 下一次发问前等多久（tick，60 Hz） |
+  |---|---|
+  | 活动成功结束 / 首次 | 0（成功节拍不变） |
+  | 活动以失败结束 | 1200（20 秒） |
+  | 发问失败（连续第 n 次） | decorrelated jitter：`min(7200, U(600, 3 × 上一次))`，首次以 600 为“上一次”，即 10–30 秒起、上限 120 秒；一次成功即复位 |
+
+  `Body.observe(pid).select.retry` 是退避状态：从一次发问失败起到下一次发问成功为止都是 `%{failures: 连续失败次数, ticks: 最近一次抽到的退避}`
+  （退避到期、重问在途时也还在），其余时候为 nil；此刻是否正留着一次发问看 `select_wait`（`nil` 或 `%{trigger:, pause_ticks:, due_tick:}`）。
+  退避状态不持久化，重启复位；抽到的随机值不可重放，从日志读回：留着时记 `npc_select_wait cid= trigger= failures= pause_ticks= due_tick=`，
+  钟回退重算时再记一行同格式、末尾加 ` rebased=true`；放行时记 `npc_select_wait_over cid= trigger= tick= cause=<due|addressed>`。
+  回合在途时再来的直呼只记 `dropped`、不放行；那个回合决定停下而活动已自己失败结束时，按同一条规则判是否放行。
+  交互：对话回合停下后的预选应答不经过这里，回合 halt 的响应不变。留着期间没有正在做的活动，来话不起回合；是否提前发问由
+  `Selector.ask_when_addressed?/1` 定——活动失败后的间隔里被直呼立即发问（这次发问就是响应），发问失败的退避期间不提前（防过载），
+  被直呼最长约 120 秒（cap）才有响应。
 - **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_queries`（各路召回的描述，按优先级）、`recall_ms`（并行墙钟）、
   `candidates`（本轮候选）；
   在 Jev 请求发出前记下，Jev 随后失败或 worker 崩溃也留着；心智读不到的那次没有发问，仍是上一次的。

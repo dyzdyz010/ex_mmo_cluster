@@ -82,6 +82,43 @@ defmodule NpcServer.NpcSelectorTest do
     end
   end
 
+  # 只测试：真实 NpcMemory 之上由测试进程控制的 Life 行写入。ETS 表本模块里的 `{cid, 测试进程, 片段, 动作}`：
+  # 下一次写入“未封存经历里有含该片段的条目”的 Life 行时，`:refuse` 拒绝一次（`{:error, :write_denied}`，先报 `{:save_refused, cid}`），
+  # `:hold` 先报 `{:save_held, 写入进程}`、等 `:release_save` 再照常写。其余读写照常（Life 只经 `get/3` 与 `put/4` 读写）。
+  defmodule ControlledStore do
+    defdelegate get(cid, kind, key), to: DataService.NpcMemory
+    defdelegate delete(cid, kind, key), to: DataService.NpcMemory
+    defdelegate journal(cid, text, position), to: DataService.NpcMemory
+    defdelegate recent(cid, limit), to: DataService.NpcMemory
+    defdelegate recent_notes(cid, limit), to: DataService.NpcMemory
+    defdelegate search(cid, query, limit), to: DataService.NpcMemory
+
+    def put(cid, "life", "state", row) do
+      with true <- :ets.whereis(__MODULE__) != :undefined,
+           [{^cid, test, fragment, action}] <- :ets.lookup(__MODULE__, cid),
+           true <- Enum.any?(row["pending"] || [], &String.contains?(&1["text"] || "", fragment)) do
+        :ets.delete(__MODULE__, cid)
+
+        case action do
+          :refuse ->
+            send(test, {:save_refused, cid})
+            {:error, :write_denied}
+
+          :hold ->
+            send(test, {:save_held, self()})
+
+            receive do
+              :release_save -> DataService.NpcMemory.put(cid, "life", "state", row)
+            end
+        end
+      else
+        _ -> DataService.NpcMemory.put(cid, "life", "state", row)
+      end
+    end
+
+    def put(cid, kind, key, value), do: DataService.NpcMemory.put(cid, kind, key, value)
+  end
+
   defmodule ColdHindsight do
     def ensure(config, name) do
       send(config.owner, {:initial_models_held, self()})
@@ -620,6 +657,101 @@ defmodule NpcServer.NpcSelectorTest do
     end
   end
 
+  # 重问节奏只有一个 owner：Selector 决定下一次发问最早什么时候发出（`pause/2`），Runtime 按它把 choose_activity 留到那一 tick。
+  # 取值（tick，60 Hz；召回隔离决策稿 D-3c 2026-11-20 条目，原创决策）：发问失败的退避 base 600（10 s）、cap 7200（120 s），
+  # decorrelated jitter `min(cap, U(base, 3 × 上一次))`，首次以 base 为“上一次”；活动以失败结束后最小间隔 1200（20 s）。
+  # 期望值在这里手写（规格），不读被测模块的常量。
+  describe "re-ask pacing" do
+    defp chosen(state, name) do
+      Selector.chose(
+        state,
+        %{
+          activity: name,
+          confidence: 0.5,
+          latency_ms: 1,
+          recall_ms: 1,
+          trigger: "start",
+          model: "m"
+        },
+        7
+      )
+    end
+
+    test "consecutive selection failures back off with decorrelated jitter up to the cap; one success resets it",
+         %{profile: profile} do
+      # 抖动取本进程的 :rand；固定种子让序列可复现（断言只用规格给的范围，不用具体抽到的值）。
+      :rand.seed(:exsss, {20, 11, 2026})
+
+      {state, retries} =
+        Enum.reduce(1..20, {asked(profile), []}, fn _, {state, retries} ->
+          state = Selector.failed(state, {:mind_unavailable, :timeout}, 7)
+          {state, retries ++ [state.retry]}
+        end)
+
+      # 连续失败计数逐次加一；每次的等待落在 [base, min(cap, 3 × 上一次)]（首次的“上一次”是 base）。
+      assert Enum.to_list(1..20) == Enum.map(retries, & &1.failures)
+
+      Enum.reduce(retries, 600, fn %{ticks: ticks}, previous ->
+        assert ticks in 600..min(7200, 3 * previous)
+        ticks
+      end)
+
+      # 带抖动（不是恒定的 600），且会长到上限、不越过上限。
+      assert length(Enum.uniq_by(retries, & &1.ticks)) > 3
+      assert 7200 == Enum.max_by(retries, & &1.ticks).ticks
+
+      # 重问（trigger retry）等的就是最近一次抽到的退避。
+      assert {"retry", ^state} = Selector.ended(state, nil)
+      assert List.last(retries).ticks == Selector.pause(state, "retry")
+
+      # 一次成功即复位：失败原因与退避都清掉，下一次失败从头（[base, 3 × base]）。
+      state = chosen(state, "rest_at_home")
+      assert %{failure: nil, retry: nil} = state
+
+      assert %{retry: %{failures: 1, ticks: ticks}} =
+               Selector.failed(state, {503, "busy"}, 7)
+
+      assert ticks in 600..1800
+    end
+
+    test "the success path asks at once; a failed activity waits the minimum interval", %{
+      profile: profile
+    } do
+      state = asked(profile)
+      assert {"start", state} = Selector.ended(state, nil)
+      assert 0 == Selector.pause(state, "start")
+
+      state = chosen(state, "rest_at_home")
+      assert {"completed", state} = Selector.ended(state, :completed)
+      assert 0 == Selector.pause(state, "completed")
+
+      state = chosen(state, "zeta_build_north")
+      assert {"failed", state} = Selector.ended(state, {:failed, "build", "occupied"})
+      assert 1200 == Selector.pause(state, "failed")
+
+      # trigger retry 由退避状态推出；没有退避却问 retry 的间隔是调用方的错，显式报错，不当成 0。
+      assert %{retry: nil} = state
+      assert_raise FunctionClauseError, fn -> Selector.pause(state, "retry") end
+    end
+
+    test "an address cuts short only the wait after a failed activity, never a selection backoff" do
+      assert Selector.ask_when_addressed?("failed")
+      refute Selector.ask_when_addressed?("retry")
+    end
+
+    # 失败行是长跑判定解析器的契约（`.demo/observe/npc-slice4-20261118/run.py` 的
+    # `npc_select_failed cid=(\d+) reason=(.*)$`）：整行只有 cid 与 reason，退避不写进这一行。
+    test "the npc_select_failed line keeps exactly cid and reason", %{profile: profile} do
+      log =
+        capture_log([level: :warning], fn ->
+          Selector.failed(asked(profile), {:mind_unavailable, :timeout}, 7)
+        end)
+
+      assert [["npc_select_failed cid=7 reason={:mind_unavailable, :timeout}"]] =
+               Regex.scan(~r/npc_select_failed.*$/m, log)
+    end
+  end
+
   describe "Trees.npc (pure tree)" do
     defp obs(tick), do: {:observation, %{self: %{entity_id: 7, tick: tick}}}
 
@@ -692,7 +824,9 @@ defmodule NpcServer.NpcSelectorTest do
       ])
     end
 
-    test "a failed selection runs nothing, waits 600 ticks and asks again with the same report",
+    # 树不自己等：重问节奏的唯一 owner 是 Selector（`Selector.pause/2`），Runtime 把 choose_activity 留到那一 tick 才发问
+    # （下面 “real Runtime” 的用例按 tick 验证）。树只保证发问失败时不执行任何分支、下一个事件带同一份报告再发。
+    test "a failed selection runs nothing and the next event sends choose_activity again with the same report",
          %{
            profile: profile
          } do
@@ -700,14 +834,11 @@ defmodule NpcServer.NpcSelectorTest do
         Tree.init(profile)
         |> script([
           {obs(0), [%{id: 1, verb: :choose_activity, ended: nil}]},
-          # 发问失败：不执行任何分支；等待从 tick 0 起算，600 到期。
+          # 发问失败：不执行任何分支；这一轮在同一事件里结束，下一个事件开下一轮。
           {rejected(1, :choose_activity, {503, "busy"}), []},
-          {obs(599), []},
-          {obs(600), []},
-          {obs(601), [%{id: 2, verb: :choose_activity, ended: nil}]},
+          {obs(1), [%{id: 2, verb: :choose_activity, ended: nil}]},
           {rejected(2, :choose_activity, :malformed_response), []},
-          {obs(1201), []},
-          {obs(1202), [%{id: 3, verb: :choose_activity, ended: nil}]}
+          {obs(2), [%{id: 3, verb: :choose_activity, ended: nil}]}
         ])
 
       # 树没有结束。
@@ -759,7 +890,8 @@ defmodule NpcServer.NpcSelectorTest do
 
     # Jev 替身：每次请求把请求体交给测试进程，并等测试进程给出这一次的冻结应答。
     # Hindsight 替身的召回结果由返回的 `recall` Agent 给定，缺省是空结果（新 NPC 的空 bank）。
-    defp start(profile, cid) do
+    # extra：顶层 profile 的覆盖（如 Life 与 Runtime 共用的持久化模块 `memory`，Life 从顶层读它）。
+    defp start(profile, cid, extra \\ %{}) do
       test = self()
 
       request = fn _endpoint, body ->
@@ -779,6 +911,7 @@ defmodule NpcServer.NpcSelectorTest do
           :life,
           &Map.merge(&1, %{hindsight: Hindsight, owner: test, recall: recall, poll_ms: 30})
         )
+        |> Map.merge(extra)
 
       body = start_supervised!({Body, %{owner: self(), profile: profile, cid: cid}})
 
@@ -1084,7 +1217,7 @@ defmodule NpcServer.NpcSelectorTest do
       {body, runtime, _recall} = start(profile, cid)
 
       log =
-        capture_log([level: :info], fn ->
+        with_runtime_log(fn ->
           # —— 第 1 次：首个观察触发发问；应答到达前不发任何命令。
           event(body, {:observation, observation(1, cid)})
           assert_receive {:jev_request, worker, request}
@@ -1119,7 +1252,8 @@ defmodule NpcServer.NpcSelectorTest do
                  } =
                    settled(body, runtime)
 
-          # —— 第 2 次：活动成功结束 → 下一个事件再次发问，state 里有它的结局。
+          # —— 第 2 次：活动成功结束 → 下一个事件再次发问，state 里有它的结局。成功路径不受重问节奏影响：
+          # 同一个观察（tick 3）里就发问，不等任何间隔。
           skill_step(body, 2, :done, nil)
           assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
           event(body, {:observation, observation(3, cid)})
@@ -1128,14 +1262,25 @@ defmodule NpcServer.NpcSelectorTest do
           send(worker, {:jev_reply, answer("zeta_build_north", 0.9)})
           assert_receive {:command, %{id: {:skill, 4, 1}, verb: :prefab_place, anchor: {8, 8, 8}}}
 
-          # —— 第 3 次：活动失败 → 失败原因写进 state；这次应答的选项不在候选里 → 显式失败，不执行任何活动。
+          # —— 第 3 次：活动失败 → 树在下一个观察（tick 4）就发 choose_activity，但发问要等活动失败后的最小间隔
+          # （1200 tick，1204 到期；e8b-01 里活动立即失败后每约 2.5 s 重问一次的热循环）：到期前不读心智、不问 Jev。
+          # 到期后失败原因写进 state；这次应答的选项不在候选里 → 显式失败，不执行任何活动。
           skill_step(body, 4, :rejected, :occupied)
 
           assert_receive {:runtime_outcome,
                           %{id: 4, verb: :build, status: :rejected, reason: :occupied}}
 
           event(body, {:observation, observation(4, cid)})
+          event(body, {:observation, observation(1203, cid)})
+
+          assert %{select_wait: %{trigger: "failed", pause_ticks: 1200, due_tick: 1204}} =
+                   settled(body, runtime)
+
+          refute_received {:jev_request, _, _}
+
+          event(body, {:observation, observation(1204, cid)})
           assert_receive {:jev_request, worker, request}
+          assert %{select_wait: nil} = settled(body, runtime)
 
           assert request.state =~
                    "alpha_build_south: completed. zeta_build_north: " <>
@@ -1151,16 +1296,34 @@ defmodule NpcServer.NpcSelectorTest do
                             reason: {:unknown_activity, "dance"}
                           }}
 
-          assert %{select: %{failure: {:unknown_activity, "dance"}} = select} =
+          assert %{
+                   select:
+                     %{
+                       failure: {:unknown_activity, "dance"},
+                       retry: %{failures: 1, ticks: first}
+                     } = select
+                 } =
                    settled(body, runtime)
 
+          assert first in 600..1800
           assert nil == Selector.current(select)
           refute_received {:command, _}
 
-          # —— 第 4 次：等够 600 tick（从 tick 4 起，604 到期；等待本身由纯树用例逐 tick 验证）后照常再问；
+          # —— 第 4 次：发问失败后的退避。树在下一个观察（tick 1205）就重发，Runtime 留到 1205 + 抽到的退避：
+          # 期望的到期 tick 用 select.retry 里抽到的值算（不读 select_wait 自己的 due_tick），卡精确边界——
+          # 1205 + first − 1 还没问，1205 + first 已问；“仍固定 600 / 写死 base”的实现在这里对不上。
           # 这次 HTTP 出错 → 显式失败，树不崩。
-          event(body, {:observation, observation(604, cid)})
-          event(body, {:observation, observation(605, cid)})
+          event(body, {:observation, observation(1205, cid)})
+          due = 1205 + first
+
+          assert %{select_wait: %{trigger: "retry", pause_ticks: ^first, due_tick: ^due}} =
+                   settled(body, runtime)
+
+          event(body, {:observation, observation(due - 1, cid)})
+          assert %{select_wait: %{due_tick: ^due}} = settled(body, runtime)
+          refute_received {:jev_request, _, _}
+
+          event(body, {:observation, observation(due, cid)})
           assert_receive {:jev_request, worker, _}
           send(worker, {:jev_reply, {:error, {503, "busy"}}})
 
@@ -1172,9 +1335,22 @@ defmodule NpcServer.NpcSelectorTest do
                             reason: {503, "busy"}
                           }}
 
-          # —— 第 5 次：再等 600 tick，照常再问并执行被选中的分支。
-          event(body, {:observation, observation(1205, cid)})
-          event(body, {:observation, observation(1206, cid)})
+          # 连续第二次失败：退避在 [600, min(7200, 3 × 第一次)]。
+          assert %{select: %{retry: %{failures: 2, ticks: second}}} = settled(body, runtime)
+          assert second in 600..min(7200, 3 * first)
+
+          # —— 第 5 次：同样卡精确边界（重发在 due + 1），到期后照常执行被选中的分支。
+          event(body, {:observation, observation(due + 1, cid)})
+          due2 = due + 1 + second
+
+          assert %{select_wait: %{trigger: "retry", pause_ticks: ^second, due_tick: ^due2}} =
+                   settled(body, runtime)
+
+          event(body, {:observation, observation(due2 - 1, cid)})
+          assert %{select_wait: %{due_tick: ^due2}} = settled(body, runtime)
+          refute_received {:jev_request, _, _}
+
+          event(body, {:observation, observation(due2, cid)})
           assert_receive {:jev_request, worker, request}
           # 失败的活动只记了一次。
           assert request.state =~
@@ -1186,10 +1362,16 @@ defmodule NpcServer.NpcSelectorTest do
           assert_receive {:command,
                           %{id: {:skill, 8, 1}, verb: :prefab_place, anchor: {80, 8, 8}}}
 
-          assert %{select: %{failure: nil} = select} = settled(body, runtime)
+          # 一次成功即复位：失败原因与退避都清掉。
+          assert %{select: %{failure: nil, retry: nil} = select, select_wait: nil} =
+                   settled(body, runtime)
+
           assert "alpha_build_south" == Selector.current(select)
           refute_received {:command, _}
+          send(self(), {:dues, first, second, due, due2})
         end)
+
+      assert_received {:dues, first, second, due, due2}
 
       # 召回耗时是 Life 量的并行墙钟（替身立即返回，数值随运行而变）。
       candidates = "candidates=zeta_build_north,alpha_build_south,rest_at_home"
@@ -1203,11 +1385,292 @@ defmodule NpcServer.NpcSelectorTest do
       assert log =~
                ~r/npc_select cid=#{cid} trigger=retry #{candidates} chosen=alpha_build_south confidence=0.55 latency_ms=\d+ recall_ms=\d+ model=jev-test/
 
-      assert log =~ ~s(npc_select_failed cid=#{cid} reason={:unknown_activity, "dance"})
-      assert log =~ ~s(npc_select_failed cid=#{cid} reason={503, "busy"})
+      # 失败行的格式是长跑判定解析器的契约（`.demo/observe/npc-slice4-20261118/run.py` 的 SELECT_FAILED，按行尾锚定）：
+      # 只有 cid 与 reason，不带别的字段。
+      cid_text = "#{cid}"
+
+      assert [
+               [_, ^cid_text, ~s({:unknown_activity, "dance"})],
+               [_, ^cid_text, ~s({503, "busy"})]
+             ] = Regex.scan(~r/npc_select_failed cid=(\d+) reason=(.*)$/m, log)
+
+      # 等过的三次各一行等待与一行放行：活动失败 1200 tick；两次退避的数值就是 select.retry 抽到的。
+      assert log =~
+               "npc_select_wait cid=#{cid} trigger=failed failures=0 pause_ticks=1200 due_tick=1204"
+
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=failed tick=1204 cause=due"
+
+      assert log =~
+               "npc_select_wait cid=#{cid} trigger=retry failures=1 pause_ticks=#{first} due_tick=#{due}"
+
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=retry tick=#{due} cause=due"
+
+      assert log =~
+               "npc_select_wait cid=#{cid} trigger=retry failures=2 pause_ticks=#{second} due_tick=#{due2}"
+
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=retry tick=#{due2} cause=due"
+      # 成功路径（start / completed）不等，没有等待行。
+      assert 3 == length(Regex.scan(~r/npc_select_wait cid=/, log))
+
+      # 活动失败 → 发问失败 ×2 → 重问成功：那项失败活动的经历在 Life 持久行里恰好一条（重问带同一份报告，不重复交）。
+      row = DataService.NpcMemory.get(cid, "life", "state")
+      episodes = row["pending"] ++ Enum.flat_map(row["fragments"], & &1["episodes"])
+      assert 1 == Enum.count(episodes, &(&1["text"] =~ ~s|I did "zeta_build_north"|))
+
       # 三次成功、两次失败，各一行。
       assert 3 == length(Regex.scan(~r/npc_select cid=/, log))
       assert 2 == length(Regex.scan(~r/npc_select_failed cid=/, log))
+    end
+
+    # 重问节奏的交互与经历（召回隔离决策稿 D-3c 2026-11-20，评审 S4 / S5）：活动以失败结束后的间隔里被直呼 → 立即发问
+    # （`Selector.ask_when_addressed?/1`；没有正在做的活动，不起回合，这次发问就是响应）；那项活动的经历在收到
+    # choose_activity 时就交给 Life，间隔里靠近的人不算进它。
+    test "a direct address during the wait after a failed activity asks at once; the wait does not leak into its experience",
+         %{profile: profile, cid: cid} do
+      {body, runtime, _recall} = start(profile, cid)
+      brann = cid + 2
+
+      near =
+        Map.put(observation(5, cid), :entities, [
+          %{entity_id: cid, kind: 1, name: "Lin", position: {1.0, 2.0, 3.0}},
+          %{entity_id: brann, kind: 0, name: "Brann", position: {4.0, 2.0, 7.0}}
+        ])
+
+      log =
+        with_runtime_log(fn ->
+          event(body, {:observation, observation(1, cid)})
+          assert_receive {:jev_request, worker, _}
+          send(worker, {:jev_reply, answer("alpha_build_south", 0.9)})
+          assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+          # 活动失败；树在 tick 4 发 choose_activity，留到 1204。
+          skill_step(body, 2, :rejected, :occupied)
+          assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :rejected}}
+          event(body, {:observation, observation(4, cid)})
+
+          assert %{select_wait: %{trigger: "failed", due_tick: 1204}} = settled(body, runtime)
+
+          # 经历在收到 choose_activity 时就交给 Life（不等放行）：留着期间它已在持久行里。
+          NpcWorld.await(fn ->
+            life_episode?(cid, &(&1["text"] =~ ~s|I did "alpha_build_south"|))
+          end)
+
+          # 留着期间 Brann 走近：不进那项已结束活动的经历。
+          event(body, {:observation, near})
+          settled(body, runtime)
+          refute_received {:jev_request, _, _}
+
+          # 被直呼：不等 1204，立即发问；没有正在做的活动，不起回合。
+          event(body, {:heard, address(cid)})
+          assert_receive {:jev_request, _worker, request}
+
+          assert request.state =~
+                   "failed (build: something else was already in the place where it had to go)"
+
+          assert %{select_wait: nil, dialogue_turn: nil} = settled(body, runtime)
+        end)
+
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=failed tick=5 cause=addressed"
+
+      assert life_episode?(cid, fn episode ->
+               episode["text"] =~ ~s|I did "alpha_build_south"| and
+                 episode["text"] =~ "During it: nobody came near."
+             end)
+
+      refute life_episode?(cid, fn episode ->
+               episode["text"] =~ ~s|I did "alpha_build_south"| and episode["text"] =~ "Brann"
+             end)
+    end
+
+    # 发问失败的退避期间被直呼不提前（心智多半仍读不到，提前只加压）：留着的那次原样留着，到期才问。
+    test "a direct address does not cut a selection backoff short", %{profile: profile, cid: cid} do
+      {body, runtime, _recall} = start(profile, cid)
+
+      capture_log(fn ->
+        event(body, {:observation, observation(1, cid)})
+        assert_receive {:jev_request, worker, _}
+        send(worker, {:jev_reply, {:error, {503, "busy"}}})
+        assert_receive {:runtime_outcome, %{id: 1, verb: :choose_activity, status: :rejected}}
+
+        event(body, {:observation, observation(2, cid)})
+        assert %{select: %{retry: %{ticks: ticks}}} = settled(body, runtime)
+        due = 2 + ticks
+        assert %{select_wait: %{trigger: "retry", due_tick: ^due}} = settled(body, runtime)
+
+        event(body, {:heard, address(cid)})
+        assert %{select_wait: %{trigger: "retry", due_tick: ^due}} = settled(body, runtime)
+        refute_received {:jev_request, _, _}
+
+        event(body, {:observation, observation(due, cid)})
+        assert_receive {:jev_request, _worker, _}
+      end)
+    end
+
+    # 观察的 tick 比上一次看到的还小（会话重建、换了钟）：原到期 tick 不在同一条钟上，按剩余等待重算——
+    # 新到期 = 当前 tick + (原到期 − 回退前最后看到的 tick)，既不卡住、也不提前放行。
+    test "an observation tick going backwards rebases the wait on what was left", %{
+      profile: profile,
+      cid: cid
+    } do
+      {body, runtime, _recall} = start(profile, cid)
+
+      log =
+        with_runtime_log(fn ->
+          event(body, {:observation, observation(10, cid)})
+          assert_receive {:jev_request, worker, _}
+          send(worker, {:jev_reply, {:error, {503, "busy"}}})
+          assert_receive {:runtime_outcome, %{id: 1, verb: :choose_activity, status: :rejected}}
+
+          event(body, {:observation, observation(11, cid)})
+          assert %{select: %{retry: %{ticks: ticks}}} = settled(body, runtime)
+          # 已等了 100 tick，还剩 ticks − 100（ticks ≥ 600）。
+          event(body, {:observation, observation(111, cid)})
+          left = ticks - 100
+
+          # 钟回到 5：从 5 起再等剩余的 left。
+          event(body, {:observation, observation(5, cid)})
+          due = 5 + left
+
+          assert %{select_wait: %{trigger: "retry", pause_ticks: ^left, due_tick: ^due}} =
+                   settled(body, runtime)
+
+          event(body, {:observation, observation(due - 1, cid)})
+          assert %{select_wait: %{due_tick: ^due}} = settled(body, runtime)
+          refute_received {:jev_request, _, _}
+
+          event(body, {:observation, observation(due, cid)})
+          assert_receive {:jev_request, _worker, _}
+          assert %{select_wait: nil} = settled(body, runtime)
+          send(self(), {:rebased, left, due})
+        end)
+
+      assert_received {:rebased, left, due}
+
+      assert log =~
+               "npc_select_wait cid=#{cid} trigger=retry failures=1 pause_ticks=#{left} due_tick=#{due} rebased=true"
+
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=retry tick=#{due} cause=due"
+    end
+
+    # 末轮 B：刚结束那项活动的经历保存失败，不等放行，立即以失败结束（按发问失败退避）；Life 保留同一输入，之后照常提交。
+    test "a failed save of the ended activity rejects the selection at once, without waiting for the release",
+         %{profile: profile, cid: cid} do
+      :ets.new(ControlledStore, [:named_table, :public])
+      {body, runtime, _recall} = start(profile, cid, %{memory: ControlledStore})
+
+      capture_log(fn ->
+        event(body, {:observation, observation(1, cid)})
+        assert_receive {:jev_request, worker, _}
+        send(worker, {:jev_reply, answer("alpha_build_south", 0.9)})
+        assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+        :ets.insert(ControlledStore, {cid, self(), ~s|I did "alpha_build_south"|, :refuse})
+        skill_step(body, 2, :rejected, :occupied)
+        assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :rejected}}
+
+        # 活动失败 → choose_activity 在 tick 4 留到 1204；保存被拒 → 不等 1204，立即 rejected。
+        event(body, {:observation, observation(4, cid)})
+        assert_receive {:save_refused, ^cid}, 5_000
+
+        assert_receive {:runtime_outcome,
+                        %{
+                          id: 3,
+                          verb: :choose_activity,
+                          status: :rejected,
+                          reason: {:memory_unavailable, :write_denied}
+                        }},
+                       5_000
+
+        refute_received {:jev_request, _, _}
+
+        assert %{select: %{failure: {:memory_unavailable, :write_denied}, retry: %{failures: 1}}} =
+                 settled(body, runtime)
+
+        # Life 保留同一输入、轮询时照常提交。
+        NpcWorld.await(fn ->
+          life_episode?(cid, &(&1["text"] =~ ~s|I did "alpha_build_south"|))
+        end)
+      end)
+    end
+
+    # 末轮 G：直呼时 worker 还在保存经历（Life 的写入被扣住）：放行已发出，但发问仍在经历保存之后才发生。
+    test "an address while the ended activity is still being saved asks only after the save", %{
+      profile: profile,
+      cid: cid
+    } do
+      :ets.new(ControlledStore, [:named_table, :public])
+      {body, runtime, _recall} = start(profile, cid, %{memory: ControlledStore})
+
+      capture_log(fn ->
+        event(body, {:observation, observation(1, cid)})
+        assert_receive {:jev_request, worker, _}
+        send(worker, {:jev_reply, answer("alpha_build_south", 0.9)})
+        assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+        :ets.insert(ControlledStore, {cid, self(), ~s|I did "alpha_build_south"|, :hold})
+        skill_step(body, 2, :rejected, :occupied)
+        assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :rejected}}
+        event(body, {:observation, observation(4, cid)})
+        assert_receive {:save_held, writer}, 5_000
+        # 第一次发问的召回消息先清掉，下面只看这一次。
+        flush_recalls()
+
+        # 被直呼：放行（活动失败的间隔可提前），但经历还没存完，不读心智、不问 Jev。
+        event(body, {:heard, address(cid)})
+        assert %{select_wait: nil} = settled(body, runtime)
+        refute_receive {:jev_request, _, _}, 200
+        refute_received {:recall_called, _, _}
+        refute life_episode?(cid, &(&1["text"] =~ ~s|I did "alpha_build_south"|))
+
+        # 放开写入：先存下经历，再发问。
+        send(writer, :release_save)
+        assert_receive {:jev_request, _worker, request}, 5_000
+        assert life_episode?(cid, &(&1["text"] =~ ~s|I did "alpha_build_south"|))
+
+        assert request.state =~
+                 "failed (build: something else was already in the place where it had to go)"
+      end)
+    end
+
+    # 末轮 F：回合在途时活动自己失败结束（choose_activity 留在 1200 tick 的间隔里），回合随后决定停下——无可停之事，这次停下作废；
+    # 但它是对一次直呼的响应，按同一条规则（`Selector.ask_when_addressed?/1`）放行发问。
+    @tag :dialogue_turn
+    test "a turn that decides to stop after the activity already failed releases the waiting selection",
+         %{profile: profile, cid: cid} do
+      {body, runtime, _recall} = start(profile, cid)
+
+      log =
+        with_runtime_log(fn ->
+          event(body, {:observation, observation(1, cid)})
+          assert_receive {:jev_request, worker, _}
+          send(worker, {:jev_reply, answer("alpha_build_south", 0.9)})
+          assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+          # 活动进行中被直呼：起回合（回合 worker 问 Jev，先不答）。
+          event(body, {:heard, address(cid)})
+          assert_receive {:jev_request, turn, _}
+
+          # 回合决定期间活动自己失败：choose_activity 留到 1204。回合在途时再来的直呼只记 dropped、不放行。
+          skill_step(body, 2, :rejected, :occupied)
+          assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :rejected}}
+          event(body, {:observation, observation(4, cid)})
+          event(body, {:heard, address(cid, 2, "Still there?")})
+          assert %{select_wait: %{trigger: "failed", due_tick: 1204}} = settled(body, runtime)
+          refute_received {:jev_request, _, _}
+
+          # 回合决定停下去做 rest_at_home：没有可停的活动 → 作废，并放行留着的发问。
+          send(turn, {:jev_reply, answer("rest_at_home", 0.8)})
+          assert_receive {:jev_request, _worker, request}, 5_000
+
+          assert request.state =~
+                   "failed (build: something else was already in the place where it had to go)"
+
+          assert %{select_wait: nil, dialogue_turn: nil} = settled(body, runtime)
+        end)
+
+      assert log =~ "event=dropped"
+      assert log =~ "event=failed reason=:no_activity_to_stop"
+      assert log =~ "npc_select_wait_over cid=#{cid} trigger=failed tick=4 cause=addressed"
     end
 
     test "a selection worker that dies without an answer is an explicit failure", %{
@@ -1378,13 +1841,14 @@ defmodule NpcServer.NpcSelectorTest do
 
           assert {:ok, %{recall: %{status: :failed, error: :transport_error}}} = Life.observe(cid)
 
-          # —— 第 4 次：600 tick 后照常再问（从 tick 4 起，604 到期）；记忆读得到了，照常问 Jev。
+          # —— 第 4 次：退避到期后照常再问（树在 tick 5 重发；首次退避在 [600, 1800] tick，1805 时一定已问）；
+          # 记忆读得到了，照常问 Jev。
           Agent.update(recall, fn _ -> {:ok, %{results: [], latency_ms: 4}} end)
 
           # 上一次失败时可能有一路还没发出就停下了：先清掉它留下的消息，再看这一次的两路。
           flush_recalls()
-          event(body, {:observation, near.(604)})
-          event(body, {:observation, near.(605)})
+          event(body, {:observation, near.(5)})
+          event(body, {:observation, near.(1805)})
           recalled_both.()
           assert_receive {:jev_request, worker, request}
 
@@ -1417,7 +1881,7 @@ defmodule NpcServer.NpcSelectorTest do
       assert log =~
                ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=\d+ model=jev-test/
 
-      assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}"
+      assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}\n"
 
       assert log =~
                ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=\d+ model=jev-test/
@@ -1645,11 +2109,12 @@ defmodule NpcServer.NpcSelectorTest do
                 }} =
                  Life.observe(cid)
 
-        # 600 tick 后重问；四路都成功：照常问 Jev，observe 里是按优先级排好的四路描述。
+        # 退避到期后重问（树在 tick 2 重发；首次退避在 [600, 1800] tick，1802 时一定已问）；
+        # 四路都成功：照常问 Jev，observe 里是按优先级排好的四路描述。
         Agent.update(recall, fn _ -> ok end)
         flush_recalls()
-        event(body, {:observation, crowd.(601)})
-        event(body, {:observation, crowd.(602)})
+        event(body, {:observation, crowd.(2)})
+        event(body, {:observation, crowd.(1802)})
         assert_receive {:jev_request, _worker, request}, 5000
         assert request.state =~ ~s|My building "small hut" at (4, 64, 8) is standing.|
         assert %{select: %{asked: %{recall_queries: ^routes}}} = settled(body, runtime)

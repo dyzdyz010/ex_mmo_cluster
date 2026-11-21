@@ -31,10 +31,10 @@ R6 / R7 / R10 共 25 次 `recall_timeout`（选择的心智快照召回 10 秒�
 | S5 | OTP 源码 `httpc_profile_sup.erl`（master） | `one_for_one`，`MaxR = 10`，`MaxT = 3600`；profile manager 的子规格 `Restart = permanent`、`Shutdown = 4000`，`StartFunc = {httpc_manager, start_link, [Profile, Dir, inets]}`；`start_child` 只读 `profile` 与 `data_dir`；`stop_child` 先 terminate 再 delete | 同上 | inets 起的 profile 崩了会被 inets 自动重启，但重启后用的是缺省参数。所以**只要用缺省参数，重启前后就一致**，这个不变量由 inets 自己维护（AGENTS §2.1 第 2 条） |
 | S6 | 本线实验 E1（`s1r10/recall/e1-results.md`，原始输出 `e1/out-ab/`） | 缺省 profile：快请求进了正忙的 keep-alive 会话队列（`queue_length` 空闲 0 → 在途 1 → 在途 + 排队 2），调用方 10,001 ms `{error,timeout}`，服务端始终没收到它。独立 profile `e1_recall`（**参数全缺省**）：走另一条连接，7.7 ms 拿到 200 | OTP 29.1.2 / inets 9.8.1，与节点同一套 | D-1 的直接证据，而且证明不调参数就够了 |
 | S7 | Dean & Barroso, “The Tail at Scale”, CACM 56(2), 2013, p. 76（PDF：<https://www.barroso.org/publications/TheTailAtScale.pdf>） | “Differentiating service classes and higher-level queuing. Differentiated service classes can be used to prefer scheduling requests for which a user is waiting over non-interactive requests. Keep low-level queues short so higher-level policies take effect more quickly…”（例子是集群文件系统让 OS 磁盘队列保持很浅，自己维护优先级队列）。“Reducing head-of-line blocking … break long-running requests into a sequence of smaller requests…”。“Managing background activities … A combination of throttling, breaking down heavyweight operations into smaller operations, and triggering such operations at times of lower overall load…”。p. 75 “Why Variability Exists?”：Shared resources（“contending for shared resources (such as CPU cores…)”），Queueing（“Multiple layers of queueing … amplify this variability”） | 交互请求与批量请求共用后端 / 队列 | 召回是“有人在等”的一类，retain、refresh 轮询、status 是“没人在等”的一类。D-1 把两类分到不同的连接队列（不同 profile），召回就不会再排到长请求后面。“拆小长请求”（retain 分批）与“后台活动节流”是服务端的事，我方暂不需要（D-2）。乙类的 CPU 争用正是 “Shared resources”，要等证据（D-4） |
-| S8 | Google SRE Book 第 22 章 “Addressing Cascading Failures” <https://sre.google/sre-book/addressing-cascading-failures/> | Deadline：“It’s usually wise to set a deadline.”；“servers spend resources handling requests that will exceed their deadlines … you don’t get credit for late assignments with RPCs”；Deadline propagation：“The tree of RPCs emanating from an initial request will all have the same absolute deadline.”；Cancellation propagation：“reduces unneeded or doomed work”。Retries：“Limit retries per request”；“Always use randomized exponential backoff when scheduling retries.”；“Consider having a server-wide retry budget”（例：每进程每分钟 60 次）；“Retries can destabilize a system”；“avoid amplifying retries by issuing retries at multiple levels”。Queue：“it is usually better to have small queue lengths relative to the thread pool size” | 多层 RPC、后端可能过载 | D-3a 对应 cancellation propagation：放弃的请求要真的被取消，连接关掉，Hindsight 才会在阶段边界停下来。“同一绝对截止时间”在我方每路超时从调用起算时（S1 注）已近似成立，所以不另立整次 deadline（D-3b）。退避加抖动是一般性的推荐，但本线证据显示重试**没有**维持慢段（D-3c），先不加 |
-| S9 | AWS Builders' Library “Timeouts, retries, and backoff with jitter”（现址 <https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter>） | 超时取值：“start with the latency metrics of the downstream service”，选可接受的误超时率（例 0.1%），取对应百分位（p99.9）。“When failures are caused by overload, retries that increase load can make matters significantly worse.”；“retry at a single point in the stack”；capped exponential backoff；“limiting retries locally using a token bucket”；Jitter：“If all the failed calls back off to the same time, they cause contention or overload again”；“we consider adding some jitter to all timers, periodic jobs, and other delayed work” | 很多客户端打同一后端 | 我方只在一处重试（树的 `@retry`），符合“single point”。单 NPC 时不存在“很多客户端同时退避”的问题，抖动的收益要到多 NPC 才有（D-3c）。10 s 单路预算按百分位法重定需要分布数据，下次实跑记（D-3d） |
+| S8 | Google SRE Book 第 22 章 “Addressing Cascading Failures” <https://sre.google/sre-book/addressing-cascading-failures/> | Deadline：“It’s usually wise to set a deadline.”；“servers spend resources handling requests that will exceed their deadlines … you don’t get credit for late assignments with RPCs”；Deadline propagation：“The tree of RPCs emanating from an initial request will all have the same absolute deadline.”；Cancellation propagation：“reduces unneeded or doomed work”。Retries：“Limit retries per request”；“Always use randomized exponential backoff when scheduling retries.”；“Consider having a server-wide retry budget”（例：每进程每分钟 60 次）；“Retries can destabilize a system”；“avoid amplifying retries by issuing retries at multiple levels”。Queue：“it is usually better to have small queue lengths relative to the thread pool size” | 多层 RPC、后端可能过载 | D-3a 对应 cancellation propagation：放弃的请求要真的被取消，连接关掉，Hindsight 才会在阶段边界停下来。“同一绝对截止时间”在我方每路超时从调用起算时（S1 注）已近似成立，所以不另立整次 deadline（D-3b）。退避加抖动是一般性的推荐，但本线证据显示重试**没有**维持慢段（D-3c），先不加（2026-11-20 已改，见进度同日条目） |
+| S9 | AWS Builders' Library “Timeouts, retries, and backoff with jitter”（现址 <https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter>） | 超时取值：“start with the latency metrics of the downstream service”，选可接受的误超时率（例 0.1%），取对应百分位（p99.9）。“When failures are caused by overload, retries that increase load can make matters significantly worse.”；“retry at a single point in the stack”；capped exponential backoff；“limiting retries locally using a token bucket”；Jitter：“If all the failed calls back off to the same time, they cause contention or overload again”；“we consider adding some jitter to all timers, periodic jobs, and other delayed work” | 很多客户端打同一后端 | 我方只在一处重试（树的 `@retry`），符合“single point”。单 NPC 时不存在“很多客户端同时退避”的问题，抖动的收益要到多 NPC 才有（D-3c）。10 s 单路预算按百分位法重定需要分布数据，下次实跑记（D-3d）（2026-11-20 已改，见进度同日条目） |
 | S10 | gRPC Deadlines 指南 <https://grpc.io/docs/guides/deadlines/> | “A deadline is used to specify a point in time past which a client is unwilling to wait”；“A timeout can be converted to a deadline by adding the timeout to the current time when the application starts a call.”；“the server application is responsible for stopping any activity it has spawned”；“you should always explicitly set a realistic deadline in your clients” | RPC 客户端 / 服务端 | 同 S8。服务端停止工作是 Hindsight 的事（上游 #2122：重排线程不可中断），我方能做的是把取消真正发出去（D-3a） |
-| S11 | Bronson et al., “Metastable Failures in Distributed Systems”, HotOS ’21, pp. 221–222（<https://sigops.org/s/conferences/hotos/2021/papers/hotos21-s11-bronson.pdf>） | 亚稳态：“a bad state that persists even when the trigger is removed”，由 “sustaining effect—often involving work amplification” 维持；§2.1 “One of the most common failure-sustaining mechanisms is request retries … work amplification” | 有重试 / 超时的开放系统 | 判据是**触发消失后坏状态还在不在**。S1-R10 的慢段在 02:02:05 前后结束，而 20 s 重试一直在跑（最后一次失败 02:02:02.4，召回 02:02:12 起恢复），所以我方重试**不是**维持慢段的原因。这是 D-3c 暂不加退避的依据 |
+| S11 | Bronson et al., “Metastable Failures in Distributed Systems”, HotOS ’21, pp. 221–222（<https://sigops.org/s/conferences/hotos/2021/papers/hotos21-s11-bronson.pdf>） | 亚稳态：“a bad state that persists even when the trigger is removed”，由 “sustaining effect—often involving work amplification” 维持；§2.1 “One of the most common failure-sustaining mechanisms is request retries … work amplification” | 有重试 / 超时的开放系统 | 判据是**触发消失后坏状态还在不在**。S1-R10 的慢段在 02:02:05 前后结束，而 20 s 重试一直在跑（最后一次失败 02:02:02.4，召回 02:02:12 起恢复），所以我方重试**不是**维持慢段的原因。这是 D-3c 暂不加退避的依据（2026-11-20 已改，见进度同日条目） |
 | S12 | Hindsight 0.10 文档 “Operations” <https://hindsight.vectorize.io/0.10/developer/api/operations>（页面自注 “no longer maintained”，当前 1.2） | 异步 retain：`POST …/memories` 带 `async=true`，响应里的 `operation_id` 用来轮询；状态 `pending / processing / completed / failed / cancelled`；“The handler runs the same pipeline as a synchronous retain”（抽取 LLM、嵌入、实体、链接）；“Use async retain when you’re ingesting thousands of items and don’t want the HTTP call to hold for minutes”；worker 缺省 “in-process inside the API”；失败自动重试至 `HINDSIGHT_API_WORKER_MAX_RETRIES` 次 | 容器是 hindsight-api-slim **0.10.3**（报告 §3）。文档是 0.10 小版本的，不是 0.10.3 逐行；容器内源码（`api/http.py` L5148 起 `WorkerPoller`，后台与在线召回同进程、无优先级）由调查报告读过，本子会话按规则不碰容器，未复读 | 异步 retain 只是把同一份工作挪到**同一进程**的 worker 里，Hindsight 的 CPU 一点没少，召回和后台之间也没有优先级。它解决的只有“HTTP 连接被占住”，而这一点 D-1 已经解决。所以 D-2 不改 |
 | S13 | Elasticsearch thread pool 设置 <https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings>（当前版） | 节点有多个线程池；`search` 池（“For count/search operations…”）与 `write` 池（“For write operations and ingest processors”）各自定长、各自有队列 | 服务端读写隔离 | 业界“读写各一个池、各一个队列”的成熟做法，作 D-1 的旁证。它是服务端线程池，我们这里是客户端连接池，只借“按服务等级分队列”这一点 |
 | S14 | Python `concurrent.futures.Future.cancel` <https://docs.python.org/3/library/concurrent.futures.html> | “If the call is currently being executed or finished running and cannot be cancelled then the method will return False” | Hindsight 用 `run_in_executor` 跑 FlashRank | 解释为什么取消只在阶段边界生效、已派出的重排会算完（报告 §3 第 4 条），D-3a 只能减少白算，不能消除 |
@@ -82,7 +82,7 @@ flowchart LR
 | CLI `context/2` | `life.ex` L200–220 | `:infinity` → 适配器 300 s | 调试入口 |
 | 写日记接口、Jev | `http.ex` L14–39，L34 `:httpc.request/4` 无 profile | 写作缺省 60 s；Jev 10 s | 见 3.3 |
 
-### 3.2 选择失败后的重试节奏
+### 3.2 选择失败后的重试节奏（2026-11-20 已改，见进度同日条目）
 
 不在 Life 里，在树上：`trees.ex` L46 `@retry 600`（tick，60 Hz，即 10 s），L131 “发问失败：这一轮不执行任何活动，等 `@retry` tick 后下一轮再问”，L145 `{:repeat, :forever, {:sel, [round, {:wait, @retry}]}}`。召回 10 s 超时加上等 10 s，日志里 `npc_select_failed` 间隔 20.0–20.05 s（报告 §2）。这条重试路径对所有发问失败都一样（召回、Jev、World），没有退避也没有抖动。正常时选择间隔约 34 s。
 
@@ -219,7 +219,7 @@ flowchart LR
 
 现状下同时起的各路共用同一个起点，每路超时从调用起算，已经近似 S8 说的“同一绝对截止时间”；只有第 4 路（`max_concurrency: 3`）要等前面某一路结束才起，整次最长可到约 20 s。没有任何失败与整次时长有关，也没有产品上对选择延迟的要求（树在等应答时身体原地不动，`trees.ex` L130）。不加。
 
-**D-3c 选择失败后的重试加退避与抖动（不建议现在加；多 NPC 实跑之前再定）**
+**D-3c 选择失败后的重试加退避与抖动（不建议现在加；多 NPC 实跑之前再定）**（2026-11-20 已改，见进度同日条目）
 
 - 现状：固定约 20 s（10 s 超时 + `@retry` 10 s），所有发问失败共用。
 - 不加的理由：
@@ -267,6 +267,8 @@ flowchart LR
 3. 每一路召回的截止时间只有一个 owner（适配器给 `NpcServer.Http` 的 `timeout_ms`，即 Finch `request_timeout`；取连接另由车道的 `pool_timeout` 管），到点 Finch 关掉那条连接；生产代码里不再有第二个计时器去 kill 召回进程（D-3a，2026-11-18 按 Finch 决策稿 §3 改写）。
 4. 选择的视图仍是全有全无（P-1 不动）；召回失败仍是显式失败，`observe/1` 的 `recall` 记失败的那一路与原因。
 5. retain 的语义不变：同步、写完逐文档查 facts、成功才删片段；存档结局只有 `none / pending / ok / failed`。
+6. 活动选择的重问节奏只有一个 owner：`NpcServer.Selector.pause/2`（连续失败计数与退避只在 `Selector.failed/3` 算、`chose/3` 复位；留着期间被直呼是否提前只由 `Selector.ask_when_addressed?/1` 定）。树与 Runtime 不另算间隔（2026-11-20）。
+7. 任何非 0 的重问间隔都不小于 600 tick（10 s，失败退避的 base）；成功路径（start / completed）的间隔为 0（2026-11-20）。
 
 ## 7. 验证方式（先最小测试，后闭环实跑；期望运行前写）
 
@@ -303,7 +305,7 @@ flowchart LR
 | profile 的 owner 与起停位置 | `Application.start/2` 起、`stop/1` 停，运行期间归 inets 监督 | OTP 只给了机制（S2、S3、S5），没规定由哪个应用持有 | T-3 |
 | 合成方式 | 不 halt、等各路结束再全有全无 | S8 要求传播取消，但没规定合成方式；代价是早失败时晚返回 | T-2 |
 | （待定，不在本次）D-1b 参数 | `max_keep_alive_length 0`、`max_sessions 5` | 按单 NPC 召回在途上限推出 | 启用前另报 |
-| （待定，不在本次）D-3c 退避数字 | 起点 / 倍率 / 上限 / 抖动方式 | S8、S9 只给形状 | 多 NPC 前另报 |
+| D-3c 退避数字（2026-11-20 定，见进度同日条目） | base 600 tick（10 s）、decorrelated jitter `min(cap, U(base, 3 × 上一次))`、cap 7200 tick（120 s）；活动失败后最小间隔 1200 tick（20 s） | S8、S9 只给形状 | 离线闭环仿真 + 最小测试，见进度条目 |
 
 检索范围：Erlang/OTP 官方文档与 inets 源码（master）、CACM 论文、Google SRE Book、AWS Builders' Library、gRPC 官方指南、HotOS 论文、Hindsight 0.10 官方文档、Elasticsearch 官方文档、Python 与 Elixir 官方文档（见 §2）。
 
@@ -324,6 +326,8 @@ flowchart LR
 4. D-3c：**现在不加退避**，多 NPC 实跑之前再定；D-3b（不另立整次 deadline）、D-3d（单路 10 s）照建议不改；D-4 按已定采样计划在下一次闭环实跑附带；P-1 不动。
 
 未选的：召回与后台各一个 profile / 现在就做 D-1b；retain 改异步 + 轮询；保持 Task kill；现在就加退避。
+
+**D-3c 再定（2026-11-20，经对话框，第二十五个统筹会话发问）**：多 NPC 实跑（长跑 `e8b-01`，3 人、生产限额同机 2 核）出现自持召回风暴后，用户选 **“现在加退避”**（推荐项）：失败后从 10 s 起、带抖动递增、上限 120 s、成功复位；活动失败后至少隔 20 s 再问，其间被直呼立即响应。未选：“先不加，改容量”“加退避并改容量”。取值依据与仿真见下方进度 2026-11-20 条目（原创决策）。
 
 ## 进度
 
@@ -375,3 +379,81 @@ flowchart LR
   （交互召回、后台取材、其余后台请求不共用连接队列；选择不排在同主机的写作 / retain 后面）由交互 / 后台两条车道承担，
   `npc_recall_isolation_test.exs` 的两项与 `npc_selection_lane_test.exs` 改走 Finch 后仍绿；profile 起停、`{:profile_not_started, 名}` 与相关用例删除。
   D-3a 按 Finch 决策稿 §3 改写（见上文“D-3a 改写”）。
+- 2026-11-20：**D-3c 改为现在就加（统筹裁定：冻结期 happy path 缺陷修复）；原创决策**（随后按独立评审 B1、S1–S7、O1–O4 修订，下文是修订后的状态）。
+  证据推翻了 11-16 “先不加”的依据：e8b-01（3 人）出现亚稳态召回风暴（`.demo/observe/npc-e8-20261120/longrun/storm/timeline.tsv`）——
+  失败期 10 s 固定重问的到达率约 0.45 次召回/s，是成功节拍的 2.4–5 倍；首轮巩固后单次召回 3.5–4.5 核·秒，2 核同机负载率约 0.85，
+  W≈11–12 s > 10 s（W 是拥塞下的墙钟——请求从发出到返回，含排队与与其它请求分享 CPU，不是单次召回独占算力时的耗时），
+  触发消失后坏态仍在，重启后复发。这正是 S11 的判据（坏态由重试的工作放大维持）；11-16 的 ①②（单 NPC、慢段结束时重试不维持）在多 NPC 下不再成立。
+  - **热循环的根因与 owner（S7）**：e8b-01 石砚两段热循环都是 `build_steps` 的 build 技能被 World 以 `out_of_reach` 拒绝：
+    07:04:46–07:05:00（`runs/e8b-01/release.log` 第 2641–3165 行，14 s 内 9 次选择，每次 `voxel_prefab_place_v1 result=error reason=:out_of_reach`）
+    与 07:06:04–07:07:12（25 次 build 拒绝，`out_of_reach` 25 次）。上游 owner 是 build 技能（够不着时没有自己走到射程内），已由 `99296b54`
+    修复（按足迹站位走到射程内再放置）。本稿的 20 s 下限**不是**这个根因的修复，是负载保护：任何活动立即失败（今后别的技能、别的拒绝原因）
+    都不能让一个 NPC 以秒级节拍重问、把召回算力吃掉。退出条件：每个“立即失败”的原因都由对应技能 / 世界规则修掉，且多 NPC 长跑里
+    活动失败后的重问率不再是召回负载的显著部分时，可以下调或取消这一档（取消即 `pause/2` 的 `failed` 行改 0，测试同步改）。
+  - **依据（本子会话读原文）**：S8（SRE 第 22 章）“Always use randomized exponential backoff when scheduling retries.”、
+    “Limit retries per request”、“retries can destabilize a system”、恢复时 “reduce load … only allow, say, 1% of the traffic through”；
+    SRE 第 21 章 “Handling Overload”：大面积过载时 “requests should not be retried and errors should bubble up”；它的客户端节流与 10% 重试比
+    是给大量请求共享一个客户端的情形，我方每个 NPC 每分钟约 1 次发问，比率型预算在这个量级上没有意义，不采用（这是本稿的判断）；
+    S9（AWS Builders' Library）“When failures are caused by overload, retries that increase load can make matters significantly worse.”、
+    “retry at a single point in the stack”、capped exponential backoff + jitter，但不给 base / cap 取值，也不点名抖动方式；
+    抖动公式取自它链接的 AWS 退避仿真官方样例（`aws-samples/aws-arch-backoff-simulator` `src/backoff_simulator.py`：
+    full `uniform(0, min(cap, base·2^n))`、decorrelated `min(cap, uniform(base, sleep·3))`，sleep 初值 base）。
+    架构博客原文（“Exponential Backoff And Jitter”）本次抓取只拿到导航页，没读到正文，不引用它的结论。
+  - **选 decorrelated，不选 full**：full jitter 的下界是 0，第一次重问可能紧接在失败之后，比改前的固定 10 s 更激进；本场景只有 3 个
+    客户端打一台过载的 Hindsight，要的是压低到达率，不是在大量竞争者之间去相关。decorrelated 的下界恒为 base，任何一次都不比改前快。
+  - **取值**（tick，60 Hz）：base 600（= 改前的固定间隔）；cap 7200（120 s）；活动以失败结束后的最小间隔 1200（20 s）。
+    判据：持续失败时每个 NPC 的发问率不高于成功节拍（e8b-01 两次启动的完成周期 n=15，中位 68 s、下四分位 22 s）；热循环的 NPC
+    在高成本（4.5 核·秒）下的召回负载不超过它的公平份额（召回算力的 1/3）。
+  - **离线闭环仿真**（Test-only，`.demo/observe/npc-e8-20261120/longrun/storm/sim/sim.py`，结果 `results-1.8.txt`、`results-1.5.txt`，200 个种子）：
+    单服务器 FIFO，被放弃的召回照算，3 人 × 3 路、10 s 超时、全有全无，活动周期与 Jev 延迟从 e8b-01 日志抽样；召回算力取 1.8 核
+    （2 核扣 release 0.2）与 1.5 核（再扣 0.3 核给同机其它进程）作敏感性。“卡住” = 最后 30 分钟仍有成功占比 < 50% 的 5 分钟桶。
+    - 1.8 核：① 现状在 4.5 核·秒下，后台占 1 核 120 s / 300 s 后 200/200 卡死（末小时成功发问 0/min，坏态 9.0 次/min）；无触发也 134/200
+      自己掉进去，与“重启后复发”一致；3.5 核·秒下能自己恢复（p50 180 / 900 s）。② cap 120：同样触发下恢复 p50 0–180 s、末小时回到触发前的
+      成功节拍（2.47–2.49 次/min），卡死 0/200；**尾部**：W=4.5、触发 300 s 时恢复 max 5400 s、触发 120 s 时 max 1980 s（少数种子恢复后又有
+      零星坏态桶；无触发对照里 cap 120 的 max 也有 900 s，属 FIFO 模型健康态里两次发问重叠就超时的噪声）。③ 召回算力 1800 s 为 0：坏态发问率
+      cap 40 → 4.06/min（成功节拍的 1.6 倍）、80 → 2.57（1.04 倍）、120 → 1.90（0.77 倍）、160 → 1.54；恢复 p50 1800 / 900 / 600 / 600 s，
+      cap 120 的 max 2700 s。取发问率低于成功节拍的最小一档：cap 120 s。④ 只有热循环（NPC 0 活动立即失败 300 s，失败退避用定稿的 cap 120）：
+      热 NPC 召回负载 间隔 0 → 0.74 核、10 s → 0.58、20 s → 0.43、30 s → 0.34（份额 0.60），卡死 3 / 1 / 1 / 0 / 200；
+      在现状 10 s 固定重问下，单靠最小间隔挡不住热循环引发的风暴（4.5 核·秒时 142–178/200 卡死），退避才是止住风暴的那一项。
+    - 1.5 核（敏感性）：3.5 核·秒时现状无触发也 117/200 卡死、触发后 200/200，新策略 0/200、恢复 p50 0–180 s；**4.5 核·秒时新策略也有
+      30–57/200 个种子在最后 30 分钟仍有坏态桶（无触发对照 cap 120 为 46/200）**，但末小时成功发问率保持在触发前水平（约 2.2 次/min，
+      现状为 0）；热循环 20 s 间隔时热 NPC 0.39 核（份额 0.50）。原因：一次发问 3 路串行的服务时间 3 × 4.5 / 1.5 = 9 s，已贴着 10 s 超时，
+      任何两次发问重叠都会超时——这时客户端节奏只能保住平均节拍、消不掉零星超时。
+    - **适用条件**：结论依赖“一次发问的服务时间明显小于 10 s 超时”（3W / 算力；1.8 核、W=4.5 时 7.5 s）。贴近或超过时，修复点在算力与
+      每路预算（D-4、D-3d），不在重问节奏。模型比真实 Hindsight 保守（真实是多核并行、D-3a 在阶段边界取消），数字只作取值依据，
+      要以下一次多 NPC 长跑的读数复核（失败期每人发问率、风暴后的恢复时间、`npc_select_wait` 行的分布）。
+  - **落点**：重问节奏的唯一 owner 是 `NpcServer.Selector`（`failed/3` 抽退避、`chose/3` 复位、`pause/2` 给间隔、`ask_when_addressed?/1` 定直呼时是否
+    提前；trigger `retry` 由退避状态推出，`pause(_, "retry")` 在没有退避时不匹配、显式报错）。Runtime 收到 `choose_activity` 时立即起发问
+    worker，worker 先把刚结束那项活动的经历交给 Life（S5：此刻交，留着期间靠近的人不算进那项活动），再等放行；Runtime 记“收到时的 tick”
+    与“到期 tick = 收到时的 tick + pause”，观察推进到到期再放行，所以真正的发问在“到期且经历已保存”之后；经历保存失败时 worker 立即
+    以 rejected 结束，不等放行（按发问失败退避）。观察的 tick 比上一次看到的还小（钟回退）时按剩余等待重算：新起点 = 当前 tick，
+    新到期 = 当前 tick + max(原到期 − 回退前最后看到的 tick, 0)，记一行 `npc_select_wait … rebased=true`，不提前放行（S2，末轮改）。
+    收到新的 `choose_activity` 时若还有未放行的旧项，显式 raise（同时只有一项；正常路径不可达，见 Runtime moduledoc）。`Trees.npc` 去掉 `@retry` 等待，发问失败后下一个事件就重发。不放在树里，是因为活动失败后的间隔若在树上等，
+    等待期间 `Selector.current/1` 仍是那项已失败的活动，被直呼会起对话回合、回合停下会把“失败”改记成“被打断”。随机数取 Runtime 进程的
+    `:rand`（树是纯函数，不放随机），不可重放，从日志读回；退避状态只在内存里，不持久化，重启复位。
+  - **交互（S4）**：留着期间没有正在做的活动，来话不起回合。活动失败后的间隔里被直呼 → 立即放行发问（这次发问就是对来话的响应；
+    间隔是负载保护，外部事件不构成热循环）；发问失败的退避期间被直呼不提前（心智多半仍读不到，提前只加压），直呼的响应最长约 120 s（cap）。
+    对话回合停下后的预选应答走 Runtime 另一子句，不经过 pause；成功路径 pause 0，同一个事件里就发问。回合在途时再来的直呼只记 `dropped`、
+    不放行；那个回合决定停下而活动已自己失败结束（无可停之事）时，在 `stop_for` 里按同一条规则判是否放行。
+  - **可观测面（B1、S1）**：`npc_select_failed cid= reason=` 行格式不变（长跑判定 `.demo/observe/npc-slice4-20261118/run.py` 的 SELECT_FAILED
+    按行尾锚定读 reason，加字段会让召回失败被静默读成 0）。等待记在新行：pause > 0 时 `npc_select_wait cid= trigger= failures= pause_ticks= due_tick=`，
+    钟回退重算时再记一行、末尾 ` rebased=true`，放行时 `npc_select_wait_over cid= trigger= tick= cause=<due|addressed>`；`Body.observe(pid)` / `Runtime.observe/1` 多一个
+    `select_wait`（`nil` 或 `%{trigger:, pause_ticks:, due_tick:}`，留着、还没放行的那次），`select.retry` 是 `%{failures:, ticks:}`（从失败起到下一次成功）。
+  - **不变的**：Life / Hindsight 客户端的超时语义（每路 10 s、全有全无）；D-3b、D-3d、P-1。
+  - **验证**：见同日下一条（评审修订后的测试与错误改法杀伤）。
+  - **风险与残余**：① 发问持续失败的 NPC 被直呼最长约 120 s 才有响应；② 活动以失败结束后身体原地待 20 s（被直呼则立即发问）；
+    ③ 仿真的保守与 1.5 核敏感性见上；④ 随机数是各 Runtime 进程的 `:rand`，同机多个 NPC 各自独立抽，不需要额外去相关。
+- 2026-11-20（评审修订的验证）：
+  - `npc_selector_test.exs`：Selector 单元——连续失败的等待落在 `[600, min(7200, 3 × 上一次)]`、会到 cap、一次成功复位；start / completed 为 0、
+    活动失败为 1200、没有退避时 `pause(_, "retry")` 报错；`ask_when_addressed?/1`；`npc_select_failed` 行只有 cid 与 reason。真实 Runtime——活动失败后
+    `select_wait` 为 `%{trigger: "failed", pause_ticks: 1200, due_tick: 1204}`、1204 才问；两段退避用 `select.retry` 抽到的值卡精确边界（到期前一 tick 未问、
+    到期那一 tick 已问）；日志用解析器同一正则读回失败行、等待行与放行行；活动失败的间隔里被直呼立即发问且那项活动的经历不含间隔里靠近的人；
+    发问失败的退避期间被直呼不提前；观察 tick 回退后照常发问（末轮改为按剩余重算，见下一条）。
+  - 改前红（第一轮）6 项：`.demo/dev-env/logs/test-20261120-retry-backoff-red.log`。
+  - 错误改法杀伤（临时植入、跑完还原，`cmp` 确认）：`pause(_, "retry")` 固定 600 → 3 项红（Selector 单元、Runtime 精确边界、退避期间直呼不提前），
+    `test-20261120-retry-backoff-mutant-pause600.log`；退避写死 base → Selector 单元红（Runtime 用例读回抽到的值，与这个错误自洽，由单元用例负责），
+    `test-20261120-retry-backoff-mutant-base.log`。
+- 2026-11-20（末轮，统筹 A–G）：pause/2 的文档与时序图改成与实现一致（收到命令即起 worker、先 `Life.activity` 保存经历，到期 / 被直呼才放行）；
+  经历保存失败立即 rejected（B）；未放行的旧项被新 `choose_activity` 覆盖时显式 raise（C，正常路径不可达，只加断言）；钟回退按剩余等待重算（E）；
+  回合在途时活动失败、回合决定停下后按 `ask_when_addressed?/1` 判是否放行（F）；补用例：保存失败立即 rejected、回退后仍等满剩余、
+  回合停下作废时放行、直呼时经历尚未存完仍先存后问、“活动失败 → 发问失败 → 重问”后该活动的经历恰好一条（G）。测试结果见汇报。
