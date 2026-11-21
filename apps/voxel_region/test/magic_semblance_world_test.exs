@@ -268,6 +268,58 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     closed?(restored)
   end
 
+  # 只测试：真实后端在 Scene 未起时对冻结命中返回 `{:retry, :target_unavailable}`（world_server
+  # ProjectileSceneDownTest 证明），Scene 起后才交付；这里由测试进程逐次决定 Scene 是否已起。
+  defmodule SceneLateBackend do
+    def poll(shots, _cv) do
+      for {id, %{impact_delivery: hit} = s} <- shots do
+        send(ProjectileBackend, {:delivery_attempt, self(), hit})
+        result = receive do
+          :scene_down -> {:retry, :target_unavailable}
+          :scene_up -> {:ok, hit}
+        end
+        {id, s.age_s, {:delivered, result}}
+      end
+    end
+    def notify(hit, seq), do: send(ProjectileBackend, {:projectile_receipt, hit, seq})
+  end
+
+  # 回归（2026-11-20）：已落地未交付的命中随 World 崩溃持久，恢复时 Scene 尚未起。重投推迟到 Scene 可用：
+  # 期间冻结交付保留、不入身体账，World 存活；Scene 起后只交付一次、只释放一次。
+  @tag :projectile
+  test "恢复后冻结命中在 Scene 未起时保留重投，Scene 起后只交付一次", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    target = %{id: 2002, life_generation: 88, identity: :hold,
+      position: {0.5, 2.0, 2.0}, velocity: {0.1, 0.0, 0.0}}
+    send(worker, {:sample, 0.1, {0.5, target}})
+    assert_receive {:delivery_ready, old_worker, hit}, 2_000
+    :ok = stop_supervised(:world)
+    if Process.alive?(old_worker), do: Process.exit(old_worker, :kill)
+
+    w = start(c.root, SceneLateBackend)
+    monitor = Process.monitor(w)
+    for _ <- 1..2 do
+      assert_receive {:delivery_attempt, worker, ^hit}, 2_000
+      send(worker, :scene_down)
+    end
+    refute_received {:DOWN, ^monitor, :process, _, _}
+    waiting = observe(w)
+    assert waiting.semblances[{seq, 0}].impact_delivery == hit
+    assert ledger(waiting, :projectile_body_j) == 0
+
+    assert_receive {:delivery_attempt, worker, ^hit}, 2_000
+    send(worker, :scene_up)
+    assert_receive {:projectile_receipt, ^hit, _}, 2_000
+    final = observe(w)
+    refute Map.has_key?(final.semblances, {seq, 0})
+    assert ledger(final, :projectile_body_j) == hit.q_j
+    closed?(final)
+    refute_receive {:delivery_attempt, _, _}, 200
+    refute_received {:projectile_receipt, _, _}
+  end
+
   @tag :impact_snapshot
   test "触散：命中前存在，碰撞热提交删除并下发；余光和动能只释放一次，叶获热", c do
     assert {:ok, _} = draw(c, 1_000_000)
