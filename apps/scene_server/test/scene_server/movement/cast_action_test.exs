@@ -68,7 +68,10 @@ defmodule SceneServer.Movement.CastActionTest do
              Player.handle_call({:spell, c.id, %{c.request | action: 2}, %{}}, c.from, s)
 
     assert_receive {:cancel_cast, ^key, :cast_cancelled}
-    assert {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
+
+    assert {:noreply, s} =
+             Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+
     assert {:noreply, _} = Player.handle_info({:release_cast, key}, s)
     refute_receive {:authorize_cast, _, _, _}, 0
     assert_receive {:wire, %{input_limit: 1.0}}
@@ -96,7 +99,10 @@ defmodule SceneServer.Movement.CastActionTest do
   test "授权冻结当前位置和瞄准；重复到期不重复释放，之后取消返回已释放", c do
     {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
-    {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
+
+    {:noreply, s} =
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+
     aim = %{c.request | action: 3, direction: {0.0, 1.0, 0.0}}
     {:reply, {:ok, :controlled}, s} = Player.handle_call({:spell, c.id, aim, %{}}, c.from, s)
     s = %{s | state: %{position: {4.0, 5.0, 6.0}, yaw: 0}}
@@ -109,6 +115,52 @@ defmodule SceneServer.Movement.CastActionTest do
     assert {:reply, {:error, :already_released}, _} =
              Player.handle_call({:spell, c.id, %{c.request | action: 2}, %{}}, c.from, s)
 
+    {:noreply, _} = Player.handle_info({:release_cast, key}, s)
+    refute_receive {:authorize_cast, _, _, _}, 0
+  end
+
+  # W1（设计 v2.11、落地稿 D7）：World 预判第 k 步中断时给出 checkpoint_s，计时器先到 t_k 发检查，World 只回判定；
+  # continue 后只计剩余前摇，ended 清动作槽。若 Player 仍只按前摇终点计时，检查不会发出，中断只能拖到出手才结算。
+  test "W1 第 k 步检查：先到 t_k 发 check_cast（带当前快照），continue 后只计剩余前摇再授权", c do
+    {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
+
+    {:noreply, s} =
+      Player.handle_info({:cast_prepared, key, %{windup_s: 0.06, checkpoint_s: 0.02}}, s)
+
+    assert_receive {:cast_checkpoint, ^key}, 1_000
+    refute_received {:release_cast, ^key}
+
+    s = %{s | state: %{position: {4.0, 5.0, 6.0}, yaw: 0}}
+    {:noreply, s} = Player.handle_info({:cast_checkpoint, key}, s)
+    assert_receive {:check_cast, ^key, actor, request}
+    assert {actor.eye, actor.coherence_factor, request} == {{4.0, 5.6, 6.0}, 1.0, c.request}
+    assert s.action.phase == :checking
+    # 检查中到达的旧到期消息不释放。
+    {:noreply, s} = Player.handle_info({:release_cast, key}, s)
+    refute_received {:authorize_cast, _, _, _}
+
+    {:noreply, s} = Player.handle_info({:cast_checked, key, :continue}, s)
+    assert s.action.phase == :windup
+    assert_receive {:release_cast, ^key}, 1_000
+    {:noreply, s} = Player.handle_info({:release_cast, key}, s)
+    assert_receive {:authorize_cast, ^key, _, _}
+    assert s.action == nil
+  end
+
+  test "W1 第 k 步检查后 World 已结算（ended）：动作槽清空，之后的到期与旧回复都不再授权", c do
+    {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
+
+    {:noreply, s} =
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: 5.0}}, s)
+
+    {:noreply, s} = Player.handle_info({:cast_checkpoint, key}, s)
+    assert_receive {:check_cast, ^key, _, _}
+
+    {:noreply, s} = Player.handle_info({:cast_checked, key, :ended}, s)
+    assert s.action == nil
+    assert {:noreply, ^s} = Player.handle_info({:cast_checked, key, :continue}, s)
     {:noreply, _} = Player.handle_info({:release_cast, key}, s)
     refute_receive {:authorize_cast, _, _, _}, 0
   end
@@ -150,7 +202,10 @@ defmodule SceneServer.Movement.CastActionTest do
   test "死亡先于授权则只取消，旧身份控制不能改变本次施法", c do
     {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
-    {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
+
+    {:noreply, s} =
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+
     old = %{c.id | session_epoch: 6}
 
     assert {:reply, {:error, :invalid_state}, ^s} =

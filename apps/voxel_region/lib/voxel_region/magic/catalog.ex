@@ -1,42 +1,23 @@
 defmodule VoxelRegion.Magic.Catalog do
   @moduledoc """
-  全局系统功能（魔法增量 1）：魔法目录——施法者常数、上限、成本参数与符号清单的唯一服务端读取入口。
+  全局系统功能（魔法）：魔法目录 v5——施法者常数、上限、构造与运行期参数、配额与符号清单的唯一服务端读取入口。
 
-  版本 4 的作者入口是 Voxim 的 `UVoxelMagicCatalogAsset`（`DA_MagicCatalogV1`），Publish 产出不可变
-  `Content/Voxel/Magic/Published/<sha256>.json`；服务端在 World 启动时读取部署进来的同一文件
-  （`:magic_catalog_path`），digest = 文件字节 sha256，与属性目录同法（`VoxelRegion.Damage.load/1`）。
-  部署文件是信任边界：结构在这里校验一次，之后 `Program` 与 `Cost` 直接消费。
-  `max_steps`、`draw_max_j` 属于共享目录的完整结构，这里只校验存在且为正；执行器接受的程序形态由
-  `Program` 限定（至多 3 步），取能上限由 `energy.draw` 的槽上限约束，二者暂无服务端调用方。
-  `max_semblances` 是每名施法者同时存在的拟态上限（增量 2）。
-  符号只接受服务端已实现的动词（增量 1：`energy.draw`、`act.heat`；增量 2：`form.semblance`、`act.throw`、
-  `act.dispel`、`act.break_on_hit`），目录里出现未实现动词即拒绝启动，运行时不再为未知动词设分支。槽可带 `"integer": true`
-  （枚举槽，如拟态形状），此时取值必须是整数。含 `form.semblance` 的目录必须给出 `semblance` 段：拟态的
-  比热（J/(kg·K)，热容 = 质量 × 比热）与导热率（W/(m·K)），与材料共用同一属性轴与单位。`reading`（Sevara 读法占位）与 `presets` 名称只服务客户端，不参与判定；
-  预设程序在这里按同一 `Program.validate/2` 校验，保证发布的预设都可施放。
+  schema 见 `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`（符号组合魔法 v2，切片 0a）。
+  唯一作者源是本仓 `apps/voxel_region/priv/magic/<sha256>.json`（不可变、按内容寻址，切片 3 决策 P9）：
+  Voxim 按 sha256 校验后拷入 `Content/Voxel/Magic/Published/`，部署照旧拷成 `catalogs/magic-catalog.json`，
+  World 启动时读取（`:magic_catalog_path`），digest = 文件字节 sha256，与属性目录同法（`VoxelRegion.Damage.load/1`）。
+  部署文件是信任边界：结构在这里校验一次，之后 `Program`、`Signature`、`Cost` 与 World 直接消费。
 
-  版本 4（双支链与分段施法，Voxim Docs/Magic.md §13.6）：`release_lead_s` 是最终定形到出手帧的时长，参与维护与前摇。
-  每个符号带 `pose`（双支链的 6 个关节角，整数度、5 的倍数、
-  |q| ≤ 175，解码为弧度），`cost` 为构型损耗参数 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`（去掉增量 1 的 `e0_j`），
-  `caster.max_power_w` 是注能的最大输出功率。姿态只是数据，时长与损耗由 `Cost` 的通用公式算出。
-
-  版本 5（符号组合魔法 v2，切片 0a）：schema 见 `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
-  唯一作者源是本仓 `apps/voxel_region/priv/magic/<sha256>.json`（不可变、按内容寻址；方向与 v4 相反，切片 3 决策 P9）：
-  Voxim 按 sha256 校验后拷入 `Content/Voxel/Magic/Published/`，部署照旧拷成 `catalogs/magic-catalog.json`。
   解码为 `%VoxelRegion.Magic.Catalog{}`：符号表按 u16 下标索引（`Catalog.Symbol` / `Catalog.Slot`）、预留下标表
   （`reserved`，设计 v2.4 K3：未开放阶段的下标只占位，解码层按未知下标拒绝）、计数上限、`backup_modes`、配额、
   运行期常数与预设字节；任何不符都抛出带字段路径的 `ArgumentError`。
   预设逐个经 `Program.diagnose_ir/2` 解码，保证发布的预设都是合法程序。
 
-  迁移期兼容（AGENTS 铁律 9）：版本 4 分支原样保留、仍返回旧 map，因为 `world/casting.ex` 与 NPC 法术还在用
-  v1 JSON 程序；退出条件是切片 1 第 4 项（施放结算改为构造结构）落地，届时删除 v4 分支。
+  版本 4（v1 JSON 程序的旧目录）已随切片 3 删除（决策稿 `2026-11-19-slice3-protocol.md` §6）：部署 v4 文件时
+  World 启动即显式失败，升级须同时替换 `magic-catalog.json`（决策稿 §5.2）。
   """
 
   alias VoxelRegion.Magic.Program
-
-  # 服务端已实现的动词及其类别；新动词随其实现一起加入。
-  @implemented %{"energy.draw" => "act", "act.heat" => "act", "form.semblance" => "form",
-    "act.throw" => "act", "act.dispel" => "act", "act.break_on_hit" => "act"}
 
   defmodule Slot do
     @moduledoc """
@@ -48,8 +29,19 @@ defmodule VoxelRegion.Magic.Catalog do
     - `enum`：`enum8` 的 `%{编号 => 名称}`；`bits`：`mask8` 的 `%{位 => 名称}`；都只含已发布项。
     """
     @enforce_keys [:name, :key, :class]
-    defstruct [:name, :key, :class, :unit, :min, :max, scale: 1, enum: %{}, bits: %{},
-      zero_means_absent: false, refs_enabled: false]
+    defstruct [
+      :name,
+      :key,
+      :class,
+      :unit,
+      :min,
+      :max,
+      scale: 1,
+      enum: %{},
+      bits: %{},
+      zero_means_absent: false,
+      refs_enabled: false
+    ]
   end
 
   defmodule Symbol do
@@ -65,33 +57,87 @@ defmodule VoxelRegion.Magic.Catalog do
     §4.2、§11.4.5）；只有读数段符号有，其余为 `nil`。Cost 据此数 `entries_spoof`。
     """
     @enforce_keys [:index, :id, :section, :phase, :params]
-    defstruct [:index, :id, :section, :phase, :params, :max_per_group, :max_per_rule, :units, :precision, :pose,
-      :property_class, :reading_source,
-      in_program: true, ranges_by_param: %{}, provides: [], provides_by_param: %{}, requires_all: [],
-      requires_any: [], requires_by_param: %{}, excludes: [], unique_by: [], refs: [], numeric_checks: [],
-      units_by_param: %{}, precision_by_param: %{}]
+    defstruct [
+      :index,
+      :id,
+      :section,
+      :phase,
+      :params,
+      :max_per_group,
+      :max_per_rule,
+      :units,
+      :precision,
+      :pose,
+      :property_class,
+      :reading_source,
+      in_program: true,
+      ranges_by_param: %{},
+      provides: [],
+      provides_by_param: %{},
+      requires_all: [],
+      requires_any: [],
+      requires_by_param: %{},
+      excludes: [],
+      unique_by: [],
+      refs: [],
+      numeric_checks: [],
+      units_by_param: %{},
+      precision_by_param: %{}
+    ]
   end
 
   @typedoc "目录 v5 的已校验值；字段含义见 schema 文档。"
   @type t :: %__MODULE__{}
-  defstruct [:digest, :caster, :construction, :limits, :quotas, :runtime, :semblance, :group_requires_all,
-    :symbols, :reserved, :presets]
+  defstruct [
+    :digest,
+    :caster,
+    :construction,
+    :limits,
+    :quotas,
+    :runtime,
+    :semblance,
+    :group_requires_all,
+    :symbols,
+    :reserved,
+    :presets
+  ]
 
   # 段名：目录字符串 → 程序布局中的段（设计 §11.4.1）。
-  @sections %{"caster_action" => :caster_action, "anchor.form" => :form_anchor, "anchor.ref" => :ref_anchor,
-    "shape" => :shape, "quality" => :quality, "energy" => :energy, "motion" => :motion,
-    "rule.reading" => :reading, "rule.response" => :response}
+  @sections %{
+    "caster_action" => :caster_action,
+    "anchor.form" => :form_anchor,
+    "anchor.ref" => :ref_anchor,
+    "shape" => :shape,
+    "quality" => :quality,
+    "energy" => :energy,
+    "motion" => :motion,
+    "rule.reading" => :reading,
+    "rule.response" => :response
+  }
   # 这些段内同一下标能否重复由 `max_per_group` 决定，所以必须写明（§11.4.3 第 2 条）。
   @segment_sections [:ref_anchor, :shape, :quality, :energy, :motion]
   # `id16`、`sid96` 随 P2 符号（〈仿〉、〈调〉）开放，现在出现即拒绝加载。
-  @classes %{"dec" => :dec, "lin16" => :lin16, "u8" => :u8, "enum8" => :enum8, "mask8" => :mask8, "ref8" => :ref8}
+  @classes %{
+    "dec" => :dec,
+    "lin16" => :lin16,
+    "u8" => :u8,
+    "enum8" => :enum8,
+    "mask8" => :mask8,
+    "ref8" => :ref8
+  }
   # 单位 → {量化类, 槽名后缀, 内部单位倍数, 解码后键后缀}（设计 §11.4.2 单位表与 N7；能量内部单位为整数 mJ）。
-  @units %{"J" => {:dec, "_j", 1000, "_mj"}, "W" => {:dec, "_w", 1, "_w"}, "g" => {:dec, "_g", 1, "_g"},
-    "mm" => {:lin16, "_mm", 1, "_mm"}, "dK" => {:lin16, "_dk", 1, "_dk"}, "mm/s" => {:lin16, "_mmps", 1, "_mmps"},
-    "cs" => {:lin16, "_cs", 1, "_cs"}, "cdeg" => {:lin16, "_cdeg", 1, "_cdeg"}, "bp" => {:lin16, "_bp", 1, "_bp"}}
+  @units %{
+    "J" => {:dec, "_j", 1000, "_mj"},
+    "W" => {:dec, "_w", 1, "_w"},
+    "g" => {:dec, "_g", 1, "_g"},
+    "mm" => {:lin16, "_mm", 1, "_mm"},
+    "dK" => {:lin16, "_dk", 1, "_dk"},
+    "mm/s" => {:lin16, "_mmps", 1, "_mmps"},
+    "cs" => {:lin16, "_cs", 1, "_cs"},
+    "cdeg" => {:lin16, "_cdeg", 1, "_cdeg"},
+    "bp" => {:lin16, "_bp", 1, "_bp"}
+  }
   @class_max %{dec: 4095 * 10 ** 15, lin16: 0xFFFF, u8: 0xFF}
-  # 计价层数值检查名（设计 §3.3）：T5 capacity、T6 domain、T13 first_tick、T14 ambient_floor、T15 thermal_step。
-  @numeric_checks ~w(capacity domain first_tick ambient_floor thermal_step)
   # 性质类别（设计 v2.9 §4.5）：P1 发布 thermal（〈热〉）与 emission（〈辉〉），P2 起 appearance、mechanical。
   @property_classes ~w(thermal emission appearance mechanical)
   # 读数来源（设计 v2.10 E2）：读数段符号必填。
@@ -123,96 +169,16 @@ defmodule VoxelRegion.Magic.Catalog do
   def load(path), do: decode(File.read!(path))
 
   @doc """
-  目录字节 → 目录值；字节即发布物，digest 取其 sha256。
-
-  版本 5 返回 `%Catalog{}`，不合规抛出 `ArgumentError`（消息带字段路径）；其余版本走 v4 分支，不合规沿用 `MatchError`。
+  目录字节 → `%Catalog{}`；字节即发布物，digest 取其 sha256。只接受版本 5，其余版本与任何不合规都抛出
+  `ArgumentError`（消息带字段路径）。
   """
   def decode(bytes) do
     data = Jason.decode!(bytes)
 
     case data["version"] do
       5 -> decode_v5(bytes, data)
-      _ -> decode_v4(bytes, data)
+      other -> fail!("version", "只接受 5，收到 #{inspect(other)}")
     end
-  end
-
-  # ---------------------------------------------------------------------------
-  # 版本 4（迁移期保留，切片 1 删除）
-  # ---------------------------------------------------------------------------
-
-  defp decode_v4(bytes, data) do
-    true = data["version"] == 4
-    true = is_number(data["release_lead_s"]) and data["release_lead_s"] >= 0
-    true = pose?(data["rest_pose"])
-
-    caster = data["caster"]
-    true = positive?(caster["capacity_j"]) and positive?(caster["coherence"])
-    true = positive?(caster["draw_efficiency"]) and caster["draw_efficiency"] <= 1
-    true = positive?(caster["max_power_w"])
-
-    limits = data["limits"]
-
-    true =
-      Enum.all?(
-        ~w(max_steps max_semblances range_m local_domain_m cast_interval_ms program_max_bytes draw_max_j),
-        &positive?(limits[&1])
-      )
-
-    true = limits["local_domain_m"] <= limits["range_m"]
-
-    cost = data["cost"]
-    true = Enum.all?(~w(eta_j_s_per_rad2 b0_w e_ref_j alpha), &positive?(cost[&1]))
-
-    symbols =
-      Map.new(data["symbols"], fn s ->
-        true = @implemented[s["id"]] == s["category"] and positive?(s["weight"])
-        true = length(Enum.uniq_by(s["slots"], & &1["name"])) == length(s["slots"])
-        true = pose?(s["pose"])
-
-        slots =
-          Map.new(s["slots"], fn slot ->
-            true = is_binary(slot["name"]) and is_number(slot["min"]) and slot["max"] >= slot["min"]
-            {slot["name"], {slot["min"], slot["max"]}}
-          end)
-
-        integer = for slot <- s["slots"], slot["integer"] == true, do: slot["name"]
-        {s["id"], %{weight: s["weight"], target: s["target"], slots: slots, integer: integer,
-          pose: Enum.map(s["pose"], &(&1 * :math.pi() / 180))}}
-      end)
-
-    true = map_size(symbols) == length(data["symbols"])
-
-    semblance =
-      if Map.has_key?(symbols, "form.semblance") do
-        section = data["semblance"]
-        true = positive?(section["specific_heat_j_per_kg_k"]) and positive?(section["thermal_conductivity_w_per_m_k"])
-        %{specific_heat: section["specific_heat_j_per_kg_k"] * 1.0,
-          conductivity: section["thermal_conductivity_w_per_m_k"] * 1.0}
-      end
-
-    catalog = %{
-      digest: :crypto.hash(:sha256, bytes),
-      release_lead_s: data["release_lead_s"] * 1.0,
-      capacity_j: caster["capacity_j"] * 1.0,
-      coherence: caster["coherence"] * 1.0,
-      draw_efficiency: caster["draw_efficiency"] * 1.0,
-      max_power_w: caster["max_power_w"] * 1.0,
-      range_m: limits["range_m"] * 1.0,
-      local_domain_m: limits["local_domain_m"] * 1.0,
-      cast_interval_us: round(limits["cast_interval_ms"] * 1000),
-      max_semblances: limits["max_semblances"],
-      program_max_bytes: limits["program_max_bytes"],
-      rest_pose: Enum.map(data["rest_pose"], &(&1 * :math.pi() / 180)),
-      eta: cost["eta_j_s_per_rad2"] * 1.0,
-      b0_w: cost["b0_w"] * 1.0,
-      e_ref_j: cost["e_ref_j"] * 1.0,
-      alpha: cost["alpha"] * 1.0,
-      symbols: symbols,
-      semblance: semblance
-    }
-
-    true = Enum.all?(data["presets"], &match?({:ok, _}, Program.validate(&1["program"], catalog)))
-    catalog
   end
 
   # ---------------------------------------------------------------------------
@@ -226,8 +192,19 @@ defmodule VoxelRegion.Magic.Catalog do
     limits = object!(data, "limits")
     semblance = object!(data, "semblance")
     known!(caster, ~w(resolution_omega capacity_j max_power_w draw_efficiency), "caster")
-    known!(construction, ~w(b0_w b_floor alpha e_ref_j eta_j_s_per_rad2 release_lead_s rest_pose), "construction")
-    known!(limits, ~w(program_max_bytes range_m local_domain_m cast_interval_ms backup_modes counts), "limits")
+
+    known!(
+      construction,
+      ~w(b0_w b_floor alpha e_ref_j eta_j_s_per_rad2 release_lead_s rest_pose),
+      "construction"
+    )
+
+    known!(
+      limits,
+      ~w(program_max_bytes range_m local_domain_m cast_interval_ms backup_modes counts),
+      "limits"
+    )
+
     known!(semblance, ~w(specific_heat_j_per_kg_k thermal_conductivity_w_per_m_k), "semblance")
     known!(object!(data, "group_signature"), ["requires_all"], "group_signature")
     symbols = symbols!(list!(data, "symbols"))
@@ -255,9 +232,11 @@ defmodule VoxelRegion.Magic.Catalog do
       runtime: runtime!(object!(data, "runtime")),
       semblance: %{
         specific_heat_j_per_kg_k: positive!(semblance, "specific_heat_j_per_kg_k", "semblance"),
-        thermal_conductivity_w_per_m_k: positive!(semblance, "thermal_conductivity_w_per_m_k", "semblance")
+        thermal_conductivity_w_per_m_k:
+          positive!(semblance, "thermal_conductivity_w_per_m_k", "semblance")
       },
-      group_requires_all: tags!(object!(data, "group_signature")["requires_all"], "group_signature.requires_all"),
+      group_requires_all:
+        tags!(object!(data, "group_signature")["requires_all"], "group_signature.requires_all"),
       symbols: symbols,
       reserved: reserved,
       presets: []
@@ -269,14 +248,25 @@ defmodule VoxelRegion.Magic.Catalog do
   defp limits!(limits) do
     hard = Program.hard_limits()
     max_bytes = integer!(limits["program_max_bytes"], "limits.program_max_bytes")
-    check!(max_bytes in 1..hard.program_max_bytes, "limits.program_max_bytes", "须在 1..#{hard.program_max_bytes}")
+
+    check!(
+      max_bytes in 1..hard.program_max_bytes,
+      "limits.program_max_bytes",
+      "须在 1..#{hard.program_max_bytes}"
+    )
+
     range = positive!(limits, "range_m", "limits")
     domain = positive!(limits, "local_domain_m", "limits")
     check!(domain <= range, "limits.local_domain_m", "不得大于 range_m")
 
     modes = list!(limits, "backup_modes")
-    check!(0 in modes and Enum.all?(modes, &(&1 in [0, 1, 2])) and length(Enum.uniq(modes)) == length(modes),
-      "limits.backup_modes", "须为含 0 的 {0, 1, 2} 子集")
+
+    check!(
+      0 in modes and Enum.all?(modes, &(&1 in [0, 1, 2])) and
+        length(Enum.uniq(modes)) == length(modes),
+      "limits.backup_modes",
+      "须为含 0 的 {0, 1, 2} 子集"
+    )
 
     counts = object!(limits, "counts")
 
@@ -287,18 +277,31 @@ defmodule VoxelRegion.Magic.Catalog do
         {name, value}
       end)
 
-    known!(object!(limits, "counts"), Enum.map(Map.keys(hard.counts), &Atom.to_string/1), "limits.counts")
+    known!(
+      object!(limits, "counts"),
+      Enum.map(Map.keys(hard.counts), &Atom.to_string/1),
+      "limits.counts"
+    )
+
     check!(counts.n_act == 1, "limits.counts.n_act", "须为 1")
     check!(counts.n_grp >= 1, "limits.counts.n_grp", "须 ≥ 1")
 
-    %{program_max_bytes: max_bytes, range_m: range, local_domain_m: domain,
+    %{
+      program_max_bytes: max_bytes,
+      range_m: range,
+      local_domain_m: domain,
       cast_interval_us: round(positive!(limits, "cast_interval_ms", "limits") * 1000),
-      backup_modes: modes, counts: counts}
+      backup_modes: modes,
+      counts: counts
+    }
   end
 
   defp runtime!(runtime) do
     numbers!(runtime, @runtime, "runtime", ["grade_multipliers", "repair_quality"])
-    |> Map.put(:grade_multipliers, triple!(runtime["grade_multipliers"], "runtime.grade_multipliers"))
+    |> Map.put(
+      :grade_multipliers,
+      triple!(runtime["grade_multipliers"], "runtime.grade_multipliers")
+    )
     |> Map.put(:repair_quality, triple!(runtime["repair_quality"], "runtime.repair_quality"))
   end
 
@@ -325,13 +328,33 @@ defmodule VoxelRegion.Magic.Catalog do
 
     published_ids = MapSet.new(Map.values(symbols), & &1.id)
     check!(map_size(reserved) == length(entries), "reserved_symbols", "index 重复")
-    check!(length(Enum.uniq(Map.values(reserved))) == map_size(reserved), "reserved_symbols", "id 重复")
-    check!(Enum.all?(Map.keys(reserved), &(not Map.has_key?(symbols, &1))), "reserved_symbols", "index 与已发布符号重复")
-    check!(Enum.all?(Map.values(reserved), &(not MapSet.member?(published_ids, &1))), "reserved_symbols",
-      "id 与已发布符号重复")
+
+    check!(
+      length(Enum.uniq(Map.values(reserved))) == map_size(reserved),
+      "reserved_symbols",
+      "id 重复"
+    )
+
+    check!(
+      Enum.all?(Map.keys(reserved), &(not Map.has_key?(symbols, &1))),
+      "reserved_symbols",
+      "index 与已发布符号重复"
+    )
+
+    check!(
+      Enum.all?(Map.values(reserved), &(not MapSet.member?(published_ids, &1))),
+      "reserved_symbols",
+      "id 与已发布符号重复"
+    )
 
     all = Map.keys(symbols) ++ Map.keys(reserved)
-    check!(Enum.sort(all) == Enum.to_list(0..(length(all) - 1)//1), "reserved_symbols", "已发布与预留下标须恰好覆盖 0..n−1")
+
+    check!(
+      Enum.sort(all) == Enum.to_list(0..(length(all) - 1)//1),
+      "reserved_symbols",
+      "已发布与预留下标须恰好覆盖 0..n−1"
+    )
+
     reserved
   end
 
@@ -342,21 +365,45 @@ defmodule VoxelRegion.Magic.Catalog do
     known!(entry, @symbol_fields, at)
     index = integer!(entry["index"], "#{at}.index")
     check!(index in 0..0xFFFF, "#{at}.index", "须为 u16")
-    section = Map.get(@sections, entry["section"]) || fail!("#{at}.section", "未知段 #{inspect(entry["section"])}")
+
+    section =
+      Map.get(@sections, entry["section"]) ||
+        fail!("#{at}.section", "未知段 #{inspect(entry["section"])}")
+
     params = Enum.map(list!(entry, "params"), &slot!(&1, at))
     check!(length(Enum.uniq_by(params, & &1.name)) == length(params), "#{at}.params", "槽名重复")
     names = MapSet.new(params, & &1.name)
     ranges = ranges_by_param!(entry["ranges_by_param"] || %{}, params, at)
 
     for slot <- params, slot.class in [:dec, :lin16, :u8], slot.min == nil do
-      covered = Map.values(ranges) |> Enum.flat_map(&Map.values/1) |> Enum.all?(&Map.has_key?(&1, slot.name))
-      check!(covered and ranges != %{}, "#{at}.params.#{slot.name}", "数值槽须有 [min, max] 或被 ranges_by_param 每项覆盖")
+      covered =
+        Map.values(ranges)
+        |> Enum.flat_map(&Map.values/1)
+        |> Enum.all?(&Map.has_key?(&1, slot.name))
+
+      check!(
+        covered and ranges != %{},
+        "#{at}.params.#{slot.name}",
+        "数值槽须有 [min, max] 或被 ranges_by_param 每项覆盖"
+      )
     end
 
     max_per_group = optional_count!(entry["max_per_group"], "#{at}.max_per_group")
-    check!(max_per_group != nil or section not in @segment_sections, "#{at}.max_per_group", "段符号必须写明")
+
+    check!(
+      max_per_group != nil or section not in @segment_sections,
+      "#{at}.max_per_group",
+      "段符号必须写明"
+    )
+
     unique_by = Map.get(entry, "unique_by", [])
-    check!(is_list(unique_by) and Enum.all?(unique_by, &(&1 in names)), "#{at}.unique_by", "须为本符号的槽名")
+
+    check!(
+      is_list(unique_by) and Enum.all?(unique_by, &(&1 in names)),
+      "#{at}.unique_by",
+      "须为本符号的槽名"
+    )
+
     in_program = Map.get(entry, "in_program", true)
     check!(is_boolean(in_program), "#{at}.in_program", "须为布尔值")
 
@@ -364,20 +411,39 @@ defmodule VoxelRegion.Magic.Catalog do
 
     # ref8 的非 0xFF 值只由签名层按 `refs` 判“严格在前”（设计 v2.6 S4），所以每个 ref8 槽都必须有对应声明。
     for slot <- params, slot.class == :ref8 do
-      check!(Enum.any?(refs, &(&1.param == slot.name)), "#{at}.params.#{slot.name}", "ref8 槽须在 refs 中声明")
+      check!(
+        Enum.any?(refs, &(&1.param == slot.name)),
+        "#{at}.params.#{slot.name}",
+        "ref8 槽须在 refs 中声明"
+      )
     end
 
+    # 计价层数值检查名（设计 §3.3）只有线协议一份定义：0x83 `rejects` 的位序（T5、T6、T13、T14、T15）。
+    known_checks = Enum.map(MmoContracts.Voxel.Codec.spell_reject_checks(), &Atom.to_string/1)
     checks = Map.get(entry, "numeric_checks", [])
-    check!(is_list(checks) and Enum.all?(checks, &(&1 in @numeric_checks)), "#{at}.numeric_checks",
-      "只允许 #{Enum.join(@numeric_checks, "、")}")
+
+    check!(
+      is_list(checks) and Enum.all?(checks, &(&1 in known_checks)),
+      "#{at}.numeric_checks",
+      "只允许 #{Enum.join(known_checks, "、")}"
+    )
+
     # 施法者动作不建结构，数值检查只可能是 T6（设计 v2.10 E4）；Cost 的〈取〉报价只有施放处读数可判。
-    check!(section != :caster_action or checks -- ["domain"] == [], "#{at}.numeric_checks",
-      "施法者动作段只允许 domain")
+    check!(
+      section != :caster_action or checks -- ["domain"] == [],
+      "#{at}.numeric_checks",
+      "施法者动作段只允许 domain"
+    )
 
     # 可选；只有质段耦合写入性质类，其余符号不写（§4.5）。
     property_class = entry["property_class"]
-    check!(not Map.has_key?(entry, "property_class") or (section == :quality and property_class in @property_classes),
-      "#{at}.property_class", "只允许质段符号取 #{Enum.join(@property_classes, "、")}")
+
+    check!(
+      not Map.has_key?(entry, "property_class") or
+        (section == :quality and property_class in @property_classes),
+      "#{at}.property_class",
+      "只允许质段符号取 #{Enum.join(@property_classes, "、")}"
+    )
 
     # 读数段必填、其余段不得写（v2.10 E2）：外部与否只看这个字段，不从签名推断。
     reading_source =
@@ -404,10 +470,13 @@ defmodule VoxelRegion.Magic.Catalog do
       params: params,
       ranges_by_param: ranges,
       provides: tags!(Map.get(entry, "provides", []), "#{at}.provides"),
-      provides_by_param: by_param!(entry["provides_by_param"], params, &tags!/2, "#{at}.provides_by_param"),
+      provides_by_param:
+        by_param!(entry["provides_by_param"], params, &tags!/2, "#{at}.provides_by_param"),
       requires_all: tags!(Map.get(entry, "requires_all", []), "#{at}.requires_all"),
-      requires_any: Enum.map(Map.get(entry, "requires_any", []), &tags!(&1, "#{at}.requires_any")),
-      requires_by_param: by_param!(entry["requires_by_param"], params, &tags!/2, "#{at}.requires_by_param"),
+      requires_any:
+        Enum.map(Map.get(entry, "requires_any", []), &tags!(&1, "#{at}.requires_any")),
+      requires_by_param:
+        by_param!(entry["requires_by_param"], params, &tags!/2, "#{at}.requires_by_param"),
       excludes: tags!(Map.get(entry, "excludes", []), "#{at}.excludes"),
       max_per_group: max_per_group,
       max_per_rule: optional_count!(entry["max_per_rule"], "#{at}.max_per_rule"),
@@ -415,10 +484,16 @@ defmodule VoxelRegion.Magic.Catalog do
       refs: refs,
       numeric_checks: checks,
       units: non_negative!(entry, "units", at),
-      units_by_param: by_param!(entry["units_by_param"], params, &non_negative_value!/2, "#{at}.units_by_param"),
+      units_by_param:
+        by_param!(entry["units_by_param"], params, &non_negative_value!/2, "#{at}.units_by_param"),
       precision: non_negative!(entry, "precision", at),
       precision_by_param:
-        by_param!(entry["precision_by_param"], params, &non_negative_value!/2, "#{at}.precision_by_param"),
+        by_param!(
+          entry["precision_by_param"],
+          params,
+          &non_negative_value!/2,
+          "#{at}.precision_by_param"
+        ),
       pose: pose!(entry["pose"], "#{at}.pose")
     }
   end
@@ -428,14 +503,19 @@ defmodule VoxelRegion.Magic.Catalog do
     check!(is_binary(name), "#{symbol_at}.params[].name", "须为字符串")
     at = "#{symbol_at}.params.#{name}"
     known!(entry, @slot_fields, at)
-    class = Map.get(@classes, entry["class"]) || fail!("#{at}.class", "不支持的量化类 #{inspect(entry["class"])}")
+
+    class =
+      Map.get(@classes, entry["class"]) ||
+        fail!("#{at}.class", "不支持的量化类 #{inspect(entry["class"])}")
+
     slot = %Slot{name: name, key: name, class: class}
 
     slot =
       case class do
         numeric when numeric in [:dec, :lin16] ->
           {unit_class, suffix, scale, key_suffix} =
-            Map.get(@units, entry["unit"]) || fail!("#{at}.unit", "未知单位 #{inspect(entry["unit"])}")
+            Map.get(@units, entry["unit"]) ||
+              fail!("#{at}.unit", "未知单位 #{inspect(entry["unit"])}")
 
           check!(unit_class == class, "#{at}.unit", "单位 #{entry["unit"]} 不属于 #{entry["class"]}")
           check!(String.ends_with?(name, suffix), at, "槽名须以单位后缀 #{suffix} 结尾（N7）")
@@ -462,11 +542,13 @@ defmodule VoxelRegion.Magic.Catalog do
           fail!(at, "min 与 max 须同时给出")
       end
 
-    %{slot |
-      enum: published!(entry, class == :enum8, "enum", "code", 0..0xFF, at),
-      bits: published!(entry, class == :mask8, "bits", "bit", 0..7, at),
-      zero_means_absent: flag!(entry, "zero_means_absent", class in [:dec, :lin16, :u8], at),
-      refs_enabled: flag!(entry, "refs_enabled", class == :ref8, at)}
+    %{
+      slot
+      | enum: published!(entry, class == :enum8, "enum", "code", 0..0xFF, at),
+        bits: published!(entry, class == :mask8, "bits", "bit", 0..7, at),
+        zero_means_absent: flag!(entry, "zero_means_absent", class in [:dec, :lin16, :u8], at),
+        refs_enabled: flag!(entry, "refs_enabled", class == :ref8, at)
+    }
   end
 
   # 枚举表与位表：只列已发布项（B4）；名称是解码后的值，也是 `*_by_param` 的取值键。
@@ -479,12 +561,23 @@ defmodule VoxelRegion.Magic.Catalog do
         table =
           Map.new(items, fn item ->
             code = integer!(item[number], "#{at}.#{field}[].#{number}")
-            check!(code in range and is_binary(item["name"]), "#{at}.#{field}", "项须为 {#{number}, name}")
+
+            check!(
+              code in range and is_binary(item["name"]),
+              "#{at}.#{field}",
+              "项须为 {#{number}, name}"
+            )
+
             {code, item["name"]}
           end)
 
-        check!(map_size(table) == length(items) and length(Enum.uniq(Map.values(table))) == length(items),
-          "#{at}.#{field}", "编号或名称重复")
+        check!(
+          map_size(table) == length(items) and
+            length(Enum.uniq(Map.values(table))) == length(items),
+          "#{at}.#{field}",
+          "编号或名称重复"
+        )
+
         table
 
       _ ->
@@ -505,10 +598,17 @@ defmodule VoxelRegion.Magic.Catalog do
     check!(is_map(table), "#{at}.ranges_by_param", "须为对象")
 
     Map.new(table, fn {param, by_value} ->
-      slot = Enum.find(params, &(&1.name == param)) || fail!("#{at}.ranges_by_param.#{param}", "不是本符号的槽")
+      slot =
+        Enum.find(params, &(&1.name == param)) ||
+          fail!("#{at}.ranges_by_param.#{param}", "不是本符号的槽")
+
       check!(slot.class == :enum8, "#{at}.ranges_by_param.#{param}", "只能按 enum8 槽取值")
-      check!(is_map(by_value) and Enum.sort(Map.keys(by_value)) == Enum.sort(Map.values(slot.enum)),
-        "#{at}.ranges_by_param.#{param}", "须覆盖每个已发布枚举名")
+
+      check!(
+        is_map(by_value) and Enum.sort(Map.keys(by_value)) == Enum.sort(Map.values(slot.enum)),
+        "#{at}.ranges_by_param.#{param}",
+        "须覆盖每个已发布枚举名"
+      )
 
       {param,
        Map.new(by_value, fn {value, ranges} ->
@@ -516,7 +616,9 @@ defmodule VoxelRegion.Magic.Catalog do
           Map.new(ranges, fn {name, interval} ->
             target = Enum.find(params, &(&1.name == name and &1.class in [:dec, :lin16, :u8]))
             check!(target != nil, "#{at}.ranges_by_param.#{param}.#{value}.#{name}", "不是本符号的数值槽")
-            {name, interval!(interval, target.class, "#{at}.ranges_by_param.#{param}.#{value}.#{name}")}
+
+            {name,
+             interval!(interval, target.class, "#{at}.ranges_by_param.#{param}.#{value}.#{name}")}
           end)}
        end)}
     end)
@@ -547,7 +649,13 @@ defmodule VoxelRegion.Magic.Catalog do
 
   defp ref!(entry, params, at) do
     param = entry["param"]
-    check!(Enum.any?(params, &(&1.name == param and &1.class == :ref8)), "#{at}.refs", "param 须为本符号的 ref8 槽")
+
+    check!(
+      Enum.any?(params, &(&1.name == param and &1.class == :ref8)),
+      "#{at}.refs",
+      "param 须为本符号的 ref8 槽"
+    )
+
     check!(entry["must_be"] == "earlier", "#{at}.refs", "must_be 目前只支持 earlier")
 
     kind =
@@ -567,7 +675,8 @@ defmodule VoxelRegion.Magic.Catalog do
         check!(is_binary(entry["id"]) and is_binary(entry["name"]), at, "须有 id 与 name")
         # 小写十六进制、无空格（N8）。
         bytes =
-          case is_binary(entry["program_hex"]) && Base.decode16(entry["program_hex"], case: :lower) do
+          case is_binary(entry["program_hex"]) &&
+                 Base.decode16(entry["program_hex"], case: :lower) do
             {:ok, bytes} -> bytes
             _ -> fail!("#{at}.program_hex", "须为小写十六进制字符串")
           end
@@ -610,8 +719,12 @@ defmodule VoxelRegion.Magic.Catalog do
   end
 
   defp triple!(value, at) do
-    check!(is_list(value) and length(value) == 3 and Enum.all?(value, &(is_number(&1) and &1 > 0)), at,
-      "须为 3 个正数")
+    check!(
+      is_list(value) and length(value) == 3 and Enum.all?(value, &(is_number(&1) and &1 > 0)),
+      at,
+      "须为 3 个正数"
+    )
+
     value
   end
 
@@ -654,7 +767,12 @@ defmodule VoxelRegion.Magic.Catalog do
 
   # 区间以槽单位计、闭区间；上界不得超过量化类能表示的最大值。
   defp interval!([min, max], class, at) when is_integer(min) and is_integer(max) do
-    check!(0 <= min and min <= max and max <= Map.fetch!(@class_max, class), at, "须为 0 ≤ min ≤ max ≤ 量化类上限")
+    check!(
+      0 <= min and min <= max and max <= Map.fetch!(@class_max, class),
+      at,
+      "须为 0 ≤ min ≤ max ≤ 量化类上限"
+    )
+
     {min, max}
   end
 
@@ -670,7 +788,8 @@ defmodule VoxelRegion.Magic.Catalog do
 
   defp fail!(at, reason), do: raise(ArgumentError, "magic catalog v5: #{at}: #{reason}")
 
-  defp pose?(p), do: is_list(p) and length(p) == 6 and Enum.all?(p, &(is_integer(&1) and rem(&1, 5) == 0 and abs(&1) <= 175))
-
-  defp positive?(value), do: is_number(value) and value > 0
+  defp pose?(p),
+    do:
+      is_list(p) and length(p) == 6 and
+        Enum.all?(p, &(is_integer(&1) and rem(&1, 5) == 0 and abs(&1) <= 175))
 end

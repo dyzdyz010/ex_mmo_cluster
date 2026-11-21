@@ -54,7 +54,6 @@ defmodule VoxelRegion.World do
   @max_level VoxelRegion.Spatial.max_level()
   @default_cache_bytes 512 * 1024 * 1024
   # 魔法增量 1：登录下发与无报价时的报价字段。
-  @no_quote %{total_j: 0.0, structure: 0.0}
   @name __MODULE__
 
   # ---- API
@@ -514,18 +513,18 @@ defmodule VoxelRegion.World do
   end
 
   @doc """
-  全局系统功能（魔法增量 1）：施法意图。action 0 = 报价（只算成本，不改世界）；1 = 施放。
-  返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 正常 / `:misfire_energy` / `:misfire_coherence`，
-  走火也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界）。
-  施放（action 1）通过立即校验后先进入前摇（Voxim Docs/Magic.md §13.6），本调用在前摇结束、结算完成后才返回；
-  前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
+  全局系统功能（魔法 v2，切片 3）：施法意图（0x82，程序为 IR v2）。action 0 = 报价（不改世界，回 0x83 v2 全字段）；
+  1 = 施放。返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 建成 / `:interrupted_omega` / `:interrupted_energy`，
+  第 k 步中断也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界；数值检查违规为 `{:rejects, [检查名]}`，
+  射线落空为 `:no_target`，报价超频为 `:quote_rate`，切片 3 内结构建成为 `:structure_runtime_pending`）。
+  施放通过立即校验后先进入前摇，本调用在结算完成后才返回；前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
+  流程与结算口径见 `VoxelRegion.World.Casting`。
   """
   def spell_intent(server, actor, request) do
-    # 冷区域生成留在调用方进程；施法者射线在 owner 内对当时世界重新求交。
-    keys = with 1 <- request.action, range when is_number(range) <- VoxelRegion.World.PageLoad.call(server, :magic_range, 300_000) do
-      Tools.tool_regions(actor, range)
-    else
-      _ -> []
+    # 冷区域生成留在调用方进程；报价与施放都要按射程求施法者射线（〈取〉〈附〉的目标与形成距离），在 owner 内对当时世界求交。
+    keys = case VoxelRegion.World.PageLoad.call(server, :magic_range, 300_000) do
+      range when is_number(range) -> Tools.tool_regions(actor, range)
+      nil -> []
     end
     prepare(server, keys, fn -> VoxelRegion.World.PageLoad.call(server, {:spell_intent, actor, request}, 300_000) end)
   end
@@ -830,6 +829,8 @@ defmodule VoxelRegion.World do
           # 施放前摇（Voxim Docs/Magic.md §13.6）：待施放（cid => 广播记录、调用方与开始时捕获的施法者、
           # 意图、程序、报价），每施法者至多一条；不持久化，冷重启即丢（未扣能）。
           pending_casts: %{},
+          # 报价限频（决策稿 P7）：cid => 最近 1 s 内已接纳报价的 World 单调时刻（ms），每施法者至多目录限额个；不持久化。
+          quote_admissions: %{},
           # 魔法增量 4：Scene 每秒报来的身体接触（cid => 几何、皮肤温度与本次接触边），派生、不持久化；
           # 过期（2.5 s 未续报）即丢。身体真值在 Scene（SceneServer.Body）。
           bodies: %{},
@@ -1359,11 +1360,11 @@ defmodule VoxelRegion.World do
       else: Claims.commit_protection(state, state, :operator, Map.new(delta))
   end
 
-  defp call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
+  defp call(:magic_range, _, state), do: {:reply, state.magic && state.magic.limits.range_m, state}
   defp call(:magic_digest, _, state), do: {:reply, state.magic && state.magic.digest, state}
 
   defp call({:caster_state, cid}, _, state) do
-    reply = if state.magic, do: {:ok, Casting.caster_view(state, cid, @no_quote, 0, 0.0)}, else: {:error, :magic_unavailable}
+    reply = if state.magic, do: {:ok, Casting.caster_status(state, cid)}, else: {:error, :magic_unavailable}
     {:reply, reply, state}
   end
 
@@ -1959,7 +1960,7 @@ defmodule VoxelRegion.World do
 
   # Player / Scene 发来、要读页的异步消息（M2b）：过读取闭包的闸，缺页即挂起、装完重放。
   # 施法授权带最终姿态，结算重新求射线：同样过闸（评审 A2）。
-  @paged_infos [:prepare_cast, :quote_cast, :authorize_cast, :prepare_beacon, :commit_beacon, :body_contact, :body_death]
+  @paged_infos [:prepare_cast, :quote_cast, :authorize_cast, :check_cast, :prepare_beacon, :commit_beacon, :body_contact, :body_death]
 
   @impl true
   def handle_info({:player_spell_request, request, from, message}, state) do
@@ -2108,7 +2109,7 @@ defmodule VoxelRegion.World do
     state = %{state | caster_coherence: Map.put(state.caster_coherence, cid, value)}
 
     if changed and state.magic != nil do
-      Casting.publish_caster_state({gate, identity}, 0, Casting.caster_view(state, cid, @no_quote, 0, 0.0))
+      Casting.publish_caster_state({gate, identity}, 0, Casting.caster_status(state, cid))
     end
 
     {:noreply, state}
@@ -2143,14 +2144,42 @@ defmodule VoxelRegion.World do
       pending ->
         # 授权快照来自角色 owner，同一消息携带姿态与 Body；不再同步回调 Player。
         Process.demonitor(pending.monitor, [:flush])
-        current = Map.merge(pending.actor, actor)
-        pending = %{pending | actor: current, request: %{pending.request | direction: request.direction}}
+        pending = Casting.refresh_pending(pending, actor, request)
         next = %{state | pending_casts: Map.delete(state.pending_casts, actor.cid),
           caster_coherence: Map.put(state.caster_coherence, actor.cid, {actor.identity, actor.coherence_factor})}
-        {reply, next} = Casting.settle_cast(next, pending)
+        {reply, next} = Casting.settle_cast(next, pending, nil)
         Casting.publish_cast_reply(pending.actor, pending.request, reply)
         GenServer.reply(pending.from, reply)
         {:noreply, next}
+    end
+  end
+
+  # 第 k 步检查（设计 v2.11 W1）：前摇开始时预判出第 k 步中断，Player 在 t_k 发来当前快照；World 用当时的值只重判
+  # 第 1..k 步。仍中断即在首个失败步结算并回 :ended，全部通过回 :continue（Player 为剩余前摇重设计时器）。
+  # 计时器只归 Player（落地稿 D7），World 只回判定结果；待施放已不存在时也回 :ended，Player 据此收尾动作槽。
+  defp info({:check_cast, key, actor, request}, state) do
+    case Casting.authorized_pending(state, key, actor) do
+      nil ->
+        send(actor.player, {:cast_checked, key, :ended})
+        {:noreply, state}
+
+      pending ->
+        pending = Casting.refresh_pending(pending, actor, request)
+        state = %{state | caster_coherence: Map.put(state.caster_coherence, actor.cid, {actor.identity, actor.coherence_factor})}
+
+        case Casting.settle_cast(state, pending, pending.checkpoint) do
+          {:continue, next} ->
+            send(actor.player, {:cast_checked, key, :continue})
+            {:noreply, %{next | pending_casts: Map.put(next.pending_casts, actor.cid, %{pending | checkpoint: nil})}}
+
+          {reply, next} ->
+            Process.demonitor(pending.monitor, [:flush])
+            next = %{next | pending_casts: Map.delete(next.pending_casts, actor.cid)}
+            Casting.publish_cast_reply(pending.actor, pending.request, reply)
+            GenServer.reply(pending.from, reply)
+            send(actor.player, {:cast_checked, key, :ended})
+            {:noreply, next}
+        end
     end
   end
   defp info({:cancel_cast, key, reason}, state), do: {:noreply, Casting.cancel_pending_cast(state, key, reason)}
@@ -2332,6 +2361,13 @@ defmodule VoxelRegion.World do
   # 授权时待施放已建立：按取消收尾（不扣能，调用方收到错误）。
   defp page_failed({:authorize_cast, key, _actor, _request}, error, state), do: Casting.cancel_pending_cast(state, key, error)
 
+  # 第 k 步检查同理按取消收尾，并告知 Player 这次施放已结束（它正等检查结果）。
+  defp page_failed({:check_cast, key, actor, _request}, error, state) do
+    state = Casting.cancel_pending_cast(state, key, error)
+    send(actor.player, {:cast_checked, key, :ended})
+    state
+  end
+
   defp page_failed({:prepare_beacon, key, actor, _request}, error, state) do
     send(actor.player, {:beacon_prepared, key, {:error, error}})
     state
@@ -2373,7 +2409,7 @@ defmodule VoxelRegion.World do
   defp physical_input?(message) when is_tuple(message) do
     tag = elem(message, 0)
     tag in (@commit_calls -- [:material_supply]) ++ [:prepare, :adopt_liquid, :prepare_intent, :prepared_intent,
-      :body_tool, :body_contact, :body_detach, :body_death, :prepare_cast, :authorize_cast,
+      :body_tool, :body_contact, :body_detach, :body_death, :prepare_cast, :authorize_cast, :check_cast,
       :prepare_beacon, :commit_beacon, :prepare_sort, :commit_sort] or is_reference(tag)
   end
   defp physical_input?(_), do: false

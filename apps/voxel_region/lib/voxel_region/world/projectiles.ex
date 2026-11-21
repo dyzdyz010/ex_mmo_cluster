@@ -1,7 +1,8 @@
 defmodule VoxelRegion.World.Projectiles do
   @moduledoc "全局系统功能：World 独占的短段飞行、当前人物采样与持久热交付。异步工作只查人物和交付不可变收据，不持有世界真值。"
   alias VoxelRegion.Magic.Semblance
-  alias VoxelRegion.World.{Casting, HeatCommit, Thermal}
+  alias VoxelRegion.World.{HeatCommit, Thermal}
+  import VoxelRegion.World.Canonical, only: [target_at: 2]
   require Logger
 
   @doc "有实时拟态时只排一个 50ms 节拍；没有对象即休眠。"
@@ -107,7 +108,7 @@ defmodule VoxelRegion.World.Projectiles do
 
   defp apply_result(state, id, s, {:sample, age, actor, target, sampled_us}) do
     {terrain, state} = Enum.reduce_while(Semblance.flight_segments(s, age), {nil, state}, fn {t0, t1, a, b}, {_, state} ->
-      case Semblance.segment(a, b, s.radius_m, state, &Casting.semblance_cast/4) do
+      case Semblance.segment(a, b, s.radius_m, state, &semblance_cast/4) do
         {nil, state} -> {:cont, {nil, state}}
         {{fraction, point, node}, state} ->
           t = (t0 + (t1 - t0) * fraction - s.age_s) / (age - s.age_s)
@@ -167,4 +168,17 @@ defmodule VoxelRegion.World.Projectiles do
     {s, thermal}
   end
 
+  # 拟态弹道的 canonical 求交（原在施法模块，切片 3 起施法不再建拟态，只剩存档拟态的飞行在用）：同一 Amanatides-Woo
+  # 射线，命中返回目标与进入的微格。
+  defp semblance_cast(origin, direction, length, state) do
+    at = fn micro, s ->
+      {target, s} = target_at(micro, s)
+      {target && {target, micro}, s}
+    end
+
+    case VoxelRegion.Damage.raycast(origin, direction, length, state, at) do
+      {:ok, hit, state} -> {hit, state}
+      {:error, :no_target, state} -> {nil, state}
+    end
+  end
 end

@@ -3,6 +3,10 @@ defmodule VoxelRegion.Magic.Semblance do
   全局系统功能（魔法增量 2）：拟态运行时对象的纯值规则——记录、运动学弹道、热内核外部节点项与剩余能量
   （Voxim Docs/Magic.md §3）。不读 World；canonical 求交由调用方以 `cast` 回调提供。
 
+  迁移期（AGENTS 铁律 9）：切片 3 起施法入口不再创建拟态（v1 程序与 `new/4`、`form_j/3`、`kinetic_j/2` 已删除），
+  这里只剩存档中已有拟态的运行时；退出条件是切片 4 以 `Magic.Structure` 取代拟态运行时并一次迁移旧存档
+  （决策稿 `2026-11-19-slice3-protocol.md` §6）。
+
   记录（World 持有于 `thermal.semblances`，id = {创建事务 seq, n}）：
   施法者 caster、形状 shape（0 球 / 1 立方，radius_m 为半径或半边长）、质量 mass_kg、热容 capacity（= 质量 × 目录比热，J/K）、
   温度 temperature_k、发光 glow_w、寿命 lifetime_s、已存在模拟时长 age_s、飞行中动能 kinetic_j、
@@ -172,32 +176,6 @@ defmodule VoxelRegion.Magic.Semblance do
   end
   defp direction({ax, ay, az}, {bx, by, bz}, l), do: {(bx - ax) / l, (by - ay) / l, (bz - az) / l}
   defp advance({x, y, z}, {dx, dy, dz}, s), do: {x + dx * s, y + dy * s, z + dz * s}
-
-  @doc "形态的物理能量（J）：热内容 m·c·(T − T_amb) 加发光预算 glow_w·lifetime_s；成本与账共用。"
-  def form_j(form, catalog, ambient),
-    do: form["mass_kg"] * catalog.semblance.specific_heat * (form["temperature_k"] - ambient) + form["glow_w"] * form["lifetime_s"]
-
-  @doc "投掷动能 ½·m·v²（J）。"
-  def kinetic_j(mass, speed), do: 0.5 * mass * speed * speed
-
-  @doc "由合法程序的形态参数与弹道结果建立记录。`launch` = %{origin, velocity, t0_us, flight_s, rest, contact}。"
-  def new(caster, form, catalog, launch) do
-    capacity = form["mass_kg"] * catalog.semblance.specific_heat
-    {vx, vy, vz} = launch.velocity
-
-    Map.merge(launch, %{
-      caster: caster,
-      shape: trunc(form["shape"]),
-      radius_m: form["radius_m"],
-      mass_kg: form["mass_kg"],
-      capacity: capacity,
-      temperature_k: form["temperature_k"],
-      glow_w: form["glow_w"],
-      lifetime_s: form["lifetime_s"],
-      age_s: 0.0,
-      kinetic_j: kinetic_j(form["mass_kg"], :math.sqrt(vx * vx + vy * vy + vz * vz))
-    })
-  end
 
   @doc "已落地（静止）；只有落地的拟态与接触节点换热。"
   def landed?(s), do: s.age_s >= s.flight_s - @epsilon

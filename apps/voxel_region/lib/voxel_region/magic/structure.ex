@@ -672,6 +672,14 @@ defmodule VoxelRegion.Magic.Structure do
   defp deposit(0, _cause), do: []
   defp deposit(mj, cause), do: [{:deposit_heat, mj, cause}]
 
+  @doc """
+  释放形态的分账（设计 §5.5 “释放形态”）：整数 mJ 按目录 `runtime.release_heat_fraction` 分成
+  `{作为有限热源沉积的热, 计入辉光与灵炁辐射账的部分}`，二者之和恒等于原值。结构终止释放运转储能与建构中断
+  （设计 v2.11 W7，`World.Casting`）共用这一个规则。
+  """
+  @spec release_split(integer(), VoxelRegion.Magic.Catalog.t()) :: {integer(), integer()}
+  def release_split(mj, %{runtime: rt}), do: split(mj, rt.release_heat_fraction)
+
   # 把整数 mJ 按热份额分成 {热, 辐射}：热取四舍五入（半数远离零，§11.4.7 入账规则），辐射取余数，二者之和恒等于原值。
   defp split(mj, heat_fraction) do
     heat = round(mj * heat_fraction)

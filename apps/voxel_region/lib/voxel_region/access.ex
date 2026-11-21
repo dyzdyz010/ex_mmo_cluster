@@ -50,6 +50,7 @@ defmodule VoxelRegion.Access do
     quote_cast: :character_intent,
     prepare_cast: :character_intent,
     authorize_cast: :character_intent,
+    check_cast: :character_intent,
     cancel_cast: :character_intent,
     # 发施法者状态时可能开户（一次性充能事务），以角色身份提交
     send_caster_state: :character_intent,

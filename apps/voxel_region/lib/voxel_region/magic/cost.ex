@@ -38,15 +38,15 @@ defmodule VoxelRegion.Magic.Cost do
     不复制。
   - **入口**（§4.2，v2.9 A5、v2.10 E1/E2）：`entries_spoof` 数规则所读、目录 `reading_source = external` 的读数种类；
     `entries_charge` P1 恒为 0；判据见 `entries/2`。
-  - **数值检查**（§3.3，只在服务端）：只做本组符号在目录 `numeric_checks` 中声明过的检查，结果全部列在 `rejects`。
+  - **数值检查**（§3.3，只在服务端）：只做本组符号在目录 `numeric_checks` 中声明过的检查，结果全部列在 `rejects`；
+    检查名与顺序取自线协议的唯一定义 `MmoContracts.Voxel.Codec.spell_reject_checks/0`。
+  - **取能分账**：`draw/4`，〈取〉成功时石储能、施法者所得与损耗的整数 mJ 分账。
 
-  ## v4 报价（迁移期保留，切片 1 删除）
-
-  `quote/3`、`misfire/3`、`draw/4`：Voxim Docs/Magic.md §4、§13.6 的旧程序报价、二值走火与取能整数分账；`world/casting.ex`
-  与 NPC 法术仍在用。退出条件同 `Program` 的 v1 JSON：切片 1 第 4 项（施放结算改为构造结构）落地。
+  v1（JSON 程序、v4 目录）的报价与二值走火已随切片 3 删除（决策稿 `2026-11-19-slice3-protocol.md` §6）。
   """
 
-  alias VoxelRegion.Magic.{Catalog, Semblance, Signature, Structure}
+  alias MmoContracts.Voxel.Codec
+  alias VoxelRegion.Magic.{Catalog, Signature, Structure}
   alias VoxelRegion.Magic.Program
   alias VoxelRegion.Magic.Program.{Glyph, Group}
 
@@ -205,22 +205,30 @@ defmodule VoxelRegion.Magic.Cost do
   end
 
   @doc """
-  分阶段失败（设计 §5.5、§3.6；取代二值的 `misfire/3`）：按构造顺序找第一步 k，使到第 k 步为止的建构复杂度
-  S_k·P_k 超过 `resolution`（Ω_eff），或到第 k 步为止的累计支出超过可用余额 `available_mj`。
+  分阶段失败（设计 §5.5、§3.6）：按构造顺序找第一步 k，使到第 k 步为止的建构复杂度 S_k·P_k 超过 `resolution`
+  （Ω_eff），或到第 k 步为止的累计支出超过可用余额 `available_mj`。
 
-  返回 `nil`（建成，按报价 `total_mj` 结算），或 `{k, spent_mj}`：k 从 1 起；第 1..k 步的注能与构型损耗照付，
+  返回 `nil`（建成，按报价 `total_mj` 结算），或 `{k, spent_mj, cause}`：k 从 1 起；第 1..k 步的注能与构型损耗照付，
   其余步不发生、不扣费。设计 v2.9 A6（§4.2 报价接口约定、§5.5）确认的扣费：余额耗尽时付到耗尽为止，即
   spent_mj = min(可用余额, 第 1..k 步累计支出)；Ω 不足时扣第 1..k 步累计支出（此时余额足够，min 取后者）。
-  出手前置维护费已并入最后一步的累计支出（见 `construction/4`）。报价时与结算时各调用一次，报价与 Ω_eff 都取该
-  时刻的值：结算时先按当时的 `site` 重新 `quote_structure/3`，不复用前摇开始时的报价（决策稿 §3.5）。
+  `cause`（决策稿 P6）是 `:omega`（分辨不足）或 `:energy`（余额耗尽）；同一步两者都不满足时记 `:omega`（沿用 v1
+  “相干度先于能量”的判定次序）。扣费只取决于步号，与在哪个时刻结算无关（设计 v2.11 W1）。
+
+  出手前置维护费已并入最后一步的累计支出（见 `construction/4`）。报价、前摇开始与结算（第 k 步时刻或出手，W1）
+  各调用一次，报价与 Ω_eff 都取该时刻的值：结算时先按当时的 `site` 重新 `quote_structure/3`，不复用前摇开始时的报价
+  （决策稿 §3.5、设计 v2.11 W9）。只判前 k 步时，调用方传入截到前 k 步的 `steps`。
   """
-  @spec staged_failure(map(), integer(), number()) :: nil | {pos_integer(), non_neg_integer()}
+  @spec staged_failure(map(), integer(), number()) ::
+          nil | {pos_integer(), non_neg_integer(), :omega | :energy}
   def staged_failure(%{steps: steps}, available_mj, resolution) do
     steps
     |> Enum.with_index(1)
     |> Enum.find_value(fn {step, k} ->
-      if step.complexity > resolution or step.spent_mj > available_mj,
-        do: {k, min(available_mj, step.spent_mj)}
+      cond do
+        step.complexity > resolution -> {k, min(available_mj, step.spent_mj), :omega}
+        step.spent_mj > available_mj -> {k, available_mj, :energy}
+        true -> nil
+      end
     end)
   end
 
@@ -526,22 +534,15 @@ defmodule VoxelRegion.Magic.Cost do
 
   # ---- 数值检查（§3.3）----
 
-  @checks [
-    {"capacity", :capacity},
-    {"domain", :domain},
-    {"first_tick", :first_tick},
-    {"ambient_floor", :ambient_floor},
-    {"thermal_step", :thermal_step}
-  ]
-
   # `inputs` 是检查所读的报价中间量：结构组为 group、upkeep、thermal、runtime、shape（〈形〉参数）与 site；
-  # 施法者动作只有 site。每条检查只匹配自己读的键。
+  # 施法者动作只有 site。每条检查只匹配自己读的键。检查顺序即线上位序（`Codec.spell_reject_checks/0`，T5、T6、
+  # T13、T14、T15），目录里的检查名是同名字符串。
   defp rejects(placed, inputs, catalog) do
     declared =
       MapSet.new(placed, & &1.glyph.index) |> Enum.flat_map(&catalog.symbols[&1].numeric_checks)
 
-    for {name, check} <- @checks,
-        name in declared,
+    for check <- Codec.spell_reject_checks(),
+        Atom.to_string(check) in declared,
         detail <- violations(check, inputs, catalog),
         do: %{check: check, detail: detail}
   end
@@ -647,81 +648,17 @@ defmodule VoxelRegion.Magic.Cost do
   end
 
   # ===========================================================================
-  # v4 报价（迁移期保留，切片 1 删除）
+  # 取能分账（〈取〉）
   # ===========================================================================
 
   @doc """
-  v4 程序报价：结构权重、物理能量、构型损耗、总支出（J）、前摇（s）与各步 `{调整 s, 注能 s}`。
-  含拟态的程序需给出环境温度 `ambient_k`。
-
-  - 物理能量 E_phys：`energy.draw` 为 0，`act.heat` 为其 `energy_j`；`form.semblance` 为热内容 C·(T − T_amb) 加发光
-    预算 glow_w × lifetime_s；`act.throw` 为动能 ½·m·v²；`act.dispel` 与 `act.break_on_hit` 为 0。
-  - 构型损耗（§13.6）：d_i = ‖q_i − q_{i−1}‖₂，b_i = b0·(S_i + H_i/E_ref)^α，T_adj = d_i·√(η/b_i)，T_inj = E_i / P_max，
-    L_i = 2·d_i·√(η·b_i) + b_i·T_inj；前摇 = Σ(T_adj + T_inj) + release_lead_s，E_loss = Σ L_i + b_final·release_lead_s。
+  〈取〉的取能分账（整数 mJ，施法者账的最小单位；目录 v5 `caster`）：石减少 `taken_mj` = 施法者取得 `gained_mj` +
+  损耗 `loss_mj`，两端同一整数。入参均为整数 mJ：请求（来自 IR v2 `energy_mj`）、石储能（调用方 `trunc(stored_j × 1000)`）、
+  施法者余额；容量取 `round(caster.capacity_j × 1000)`；取得按 `round(η × taken_mj)`，损耗是差额。
   """
-  def quote(%{steps: steps}, catalog, ambient_k \\ nil) do
-    form =
-      Enum.find_value(steps, fn %{sym: sym, args: args} -> sym == "form.semblance" && args end)
-
-    {parts, {_, structure, stored}} =
-      Enum.map_reduce(steps, {catalog.rest_pose, 0.0, 0.0}, fn %{sym: sym} = step,
-                                                               {previous, s, h} ->
-        symbol = catalog.symbols[sym]
-        energy = physical_j(step, form, catalog, ambient_k)
-        {s, h} = {s + symbol.weight, h + energy}
-        d = :math.sqrt(Enum.sum(Enum.zip_with(symbol.pose, previous, &((&1 - &2) ** 2))))
-        b = catalog.b0_w * :math.pow(s + h / catalog.e_ref_j, catalog.alpha)
-        inject = energy / catalog.max_power_w
-        loss = 2 * d * :math.sqrt(catalog.eta * b) + b * inject
-        {{energy, d * :math.sqrt(catalog.eta / b), inject, loss}, {symbol.pose, s, h}}
-      end)
-
-    physical = Enum.sum(for {e, _, _, _} <- parts, do: e) * 1.0
-
-    hold =
-      catalog.b0_w * :math.pow(structure + stored / catalog.e_ref_j, catalog.alpha) *
-        catalog.release_lead_s
-
-    loss = Enum.sum(for {_, _, _, l} <- parts, do: l) + hold
-
-    %{
-      structure: structure,
-      physical_j: physical,
-      loss_j: loss,
-      total_j: physical + loss,
-      windup_s: Enum.sum(for {_, a, i, _} <- parts, do: a + i) + catalog.release_lead_s,
-      steps: for({_, a, i, _} <- parts, do: {a, i})
-    }
-  end
-
-  defp physical_j(%{sym: "act.heat", args: %{"energy_j" => energy}}, _, _, _), do: energy
-
-  defp physical_j(%{sym: sym}, _, _, _)
-       when sym in ["energy.draw", "act.dispel", "act.break_on_hit"], do: 0.0
-
-  defp physical_j(%{sym: "form.semblance", args: form}, _, catalog, ambient),
-    do: Semblance.form_j(form, catalog, ambient)
-
-  defp physical_j(%{sym: "act.throw", args: %{"speed_mps" => v}}, form, _, _),
-    do: Semblance.kinetic_j(form["mass_kg"], v)
-
-  @doc "v4 走火判定：`nil` = 正常施放；相干度先于能量（S > 相干度 → `:misfire_coherence`，余额 < 总支出 → `:misfire_energy`）。"
-  def misfire(quote, available_j, catalog) do
-    cond do
-      quote.structure > catalog.coherence -> :misfire_coherence
-      available_j < quote.total_j -> :misfire_energy
-      true -> nil
-    end
-  end
-
-  @doc """
-  取能分账（整数 mJ，施法者账的最小单位）：石减少 taken_mj = 施法者取得 gained_mj + 损耗 loss_mj，两端同一整数。
-  入参均为整数 mJ：请求（调用方 `round(energy_j × 1000)`）、石储能（调用方 `trunc(stored_j × 1000)`）、施法者余额；
-  容量取 `round(capacity_j × 1000)`；取得按 `round(η × taken_mj)`，损耗是差额。
-  """
-  def draw(requested_mj, stored_mj, balance_mj, catalog) do
-    taken = min(requested_mj, min(stored_mj, round(catalog.capacity_j * 1000) - balance_mj))
-    gained = round(catalog.draw_efficiency * taken)
+  def draw(requested_mj, stored_mj, balance_mj, %Catalog{caster: caster}) do
+    taken = min(requested_mj, min(stored_mj, round(caster.capacity_j * 1000) - balance_mj))
+    gained = round(caster.draw_efficiency * taken)
     %{taken_mj: taken, gained_mj: gained, loss_mj: taken - gained}
   end
 end

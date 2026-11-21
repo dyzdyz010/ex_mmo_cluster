@@ -768,15 +768,70 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
+  # 施放前摇（魔法 v2，设计 v2.11 W1；落地稿 D7：本进程是前摇计时器的唯一 owner，World 只回判定结果）。
+  # World 接纳前摇后给出计划 %{windup_s, checkpoint_s}：checkpoint_s 非 nil 表示 World 预判出第 k 步中断，计时器先设在
+  # t_k（第 k 步结束），到时发 `{:check_cast, key, actor, request}` 请 World 用当时的值重判第 1..k 步；回 :continue 则为
+  # 剩余前摇重设计时器，回 :ended 表示 World 已结算（或这次施放已不存在），动作槽清空。没有预判时计时器直接设在前摇终点。
+  # 两段计时按整毫秒切分（ceil(t_k)、ceil(windup) − ceil(t_k)），总长与无检查时相同。
   def handle_info(
-        {:cast_prepared, key, windup_s},
+        {:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: checkpoint_s}},
         %{action: %{key: key, phase: :preparing} = action} = state
       ) do
-    timer = Process.send_after(self(), {:release_cast, key}, ceil(windup_s * 1000))
-    {:noreply, %{state | action: %{action | phase: :windup, timer: timer}}}
+    {message, delay_ms} =
+      if checkpoint_s,
+        do: {{:cast_checkpoint, key}, ceil(checkpoint_s * 1000)},
+        else: {{:release_cast, key}, ceil(windup_s * 1000)}
+
+    timer = Process.send_after(self(), message, delay_ms)
+
+    action =
+      Map.merge(action, %{
+        phase: :windup,
+        timer: timer,
+        windup_s: windup_s,
+        checkpoint_s: checkpoint_s
+      })
+
+    {:noreply, %{state | action: action}}
   end
 
   def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:cast_checkpoint, key},
+        %{action: %{key: key, phase: :windup} = action} = state
+      ) do
+    if state.body.status == :dead or state.failure != nil or state.transfer != nil do
+      {:noreply, cancel_cast(state, :cast_cancelled)}
+    else
+      actor = actor_context(state)
+
+      character_event(state, state, :cast_checkpoint, %{
+        client_intent_seq: action.request.client_intent_seq,
+        checkpoint_s: action.checkpoint_s,
+        coherence_factor: actor.coherence_factor
+      })
+
+      send(state.authority_ref, {:check_cast, key, actor, action.request})
+      {:noreply, %{state | action: %{action | phase: :checking, timer: nil}}}
+    end
+  end
+
+  def handle_info({:cast_checkpoint, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:cast_checked, key, :continue},
+        %{action: %{key: key, phase: :checking} = action} = state
+      ) do
+    remaining_ms = max(ceil(action.windup_s * 1000) - ceil(action.checkpoint_s * 1000), 0)
+    timer = Process.send_after(self(), {:release_cast, key}, remaining_ms)
+    {:noreply, %{state | action: %{action | phase: :windup, timer: timer, checkpoint_s: nil}}}
+  end
+
+  def handle_info({:cast_checked, key, :ended}, %{action: %{key: key}} = state),
+    do: {:noreply, clear_cast(state)}
+
+  def handle_info({:cast_checked, _, _}, state), do: {:noreply, state}
 
   # 传送信标：World 校验开始 → 读条；读条起点记下，移动超过 0.25 m 即打断（`interrupt_channel/1`）。
   def handle_info(

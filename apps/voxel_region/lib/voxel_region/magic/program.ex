@@ -1,8 +1,7 @@
 defmodule VoxelRegion.Magic.Program do
   @moduledoc """
-  全局系统功能（魔法）：咒语程序在信任边界的唯一解析与校验。现有两种程序表示：
-
-  ## IR v2（符号组合魔法 v2，切片 0a；目录 v5）
+  全局系统功能（魔法）：咒语程序（IR v2，符号组合魔法 v2；目录 v5）在信任边界的唯一解析与校验。v1 JSON 程序已随
+  切片 3 删除（决策稿 `2026-11-19-slice3-protocol.md` §6），线上只有 IR v2 一种表示。
 
   `decode_ir/2` 按设计 v2.6 §11.4（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）的文字规范
   解码二进制程序（字节层；签名层与计价层的分工见 §11.4.3 三层分工表）：大端；`version = 2`；`kind = 0` 为施法者动作（恰好 1 个 `caster_action` 符号），`kind = 1` 为
@@ -19,26 +18,12 @@ defmodule VoxelRegion.Magic.Program do
      `zero_means_absent` 的 0 视为未写并结束 → 区间 → 依赖区间（`ranges_by_param`）→ 换算内部单位（能量 mJ）。
   4. 结构程序整体交给 `Magic.Signature.check/2`。
 
-  对外只有一种失败 `{:error, :invalid_program}`；`diagnose_ir/2` 返回同一判定的可诊断原因（带字节偏移），
-  `decode_ir/2` 拒绝时把原因写入结构化日志 `voxel_magic_program_rejected`（AGENTS 铁律 8）。
+  对外只有一种失败 `{:error, :invalid_program}`；`diagnose_ir/2` 返回同一判定的可诊断原因（带字节偏移）。
+  本模块不写日志：施法入口（`World.Casting`）用 `diagnose_ir/2` 的原因带上施法者与请求上下文写一条
+  `voxel_magic_program_rejected`（决策稿 §8，一条拒绝只打一次，AGENTS 铁律 8）。
   通过后的 `%Program{}` 即合法程序，Cost 与 Structure 直接消费，不再复核。
-
-  ## v1 JSON（迁移期保留，切片 1 删除）
-
-  线格式 `{"v":1,"target":{"kind":"aim"},"emit":<发出>,"steps":[{"sym":<id>,"args":{<slot>:<number>}}]}`，
-  字节数 ≤ 目录 `program_max_bytes`。执行器接受的程序形态（符号序列 → 发出方式）：
-
-  - `act.heat` / `energy.draw` / `act.dispel`：单步，emit = "at_target"（目标由眼睛射线或线上拟态 id 给出）；
-  - `form.semblance`：单步，emit = "hand"，拟态静止在手边；
-  - `form.semblance` + `act.throw`：emit = "hand"，拟态从手边沿眼睛方向运动学抛出。
-  - `form.semblance` + `act.throw` + `act.break_on_hit`：同一弹道，命中时散解；末步无参数。
-
-  符号必须在目录里，参数键恰为该符号的槽名，每个值是落在槽 [min, max] 内的数，枚举槽（`integer`）取整数。
-  任何不符都是同一个失败 `:invalid_program`（不扣能量）；通过后返回的值即合法程序，下游不再复核。
-  迁移期兼容：`world/casting.ex` 与 NPC 法术仍发 v1 JSON；退出条件是切片 1 第 4 项（施放结算改为构造结构）。
   """
 
-  require Logger
   alias VoxelRegion.Magic.Catalog.{Slot, Symbol}
   alias VoxelRegion.Magic.Signature
 
@@ -86,19 +71,14 @@ defmodule VoxelRegion.Magic.Program do
   def hard_limits, do: %{program_max_bytes: @hard_max_bytes, counts: @hard_counts}
 
   @doc """
-  IR v2 程序字节 → `{:ok, %Program{}}` | `{:error, :invalid_program}`。
-
-  拒绝时写一条 `voxel_magic_program_rejected` 警告日志，带 `diagnose_ir/2` 给出的原因。
+  IR v2 程序字节 → `{:ok, %Program{}}` | `{:error, :invalid_program}`：`diagnose_ir/2` 的同一判定，丢掉原因，
+  供只需要合法与否的调用方使用。
   """
   @spec decode_ir(binary(), VoxelRegion.Magic.Catalog.t()) :: {:ok, t()} | {:error, :invalid_program}
   def decode_ir(bytes, catalog) do
     case diagnose_ir(bytes, catalog) do
-      {:ok, program} ->
-        {:ok, program}
-
-      {:error, reason} ->
-        Logger.warning("voxel_magic_program_rejected bytes=#{byte_size(bytes)} reason=#{inspect(reason)}")
-        {:error, :invalid_program}
+      {:ok, program} -> {:ok, program}
+      {:error, _reason} -> {:error, :invalid_program}
     end
   end
 
@@ -354,59 +334,4 @@ defmodule VoxelRegion.Magic.Program do
 
   defp expect(true, _reason), do: :ok
   defp expect(false, reason), do: {:error, reason}
-
-  # ---------------------------------------------------------------------------
-  # v1 JSON（迁移期保留，切片 1 删除）
-  # ---------------------------------------------------------------------------
-
-  @shapes %{
-    ["act.heat"] => {"at_target", :at_target},
-    ["energy.draw"] => {"at_target", :at_target},
-    ["act.dispel"] => {"at_target", :at_target},
-    ["form.semblance"] => {"hand", :hand},
-    ["form.semblance", "act.throw"] => {"hand", :hand},
-    ["form.semblance", "act.throw", "act.break_on_hit"] => {"hand", :hand}
-  }
-
-  @doc "程序字节 → `{:ok, program}` | `{:error, :invalid_program}`。"
-  def parse(bytes, catalog) do
-    with true <- byte_size(bytes) <= catalog.program_max_bytes,
-         {:ok, data} <- Jason.decode(bytes) do
-      validate(data, catalog)
-    else
-      _ -> {:error, :invalid_program}
-    end
-  end
-
-  @doc "已解码 JSON 值 → 合法程序；目录预设与线上程序共用。"
-  def validate(%{"v" => 1, "target" => %{"kind" => "aim"} = target, "emit" => emit, "steps" => steps} = data, catalog)
-      when map_size(data) == 4 and map_size(target) == 1 and is_list(steps) do
-    with true <- Enum.all?(steps, &(is_map(&1) and map_size(&1) == 2 and is_map(&1["args"]))),
-         {^emit, emitted} <- Map.get(@shapes, Enum.map(steps, & &1["sym"])),
-         true <- Enum.all?(steps, &valid_step?(&1, catalog)) do
-      {:ok,
-       %{target: :aim, emit: emitted,
-         steps: Enum.map(steps, fn %{"sym" => sym, "args" => args} ->
-           %{sym: sym, args: Map.new(args, fn {k, v} -> {k, v * 1.0} end)}
-         end)}}
-    else
-      _ -> {:error, :invalid_program}
-    end
-  end
-
-  def validate(_, _), do: {:error, :invalid_program}
-
-  defp valid_step?(%{"sym" => sym, "args" => args}, catalog) do
-    with {:ok, symbol} <- Map.fetch(catalog.symbols, sym),
-         true <- Enum.sort(Map.keys(args)) == Enum.sort(Map.keys(symbol.slots)) do
-      Enum.all?(args, fn {name, value} ->
-        {min, max} = symbol.slots[name]
-
-        is_number(value) and value >= min and value <= max and
-          (name not in symbol.integer or value == trunc(value))
-      end)
-    else
-      _ -> false
-    end
-  end
 end

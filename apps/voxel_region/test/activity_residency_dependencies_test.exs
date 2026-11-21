@@ -153,7 +153,8 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
 
   test "前摇保留脚下与重新裁决射程，不依赖玩家窗口或定时租约" do
     actor = %{eye: {128.0, 65.0, -64.0}, feet: {128.0, 1.0, -64.0}}
-    state = %{magic: %{range_m: 2.0}, pending_casts: %{1 => %{actor: actor, request: %{action: 1}}}, thermal: nil}
+    # 射程取目录 v5 的 `limits.range_m`（魔法 v2 切片 3）。
+    state = %{magic: %{limits: %{range_m: 2.0}}, pending_casts: %{1 => %{actor: actor, request: %{action: 1}}}, thermal: nil}
     assert {:ok, {keys, [], []}} = Casting.residency_dependencies(state)
     assert {0, {2, 0, -1}} in keys
     assert {0, {1, 1, -2}} in keys

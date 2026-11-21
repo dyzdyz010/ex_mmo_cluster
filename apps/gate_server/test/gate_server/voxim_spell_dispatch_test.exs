@@ -7,11 +7,9 @@ defmodule GateServer.VoximSpellDispatchTest do
   QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）；World 的施法回复在连接里先 0x83 后 0x68。
 
   World 用目录 v5 发布物 `apps/voxel_region/priv/magic/<sha256>.json`（P9）与材料目录 b1aca503…；施法者能量 0（新角色）。
-  程序字节取自 `ir-v2-samples.json`（唯一来源）；期望值只来自线契约与报价样本（`quote-v2-samples.json` 的 draw_1mj：
-  total 560 750 mJ、前摇 0.430375 s、S·P = 1），不调 `Magic.Cost`。
-
-  依赖 World 迁到 v2（切片 3 的 World 部分）：World 仍是 v1 施法路径时，经 World 的用例失败属预期。
-  〈取〉施放成功的端到端（先 0x83 后 0x68 "ok"）依赖 World 的〈取〉结算与能源夹具，随 World 部分补在这里。
+  蓄能石 (1,1,0) 的 10 MJ 储能是作者初态，经持久化边界安装一次（同 voxel_region 的魔法 World 用例）。
+  程序字节取自 `ir-v2-samples.json`（唯一来源）；期望值只来自线契约、目录常数（η 0.9）与报价样本
+  （`quote-v2-samples.json` 的 draw_1mj：total 560 750 mJ、前摇 0.430375 s、S·P = 1），不调 `Magic.Cost`。
   """
   use ExUnit.Case, async: false
   alias GateServer.Session.{Dispatch, Sink}
@@ -41,12 +39,16 @@ defmodule GateServer.VoximSpellDispatchTest do
   end
 
   @fixtures Path.expand("../../../voxel_region/test/fixtures", __DIR__)
+  # 蓄能石宏格与准星微格（格内中心附近）。
+  @battery {1, 1, 0}
+  @battery_micro {12, 12, 4}
 
   # 只测试：Player 施法协议替身。与真实 `SceneServer.Movement.Player` 同一消息：同步入口 `{:spell_request, ref, …}`、
   # 异步入口 `{:spell, …, reply_to}`；报价 / 准备以 `{:player_spell_request, ref, relay, message}` 交给 World，
   # World 的回执先回 Player 的本请求 relay `{self(), {:spell_reply, ref}}`，再由 Player 转交原调用方一次。
-  # World 回 `cast_prepared` 后按前摇时长发 `authorize_cast`；前摇互斥、超时取消与会话取消由真实 Player 负责
-  # （scene `cast_action_test`），这里只接通 Gate → Player 协议 → World。
+  # World 回 `cast_prepared` 计划后按它计时：有第 k 步检查时先发 `check_cast`，回 :continue 再为剩余前摇计时，最后发
+  # `authorize_cast`（设计 v2.11 W1）。前摇互斥、超时取消与会话取消由真实 Player 负责（scene `cast_action_test`），
+  # 这里只接通 Gate → Player 协议 → World。
   defmodule CastingPlayer do
     use GenServer
 
@@ -75,10 +77,35 @@ defmodule GateServer.VoximSpellDispatchTest do
       do: spell(make_ref(), identity, request, ingress, from, state)
 
     @impl true
-    def handle_info({:cast_prepared, key, windup_s}, state) do
+    def handle_info({:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: nil}}, state) do
       Process.send_after(self(), {:release_cast, key}, ceil(windup_s * 1000))
       {:noreply, state}
     end
+
+    def handle_info(
+          {:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: checkpoint_s}},
+          state
+        ) do
+      Process.send_after(self(), {:checkpoint, key}, ceil(checkpoint_s * 1000))
+
+      {:noreply,
+       put_in(
+         state.requests[{:remaining, key}],
+         ceil(windup_s * 1000) - ceil(checkpoint_s * 1000)
+       )}
+    end
+
+    def handle_info({:checkpoint, key}, state) do
+      send(state.world, {:check_cast, key, actor(state), state.requests[key]})
+      {:noreply, state}
+    end
+
+    def handle_info({:cast_checked, key, :continue}, state) do
+      Process.send_after(self(), {:release_cast, key}, state.requests[{:remaining, key}])
+      {:noreply, state}
+    end
+
+    def handle_info({:cast_checked, _key, :ended}, state), do: {:noreply, state}
 
     def handle_info({:release_cast, key}, state) do
       send(state.world, {:authorize_cast, key, actor(state), state.requests[key]})
@@ -150,28 +177,43 @@ defmodule GateServer.VoximSpellDispatchTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
 
-    world =
-      start_supervised!(
-        {World,
-         source: Source,
-         root: root,
-         observer: self(),
-         name: nil,
-         clock: {ManualClock, nil},
-         property_catalog_path:
-           Path.join([
-             @fixtures,
-             "combustion",
-             "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec.json"
-           ]),
-         thermal_environment_path:
-           Path.join([@fixtures, "combustion", "environment-radiation.json"]),
-         magic_catalog_path: @catalog,
-         prefab_catalog_path: nil}
-      )
+    world_spec =
+      {World,
+       source: Source,
+       root: root,
+       observer: self(),
+       name: nil,
+       clock: {ManualClock, nil},
+       property_catalog_path:
+         Path.join([
+           @fixtures,
+           "combustion",
+           "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec.json"
+         ]),
+       thermal_environment_path:
+         Path.join([@fixtures, "combustion", "environment-radiation.json"]),
+       magic_catalog_path: @catalog,
+       prefab_catalog_path: nil}
 
-    # 地面石 (0,0,0)、叶 (0,2,3)；脚 (0.5,1,0.5)、眼 (0.5,2.5,0.5)，叶在正 z 方向 3 m。
-    {:ok, _} = World.apply_edits(world, [{{0, 0, 0}, 11}, {{0, 2, 3}, 28}])
+    world = start_supervised!(world_spec, id: :world)
+
+    # 地面石 (0,0,0)、叶 (0,2,3)、蓄能石 (1,1,0)；脚 (0.5,1,0.5)、眼 (0.5,2.5,0.5)，叶在正 z 方向 3 m，石格心在 √2 m。
+    {:ok, _} =
+      World.apply_edits(world, [{{0, 0, 0}, 11}, {{0, 2, 3}, 28}, {{1, 0, 0}, 11}, {@battery, 42}])
+
+    scout = scout()
+    {:ok, row} = World.tool_intent(world, scout, query(scout, @battery_micro))
+    seq = World.seq(world)
+    :ok = stop_supervised(:world)
+
+    VoxelRegion.OverlayLog.File.append(Path.join(root, "overlay.log"), %{
+      seq: seq + 1,
+      entries: [],
+      coarse: [],
+      property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]
+    })
+
+    world = start_supervised!(world_spec, id: :world)
 
     identity = make_ref()
     connection = start_supervised!({Connection, %{owner: self(), identity: identity}})
@@ -202,7 +244,44 @@ defmodule GateServer.VoximSpellDispatchTest do
       sink: Sink.quic(connection, :session)
     }
 
-    %{world: world, state: state}
+    %{world: world, state: state, actor: Map.put(actor, :player, player)}
+  end
+
+  # 作者初态与目标身份的查询者：施法者同一位置的 Test-only 角色（`TestSupport.Actor`）。
+  defp scout do
+    a = %{
+      cid: 9,
+      gate: self(),
+      identity: make_ref(),
+      refresh: &Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5},
+      feet: {0.5, 1.0, 0.5},
+      tick_us: 16_667
+    }
+
+    Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
+  end
+
+  defp aim({ex, ey, ez}, {x, y, z}) do
+    {dx, dy, dz} = {(x + 0.5) / 8 - ex, (y + 0.5) / 8 - ey, (z + 0.5) / 8 - ez}
+    n = :math.sqrt(dx * dx + dy * dy + dz * dz)
+    {dx / n, dy / n, dz / n}
+  end
+
+  defp query(a, micro) do
+    %{
+      request_id: 1,
+      client_intent_seq: 1,
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: aim(a.eye, micro),
+      micro: micro,
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
   end
 
   # 0x82 v2：rid 7、seq 8、scene 1、action、digest、方向 (0,0,1)、目标 = 叶宏格 (0,2,3) 的角微格 {0,16,24}、
@@ -211,6 +290,19 @@ defmodule GateServer.VoximSpellDispatchTest do
     <<0x82, 7::64, 8::32, 1::64, action, digest::binary-size(32), 0.0::float-64, 0.0::float-64,
       1.0::float-64, 0::signed-64, 16::signed-64, 24::signed-64, 1::64, 0::64, 0::32, 28::16, 0,
       byte_size(program)::16, program::binary>>
+  end
+
+  # 同一帧，目标是工具查询给出的身份、方向瞄准它的微格中心。
+  defp spell_at(action, program, target, aimed) do
+    {dx, dy, dz} = aim({0.5, 2.5, 0.5}, aimed)
+    {x, y, z} = target.micro
+    {birth, occurrence} = target.owner
+    digest = @digest
+
+    <<0x82, 7::64, 8::32, 1::64, action, digest::binary-size(32), dx::float-64, dy::float-64,
+      dz::float-64, x::signed-64, y::signed-64, z::signed-64, target.incarnation::64, birth::64,
+      occurrence::32, target.material::16, target.granularity, byte_size(program)::16,
+      program::binary>>
   end
 
   defp dispatch(state, bytes) do
@@ -245,6 +337,28 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert World.seq(c.world) == seq
   end
 
+  # G-1：〈取〉施放成功的端到端。若 World 结算回复没有先经施法者状态出口，或 Gate 把成功编成别的原因串，这里的帧序或
+  # 字节对不上。
+  test "G-1 〈取〉1 MJ 施放：先 0x83 v2（余额 = η·1 MJ − 560.75 J、spent_j = 560.75 J、扩展段 0），后 0x68 \"ok\"",
+       c do
+    {:ok, target} = World.tool_intent(c.world, c.actor, query(c.actor, @battery_micro))
+    dispatch(c.state, spell_at(1, ir_program("draw_1mj"), target, @battery_micro))
+
+    assert_receive {:mmo_voxel_bytes, :session,
+                    <<0x83, 7::64, seq::64, energy::float-64, 5.0e6::float-64, 16.0::float-64,
+                      quote::float-64, 1.0::float-64, spent::float-64, +0.0::float-64,
+                      0::size(88)-unit(8)>>},
+                   5_000
+
+    assert_in_delta quote, 560.75, 1.0e-9
+    assert_in_delta spent, 560.75, 1.0e-9
+    assert_in_delta energy, 0.9 * 1.0e6 - 560.75, 1.0e-6
+
+    assert_receive {:mmo_voxel_bytes, :session,
+                    <<0x68, 7::64, 8::32, 1::64, 0, ^seq::64, 0::16, 2::16, "ok">>},
+                   5_000
+  end
+
   test "施放被拒回 0x68 rejected：目录 digest 过期 :stale_magic_catalog、v1 JSON 程序 :invalid_program；不改世界",
        c do
     seq = World.seq(c.world)
@@ -267,32 +381,36 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert World.seq(c.world) == seq
   end
 
-  # 接纳即开户：该角色尚无施法者账，World 先提交一次性充能事务（seq 1 → 2），余额 497 084 850 mJ = 497 084.85 J
-  # （推导见 World.Casting）；同一请求再发一次（重连）不再充，扩展段全 0。
+  # 接纳即开户：该角色尚无施法者账，World 先提交一次性充能事务（seq → seq + 1），余额 = initial_charge_mj / 1000；
+  # 同一请求再发一次（重连）不再充，扩展段全 0。
   test "QUIC 接纳 0x76 后的施法者状态请求回 0x83 v2（request_id 0，扩展段全 0）：首次开户充能，再请求不重复", c do
+    seq0 = World.seq(c.world)
+    seq = seq0 + 1
+    granted_j = VoxelRegion.World.Casting.initial_charge_mj() / 1000
     request = {:voxel_caster_state_request, %{request_id: 0, logical_scene_id: 1}}
     assert {:ok, _} = Dispatch.handle(request, c.state)
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 2::64, 497_084.85::float-64, 5.0e6::float-64, 16.0::float-64,
+                    <<0x83, 0::64, ^seq::64, ^granted_j::float-64, 5.0e6::float-64, 16.0::float-64,
                       +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
                       0::size(88)-unit(8)>>}
 
     assert {:ok, _} = Dispatch.handle(request, c.state)
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 2::64, 497_084.85::float-64, _::binary>>}
+                    <<0x83, 0::64, ^seq::64, ^granted_j::float-64, _::binary>>}
 
-    assert World.seq(c.world) == 2
+    assert World.seq(c.world) == seq
   end
 
   test "报价调用回复延迟时，World 仍先发报价再发身体状态；身体推送的 Ω_eff = 16 × 0.45，迟到回复不重发", c do
+    seq = World.seq(c.world)
     :ok = GenServer.call(c.state.player, :hold_reply)
     task = Task.async(fn -> dispatch(c.state, spell(0, @digest, ir_program("draw_1mj"))) end)
     assert_receive :caster_reply_held
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 16.0::float-64,
+                    <<0x83, 7::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, 16.0::float-64,
                       _::binary-size(120)>>}
 
     identity = c.state.identity
@@ -300,7 +418,7 @@ defmodule GateServer.VoximSpellDispatchTest do
     send(c.world, {:body_coherence, c.state.cid, 0.45, gate, identity})
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, omega::float-64,
+                    <<0x83, 0::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, omega::float-64,
                       +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
                       0::size(88)-unit(8)>>}
 

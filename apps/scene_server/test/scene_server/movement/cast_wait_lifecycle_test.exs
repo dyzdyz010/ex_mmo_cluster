@@ -3,6 +3,10 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   只测试：真实Player→World异步施法等待。World经作者编辑、File压实和重启形成冷页；
   Player经正常构造、权威快照anchor和Ready启动。Scene时间线与网络Sink是静止依赖，
   身体存储为本例Agent；不验证移动、鉴权、PG或QUIC。读闸只延迟真实File页读取。
+
+  魔法目录是 v5 发布物 `voxel_region/priv/magic/<sha256>.json`，程序是 IR v2 样本字节（魔法 v2 切片 3，决策稿 S-1：
+  Player 对程序内容不敏感，换目录后原断言不变）。出生点脚下 (40,8,8) 是蓄能石，作者初态 10 MJ 经持久化边界安装一次，
+  使〈取〉的前摇没有预判中断（否则 World 会让 Player 在第 1 步时刻检查并结算，抢在取消之前）。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Player, Scene, CollisionUpdates, Replication}
@@ -14,7 +18,15 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
 
   @fixtures Path.expand("../../../../voxel_region/test/fixtures", __DIR__)
   @material "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "41d668f375b795ce9129dd3bbc1f9c70ce70278ded49f39c2441ccc540386bde"
+  @catalog Path.expand("../../../../voxel_region/priv/magic", __DIR__)
+           |> Path.join("*.json")
+           |> Path.wildcard()
+           |> then(fn [path] -> path end)
+  @ir Path.expand("../../../../voxel_region/test/fixtures/magic/ir-v2-samples.json", __DIR__)
+      |> File.read!()
+      |> Jason.decode!()
+  @external_resource @catalog
+  @battery {40, 8, 8}
   @cold {0, {2, 0, 0}}
   @box {{0, 0, 0}, {1, 1, 1}}
 
@@ -55,11 +67,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
       Path.join(root, "environment.json")
     )
 
-    # 用例可用 `@tag magic:` 换魔法目录（光弹需要含拟态的现行目录）；默认增量 1 目录。
-    File.cp!(
-      Path.join([@fixtures, "magic", Map.get(context, :magic, @magic) <> ".json"]),
-      Path.join(root, "magic.json")
-    )
+    File.cp!(@catalog, Path.join(root, "magic.json"))
 
     opts = [
       name: nil,
@@ -74,9 +82,23 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     ]
 
     world = start_supervised!({World, opts})
-    assert {:ok, _} = World.apply_edits(world, for(x <- 38..42, z <- 6..10, do: {{x, 8, z}, 11}))
+
+    floor =
+      for x <- 38..42, z <- 6..10, do: {{x, 8, z}, if({x, 8, z} == @battery, do: 42, else: 11)}
+
+    assert {:ok, _} = World.apply_edits(world, floor)
+    stored = battery_row(world)
     assert :ok = World.compact(world)
+    seq = World.seq(world)
     stop_supervised!(World)
+
+    VoxelRegion.OverlayLog.File.append(Path.join(root, "overlay.log"), %{
+      seq: seq + 1,
+      entries: [],
+      coarse: [],
+      property_states: [Map.merge(stored, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]
+    })
+
     world = start_supervised!({World, opts})
     parent = self()
 
@@ -165,6 +187,47 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     %{world: world, player: player, identity: identity, root: root, config: config}
   end
 
+  # 作者初态用的蓄能石属性行：经正式工具查询取得（查询者在石上方 1.5 m 向下看）。
+  defp battery_row(world) do
+    scout = %{
+      cid: 9,
+      gate: self(),
+      identity: make_ref(),
+      refresh: &VoxelRegion.TestSupport.Actor.tool_context/2,
+      eye: {40.5, 10.5, 8.5},
+      feet: {40.5, 9.0, 8.5},
+      tick_us: 16_667
+    }
+
+    scout =
+      Map.put(
+        scout,
+        :player,
+        start_supervised!({VoxelRegion.TestSupport.Actor, scout}, id: :scout)
+      )
+
+    query = %{
+      request_id: 1,
+      client_intent_seq: 1,
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: {0.0, -1.0, 0.0},
+      micro: {320, 64, 64},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
+
+    {:ok, row} = World.tool_intent(world, scout, query)
+    row
+  end
+
+  defp program(id),
+    do:
+      Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
+
   defp await(fun, left \\ 100)
 
   defp await(fun, left) when left > 0 do
@@ -179,14 +242,21 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
 
   defp await(_fun, 0), do: flunk("请求生命周期没有达到应有终态")
 
+  # 0x82 解码形；程序取合法的灯（〈握〉，报价与施放都不求射线）。冷页用例里读闸挂起在解码之前。
   defp request(action \\ 1),
     do: %{
       action: action,
       client_intent_seq: 1,
       request_id: 1,
+      logical_scene_id: 1,
       direction: {1.0, 0.0, 0.0},
-      catalog_digest: Base.decode16!(@magic, case: :lower),
-      program: "{}"
+      catalog_digest: :crypto.hash(:sha256, File.read!(@catalog)),
+      micro: {0, 0, 0},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0,
+      program: program("lamp")
     }
 
   test "冷页cast的waiter退出释放Player动作，另一公共请求共享reader继续", c do
@@ -294,19 +364,11 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
 
     SimulationIoLog.clear()
 
-    program =
-      Jason.encode!(%{
-        v: 1,
-        target: %{kind: "aim"},
-        emit: "at_target",
-        steps: [%{sym: "energy.draw", args: %{energy_j: 1000}}]
-      })
-
     assert {:ok, %{outcome: nil}} =
              Player.spell(
                c.player,
                c.identity,
-               %{request(0) | program: program},
+               request(0),
                %{caster_recipient: {self(), make_ref()}},
                5_000
              )
@@ -360,18 +422,11 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
 
     assert {:ok, target} = World.tool_intent(c.world, actor, query)
 
-    program =
-      Jason.encode!(%{
-        v: 1,
-        target: %{kind: "aim"},
-        emit: "at_target",
-        steps: [%{sym: "act.heat", args: %{energy_j: 400_000, power_w: 200_000}}]
-      })
-
+    # 脚下蓄能石取能 1 MJ：可用资金 = 余额 0 + η·1 MJ，足够付构型损耗，前摇没有预判中断。
     request =
       request()
       |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
-      |> Map.merge(%{direction: {0.0, -1.0, 0.0}, program: program})
+      |> Map.merge(%{direction: {0.0, -1.0, 0.0}, program: program("draw_1mj")})
 
     before = World.seq(c.world)
     tag = make_ref()

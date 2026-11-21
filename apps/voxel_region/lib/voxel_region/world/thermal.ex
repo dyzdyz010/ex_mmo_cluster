@@ -738,7 +738,7 @@ defmodule VoxelRegion.World.Thermal do
   # 世界节点的内核下标即其在内核次序节点列表中的序号；相态宏格按有限体积定盒。
   defp semblance_terms(state, semblances, ordered, count, {pairs, sky}) do
     config = state.thermal.config
-    conductivity = state.magic.semblance.conductivity
+    conductivity = state.magic.semblance.thermal_conductivity_w_per_m_k
     emissivity = if VoxelRegion.ThermalRadiation.enabled?(config), do: config["emissivity"] * 1.0, else: 0.0
     bounded = thermal_bounded?(state)
     # 候选宏格里的实占用节点（附件槽不与拟态接触）；有限液柱按实际液位定盒。
@@ -899,7 +899,7 @@ defmodule VoxelRegion.World.Thermal do
     touched =
       for {id, s} <- semblances(state), not Map.has_key?(s, :projectile_source), Magic.Semblance.landed?(s),
           VoxelRegion.BodyContact.touching?(s.rest, s.radius_m, feet, height, radius),
-          do: {:semblance, id, VoxelRegion.BodyContact.touch(s.radius_m, state.magic.semblance.conductivity)}
+          do: {:semblance, id, VoxelRegion.BodyContact.touch(s.radius_m, state.magic.semblance.thermal_conductivity_w_per_m_k)}
 
     immersed = min(1.0, Enum.sum(Enum.map(wet, &elem(&1, 0))) / height)
     sole_key = Enum.find_value(sole, fn {:node, key, _cell, _g} -> key end)

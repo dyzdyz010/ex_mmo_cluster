@@ -25,8 +25,13 @@ defmodule VoxelRegion.MagicIrTest do
   setup_all do
     samples = Jason.decode!(File.read!(@samples))
 
-    %{catalog: Catalog.load(@path), data: Jason.decode!(File.read!(@path)), samples_digest: samples["catalog_digest"],
-      bytes: Map.new(samples["samples"], &{&1["id"], Base.decode16!(&1["program_hex"], case: :lower)})}
+    %{
+      catalog: Catalog.load(@path),
+      data: Jason.decode!(File.read!(@path)),
+      samples_digest: samples["catalog_digest"],
+      bytes:
+        Map.new(samples["samples"], &{&1["id"], Base.decode16!(&1["program_hex"], case: :lower)})
+    }
   end
 
   defp diagnose(c, bytes), do: Program.diagnose_ir(bytes, c.catalog)
@@ -34,13 +39,21 @@ defmodule VoxelRegion.MagicIrTest do
 
   # 把 bytes 中从 at 起的 byte_size(part) 个字节替换为 part。
   defp patch(bytes, at, part),
-    do: binary_part(bytes, 0, at) <> part <> binary_part(bytes, at + byte_size(part), byte_size(bytes) - at - byte_size(part))
+    do:
+      binary_part(bytes, 0, at) <>
+        part <> binary_part(bytes, at + byte_size(part), byte_size(bytes) - at - byte_size(part))
 
   defp symbol(data, id, fun),
-    do: update_in(data, ["symbols"], fn symbols -> Enum.map(symbols, &if(&1["id"] == id, do: fun.(&1), else: &1)) end)
+    do:
+      update_in(data, ["symbols"], fn symbols ->
+        Enum.map(symbols, &if(&1["id"] == id, do: fun.(&1), else: &1))
+      end)
 
   defp slot(data, id, name, fun),
-    do: symbol(data, id, fn s -> %{s | "params" => Enum.map(s["params"], &if(&1["name"] == name, do: fun.(&1), else: &1))} end)
+    do:
+      symbol(data, id, fn s ->
+        %{s | "params" => Enum.map(s["params"], &if(&1["name"] == name, do: fun.(&1), else: &1))}
+      end)
 
   test "目录 v5：digest = 文件 sha256；常量、计数、槽表与预设字节按 schema 解码", c do
     assert Base.encode16(c.catalog.digest, case: :lower) == @digest
@@ -48,28 +61,67 @@ defmodule VoxelRegion.MagicIrTest do
     assert c.catalog.caster.resolution_omega == 16
     assert c.catalog.construction.eta_j_s_per_rad2 == 18
     assert {c.catalog.limits.program_max_bytes, c.catalog.limits.backup_modes} == {512, [0]}
-    assert c.catalog.limits.counts == %{n_act: 1, n_grp: 1, n_ref: 0, n_shape: 1, n_qual: 4, n_energy: 1, n_motion: 1,
-             n_rule: 2, n_read: 2, n_resp: 2}
-    assert {c.catalog.runtime.thermal_step_min_ms, c.catalog.quotas.region_budget_units} == {25, 256}
+
+    assert c.catalog.limits.counts == %{
+             n_act: 1,
+             n_grp: 1,
+             n_ref: 0,
+             n_shape: 1,
+             n_qual: 4,
+             n_energy: 1,
+             n_motion: 1,
+             n_rule: 2,
+             n_read: 2,
+             n_resp: 2
+           }
+
+    assert {c.catalog.runtime.thermal_step_min_ms, c.catalog.quotas.region_budget_units} ==
+             {25, 256}
+
     assert c.catalog.group_requires_all == ["form:semblance", "energy:load"]
+
     # 设计 §11.4.5.1 建议补入的常数：b 底数下限与 quotas / runtime 新字段（抽查成对项与首尾）。
     assert c.catalog.construction.b_floor == 1
-    assert {c.catalog.quotas.present_floor_structures, c.catalog.quotas.region_flight_slots_per_present} == {1, 1}
+
+    assert {c.catalog.quotas.present_floor_structures,
+            c.catalog.quotas.region_flight_slots_per_present} == {1, 1}
+
     assert {c.catalog.runtime.windup_interrupt_dose, c.catalog.runtime.env_neighbor_radius_m,
             c.catalog.runtime.env_neighbor_max, c.catalog.runtime.thermal_sleep_delta_k,
-            c.catalog.runtime.thermal_sleep_power_w, c.catalog.runtime.quote_life_slices} == {0.3, 8, 16, 5, 100, 32}
+            c.catalog.runtime.thermal_sleep_power_w, c.catalog.runtime.quote_life_slices} ==
+             {0.3, 8, 16, 5, 100, 32}
+
     assert {map_size(c.catalog.quotas), map_size(c.catalog.runtime)} == {19, 39}
+
     # 设计 v2.9：〈热〉phi_grade 只发布 1 级（A3）；Q21(a) 的性质类与从零定义步长。只有〈热〉〈辉〉写 property_class。
-    assert Enum.find(c.catalog.symbols[15].params, &(&1.name == "phi_grade")) |> Map.take([:min, :max]) == %{min: 1, max: 1}
-    assert {c.catalog.runtime.scratch_unit_step, c.catalog.runtime.scratch_precision_step} == {0.5, 0.25}
-    assert for({_, s} <- c.catalog.symbols, s.property_class, into: %{}, do: {s.id, s.property_class}) ==
+    assert Enum.find(c.catalog.symbols[15].params, &(&1.name == "phi_grade"))
+           |> Map.take([:min, :max]) == %{min: 1, max: 1}
+
+    assert {c.catalog.runtime.scratch_unit_step, c.catalog.runtime.scratch_precision_step} ==
+             {0.5, 0.25}
+
+    assert for(
+             {_, s} <- c.catalog.symbols,
+             s.property_class,
+             into: %{},
+             do: {s.id, s.property_class}
+           ) ==
              %{"cpl.thermal" => "thermal", "cpl.glow" => "emission"}
+
     # 设计 v2.10 E2：只有读数段符号有 reading_source；〈遇〉外部，〈时〉〈满〉读自身。
-    assert for({_, s} <- c.catalog.symbols, s.reading_source, into: %{}, do: {s.id, s.reading_source}) ==
+    assert for(
+             {_, s} <- c.catalog.symbols,
+             s.reading_source,
+             into: %{},
+             do: {s.id, s.reading_source}
+           ) ==
              %{"cond.contact" => :external, "cond.timer" => :self, "cond.load" => :self}
 
     # 姿态照抄设计 §2.6（整数度，解码为弧度）：〈取〉保留 v4 姿态；〈满〉〈散〉各为条件层、响应层左支加各自右支。
-    degrees = fn index -> Enum.map(c.catalog.symbols[index].pose, &round(&1 * 180 / :math.pi())) end
+    degrees = fn index ->
+      Enum.map(c.catalog.symbols[index].pose, &round(&1 * 180 / :math.pi()))
+    end
+
     assert degrees.(0) == [155, -90, -95, 25, 90, 95]
     assert degrees.(36) == [130, -45, 10, -20, 55, 100]
     assert degrees.(44) == [-60, -45, 10, 5, 30, 15]
@@ -79,8 +131,13 @@ defmodule VoxelRegion.MagicIrTest do
 
     # K3：已发布 14 个 + 预留 47 个 = §2.3 表序全部 61 个下标；〈容〉〈满〉已发布，〈否〉只预留。
     assert {map_size(c.catalog.symbols), map_size(c.catalog.reserved)} == {14, 47}
-    assert Enum.sort(Map.keys(c.catalog.symbols) ++ Map.keys(c.catalog.reserved)) == Enum.to_list(0..60)
-    assert {c.catalog.symbols[0x17].id, c.catalog.symbols[0x24].id} == {"cpl.capacity", "cond.load"}
+
+    assert Enum.sort(Map.keys(c.catalog.symbols) ++ Map.keys(c.catalog.reserved)) ==
+             Enum.to_list(0..60)
+
+    assert {c.catalog.symbols[0x17].id, c.catalog.symbols[0x24].id} ==
+             {"cpl.capacity", "cond.load"}
+
     assert {c.catalog.reserved[0x35], c.catalog.reserved[60]} == {"resp.backup", "real.ascend"}
 
     form = c.catalog.symbols[2]
@@ -91,11 +148,15 @@ defmodule VoxelRegion.MagicIrTest do
     assert List.last(form.params).zero_means_absent
     assert form.ranges_by_param["shape"]["plate"]["size3_mm"] == {10, 200}
     # 能量槽换算为整数 mJ，键随之改名。
-    assert [%{key: "energy_mj", scale: 1000, min: 1, max: 5_000_000}] = c.catalog.symbols[27].params
+    assert [%{key: "energy_mj", scale: 1000, min: 1, max: 5_000_000}] =
+             c.catalog.symbols[27].params
+
     assert Enum.at(c.catalog.symbols[23].params, 0).enum == %{0 => "storage", 2 => "repair"}
 
     # 9 个预设（§11.4.5 清单与推荐 id）与冻结样本逐字相同；加载时已逐个解码并通过签名，这里再经入口复核一次。
-    assert Enum.map(c.catalog.presets, &{&1.id, &1.program}) == Enum.map(@preset_ids, &{&1, c.bytes[&1]})
+    assert Enum.map(c.catalog.presets, &{&1.id, &1.program}) ==
+             Enum.map(@preset_ids, &{&1, c.bytes[&1]})
+
     for preset <- c.catalog.presets, do: assert({:ok, _} = diagnose(c, preset.program))
   end
 
@@ -112,8 +173,16 @@ defmodule VoxelRegion.MagicIrTest do
       symbol(c.data, "cpl.glow", &Map.delete(&1, "max_per_group")),
       symbol(c.data, "cpl.glow", &Map.put(&1, "require_all", ["mass"])),
       symbol(c.data, "cpl.glow", &Map.put(&1, "index", 2)),
-      update_in(c.data, ["presets"], &[%{lamp | "program_hex" => String.upcase(lamp["program_hex"])} | &1]),
-      update_in(c.data, ["presets"], &[%{lamp | "id" => "lamp_trailing", "program_hex" => lamp["program_hex"] <> "00"} | &1]),
+      update_in(
+        c.data,
+        ["presets"],
+        &[%{lamp | "program_hex" => String.upcase(lamp["program_hex"])} | &1]
+      ),
+      update_in(
+        c.data,
+        ["presets"],
+        &[%{lamp | "id" => "lamp_trailing", "program_hex" => lamp["program_hex"] <> "00"} | &1]
+      ),
       # 新字段必填；拼错的字段仍按未知字段拒绝。
       update_in(c.data, ["construction"], &Map.delete(&1, "b_floor")),
       put_in(c.data, ["runtime", "quote_life_slice"], 32),
@@ -131,7 +200,8 @@ defmodule VoxelRegion.MagicIrTest do
       reserved.(&[hd(&1) | &1])
     ]
 
-    for data <- rejected, do: assert_raise(ArgumentError, ~r/magic catalog v5/, fn -> catalog(data) end)
+    for data <- rejected,
+        do: assert_raise(ArgumentError, ~r/magic catalog v5/, fn -> catalog(data) end)
 
     # reading_source（v2.10 E2）：读数段缺字段、非读数段写了、取值非法，都按该字段拒绝。
     for {id, fun} <- [
@@ -139,86 +209,201 @@ defmodule VoxelRegion.MagicIrTest do
           {"cpl.glow", &Map.put(&1, "reading_source", "self")},
           {"cond.timer", &Map.put(&1, "reading_source", "internal")}
         ] do
-      assert_raise ArgumentError, ~r/symbols\[#{id}\]\.reading_source: /, fn -> catalog(symbol(c.data, id, fun)) end
+      assert_raise ArgumentError, ~r/symbols\[#{id}\]\.reading_source: /, fn ->
+        catalog(symbol(c.data, id, fun))
+      end
     end
 
     # 施法者动作不建结构，只可能触发 T6（v2.10 E4）：〈取〉再声明 domain 以外的检查即按该字段拒绝。
     assert_raise ArgumentError, ~r/symbols\[energy\.draw\]\.numeric_checks: /, fn ->
-      catalog(symbol(c.data, "energy.draw", &Map.put(&1, "numeric_checks", ["domain", "capacity"])))
+      catalog(
+        symbol(c.data, "energy.draw", &Map.put(&1, "numeric_checks", ["domain", "capacity"]))
+      )
     end
   end
 
   test "冻结样本：9 组字节解码为设计 §11.4.4 声明的语义值", c do
-    %{"draw_1mj" => draw, "lamp" => lamp, "fireball" => fireball, "dispel_pulse" => dispel, "timed_ember" => ember} = c.bytes
+    %{
+      "draw_1mj" => draw,
+      "lamp" => lamp,
+      "fireball" => fireball,
+      "dispel_pulse" => dispel,
+      "timed_ember" => ember
+    } = c.bytes
+
     # 字节数与设计各标题一致（定时火种 v2.3 已更正为 38 B）。
     assert Enum.map(@preset_ids, &byte_size(c.bytes[&1])) == [7, 7, 30, 43, 35, 32, 33, 38, 55]
 
     # 取能：energy_j = dec(e=3, m=1000) = 1 000 000 J = 1e9 mJ。
     assert diagnose(c, draw) ==
-             {:ok, %Program{kind: :caster_action, bytes: draw,
-               action: %Glyph{index: 0, id: "energy.draw", params: %{"energy_mj" => 1_000_000_000}}}}
+             {:ok,
+              %Program{
+                kind: :caster_action,
+                bytes: draw,
+                action: %Glyph{
+                  index: 0,
+                  id: "energy.draw",
+                  params: %{"energy_mj" => 1_000_000_000}
+                }
+              }}
 
     hand = %Glyph{index: 7, id: "anchor.hand", params: %{}}
     surface = %Glyph{index: 8, id: "anchor.surface", params: %{"to_group" => nil}}
+
     form = fn shape, s1, s2, s3, mass ->
-      %Glyph{index: 2, id: "form.semblance",
-        params: %{"shape" => shape, "size1_mm" => s1, "size2_mm" => s2, "size3_mm" => s3, "mass_g" => mass}}
+      %Glyph{
+        index: 2,
+        id: "form.semblance",
+        params: %{
+          "shape" => shape,
+          "size1_mm" => s1,
+          "size2_mm" => s2,
+          "size3_mm" => s3,
+          "mass_g" => mass
+        }
+      }
     end
+
     load = &%Glyph{index: 27, id: "energy.load", params: %{"energy_mj" => &1}}
     release = %Glyph{index: 44, id: "resp.release", params: %{}}
 
     # 灯：球 150 mm，mass_g = 0 为“无质量”（跳过区间）；〈辉〉100 W；〈蓄〉dec(2, 500) = 50 kJ。
     assert {:ok, %Program{kind: :structure, groups: [lamp_group]}} = diagnose(c, lamp)
-    assert lamp_group == %Group{form_anchor: hand, shape: [form.("sphere", 150, 0, 0, nil)],
-             quality: [%Glyph{index: 16, id: "cpl.glow", params: %{"power_w" => 100}}], energy: [load.(50_000_000)]}
+
+    assert lamp_group == %Group{
+             form_anchor: hand,
+             shape: [form.("sphere", 150, 0, 0, nil)],
+             quality: [%Glyph{index: 16, id: "cpl.glow", params: %{"power_w" => 100}}],
+             energy: [load.(50_000_000)]
+           }
 
     # 火球：球 250 mm、500 g；〈热〉t0_dk = 20000、phi_grade = 1；〈蓄〉dec(1, 2000) = 20 kJ；〈投〉12000 mm/s；当〈遇〉则〈散〉。
     assert {:ok, %Program{groups: [fireball_group]}} = diagnose(c, fireball)
-    assert fireball_group == %Group{form_anchor: hand, shape: [form.("sphere", 250, 0, 0, 500)],
-             quality: [%Glyph{index: 15, id: "cpl.thermal", params: %{"t0_dk" => 20_000, "phi_grade" => 1}}],
+
+    assert fireball_group == %Group{
+             form_anchor: hand,
+             shape: [form.("sphere", 250, 0, 0, 500)],
+             quality: [
+               %Glyph{
+                 index: 15,
+                 id: "cpl.thermal",
+                 params: %{"t0_dk" => 20_000, "phi_grade" => 1}
+               }
+             ],
              energy: [load.(20_000_000)],
              motion: [%Glyph{index: 30, id: "act.throw", params: %{"speed_mmps" => 12_000}}],
-             rules: [%Rule{priority: 0, readings: [%Glyph{index: 34, id: "cond.contact", params: %{}}],
-               responses: [release], backup: :none, backup_response: nil}]}
+             rules: [
+               %Rule{
+                 priority: 0,
+                 readings: [%Glyph{index: 34, id: "cond.contact", params: %{}}],
+                 responses: [release],
+                 backup: :none,
+                 backup_response: nil
+               }
+             ]
+           }
 
     # 驱散脉冲：〈附〉to_group = 0xFF；球 200 mm；〈乱〉dec(2, 1000) = 100 kW、半径 3000 mm；〈蓄〉dec(2, 600) = 60 kJ。
     assert {:ok, %Program{groups: [dispel_group]}} = diagnose(c, dispel)
-    assert dispel_group == %Group{form_anchor: surface, shape: [form.("sphere", 200, 0, 0, nil)],
-             quality: [%Glyph{index: 54, id: "int.disrupt", params: %{"activity_w" => 100_000, "radius_mm" => 3000}}],
-             energy: [load.(60_000_000)]}
+
+    assert dispel_group == %Group{
+             form_anchor: surface,
+             shape: [form.("sphere", 200, 0, 0, nil)],
+             quality: [
+               %Glyph{
+                 index: 54,
+                 id: "int.disrupt",
+                 params: %{"activity_w" => 100_000, "radius_mm" => 3000}
+               }
+             ],
+             energy: [load.(60_000_000)]
+           }
 
     # 定时火种：块 150/150/150 mm、无质量；〈蓄〉dec(2, 2000) = 200 kJ；当〈时 3000 cs，from = 0xFF〉则〈散〉。
     assert {:ok, %Program{groups: [ember_group]}} = diagnose(c, ember)
-    assert ember_group == %Group{form_anchor: surface, shape: [form.("block", 150, 150, 150, nil)],
+
+    assert ember_group == %Group{
+             form_anchor: surface,
+             shape: [form.("block", 150, 150, 150, nil)],
              energy: [load.(200_000_000)],
-             rules: [%Rule{priority: 0, readings: [%Glyph{index: 35, id: "cond.timer", params: %{"duration_cs" => 3000, "from" => nil}}],
-               responses: [release], backup: :none, backup_response: nil}]}
+             rules: [
+               %Rule{
+                 priority: 0,
+                 readings: [
+                   %Glyph{
+                     index: 35,
+                     id: "cond.timer",
+                     params: %{"duration_cs" => 3000, "from" => nil}
+                   }
+                 ],
+                 responses: [release],
+                 backup: :none,
+                 backup_response: nil
+               }
+             ]
+           }
 
     # 取能 2 MJ：energy_j = dec(e=3, m=2000) = 2 000 000 J = 2e9 mJ。
     assert diagnose(c, c.bytes["draw_2mj"]) ==
-             {:ok, %Program{kind: :caster_action, bytes: c.bytes["draw_2mj"],
-               action: %Glyph{index: 0, id: "energy.draw", params: %{"energy_mj" => 2_000_000_000}}}}
+             {:ok,
+              %Program{
+                kind: :caster_action,
+                bytes: c.bytes["draw_2mj"],
+                action: %Glyph{
+                  index: 0,
+                  id: "energy.draw",
+                  params: %{"energy_mj" => 2_000_000_000}
+                }
+              }}
 
     thermal = &%Glyph{index: 15, id: "cpl.thermal", params: %{"t0_dk" => &1, "phi_grade" => 1}}
     throw = %Glyph{index: 30, id: "act.throw", params: %{"speed_mmps" => 12_000}}
 
     # 炽热投掷：球 400 mm、dec(0, 2000) = 2000 g；〈热〉20000 dK、phi_grade 1；〈蓄〉dec(2, 1200) = 120 kJ；〈投〉12000 mm/s；无规则。
     assert {:ok, %Program{groups: [hot_throw_group]}} = diagnose(c, c.bytes["hot_throw"])
-    assert hot_throw_group == %Group{form_anchor: hand, shape: [form.("sphere", 400, 0, 0, 2000)],
-             quality: [thermal.(20_000)], energy: [load.(120_000_000)], motion: [throw]}
+
+    assert hot_throw_group == %Group{
+             form_anchor: hand,
+             shape: [form.("sphere", 400, 0, 0, 2000)],
+             quality: [thermal.(20_000)],
+             energy: [load.(120_000_000)],
+             motion: [throw]
+           }
 
     # 灼点：〈附〉0xFF；球 250 mm、dec(0, 660) = 660 g；〈热〉15000 dK、phi_grade 1；〈蓄〉dec(1, 1500) = 15 kJ；无动段、无规则。
     assert {:ok, %Program{groups: [scorch_group]}} = diagnose(c, c.bytes["scorch"])
-    assert scorch_group == %Group{form_anchor: surface, shape: [form.("sphere", 250, 0, 0, 660)],
-             quality: [thermal.(15_000)], energy: [load.(15_000_000)]}
+
+    assert scorch_group == %Group{
+             form_anchor: surface,
+             shape: [form.("sphere", 250, 0, 0, 660)],
+             quality: [thermal.(15_000)],
+             energy: [load.(15_000_000)]
+           }
 
     # 过热保险火球：前 34 B 与火球相同；规则 0〈遇〉→〈散〉；规则 1〈满 相干 低于 5000 bp〉→〈散〉；backup 均为 0。
     assert binary_part(c.bytes["guarded_fireball"], 0, 34) == binary_part(fireball, 0, 34)
     assert {:ok, %Program{groups: [guarded_group]}} = diagnose(c, c.bytes["guarded_fireball"])
-    coherence_below = %Glyph{index: 36, id: "cond.load",
-      params: %{"quantity" => "coherence", "dir" => "below", "threshold_bp" => 5000}}
-    assert guarded_group == %{fireball_group | rules: fireball_group.rules ++
-             [%Rule{priority: 1, readings: [coherence_below], responses: [release], backup: :none, backup_response: nil}]}
+
+    coherence_below = %Glyph{
+      index: 36,
+      id: "cond.load",
+      params: %{"quantity" => "coherence", "dir" => "below", "threshold_bp" => 5000}
+    }
+
+    assert guarded_group == %{
+             fireball_group
+             | rules:
+                 fireball_group.rules ++
+                   [
+                     %Rule{
+                       priority: 1,
+                       readings: [coherence_below],
+                       responses: [release],
+                       backup: :none,
+                       backup_response: nil
+                     }
+                   ]
+           }
   end
 
   test "K1：dec 只认 e = 0 或 m ≥ 410；m 能被 10 整除合法、不进位", c do
@@ -230,6 +415,7 @@ defmodule VoxelRegion.MagicIrTest do
     assert diagnose(c, dec.(2, 100)) == {:error, {:noncanonical_dec, 26, "energy_j"}}
     assert dec.(2, 500) == lamp
     assert {:ok, _} = diagnose(c, lamp)
+
     # e = 0 时任意 m 都规范，落在区间内即接受；m = 0 也规范，但 0 J 越界，报的是区间而不是规范性。
     for m <- [1, 10, 409, 410, 1000, 4095], do: assert({:ok, _} = diagnose(c, dec.(0, m)))
     assert diagnose(c, dec.(0, 0)) == {:error, {:out_of_range, 26, "energy_j", 0}}
@@ -238,18 +424,34 @@ defmodule VoxelRegion.MagicIrTest do
   test "K3：预留下标出现在 Glyph 位置一律按未知下标拒绝", c do
     # 灯偏移 19 是质段〈辉〉的下标；取能偏移 3 是施法者动作 Glyph 的下标。
     for {index, _id} <- c.catalog.reserved do
-      assert diagnose(c, patch(c.bytes["lamp"], 19, <<index::16>>)) == {:error, {:unknown_index, 19, index}}
-      assert diagnose(c, patch(c.bytes["draw_1mj"], 3, <<index::16>>)) == {:error, {:unknown_index, 3, index}}
+      assert diagnose(c, patch(c.bytes["lamp"], 19, <<index::16>>)) ==
+               {:error, {:unknown_index, 19, index}}
+
+      assert diagnose(c, patch(c.bytes["draw_1mj"], 3, <<index::16>>)) ==
+               {:error, {:unknown_index, 3, index}}
     end
   end
 
   test "拒绝清单：每条规则一个最小反例，原因带字节偏移", c do
-    %{"draw_1mj" => draw, "lamp" => lamp, "fireball" => fireball, "dispel_pulse" => dispel} = c.bytes
+    %{"draw_1mj" => draw, "lamp" => lamp, "fireball" => fireball, "dispel_pulse" => dispel} =
+      c.bytes
+
     # 灯的偏移：9 shape，10/12/14 size1–3，16 mass_g，18 n_qual，19 〈辉〉下标，21 power_w，23 n_energy，24 〈蓄〉下标，26 energy_j。
     # 火球的偏移：34 n_rule，35 priority，40 响应下标，42 backup。驱散的偏移：5 to_group。
-    in_order = binary_part(lamp, 0, 18) <> <<2, 0x0010::16, 0x0064::16, 0x0036::16, 0x23E8::16, 0x0BB8::16>> <> binary_part(lamp, 23, 7)
-    reversed = binary_part(lamp, 0, 18) <> <<2, 0x0036::16, 0x23E8::16, 0x0BB8::16, 0x0010::16, 0x0064::16>> <> binary_part(lamp, 23, 7)
-    twice = binary_part(lamp, 0, 18) <> <<2, 0x0010::16, 0x0064::16, 0x0010::16, 0x0064::16>> <> binary_part(lamp, 23, 7)
+    in_order =
+      binary_part(lamp, 0, 18) <>
+        <<2, 0x0010::16, 0x0064::16, 0x0036::16, 0x23E8::16, 0x0BB8::16>> <>
+        binary_part(lamp, 23, 7)
+
+    reversed =
+      binary_part(lamp, 0, 18) <>
+        <<2, 0x0036::16, 0x23E8::16, 0x0BB8::16, 0x0010::16, 0x0064::16>> <>
+        binary_part(lamp, 23, 7)
+
+    twice =
+      binary_part(lamp, 0, 18) <>
+        <<2, 0x0010::16, 0x0064::16, 0x0010::16, 0x0064::16>> <> binary_part(lamp, 23, 7)
+
     plate = lamp |> patch(9, <<2>>) |> patch(12, <<150::16>>) |> patch(14, <<201::16>>)
     assert {:ok, _} = diagnose(c, in_order)
 
@@ -294,44 +496,83 @@ defmodule VoxelRegion.MagicIrTest do
       {plate, {:dependent_range, 14, "size3_mm", 201}}
     ]
 
-    for {bytes, reason} <- cases, do: assert(diagnose(c, bytes) == {:error, reason}, inspect({reason, diagnose(c, bytes)}))
+    for {bytes, reason} <- cases,
+        do: assert(diagnose(c, bytes) == {:error, reason}, inspect({reason, diagnose(c, bytes)}))
   end
 
   test "〈否〉：in_program = false 的下标在任何 Glyph 位置都拒绝；开放 backup 后内联响应可解码", c do
     fireball = c.bytes["fireball"]
-    backup = %{"index" => 53, "id" => "resp.backup", "section" => "rule.response", "phase" => 2, "in_program" => false,
-      "params" => [], "units" => 1, "precision" => 0, "pose" => [150, -120, -120, 30, 120, 120]}
+
+    backup = %{
+      "index" => 53,
+      "id" => "resp.backup",
+      "section" => "rule.response",
+      "phase" => 2,
+      "in_program" => false,
+      "params" => [],
+      "units" => 1,
+      "precision" => 0,
+      "pose" => [150, -120, -120, 30, 120, 120]
+    }
 
     # 按 K3 发布：〈否〉从预留表移入符号表，下标 0x0035 不变。
-    c = %{c | catalog: c.data |> update_in(["symbols"], &(&1 ++ [backup]))
-                             |> update_in(["reserved_symbols"], &Enum.reject(&1, fn r -> r["index"] == 53 end))
-                             |> put_in(["limits", "backup_modes"], [0, 1, 2]) |> catalog()}
+    c = %{
+      c
+      | catalog:
+          c.data
+          |> update_in(["symbols"], &(&1 ++ [backup]))
+          |> update_in(["reserved_symbols"], &Enum.reject(&1, fn r -> r["index"] == 53 end))
+          |> put_in(["limits", "backup_modes"], [0, 1, 2])
+          |> catalog()
+    }
 
-    assert diagnose(c, patch(fireball, 40, <<0x0035::16>>)) == {:error, {:not_in_program, 40, "resp.backup"}}
-    assert diagnose(c, binary_part(fireball, 0, 42) <> <<1, 0x0035::16>>) == {:error, {:not_in_program, 43, "resp.backup"}}
-    assert {:ok, %Program{groups: [%Group{rules: [rule]}]}} = diagnose(c, binary_part(fireball, 0, 42) <> <<2, 0x002C::16>>)
-    assert {rule.backup, rule.backup_response} == {:undecidable, %Glyph{index: 44, id: "resp.release", params: %{}}}
+    assert diagnose(c, patch(fireball, 40, <<0x0035::16>>)) ==
+             {:error, {:not_in_program, 40, "resp.backup"}}
+
+    assert diagnose(c, binary_part(fireball, 0, 42) <> <<1, 0x0035::16>>) ==
+             {:error, {:not_in_program, 43, "resp.backup"}}
+
+    assert {:ok, %Program{groups: [%Group{rules: [rule]}]}} =
+             diagnose(c, binary_part(fireball, 0, 42) <> <<2, 0x002C::16>>)
+
+    assert {rule.backup, rule.backup_response} ==
+             {:undecidable, %Glyph{index: 44, id: "resp.release", params: %{}}}
   end
 
   test "长度上限取目录值；mask8 未发布位拒绝", c do
-    short = c.data |> put_in(["limits", "program_max_bytes"], 29) |> Map.put("presets", []) |> catalog()
+    short =
+      c.data |> put_in(["limits", "program_max_bytes"], 29) |> Map.put("presets", []) |> catalog()
+
     assert Program.diagnose_ir(c.bytes["lamp"], short) == {:error, {:too_long, 30, 29}}
 
     masked =
       c.data
-      |> slot("cpl.thermal", "phi_grade", &(&1 |> Map.drop(["min", "max"])
-                                             |> Map.merge(%{"class" => "mask8", "bits" => [%{"bit" => 0, "name" => "a"}]})))
+      |> slot(
+        "cpl.thermal",
+        "phi_grade",
+        &(&1
+          |> Map.drop(["min", "max"])
+          |> Map.merge(%{"class" => "mask8", "bits" => [%{"bit" => 0, "name" => "a"}]}))
+      )
       |> catalog()
 
-    assert Program.diagnose_ir(patch(c.bytes["fireball"], 23, <<4>>), masked) == {:error, {:unpublished_bits, 23, "phi_grade", 4}}
+    assert Program.diagnose_ir(patch(c.bytes["fireball"], 23, <<4>>), masked) ==
+             {:error, {:unpublished_bits, 23, "phi_grade", 4}}
   end
 
-  test "decode_ir：对外只返回 :invalid_program，并把原因写入 voxel_magic_program_rejected 日志", c do
+  # 拒绝原因的结构化日志 `voxel_magic_program_rejected` 由施法入口带上下文写一次（决策稿 §8），见 `MagicWorldTest`；
+  # Program 本身不写日志，否则一条拒绝会打两次。
+  test "decode_ir：对外只返回 :invalid_program，原因只经 diagnose_ir 给出，本身不写日志", c do
     lamp = c.bytes["lamp"]
     assert Program.decode_ir(lamp, c.catalog) == diagnose(c, lamp)
+    truncated = binary_part(lamp, 0, 29)
 
-    log = capture_log(fn -> assert Program.decode_ir(binary_part(lamp, 0, 29), c.catalog) == {:error, :invalid_program} end)
-    assert log =~ "voxel_magic_program_rejected"
-    assert log =~ "{:truncated, 29}"
+    log =
+      capture_log(fn ->
+        assert Program.decode_ir(truncated, c.catalog) == {:error, :invalid_program}
+      end)
+
+    assert Program.diagnose_ir(truncated, c.catalog) == {:error, {:truncated, 29}}
+    refute log =~ "voxel_magic_program_rejected"
   end
 end

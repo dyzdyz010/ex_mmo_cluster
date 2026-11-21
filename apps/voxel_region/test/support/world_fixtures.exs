@@ -81,6 +81,8 @@ defmodule VoxelRegion.TestSupport do
     def handle_call({:tool_context,_},_,state),do: {:reply,{:error,:invalid_state},state}
     def handle_call({:coherence, factor}, _, state), do: {:reply, :ok, %{state | coherence_factor: factor}}
     def handle_call({:eye,eye},_,state),do: {:reply,:ok,%{state | eye: eye}}
+    # 角色移动（眼与脚一起变）：之后的授权 / 检查快照按新姿态求射线、脚下与施法域。
+    def handle_call({:pose,eye,feet},_,state),do: {:reply,:ok,%{state | eye: eye, feet: feet}}
     def handle_call(:seal,_,state),do: {:reply,:ok,%{state | identity: :sealed}}
     # World 单元测试显式提供授权；不模拟角色前摇 owner。
     def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}

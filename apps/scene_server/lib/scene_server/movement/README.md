@@ -302,6 +302,16 @@ waiter退出、公共`spell/5`显式等待超时或正常准备前取消会携�
 `Player.observe.pending_spell_requests`及`voxel_player_spell_wait request/status/reason`报告等待生命周期，World的page_waiters包含受管Player请求。
 真实Player＋File World六例和原动作回调七例覆盖冷页取消、quote、活caller超时、准备前退出与已接纳取消；不是鉴权／QUIC／UE验收。
 
+## 2026-11-20 前摇的第 k 步检查（魔法 v2 切片 3，设计 v2.11 W1）
+
+Global system：Player 仍是前摇计时器的唯一 owner（落地稿 D7），World 只回判定结果。World 接纳前摇后发
+`{:cast_prepared, key, %{windup_s, checkpoint_s}}`：`checkpoint_s` 非 nil 表示 World 按当时 Ω_eff 与余额预判出第 k 步中断，
+Player 先把计时器设在 t_k，到时以当前 `actor_context` 发 `{:check_cast, key, actor, request}`（动作进入 `:checking`，
+观察事件 `cast_checkpoint`）。World 回 `{:cast_checked, key, :continue}` 时 Player 按剩余前摇（整毫秒，
+`ceil(windup) − ceil(t_k)`）再计时，到终点照常 `authorize_cast`；回 `:ended` 表示 World 已在第 k 步结算（结果经原请求
+relay 先到）或这次施放已不存在，动作槽清空。没有预判时计时器直接设在前摇终点，与以前相同。施法移动不打断前摇。
+`cast_action_test` 覆盖检查、继续与结束三种消息；World 侧判定见 `voxel_region` 的 `world/README.md`。
+
 ## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）
 
 Global system：Player 在碰撞基线装好之前（非流送：Scene 发来的 `{:anchor, ...}`；流送：首个 `CollisionStream` 窗口）

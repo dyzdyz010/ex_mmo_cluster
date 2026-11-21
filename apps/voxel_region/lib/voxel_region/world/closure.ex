@@ -23,7 +23,7 @@ defmodule VoxelRegion.World.Closure do
       {:replacement_cells, 3}, {:place_prefab, 5}, {:prefab_intent, 5}, {:remove_prefab, 2},
       {:replace_prefab, 3}, {:serve_item, 4}, {:apply_edit, 4}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
       {:replica_snapshot, 3}, {:apply_edits, 3}, {:reference, 2}, {:body_contact, 4},
-      {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4},
+      {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4}, {:check_cast, 4},
       {:prepare_beacon, 4}, {:commit_beacon, 4}, {:liquid_commit, 0}, {:thermal_commit, 0}
     ]
 
@@ -101,7 +101,7 @@ defmodule VoxelRegion.World.Closure do
   end
 
   defp seeds(_state, {:body_tool, actor, _request, distance}), do: {Tools.tool_regions(actor, distance), []}
-  defp seeds(state, {:spell_intent, actor, %{action: 1}}), do: magic(state, actor)
+  defp seeds(state, {:spell_intent, actor, _request}), do: magic(state, actor)
   defp seeds(state, {:place_prefab, _id, anchor, orientation, geometry}), do: definition(state, geometry, anchor, orientation)
 
   defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_place_v1, r, geometry}), do: definition(state, geometry, r.anchor, r.orientation)
@@ -155,9 +155,9 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(_state, {:body_death, _cid, feet}), do: {Edits.edit_keys([meters(feet)]), []}
   # 已取消 / 已结算的旧授权在入口是空操作，不读页；否则前摇取消后施法区域已退休，旧授权会白白起一个冷装页任务。
   # 同序排队先于闭包（`PageLoad.held?/2`），挂起中的准备之后到达的授权仍排在其后，不会因这里返回 :none 越过它。
-  defp seeds(state, {:authorize_cast, key, actor, _request}) do
-    if VoxelRegion.World.Casting.authorized_pending(state, key, actor), do: magic(state, actor), else: :none
-  end
+  defp seeds(state, {:authorize_cast, key, actor, _request}), do: pending_cast(state, key, actor)
+  # 第 k 步检查（设计 v2.11 W1）同出手：按当时射线重判，读同一射程区域。
+  defp seeds(state, {:check_cast, key, actor, _request}), do: pending_cast(state, key, actor)
 
   # 投射物采样结果：飞行段两端所在区域（`Projectiles.apply_result/4` 沿段求交）。
   defp seeds(state, {ref, results}) when is_reference(ref) do
@@ -182,10 +182,14 @@ defmodule VoxelRegion.World.Closure do
     end
   end
 
+  defp pending_cast(state, key, actor) do
+    if VoxelRegion.World.Casting.authorized_pending(state, key, actor), do: magic(state, actor), else: :none
+  end
+
   defp magic(state, actor) do
     case state.magic do
-      # 施法会提交（扣能、作用格、走火落地）：射程区域带粗层祖页。
-      %{range_m: range} -> {Pages.with_ancestors(Tools.tool_regions(actor, range)), []}
+      # 施法会提交（扣能、作用格、中断支出落地）：射程区域（目录 v5 `limits.range_m`）带粗层祖页。
+      %{limits: %{range_m: range}} -> {Pages.with_ancestors(Tools.tool_regions(actor, range)), []}
       _ -> :none
     end
   end

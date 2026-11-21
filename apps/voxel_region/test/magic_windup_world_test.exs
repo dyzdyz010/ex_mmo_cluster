@@ -1,20 +1,27 @@
 defmodule VoxelRegion.MagicWindupWorldTest do
   @moduledoc """
-  只测试：施放前摇在真实 World 里的待施放、广播与定时结算（Voxim Docs/Magic.md §13.6，前摇契约 §1、§4）。
+  只测试：施放前摇在真实 World 里的待施放、广播、取消与装页（魔法 v2 切片 3；决策稿
+  `docs/10-active/magic/2026-11-19-slice3-protocol.md` §3.3、§9 W-7/W-8，现行施法分段合同 `cast-phases-2026-10-05.md`）。
 
-  目录与场景同 `MagicWorldTest`：材料 `b1aca503…`，魔法 `ff15757b…`（Test-only 手写，版本 2）；地面石 11 铺 y = 0，
+  目录与场景同 `MagicWorldTest`：材料 `b1aca503…`，魔法 v5 发布物 `priv/magic/<sha256>.json`；地面石 11 铺 y = 0，
   施法者脚 (0.5, 1.0, 0.5)、眼 (0.5, 2.5, 0.5)，蓄能石 (2,1,0)（作者初态 10 MJ，经持久化边界安装一次），孤立叶 (0,2,3)。
-  远程点火 0.4 MJ / 200 kW 的各步时长按契约 §2 手算表：构型调整 0.49198349 s、注能 0.4 s（前摇 0.89198349 s），
-  E_loss 2292.5445548 J；取能 1 MJ 的 E_loss 1053.7222097 J → 取能后余额 898 946.2777903 J。
-  第一个用例走真实定时器（前摇约 0.89 s，只断言下界）；其余用例在待施放出现后直接投递到期消息，不等墙钟。
+  期望的前摇与各步时长只取自报价样本 `quote-v2-samples.json`。用例在待施放出现后直接投递授权，不等墙钟。
   """
   use ExUnit.Case, async: false
   alias VoxelRegion.{World, OverlayLog}
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
-  @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "41d668f375b795ce9129dd3bbc1f9c70ce70278ded49f39c2441ccc540386bde"
+  @properties "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
   @fixtures Path.expand("fixtures", __DIR__)
+  @catalog Path.expand("../priv/magic", __DIR__)
+           |> Path.join("*.json")
+           |> Path.wildcard()
+           |> then(fn [path] -> path end)
+  @ir Path.join(@fixtures, "magic/ir-v2-samples.json") |> File.read!() |> Jason.decode!()
+  @quotes Path.join(@fixtures, "magic/quote-v2-samples.json") |> File.read!() |> Jason.decode!()
+  @external_resource @catalog
+  @external_resource Path.join(@fixtures, "magic/ir-v2-samples.json")
+  @external_resource Path.join(@fixtures, "magic/quote-v2-samples.json")
   @stone 11
   @leaf 28
   @battery 42
@@ -24,21 +31,22 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   @stone_micro {20, 12, 4}
   @leaf_micro {4, 20, 28}
 
-  setup context do
+  setup do
     root = Path.join(System.tmp_dir!(), "magic_windup_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
-    File.cp!(Path.join([@fixtures, "combustion", @catalog <> ".json"]), Path.join(root, "properties.json"))
-    File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
-    File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
-    if context[:release_hold] do
-      path = Path.join(root, "magic.json")
-      data = Jason.decode!(File.read!(path))
-      data = data |> Map.put("release_lead_s", 0.25) |> Map.update!("symbols", fn rows ->
-        Enum.map(rows, &Map.put(&1, "pose", data["rest_pose"]))
-      end)
-      File.write!(path, Jason.encode!(data))
-    end
+
+    File.cp!(
+      Path.join([@fixtures, "combustion", @properties <> ".json"]),
+      Path.join(root, "properties.json")
+    )
+
+    File.cp!(
+      Path.join([@fixtures, "combustion", "environment-radiation.json"]),
+      Path.join(root, "environment.json")
+    )
+
+    File.cp!(@catalog, Path.join(root, "magic.json"))
     w = start(root)
     ground = for x <- -2..8, z <- -2..4, do: {{x, 0, z}, @stone}
     {:ok, _} = World.apply_edits(w, ground ++ [{{2, 1, 0}, @battery}, {{0, 2, 3}, @leaf}])
@@ -46,11 +54,17 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     {:ok, row} = World.tool_intent(w, a, query(a, @stone_micro))
     seq = World.seq(w)
     :ok = stop_supervised(:world)
-    OverlayLog.File.append(Path.join(root, "overlay.log"), %{seq: seq + 1, entries: [], coarse: [],
-      property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]})
+
+    OverlayLog.File.append(Path.join(root, "overlay.log"), %{
+      seq: seq + 1,
+      entries: [],
+      coarse: [],
+      property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]
+    })
+
     w = start(root)
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
-    %{w: w, root: root, a: a, digest: :crypto.hash(:sha256, File.read!(Path.join(root, "magic.json")))}
+    %{w: w, root: root, a: a, digest: :crypto.hash(:sha256, File.read!(@catalog))}
   end
 
   defmodule FailLog do
@@ -109,34 +123,65 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   end
 
   defp actor do
-    a = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
-      eye: {0.5, 2.5, 0.5}, feet: {0.5, 1.0, 0.5}, tick_us: 16_667}
+    a = %{
+      cid: @cid,
+      gate: self(),
+      identity: make_ref(),
+      refresh: &Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5},
+      feet: {0.5, 1.0, 0.5},
+      tick_us: 16_667
+    }
+
     Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
   end
 
   defp next, do: System.unique_integer([:positive, :monotonic])
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [@cid], @box)
   defp energy(c), do: elem(World.caster_state(c.w, @cid), 1).energy_j
-  defp rel(actual, expected), do: assert(abs(actual - expected) <= 1.0e-6 * abs(expected), "#{actual} vs #{expected}")
+
+  defp program(id),
+    do:
+      Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
+
+  defp sample(id), do: Enum.find(@quotes["presets"], &(&1["id"] == id))["quote"]
 
   defp query(a, {x, y, z} = micro) do
     {ex, ey, ez} = a.eye
     {dx, dy, dz} = {(x + 0.5) / 8 - ex, (y + 0.5) / 8 - ey, (z + 0.5) / 8 - ez}
     n = :math.sqrt(dx * dx + dy * dy + dz * dz)
     seq = next()
-    %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 0, tool_id: 1,
-      direction: {dx / n, dy / n, dz / n}, micro: micro, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
-  end
 
-  defp heat, do: %{v: 1, target: %{kind: "aim"}, emit: "at_target", steps: [%{sym: "act.heat", args: %{energy_j: 400_000, power_w: 200_000}}]}
-  defp draw, do: %{v: 1, target: %{kind: "aim"}, emit: "at_target", steps: [%{sym: "energy.draw", args: %{energy_j: 1_000_000}}]}
+    %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: {dx / n, dy / n, dz / n},
+      micro: micro,
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
+  end
 
   # 施法意图（目标身份先经工具查询取得，与客户端命中同一射线）与带入口时钟的施法者。
   defp request(c, micro, program, at, action \\ 1) do
     {:ok, target} = World.tool_intent(c.w, c.a, query(c.a, micro))
     seq = next()
-    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: action, catalog_digest: c.digest,
-      direction: query(c.a, micro).direction, program: Jason.encode!(program), semblance: {0, 0}}
+
+    request = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: action,
+      catalog_digest: c.digest,
+      direction: query(c.a, micro).direction,
+      program: program
+    }
+
     {Map.merge(c.a, %{received_us: at, clock_node: node()}),
      Map.merge(request, Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))}
   end
@@ -155,139 +200,134 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     send(c.w, {:authorize_cast, {actor.identity, request.client_intent_seq}, actor, request})
   end
 
-  # Hello 28：报价回复带本次程序前摇（契约 §2 手算表：远程点火 0.891983 s、取能 0.526861 s），报价不结算、不产生待施放。
-  test "报价带前摇：远程点火 0.89198349 s、取能 0.52686110 s；不扣能量、无待施放", c do
-    for {program, windup} <- [{heat(), 0.89198349452}, {draw(), 0.52686110483}] do
-      {actor, request} = request(c, @leaf_micro, program, 1_000_000, 0)
-      assert {:ok, %{outcome: nil, caster: caster}} = World.spell_intent(c.w, actor, request)
-      rel(caster.quote_windup_s, windup)
-      assert caster.spent_j == 0.0
-    end
-
-    assert observe(c.w).casts == %{}
-    assert energy(c) == 0.0
+  # Player 发给 World 的角色快照（与真实 `Player.actor_context/1` 同形，含身体系数）。
+  defp snapshot(c, actor) do
+    {:ok, current} = Actor.tool_context(c.a.player, c.a.identity)
+    Map.merge(current, Map.take(actor, [:received_us, :clock_node]))
   end
 
-  test "前摇：点火通过校验后不结算，广播施放记录（各步时长同手算、出发点 = 手边、程序字节原样）；只有角色授权后结算并广播 live=0", c do
-    {a, r} = request(c, @stone_micro, draw(), 1_000_000)
+  defp funded(c) do
+    {a, r} = request(c, @stone_micro, program("draw_1mj"), 1_000_000)
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(c.w, a, r)
-    rel(energy(c), 898_946.2777903)
+    energy(c)
+  end
+
+  # W-8：若前摇或施放记录不是来自同一份报价（例如步序回到字节序、漏 part_index、出手前置没算进前摇），记录与样本对不上。
+  test "W-8 前摇：施放记录的各步 {part_index, 调整, 注能} 与报价样本一致、出发点 = 手边、程序字节原样；授权后才结算", c do
     ref = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
     assert_receive {:canonical_snapshot, ^ref, %{casts: casts}}, 5_000
     assert casts == %{}
 
-    {actor, request} = request(c, @leaf_micro, heat(), 2_000_000)
+    {actor, request} = request(c, @leaf_micro, program("lamp"), 1_000_000)
     seq0 = World.seq(c.w)
     before_us = MmoContracts.ServerTime.server_us()
     task = Task.async(fn -> World.spell_intent(c.w, actor, request) end)
 
     start_seq = seq0 + 1
-    assert_receive {:canonical_delta, %{transaction_seq: ^start_seq, transaction: %{casts: %{@cid => record}}}}, 5_000
+
+    assert_receive {:canonical_delta,
+                    %{transaction_seq: ^start_seq, transaction: %{casts: %{@cid => record}}}},
+                   5_000
+
     assert record.live == 1
     assert record.program == request.program
     assert record.t0_us >= before_us and record.t0_us <= MmoContracts.ServerTime.server_us()
-    # 出发点 = 眼 + 0.5 m × 瞄准方向（与投掷拟态手边同一来源）。
     {dx, dy, dz} = request.direction
-    for {a, e} <- Enum.zip(Tuple.to_list(record.origin), [0.5 + 0.5 * dx, 2.5 + 0.5 * dy, 0.5 + 0.5 * dz]),
-        do: assert_in_delta(a, e, 1.0e-12)
-    [{adjust, inject}] = record.steps
-    rel(adjust, 0.49198349452)
-    rel(inject, 0.4)
 
-    # 前摇中：观察快照与新订阅的完整快照都带这条记录；未扣能、目标无热源。
-    # （取能留下的热源使 World 自身每 500 ms 热提交，真实前摇期间 seq 另有推进，这里不断言 seq。）
-    s = observe(c.w)
-    assert s.casts == %{@cid => record}
-    refute Map.has_key?(s.thermal.sources, {0, 2, 3})
-    rel(energy(c), 898_946.2777903)
+    for {a, e} <-
+          Enum.zip(Tuple.to_list(record.origin), [0.5 + 0.5 * dx, 2.5 + 0.5 * dy, 0.5 + 0.5 * dz]),
+        do: assert_in_delta(a, e, 1.0e-12)
+
+    expected =
+      for s <- sample("lamp")["steps"], do: {s["part_index"], s["adjust_s"], s["inject_s"]}
+
+    assert length(record.steps) == length(expected)
+
+    for {step, {part, adjust, inject}} <- Enum.zip(record.steps, expected) do
+      assert step.part_index == part
+      assert_in_delta step.adjust_s, adjust, 1.0e-6
+      assert_in_delta step.inject_s, inject, 1.0e-6
+    end
+
+    # 前摇 = Σ(调整 + 注能) + 出手前置（报价 windup_s）。
+    assert_in_delta Enum.sum(Enum.map(record.steps, &(&1.adjust_s + &1.inject_s))) + 0.3,
+                    sample("lamp")["windup_s"],
+                    1.0e-5
+
+    # 前摇中：观察快照与新订阅的完整快照都带这条记录；未扣能。
+    assert observe(c.w).casts == %{@cid => record}
     ref2 = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref2)
     assert_receive {:canonical_snapshot, ^ref2, %{casts: %{@cid => ^record}}}, 5_000
-
     assert Task.yield(task, 0) == nil
+
+    # 余额 0 的灯在第 1 步余额不足：出手时结算第 1 步中断（扣 0），广播 outcome 1、fail_step 1。
     settle(c, request)
-    # 角色授权后按前摇 0.89198 s（向上取整到 892 ms）到期，走现有结算路径：点火成功，扣 402 292.5445548 J。
-    assert {:ok, %{outcome: nil, seq: settle_seq, caster: caster}} = Task.await(task, 10_000)
-    assert settle_seq > start_seq
-    rel(caster.spent_j, 402_292.5445548)
-    rel(energy(c), 496_653.7332355)
-    # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
-    assert caster.quote_windup_s == 0.0
-    assert_receive {:canonical_delta, %{transaction_seq: ^settle_seq, transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}}}}, 5_000
+
+    assert {:ok, %{outcome: :interrupted_energy, seq: settled, caster: %{spent_j: +0.0}}} =
+             Task.await(task, 10_000)
+
+    assert_receive {:canonical_delta,
+                    %{
+                      transaction_seq: ^settled,
+                      transaction: %{casts: %{@cid => %{live: 0, outcome: 1, fail_step: 1}}}
+                    }},
+                   5_000
+
     assert observe(c.w).casts == %{}
-    # 施放的热在结算事务里作为有限热源落地（程序原值 400 kJ / 200 kW）。读持久化的结算事务本身：
-    # 取能留下的热源使 World 每 500 ms 热提交，结算回复之后任一次提交都会按 200 kW × 0.5 s 放热，
-    # 观察快照里的余量取决于读取前跑过几次提交，不是结算时的值。
-    [settled] = OverlayLog.File.replay(Path.join(c.root, "overlay.log")) |> Enum.filter(&(&1.seq == settle_seq))
-    assert Map.take(settled.thermal.sources[{0, 2, 3}], [:remaining_j, :power_w]) ==
-             %{remaining_j: 400_000.0, power_w: 200_000.0}
   end
 
   test "前摇中再施放：立即 cast_too_soon、不扣能、不提交；报价不受影响；结算后照常", c do
-    {a, r} = request(c, @stone_micro, draw(), 1_000_000)
-    assert {:ok, _} = VoxelRegion.TestSupport.spell(c.w, a, r)
-    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
+    balance = funded(c)
+    {task, cast_request, record} = begin(c, @stone_micro, program("draw_1mj"), 2_000_000)
     seq = World.seq(c.w)
 
     # 入口时钟晚于间隔 500 ms（不是 GCRA 过快），仍因前摇中被拒；同一 World 进程立即回复，不等前摇结束。
-    {actor, again} = request(c, @leaf_micro, heat(), 9_000_000)
+    {actor, again} = request(c, @stone_micro, program("draw_1mj"), 9_000_000)
     assert {:error, :cast_too_soon} = World.spell_intent(c.w, actor, again)
-    {actor, quote} = request(c, @leaf_micro, heat(), 9_000_001, 0)
+    {actor, quote} = request(c, @stone_micro, program("draw_1mj"), 9_000_001, 0)
     assert {:ok, %{caster: q}} = World.spell_intent(c.w, actor, quote)
-    rel(q.quote_j, 402_292.5445548)
+    assert_in_delta q.quote_j, sample("draw_1mj")["total_mj"] / 1000, 1.0e-9
     assert World.seq(c.w) == seq
-    rel(energy(c), 898_946.2777903)
+    assert energy(c) == balance
     assert observe(c.w).casts == %{@cid => record}
 
     settle(c, cast_request)
     assert {:ok, %{outcome: nil, seq: settled}} = Task.await(task, 10_000)
     assert settled == seq + 1
-    rel(energy(c), 496_653.7332355)
-    # 已结算的记录不再响应到期消息（旧定时器稍后到达时忽略）。
+    # 已结算的记录不再响应到期消息（旧授权稍后到达时忽略）。
     settle(c, cast_request)
     assert World.seq(c.w) == settled
   end
 
-  test "走火也走完前摇：余额 0 的点火在前摇期间不扣能，结算为 misfire_energy、广播 outcome 1", c do
+  test "结算时目标已失效：前摇中蓄能石被换成石 → stale_target、不扣能，广播 outcome 2", c do
     ref = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
     assert_receive {:canonical_snapshot, ^ref, _}, 5_000
-    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
-    assert record.live == 1
-    assert energy(c) == 0.0
-    settle(c, cast_request)
-    assert {:ok, %{outcome: :misfire_energy, seq: seq, caster: %{spent_j: spent}}} = Task.await(task, 10_000)
-    assert spent == 0.0
-    assert_receive {:canonical_delta, %{transaction_seq: ^seq, transaction: %{casts: %{@cid => %{live: 0, outcome: 1}}}}}, 5_000
-    assert observe(c.w).casts == %{}
-  end
-
-  test "结算时目标已失效：前摇中叶被换成石 → stale_target、不扣能、目标无热源，广播 outcome 2", c do
-    {a, r} = request(c, @stone_micro, draw(), 1_000_000)
-    assert {:ok, _} = VoxelRegion.TestSupport.spell(c.w, a, r)
-    ref = make_ref()
-    :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
-    assert_receive {:canonical_snapshot, ^ref, _}, 5_000
-    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
-    {:ok, _} = World.apply_edits(c.w, [{{0, 2, 3}, @stone}])
+    {task, cast_request, _record} = begin(c, @stone_micro, program("draw_1mj"), 1_000_000)
+    {:ok, _} = World.apply_edits(c.w, [{{2, 1, 0}, @stone}])
     seq = World.seq(c.w)
 
     settle(c, cast_request)
     assert {:error, :stale_target} = Task.await(task, 10_000)
     rejected = seq + 1
     assert World.seq(c.w) == rejected
-    assert_receive {:canonical_delta, %{transaction_seq: ^rejected, transaction: %{casts: %{@cid => %{live: 0, outcome: 2}}}}}, 5_000
-    rel(energy(c), 898_946.2777903)
-    s = observe(c.w)
-    assert s.casts == %{}
-    refute Map.has_key?(s.thermal.sources, {0, 2, 3})
+
+    assert_receive {:canonical_delta,
+                    %{
+                      transaction_seq: ^rejected,
+                      transaction: %{casts: %{@cid => %{live: 0, outcome: 2, fail_step: 0}}}
+                    }},
+                   5_000
+
+    assert energy(c) == 0.0
+    assert observe(c.w).casts == %{}
   end
 
-  test "待施放不持久化：前摇中冷重启 → 记录丢失、未扣能；日志回放正常，重启后可再施放", c do
-    {a, r} = request(c, @stone_micro, draw(), 1_000_000)
-    assert {:ok, _} = VoxelRegion.TestSupport.spell(c.w, a, r)
-    {actor, request} = request(c, @leaf_micro, heat(), 2_000_000)
+  test "待施放不持久化：前摇中冷重启 → 记录丢失、未扣能；重启后可再施放", c do
+    {actor, request} = request(c, @stone_micro, program("draw_1mj"), 1_000_000)
+
     # 调用方在独立进程里等待（World 停止时它随调用退出，不牵连测试进程）。
     spawn(fn -> World.spell_intent(c.w, actor, request) end)
     assert Enum.find_value(1..2_000, fn _ -> observe(c.w).casts[@cid] end)
@@ -296,39 +336,16 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     w = start(c.root)
     c = %{c | w: w}
     assert observe(w).casts == %{}
-    rel(energy(c), 898_946.2777903)
-    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
-    {actor, request} = request(c, @leaf_micro, heat(), 3_000_000)
-    assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(w, actor, request)
-    rel(energy(c), 496_653.7332355)
-  end
-  @tag release_hold: true
-  test "符号已完成的出手前置段仍可取消；成功授权只付一次最终维护", c do
-    {actor, quote_request} = request(c, @stone_micro, draw(), 1_000_000, 0)
-    assert {:ok, %{caster: q}} = World.spell_intent(c.w, actor, quote_request)
-    assert q.quote_windup_s == 0.25
-    assert q.quote_j == 250.0
-    {task, request, record} = begin(c, @stone_micro, draw(), 2_000_000)
-    assert record.steps == [{0.0, 0.0}]
-    send(c.w, {:cancel_cast, {c.a.identity, request.client_intent_seq}, :cast_cancelled})
-    assert Task.await(task) == {:error, :cast_cancelled}
     assert energy(c) == 0.0
-    settle(c, request)
-    assert observe(c.w).casts == %{}
-    {task, request, _} = begin(c, @stone_micro, draw(), 3_000_000)
-    settle(c, request)
-    assert {:ok, %{outcome: nil, caster: caster}} = Task.await(task)
-    assert caster.spent_j == 250.0
-    assert energy(c) == 899_750.0
-    seq = World.seq(c.w)
-    settle(c, request)
-    assert World.seq(c.w) == seq
-    assert energy(c) == 899_750.0
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
+    {actor, request} = request(c, @stone_micro, program("draw_1mj"), 3_000_000)
+    assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(w, actor, request)
+    assert_in_delta energy(c), 900_000.0 - sample("draw_1mj")["total_mj"] / 1000, 1.0e-6
   end
 
   test "取消不扣能、不产生作用，旧授权无效且监视随动作退休", c do
     monitors = elem(Process.info(c.w, :monitors), 1)
-    {task, request, _} = begin(c, @stone_micro, draw(), 1_000_000)
+    {task, request, _} = begin(c, @stone_micro, program("draw_1mj"), 1_000_000)
     key = {c.a.identity, request.client_intent_seq}
     send(c.w, {:cancel_cast, key, :cast_cancelled})
     assert Task.await(task) == {:error, :cast_cancelled}
@@ -340,15 +357,36 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert elem(Process.info(c.w, :monitors), 1) == monitors
   end
 
-
-  # M2b 按需装页：有前缀的重启后施法者周围是冷页，Player 发来的前摇准备 `prepare_cast` 被挂起装页；Player 此时发的取消必须排在它后面——先处理取消会落空，准备随后建起永远等不到授权的待施放：调用方收不到回复、
-  # 施法者被卡成 cast_too_soon。期望（契约：取消不扣能、调用方收到 cast_cancelled、不留待施放）同上面的取消用例。
-  test "冷页上前摇准备被挂起装页时，同一动作的取消排在其后：调用方收到取消，不留待施放", c do
-    {actor, request} = request(c, @stone_micro, draw(), 1_000_000)
+  # W-7：施法读取闭包按目录 v5 的 `limits.range_m` 装射程区域。若闭包仍按 v4 扁平 `range_m` 匹配，会静默返回“不读页”，
+  # 冷页不装、射线在缺页处当空气。
+  test "W-7 冷页上施放：前摇准备先按射程装页（含 x = -2 的冷页），再开始前摇", c do
+    {actor, request} = request(c, @stone_micro, program("draw_1mj"), 1_000_000)
+    actor = snapshot(c, actor)
     :ok = World.compact(c.w)
     :ok = stop_supervised(:world)
     w = start(c.root)
+
     # 启动只装活动页（蓄能石所在页及其邻页 {-1..1}³）；施法闭包（眼周射程区域再扩邻页）伸到 x = -2 的冷页。
+    refute VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
+
+    key = {actor.identity, request.client_intent_seq}
+    ref = make_ref()
+    send(w, {:prepare_cast, key, Map.put(actor, :player, self()), request, {self(), ref}})
+    assert_receive {:cast_prepared, ^key, %{windup_s: windup, checkpoint_s: nil}}, 10_000
+    assert_in_delta windup, sample("draw_1mj")["windup_s"], 1.0e-6
+    assert VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
+    send(w, {:cancel_cast, key, :cast_cancelled})
+    assert_receive {^ref, {:error, :cast_cancelled}}, 5_000
+  end
+
+  # M2b 按需装页：Player 发来的前摇准备 `prepare_cast` 被挂起装页时，同一动作的取消必须排在它后面——先处理取消会落空，
+  # 准备随后建起永远等不到授权的待施放。期望（取消不扣能、调用方收到 cast_cancelled、不留待施放）同上面的取消用例。
+  test "冷页上前摇准备被挂起装页时，同一动作的取消排在其后：调用方收到取消，不留待施放", c do
+    {actor, request} = request(c, @stone_micro, program("draw_1mj"), 1_000_000)
+    actor = snapshot(c, actor)
+    :ok = World.compact(c.w)
+    :ok = stop_supervised(:world)
+    w = start(c.root)
     refute VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
 
     key = {actor.identity, request.client_intent_seq}
@@ -357,14 +395,14 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     send(w, {:cancel_cast, key, :cast_cancelled})
     assert_receive {^ref, {:error, :cast_cancelled}}, 10_000
     assert :sys.get_state(w).pending_casts == %{}
-
     assert energy(%{c | w: w}) == 0.0
   end
 
   # 评审 A5 / F3：挂起的施法准备装页失败时，按原业务收尾——调用方收到错误、Player 收到 cast_failed（清掉 :preparing），
   # 同序队列释放；不能只记日志丢弃，让调用方等满超时。
   test "冷页上前摇准备装页失败：调用方收到错误、Player 收到 cast_failed，同序队列释放", c do
-    {actor, request} = request(c, @stone_micro, draw(), 1_000_000)
+    {actor, request} = request(c, @stone_micro, program("draw_1mj"), 1_000_000)
+    actor = snapshot(c, actor)
     :ok = World.compact(c.w)
     :ok = stop_supervised(:world)
     w = start(c.root, FailLog)

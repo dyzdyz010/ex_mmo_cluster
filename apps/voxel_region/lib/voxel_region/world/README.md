@@ -55,6 +55,34 @@ sequenceDiagram
 不装页、不改世界）共用同一组判定。调用方（如 NPC 的背包候选 `NpcServer.Offers`）读这个查询，不自己镜像条件；
 执行时 World 仍按提交那一刻的状态重新裁决。
 
+## 施法（魔法 v2，切片 3）
+
+`Casting` 只吃 IR v2 程序与目录 v5（v1 JSON 与 v4 目录已删，决策稿
+[`2026-11-19-slice3-protocol.md`](../../../../../docs/10-active/magic/2026-11-19-slice3-protocol.md)）。前摇计时器只归
+Scene 的 Player（落地稿 D7）；World 在前摇开始、第 k 步检查与出手三处各按当时的施放处读数重新报价（`Magic.Cost`），
+只回判定结果。
+
+```mermaid
+sequenceDiagram
+  participant P as Player（前摇计时 owner）
+  participant W as World（Casting）
+  P->>W: prepare_cast
+  W-->>P: cast_prepared %{windup_s, checkpoint_s}
+  opt 预判第 k 步中断（checkpoint_s = t_k）
+    P->>W: check_cast（到 t_k）
+    W-->>P: cast_checked :continue | :ended（已在第 k 步结算）
+  end
+  P->>W: authorize_cast（到前摇终点）
+```
+
+- 报价（action 0）限频每施法者每秒 `quotas.quotes_per_caster_per_s` 次（World 单调时钟），超出 `:quote_rate`。
+- 施法域距离只由报价的 T6 判；射线落空 `:no_target`，数值检查违规 `{:rejects, [检查名]}`。
+- 中断支出落在形成位置（〈握〉〈取〉手边格、〈附〉目标格），`release_heat_fraction` 一份作为有限热源、其余记
+  `cast_interrupt_radiation_j`；格子不是未细分热节点时全部计入辐射账。成功施法的构型损耗仍记 `cast_waste_j`（脚下）。
+- 切片 3 内结构不会建成：全部步骤通过时回 `:structure_runtime_pending`（不扣能）。
+- 可观测：`voxel_spell_quote`（phase=quote|prepare|checkpoint|release）、`voxel_cast_begin`、`voxel_spell`、
+  `voxel_cast_rejected`、`voxel_magic_program_rejected`；热账 `cast_interrupt_heat_j` / `cast_interrupt_radiation_j`。
+
 ## 必须守住的不变量
 
 1. **唯一写者**：只有 World 进程改世界状态；其他进程拿到的是快照或增量。

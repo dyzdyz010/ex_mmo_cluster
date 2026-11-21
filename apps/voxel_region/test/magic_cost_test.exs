@@ -175,8 +175,8 @@ defmodule VoxelRegion.MagicCostTest do
     # Ω_eff = 3 也在第 4 步中断：若附加量不计入〈辉〉这一步（或推到最后一步），第 4 步只有 3 × 1 = 3，不会在此中断。
     [_, _, _, glow, _] = q.steps
     assert Cost.staged_failure(q, q.total_mj, 4.375) == nil
-    assert Cost.staged_failure(q, q.total_mj, 4.37) == {4, glow.spent_mj}
-    assert Cost.staged_failure(q, q.total_mj, 3.0) == {4, glow.spent_mj}
+    assert Cost.staged_failure(q, q.total_mj, 4.37) == {4, glow.spent_mj, :omega}
+    assert Cost.staged_failure(q, q.total_mj, 3.0) == {4, glow.spent_mj, :omega}
     assert glow.spent_mj < q.total_mj
   end
 
@@ -212,8 +212,8 @@ defmodule VoxelRegion.MagicCostTest do
 
       # fail_step 照常：余额不足以付构造费、或 Ω_eff < 1 时都在第 1 步中断。
       assert Cost.staged_failure(q, q.total_mj, 16) == nil
-      assert Cost.staged_failure(q, q.total_mj - 1, 16) == {1, q.total_mj - 1}
-      assert Cost.staged_failure(q, q.total_mj, 0.9) == {1, q.total_mj}
+      assert Cost.staged_failure(q, q.total_mj - 1, 16) == {1, q.total_mj - 1, :energy}
+      assert Cost.staged_failure(q, q.total_mj, 0.9) == {1, q.total_mj, :omega}
     end
   end
 
@@ -325,13 +325,15 @@ defmodule VoxelRegion.MagicCostTest do
     assert Cost.staged_failure(q, q.total_mj, 16) == nil
     assert Cost.staged_failure(q, q.total_mj, 2) == nil
 
-    # Ω_eff 1.5：第 3 步〈辉〉使 S·P = 2 > 1.5，付到第 3 步为止（余额充足）。
-    assert Cost.staged_failure(q, q.total_mj, 1.5) == {3, glow.spent_mj}
+    # Ω_eff 1.5：第 3 步〈辉〉使 S·P = 2 > 1.5，付到第 3 步为止（余额充足），原因 :omega（决策稿 P6）。
+    assert Cost.staged_failure(q, q.total_mj, 1.5) == {3, glow.spent_mj, :omega}
     # 余额只差 1 mJ：在最后一步耗尽，付到耗尽为止。
-    assert Cost.staged_failure(q, q.total_mj - 1, 16) == {4, q.total_mj - 1}
+    assert Cost.staged_failure(q, q.total_mj - 1, 16) == {4, q.total_mj - 1, :energy}
     assert load.spent_mj == q.total_mj and glow.spent_mj < load.spent_mj
-    # 余额在第 3 步就不够。
-    assert Cost.staged_failure(q, glow.spent_mj - 1, 16) == {3, glow.spent_mj - 1}
+
+    # 余额在第 3 步就不够，原因 :energy。同一步两者都不满足时记 :omega（分辨先于能量，沿用 v1 次序）。
+    assert Cost.staged_failure(q, glow.spent_mj - 1, 1.5) == {3, glow.spent_mj - 1, :omega}
+    assert Cost.staged_failure(q, glow.spent_mj - 1, 16) == {3, glow.spent_mj - 1, :energy}
   end
 
   test "E_phys ≥ 0：全部预设 × 环境温度（含高于 T0 的冷端口情形）× 形成距离，物理能量非负且按 §11.4.7 组成", c do
