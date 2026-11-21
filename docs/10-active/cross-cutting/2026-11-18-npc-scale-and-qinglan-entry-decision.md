@@ -180,4 +180,9 @@ flowchart LR
   - **新读数**：同期 Hindsight 只用了钉给它的 2 核中的 0.86 核——瓶颈像是单次召回的串行耗时而非 CPU 吃满（推断，未证实；FlashRank 执行器 / 准入 / DB 待分阶段计时）。
   - 未判（截断）：L1 / L2 / L6 / L7；部分读数：$1.003、oom_kill 0、release 峰值 2024 MiB、Hindsight 匿名峰值 1703 MiB。资源全部回收、守护未触发、4266 仍 128574。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-02.md`、`runs/e8b-02/checkpoint.json`）。
   - **结论**：退避去掉了重试的自我放大，但召回本身在库长大后仍超时；下一步落在召回成本 / 容量（召回隔离稿 D-4 / D-3d），需用户定。候选方向：Hindsight 自带的 Jev 整组重排（`HINDSIGHT_API_RERANKER_PROVIDER=typesafe`，`engine/cross_encoder.py:984`，候选当 Choice 选项一次排完，超限分组并行 + 决赛；外部服务、重排调用不进 Hindsight LLM 追踪即花费额度看不到，需补计量）、减候选（`RERANKER_MAX_CANDIDATES`）、不重排（`rrf`）、产品侧少发召回、加核 / 拆机。先在 e8b-02 记忆库副本上离线对比（核·秒、延迟、token、结果重合）。E9 继续推迟。
+- 2026-11-21（第二十五个统筹会话）：**E8b 第三轮 `e8b-03b`（Hindsight 重排改用 Jev，`HINDSIGHT_API_RERANKER_PROVIDER=typesafe`，Test-only 私有容器覆盖）在 2 h 检查点停跑，不通过（原判保留）**。第一次起跑 `e8b-03` 准备阶段失败（WSL 侧指纹门不认 release 复用，未建资源）。
+  - 第 0 h 通畅：召回超时 0、交互召回中位 498 ms / p90 824 ms、Hindsight 0.11 核（e8b-02 为 0.86）、重排 1012 次中位 333 ms；三人选择 77 / 58 / 74。
+  - **09:15:40Z 起召回以 500 失败**（L4：127 次 `{:mind_unavailable, {:http_status, 500}}`）：Jev 重排回 **HTTP 400 `max_tokens_exceeded`**（共 125 次），Hindsight 召回不降级、直接报错。推断：库长大后候选池（中位 54、最大 260 项）的 token 超出 Jev 单题上限，Hindsight 按自己的分词估算（预算 26k）切组仍低估。第 1 h 石砚零选择（L3），重启后 5 min 内无人选择（L5）；风暴段 09:26Z 起 10 个 5 min 桶未恢复。延迟本身仍正常（第 1 h 召回中位 701 ms），失败是硬错误而非过载。
+  - 花销（2 h）：产品 $0.34、Hindsight $1.34、Jev 重排 $1.30（第 0 h $0.46、第 1 h $0.84，随库增长），合计 $2.99。资源全部回收、4266 仍 128574、UDP 90 → 88。证据 `.demo/observe/npc-e8-20261120/longrun/runs/e8b-03b/`（`checkpoint.json`、`hindsight-container.log`）。
+  - 同轮行为观察：林眺对自建石阶说法前后矛盾，根因见统筹页（结局措辞把 `occupied` 写成 “something else”，Offers 照提供做不成的建造项）；固定单锚点是登记包的设计，产品已有 `expand`（区域内自找空地）。
 
