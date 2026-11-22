@@ -22,6 +22,8 @@ defmodule NpcServer.NpcRegistryTest do
   @moduletag :capture_log
 
   @hex String.duplicate("2A", 32)
+  # 法术带登记形：目录 v5 预设 scorch（灼点）的 program_hex 原样（ir-v2-samples.json）。
+  @scorch_hex "0201010008ff000100020000fa00000000029401000f3a980101001b15dc0000"
   @patrol %{"route" => [[4.0, 10.0], [8.0, 10.0]], "dig" => nil}
   # 只测试：Llm 的模型接口取自运行环境；集成用例里指向本机一个没人听的端口（请求失败只记日志、按退避重试）。
   @llm_env %{
@@ -405,7 +407,7 @@ defmodule NpcServer.NpcRegistryTest do
         "tools" => %{"1" => "镐", "9" => "点火器"},
         "groups" => ["move", "sense", "genesis"],
         "skills" => ["build"],
-        "spells" => %{"ignite" => "{}"},
+        "spells" => %{"ignite" => @scorch_hex},
         "max_requests_per_hour" => 60,
         "genesis" => true
       }
@@ -417,7 +419,7 @@ defmodule NpcServer.NpcRegistryTest do
                   tools: %{1 => "镐", 9 => "点火器"},
                   groups: [:move, :sense, :genesis],
                   skills: %{build: %{}},
-                  spells: %{"ignite" => "{}"},
+                  spells: %{"ignite" => Base.decode16!(@scorch_hex, case: :lower)},
                   max_requests_per_hour: 60,
                   cadence: :automatic,
                   genesis: true,
@@ -446,6 +448,27 @@ defmodule NpcServer.NpcRegistryTest do
                 } = profile} = NpcRegistry.brain("llm", %{"goal" => "g", "tools" => %{}})
 
         refute Map.has_key?(profile, :max_requests_per_hour)
+      end)
+    end
+
+    # 法术带（魔法 v2 切片 3 决策稿 §7、P10）：登记形是小写十六进制，profile 里是解码后的 IR v2 字节；
+    # 不是非空小写十六进制的（含 v1 的 JSON 程序）在登记边界 raise，put/2 据此回 invalid_params。
+    test "llm: spells are lowercase hex in the row and IR v2 bytes in the profile; bad hex is rejected" do
+      with_env(@llm_env, fn ->
+        params = %{"goal" => "g", "tools" => %{}, "spells" => %{"ignite" => @scorch_hex}}
+        assert {Brain.Llm, %{spells: %{"ignite" => program}}} = NpcRegistry.brain("llm", params)
+        assert Base.encode16(program, case: :lower) == @scorch_hex
+
+        for bad <- [
+              String.upcase(@scorch_hex),
+              "020",
+              "",
+              ~s({"v":1,"steps":[{"sym":"energy.draw","args":{"energy_j":1000000}}]})
+            ] do
+          assert_raise ArgumentError, ~r/法术 "ignite" 的程序必须是非空的小写十六进制/, fn ->
+            NpcRegistry.brain("llm", %{params | "spells" => %{"ignite" => bad}})
+          end
+        end
       end)
     end
 

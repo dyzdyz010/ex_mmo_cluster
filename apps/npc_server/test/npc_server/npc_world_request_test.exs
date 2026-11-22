@@ -17,14 +17,16 @@ defmodule NpcServer.NpcWorldRequestTest do
   @one "3FF0000000000000"
   @def_ab String.duplicate("AB", 32)
   @def_cd String.duplicate("CD", 32)
-  # 0x82 的程序字节：Test-only 魔法目录 19c513f9… 的预设 ignite_near 原样；目录 digest 取 32 字节 EE。
-  @ignite ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":200000}}]})
+  # 0x82 v2 的程序字节：目录 v5 预设 scorch（灼点，v1 ignite_near 的转写，ir-v2-samples.json）原样；目录 digest 取 32 字节 EE。
+  @scorch Base.decode16!("0201010008ff000100020000fa00000000029401000f3a980101001b15dc0000",
+            case: :lower
+          )
   @digest :binary.copy(<<0xEE>>, 32)
 
   defp frame(hex), do: Base.decode16!(String.replace(hex, " ", ""))
 
   # 0x82 action 之后的字段：digest EE…、方向 (0.6, 0, -0.8)、g2 构件 micro (-17, 513, 83)、incarnation 12、owner {12, 1}、
-  # material 11、granularity 2、拟态 id {0, 0}；程序字段另接 u16 长度 + 字节。
+  # material 11、granularity 2；程序字段另接 u16 长度 + 字节（v2 帧没有拟态 id）。
   @spell_body String.duplicate("EE", 32) <>
                 "3FE3333333333333" <>
                 @zero64 <>
@@ -36,10 +38,9 @@ defmodule NpcServer.NpcWorldRequestTest do
                 "000000000000000C" <>
                 "00000001" <>
                 "000B" <>
-                "02" <>
-                @zero64 <> "00000000"
+                "02"
 
-  defp program_tail, do: <<byte_size(@ignite)::16, @ignite::binary>>
+  defp program_tail, do: <<byte_size(@scorch)::16, @scorch::binary>>
 
   defp same(hex, command, context \\ @context) do
     assert {:ok, decoded} =
@@ -288,8 +289,8 @@ defmodule NpcServer.NpcWorldRequestTest do
     )
   end
 
-  # I4（设计稿 §7.8）：0x82 的布局 = 公共头、action u8、目录 digest 32B、方向 f64×3、目标 micro i64×3、incarnation u64、
-  # owner {birth u64, occurrence u32}、material u16、granularity u8、拟态 id {seq u64, n u32}、程序 u16 长度 + 字节。
+  # 0x82 v2（魔法 v2 切片 3 决策稿 §3.1，127 + n B）：公共头、action u8、目录 digest 32B、方向 f64×3、目标 micro i64×3、
+  # incarnation u64、owner {birth u64, occurrence u32}、material u16、granularity u8、程序 u16 长度 + IR v2 字节。
   # 目录 digest 在 Body 受理时未知（执行进程投递前经 World.magic_digest/1 填入），build 留 nil，比较时补上 EE…。
   describe "0x82 施法意图" do
     test "a1 施放 g2 构件（负 micro、非零 owner）；a2 取消 = 同一请求换 action 与 request_id，client_intent_seq 不变" do
@@ -300,7 +301,7 @@ defmodule NpcServer.NpcWorldRequestTest do
 
       command = %{
         verb: :cast_spell,
-        program: @ignite,
+        program: @scorch,
         direction: {0.6, 0.0, -0.8},
         target: %{
           granularity: 2,
@@ -325,9 +326,29 @@ defmodule NpcServer.NpcWorldRequestTest do
       assert %{built_cancel | catalog_digest: @digest} == cancel
     end
 
+    # 进入场景时的报价校验（NpcServer.Spells）：action 0、竖直向上 (0, 1, 0)、目标句柄全零。
+    test "a0 报价校验：不瞄准任何东西的同一 0x82 v2 帧" do
+      frame =
+        "82" <>
+          @head <>
+          "00" <>
+          String.duplicate("EE", 32) <>
+          @zero64 <>
+          @one <>
+          @zero64 <>
+          String.duplicate(@zero64, 3) <>
+          @zero64 <>
+          @zero64 <> "00000000" <> "0000" <> "00"
+
+      assert {:ok, {:voxel_spell_intent, decoded}} = Codec.decode(frame(frame) <> program_tail())
+      assert {:voxel_spell_intent, built} = WorldRequest.quote(@scorch, %{seq: 5, scene_id: 1})
+      assert built.catalog_digest == nil
+      assert %{built | catalog_digest: @digest} == decoded
+    end
+
     test "不给方向时从眼点瞄准句柄；附件 g3、人物 g5、非二进制程序拼不出（0x82 的 granularity 只有 0..2）" do
       handle = %{granularity: 0, micro: {8, 512, 0}, incarnation: 1, owner: {0, 0}, material: 11}
-      command = %{verb: :cast_spell, program: @ignite, target: handle}
+      command = %{verb: :cast_spell, program: @scorch, target: handle}
       assert WorldRequest.aims?(command)
 
       # 与 0x7D 同一手算：宏格 (1, 64, 0) 中心 (1.5, 64.5, 0.5)，眼 (0.5, 64.6, 0.5) → (1, −0.1, 0) / √1.01。

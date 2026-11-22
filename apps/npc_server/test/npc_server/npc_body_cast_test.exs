@@ -77,12 +77,15 @@ defmodule NpcServer.NpcBodyCastTest do
     end
   end
 
-  # 代码 Brain 写法的施放（方向已给，不需要眼点）；程序字节对 Body 不透明。
+  # 代码 Brain 写法的施放（方向已给，不需要眼点）；程序字节对 Body 不透明（这里是目录 v5 预设 lamp 的 IR v2 字节）。
   defp cast(body, id) do
     Body.command(body, %{
       id: id,
       verb: :cast_spell,
-      program: ~s({"v":1}),
+      program:
+        Base.decode16!("020101000700010002000096000000000000010010006401001b21f40000",
+          case: :lower
+        ),
       target: %{granularity: 0, micro: {8, 8, 8}, incarnation: 0, owner: {0, 0}, material: 11},
       direction: {1.0, 0.0, 0.0}
     })

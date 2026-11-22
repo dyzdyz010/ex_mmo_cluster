@@ -11,7 +11,8 @@ defmodule NpcServer.WorldRequest do
   动词 → 线帧：`probe_toward` / `use_tool` / `dismantle` = 0x7D action 0 / 1 / 2；`place` / `scoop` / `pour` /
   `craft` / `eat` = 0x7F action 1..5；`attach` / `detach` = 0x81 action 0 / 1；`prefab_place` / `prefab_remove` /
   `prefab_replace` = 0x7A / 0x7B / 0x7C；`cast_spell` = 0x82 action 1，它的取消（`cancel/2`）= 同一请求换 action 2 与新
-  request_id（与玩家前摇中再按 M 同一帧）。施法不经 Intent：Body 交给 `Player.cast_spell/5`。0x82 的目录 digest 在 Body
+  request_id（与玩家前摇中再按 M 同一帧）；进入场景时的报价校验（`quote/2`）= 0x82 action 0。0x82 是 v2 帧（IR v2 程序、
+  无拟态 id）。施法不经 Intent：Body 交给 `Player.cast_spell/5`。0x82 的目录 digest 在 Body
   受理时未知，`build/2` 留 nil，由 Body 的执行进程在投递前经 `World.magic_digest/1` 填入（能力库设计稿 §7.8）。
   冻结帧对拍见 `apps/npc_server/test/npc_server/npc_world_request_test.exs`。
   """
@@ -80,6 +81,18 @@ defmodule NpcServer.WorldRequest do
   """
   def cancel(cast_request, context),
     do: {:voxel_spell_intent, %{cast_request | action: 2, request_id: context.seq}}
+
+  @doc """
+  进入场景时的法术报价（0x82 action 0，`NpcServer.Spells` 的校验用）：不瞄准任何东西——方向竖直向上、目标句柄全零，
+  需要目标的〈取〉〈附〉因此会得到 `:no_target` / `:stale_target`（程序本身已过 World 的解码）。目录 digest 留 nil，
+  由调用方投递前填入；`context` 只用 `seq` 与 `scene_id`。与 `build/2` 同样经 `Codec.intent?/1`。
+  """
+  @spec quote(binary(), %{seq: pos_integer(), scene_id: non_neg_integer()}) :: {atom(), map()}
+  def quote(program, context) when is_binary(program) do
+    command = %{verb: :cast_spell, program: program, target: %{}, direction: {0.0, 1.0, 0.0}}
+    {:voxel_spell_intent, request} = build(command, Map.put(context, :eye, nil))
+    {:voxel_spell_intent, %{request | action: 0}}
+  end
 
   # —— 各动词的类型守卫与拼装；取值约束留给 Codec.intent?/1 ——
 
@@ -171,22 +184,15 @@ defmodule NpcServer.WorldRequest do
          {@prefab.prefab_replace,
           common(context, %{instance_id: {birth, occurrence}, definition_id: id})}
 
-  # 0x82 施放：程序字节来自作者法术带（经 Abilities 时按 profile.spells 的名字填入），目标句柄同 0x7D 的身份形状；
-  # 目录 digest 由执行进程投递前填入（这里 nil）；拟态 id 只有驱散用，NPC 填 {0, 0}。
+  # 0x82 v2 施放（决策稿 §3.1）：程序是 IR v2 字节，来自作者法术带（经 Abilities 时按 profile.spells 的名字填入，
+  # 登记时已由 NpcServer.Spells.decode!/1 从十六进制解码）；目标句柄同 0x7D 的身份形状；目录 digest 由执行进程投递前
+  # 填入（这里 nil）。v2 帧没有拟态 id（驱散改为区域脉冲）。
   defp shape(%{verb: :cast_spell, program: program, target: target} = command, context)
        when is_binary(program) and is_map(target) do
     if fields = target_fields(command, context),
       do:
         {:voxel_spell_intent,
-         common(
-           context,
-           Map.merge(fields, %{
-             action: 1,
-             catalog_digest: nil,
-             semblance: {0, 0},
-             program: program
-           })
-         )}
+         common(context, Map.merge(fields, %{action: 1, catalog_digest: nil, program: program}))}
   end
 
   defp shape(_command, _context), do: nil

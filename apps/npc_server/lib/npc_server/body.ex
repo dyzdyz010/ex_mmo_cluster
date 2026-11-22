@@ -35,6 +35,8 @@ defmodule NpcServer.Body do
   `cancel_cast` 取最早提交、还没有终态的那次（执行进程按提交顺序投递，后提交的在它前摇时只会被 `cast_too_soon` 拒绝）。
   投给已退出 Player 的施放没有回复，由本进程收尾：会话丢失时在途施法以 `session_lost` 结束；跨 Scene 移交后仍监视旧 Player，
   它退出时移交前提交、仍无终态的施法同样以 `session_lost` 结束。之后迟到的回复因表中无 id 被忽略：每次施法恰好一个终态。
+  会话就绪（InputStart）时经 `NpcServer.Spells.check/4` 对作者法术带逐个 action 0 报价一次；报价被拒的程序之后就地回
+  `{:spell_rejected, 原因}`，不再投递（P10）。
 
   传送回出生点（`teleport_to_spawn`）的 owner 是 `Player.teleport_to_spawn/4`：本进程先按 `stop` 同一零输入与停稳判据停下
   （顶替在途移动），停稳后以 `{本进程, {:npc_teleport, id}}` 为回复目标投递，登记在在途世界事务表里（id → `:teleport_to_spawn`）。
@@ -59,7 +61,7 @@ defmodule NpcServer.Body do
   alias VoxelRegion.EditBounds
   alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
   alias VoxelRegion.World
-  alias NpcServer.{Attention, Context, Genesis, Perception, Route, Sight, WorldRequest}
+  alias NpcServer.{Attention, Context, Genesis, Perception, Route, Sight, Spells, WorldRequest}
   @attention_verbs Attention.verbs()
   # 世界写意图的动词（经 WorldRequest 拼成线同形请求：施法 0x82 交给 Player.cast_spell/5，其余进 Intent.run/3）；
   # 余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
@@ -224,10 +226,12 @@ defmodule NpcServer.Body do
        casts: %{},
        # 移交后仍在监视的旧 Player：monitor ref => 移交时在途的施法 id；旧 Player 退出时其中仍无终态的以 session_lost 结束。
        retired: %{},
-       # 最近一次施法回复里的施法者状态 %{energy_j, capacity_j, coherence}；nil = 还没施过法。派生缓存，真值在 World。
+       # 最近一次施法回复里的施法者状态 %{energy_j, capacity_j, resolution_eff}；nil = 还没施过法。派生缓存，真值在 World。
        caster: nil,
        # 传送回出生点已生效、等 OwnerAck 到达 apply_tick 再报完成：%{id, tick, data}；nil = 没有。
        landing: nil,
+       # 作者法术带与进入场景时的报价校验结果（NpcServer.Spells）；被拒程序的 cast_spell 就地回 spell_rejected。派生缓存。
+       spell_check: Spells.new(Map.get(profile, :spells, %{})),
        request_seq: 0,
        # 对话请求号独立于 Brain 的任意 term 命令 id；不自动重发。
        speech_seq: 0,
@@ -407,12 +411,16 @@ defmodule NpcServer.Body do
     {:noreply, %{state | profile: start.profile}}
   end
 
+  # InputStart 只在 Player ready 之后下发：此时起进入场景的法术报价校验（P10，NpcServer.Spells.check/4），结果异步回来。
   def handle_info(
         {:mmo_reliable, identity, 1, %Session.InputStart{first_input_seq: 1} = start},
         %{identity: identity} = state
-      ),
-      do:
-        {:noreply, feed(%{state | origin: start.origin_tick}, start.state, start.anchor_tick, 0)}
+      ) do
+    session = Map.take(state, [:player, :identity, :world_ref, :cid, :scene_id])
+    used = Spells.check(state.spell_check, self(), session, state.request_seq + 1)
+    state = %{state | origin: start.origin_tick, request_seq: state.request_seq + used}
+    {:noreply, feed(state, start.state, start.anchor_tick, 0)}
+  end
 
   def handle_info(
         {:mmo_datagram, identity, %Movement.OwnerAck{} = ack},
@@ -580,7 +588,11 @@ defmodule NpcServer.Body do
 
   # 成功报价 / 结算时 World 先发给 caster_recipient 的施法者状态：只更新 Observation 的 self.caster，不产生 Outcome。
   def handle_info({:mmo_spell_reply, {:npc_cast, _}, _request, %{caster: caster}}, state),
-    do: {:noreply, %{state | caster: Map.take(caster, [:energy_j, :capacity_j, :coherence])}}
+    do: {:noreply, %{state | caster: Map.take(caster, [:energy_j, :capacity_j, :resolution_eff])}}
+
+  # 进入场景时的报价校验结果（NpcServer.Spells.check/4 的校验进程发回）。
+  def handle_info({:npc_spells_checked, digest, rejected}, state),
+    do: {:noreply, %{state | spell_check: Spells.checked(state.spell_check, digest, rejected)}}
 
   def handle_info({:npc_path, id, result}, %{move: %{id: id, path: :planning} = move} = state) do
     case result do
@@ -1054,6 +1066,17 @@ defmodule NpcServer.Body do
         from: nil,
         mark: nil
       })
+
+  # 进入场景时报价就被 World 拒绝的程序（NpcServer.Spells）不再投递：原样回报当时的原因。
+  defp apply_command(
+         %{spell_check: %{rejected: rejected}} = state,
+         %{id: id, verb: :cast_spell, program: program}
+       )
+       when is_map_key(rejected, program) do
+    reason = {:spell_rejected, Map.fetch!(rejected, program)}
+    log_rejected(state.cid, id, "verb=cast_spell", reason)
+    emit(state, %{id: id, verb: :cast_spell, status: :rejected, reason: reason, data: nil})
+  end
 
   # 世界写意图：拼成线解码同形的 {kind, request}；需按眼点补方向而位置还不知道（claim 后、首个 ACK 前）时回 invalid_session。
   defp apply_command(state, %{id: id, verb: verb} = command) when verb in @world_verbs do

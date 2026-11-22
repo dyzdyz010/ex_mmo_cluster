@@ -54,7 +54,8 @@ defmodule NpcServer.Brain do
   `%{life:, recoverable:, status:, core_k:, skin_k:, protein_g:, injuries: [%{tag:, severity:, heal:, remaining_s:}]}`，
   life / recoverable 0..100，status 0 存活 / 1 濒死 / 2 死亡；nil = 本会话还没收到（会话丢失后重新入场前也是 nil）。
   真值在 Scene 的身体 owner，这里是派生缓存；无热环境的世界不推进身体，只在入场与受伤时更新。
-  `self.caster` 是最近一次施法回复里的施法者状态 `%{energy_j:, capacity_j:, coherence:}`（与玩家 0x83 同一来源），
+  `self.caster` 是最近一次施法回复里的施法者状态 `%{energy_j:, capacity_j:, resolution_eff:}`（与玩家 0x83 v2 同一来源，
+  `resolution_eff` = 施法分辨率 Ω_eff），
   nil = 还没施过法；真值在 World，跨会话保留这份缓存（World 按 cid 记账）。
   `entities` 的 kind 0 = 玩家、1 = NPC，各自带 tick；`name`（无名为空串）、`relation`（`MmoContracts.Relation.code/1`：
   0 中立、1 自己、2 同属、3 友好、4 敌对，按本角色这个观察者算）、`relation_source`（来源文字，与玩家名牌悬停相同）
@@ -98,7 +99,7 @@ defmodule NpcServer.Brain do
       %{id:, verb: :read_catalog, what: :prefab | :prefabs | :materials | :tools, definition: <<32 字节>> | nil}
                                                                  # 读目录；:prefab 必须给 definition，其余为 nil
       %{id:, verb: :find_route, min: {x0, z0}, max: {x1, z1}, tool_id:}   # 只读路线查询（`NpcServer.Route`），区域同 survey 的限制
-      %{id:, verb: :cast_spell, program: <<程序字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
+      %{id:, verb: :cast_spell, program: <<IR v2 字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
       %{id:, verb: :cancel_cast}                                 # 取消在前摇的施法（同一 client_intent_seq 的 0x82 action 2）
       %{id:, verb: :genesis_edit, edits: [{{x, y, z}, material}]}   # 创世：只有启动选项 genesis: true 的 Body 受理（见下）
       %{id:, verb: :say, text:, target_id: 0, conversation_id: 0}  # 附近公开说话；0 表示未指定对象 / 新话题
@@ -114,8 +115,8 @@ defmodule NpcServer.Brain do
   人物目标（g5）的合法性只由权威的战斗范围裁决，正式世界一律拒绝。
 
   施法与玩家同一个角色 owner 入口 `Player.cast_spell/5`（不经 Intent，前摇由 Player 推进；只在流送 Scene 可用）。
-  `program` 是 0x82 的程序字段（UTF-8 JSON），经 Abilities 时由作者法术带 `profile.spells`（`%{名字 => 程序字节}`）按名字
-  填入，LLM 只选名字；目录 digest 由 Body 的执行进程投递前经 `World.magic_digest/1` 填入。前摇期间工具与非工具世界意图
+  `program` 是 0x82 v2 的程序字段（IR v2 字节），经 Abilities 时由作者法术带 `profile.spells`（`%{名字 => IR v2 字节}`，
+  注册表里是小写十六进制，见 `NpcServer.Spells`）按名字填入，LLM 只选名字；目录 digest 由 Body 的执行进程投递前经 `World.magic_digest/1` 填入。前摇期间工具与非工具世界意图
   回 `casting`，再施放回 `cast_too_soon`；同一角色同时只有一个前摇，`cancel_cast` 取消的是它。
 
   创世编辑 `genesis_edit`（能力组 `:genesis`，`NpcServer.Genesis`）：`edits` 是 macro 格与材料（0 = 空气），交给
@@ -166,10 +167,12 @@ defmodule NpcServer.Brain do
   生产材料给出，与 World 进食 / 合成门一致：非 nil 时 `eat` / `craft` 不会因 `not_edible` / `unknown_recipe` 被拒，
   余额不足照常回 `insufficient_material`）；`:tools` 是
   `%{tools: [%{tool_id:, action:, range_m:, interval_s:}]}`。
-  `cast_spell` 的 `:done` = 前摇结束且 World 已结算，`data` 是 World 回复原样 `%{seq:, outcome:, caster:}`：`outcome` 为
-  nil 是正常施放，`:misfire_energy` / `:misfire_coherence` 是走火（同样是已提交事务）；`caster` 是结算后的
-  `%{seq:, energy_j:, capacity_j:, coherence:, quote_j:, quote_s:, spent_j:, quote_windup_s:}`。拒绝原样来自权威
-  （`cast_too_soon`、`dead`、`out_of_domain`、`stale_target`…）；前摇中被 `cancel_cast` 或 `Player.stop/1` 撤销回
+  `cast_spell` 的 `:done` = 前摇结束（或在预判的第 k 步）且 World 已结算，`data` 是 World 回复原样 `%{seq:, outcome:, caster:}`：
+  `outcome` 为 nil 是正常施放，`:interrupted_energy` / `:interrupted_omega` 是建构在第 k 步中断（扣第 1..k 步累计支出，
+  同样是已提交事务；k 只在施放记录里，回复不带）；`caster` 是结算后的 0x83 v2 状态
+  `%{seq:, energy_j:, capacity_j:, resolution_eff:, quote_j:, quote_s:, spent_j:, quote_windup_s:, …}`（报价扩展段为零）。
+  拒绝原样来自权威（`cast_too_soon`、`dead`、`no_target`、`{:rejects, [检查名]}`、`structure_runtime_pending`、
+  `stale_target`…）；进入场景时报价就被拒的法术由 Body 就地回 `{:spell_rejected, 原因}`（`NpcServer.Spells`）；前摇中被 `cancel_cast` 或 `Player.stop/1` 撤销回
   `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
   `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回
   `already_released`（原样来自 Player）。

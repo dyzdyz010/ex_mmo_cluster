@@ -265,7 +265,8 @@ defmodule NpcServer.Registry do
         tools: belt(tools),
         endpoint: endpoint(),
         skills: Map.new(Map.get(params, "skills", []), &skill(&1, params)),
-        spells: Map.new(Map.get(params, "spells", %{}), &spell/1),
+        # 法术带 %{名字 => 小写十六进制 IR v2}：登记边界一次解码成字节，非法十六进制 raise（NpcServer.Spells）。
+        spells: NpcServer.Spells.decode!(Map.new(Map.get(params, "spells", %{}), &spell/1)),
         genesis: flag(Map.get(params, "genesis", false)),
         cadence: cadence(Map.get(params, "cadence", "automatic")),
         groups: nil

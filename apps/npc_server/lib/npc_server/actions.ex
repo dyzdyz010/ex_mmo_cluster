@@ -230,8 +230,10 @@ defmodule NpcServer.Actions do
 
   @doc """
   施法条目（组 `:magic`：`cast_spell`、`cancel_cast`），授予条件 = `profile.spells` 非空。`profile.spells` 是作者给的
-  法术带 `%{名字 => 程序字节}`（0x82 的程序字段，UTF-8 JSON；D-10：LLM 只选名字）：schema 只列名字，译码时由名字取出
-  程序字节。目标句柄只取 0x82 能表达的 granularity 0..2（附件 g3 与人物 g5 都不行）。
+  法术带 `%{名字 => IR v2 字节}`（0x82 v2 的程序字段；注册表里以小写十六进制登记，`NpcServer.Spells.decode!/1` 解码；
+  D-10：LLM 只选名字）：schema 只列名字，译码时由名字取出程序字节。目标句柄只取 0x82 能表达的 granularity 0..2
+  （附件 g3 与人物 g5 都不行）。结算语义（设计 v2.11 §5.5、§11.4.6）：能量或施法分辨率不足时建构在第 k 步中断，
+  扣第 1..k 步的累计支出；World 的回复只带中断原因（`interrupted_energy` / `interrupted_omega`），k 在施放记录里。
   """
   def spells(profile) do
     case Map.get(profile, :spells, %{}) do
@@ -245,11 +247,13 @@ defmodule NpcServer.Actions do
             group: :magic,
             description:
               "对 target 施放作者配置的法术 spell（只选名字，程序已定）。target 原样抄 probe_toward 结果或 inspect 行里的 target，" <>
-                "target.direction 为 null 时从眼睛瞄准目标中心。施放先有前摇，前摇期间工具、建造等世界动作回 casting，" <>
-                "可用 cancel_cast 取消；能量或相干度不足会走火（扣掉的能量落在脚下，同样是已提交事务）。",
+                "target.direction 为 null 时从眼睛瞄准目标中心。施放先有前摇（逐步构造），前摇期间工具、建造等世界动作回 casting，" <>
+                "可用 cancel_cast 取消；能量或施法分辨率不足时，建构在第 k 步中断，已做的第 1..k 步的能量照扣，" <>
+                "落在形成处（同样是已提交事务）。进入场景时报价就被拒的法术回 spell_rejected。",
             done:
-              "前摇结束且 World 已结算（data.seq）：data.outcome 为 null 是正常施放，misfire_energy / misfire_coherence 是走火；" <>
-                "data.caster 是结算后的施法者状态（能量、容量、相干度、本次支出），同 self.caster。",
+              "前摇结束且 World 已结算（data.seq）：data.outcome 为 null 是正常施放，interrupted_energy（能量不足）/ " <>
+                "interrupted_omega（施法分辨率不足）是建构在第 k 步中断；data.caster 是结算后的施法者状态" <>
+                "（energy_j 能量、capacity_j 容量、resolution_eff 施法分辨率、spent_j 本次支出），同 self.caster。",
             params: [spell: {:enum, spells}, target: handle([0, 1, 2])],
             build: fn %{spell: program, target: target}, _ ->
               Map.merge(aimed(target), %{verb: :cast_spell, program: program})

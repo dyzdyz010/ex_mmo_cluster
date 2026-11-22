@@ -136,9 +136,19 @@ flowchart LR
   `Player.stop/1` 先撤销施法，所以那时的终态是 `cast_cancelled`。跨 Scene 移交时 seal 撤销前摇（`cast_cancelled`），
   Body 仍监视旧 Player：执行进程投递时它已退出的施放没有回复，它退出时以 `session_lost` 结束；旧会话的施法不能再取消。
   `session_lost` 不保证未结算（已授权的可能先到 World）。
-  法术来自作者给的 `profile.spells`（`%{名字 => 程序字节}`，0x82 的程序字段；LLM 只选名字），`:magic` 组条目只在它非空时投影；
-  目标句柄同 use_tool，但只有 0x82 能表达的 g0..g2。只在流送 Scene 可用（非流送 Scene 的 Player 没有 `authority_ref`）。
-  新 NPC 能量 0：施法会走火（spent 0），有效施法要法术带里先有取能（`energy.draw`）程序。
+  法术来自作者给的 `profile.spells`（`%{名字 => IR v2 字节}`，0x82 v2 的程序字段；注册表行里写小写十六进制，与目录 v5
+  `presets[].program_hex` 同形，登记时由 `NpcServer.Spells.decode!/1` 解码，非法十六进制登记被拒；LLM 只选名字），`:magic` 组
+  条目只在它非空时投影；目标句柄同 use_tool，但只有 0x82 能表达的 g0..g2。只在流送 Scene 可用（非流送 Scene 的 Player 没有
+  `authority_ref`）。结算回复的 `outcome`：nil 建成，`interrupted_energy` / `interrupted_omega` = 建构在第 k 步中断（扣第 1..k 步
+  累计支出；k 只在施放记录里）。新 NPC 能量 0：结构类法术在第 1 步中断（spent 0）；〈取〉的构型损耗从取得的能量里付，所以
+  法术带里先放取能程序（目录预设 `draw_1mj` / `draw_2mj`）。
+  **进入场景时的报价校验**（魔法 v2 切片 3 P10，`NpcServer.Spells`）：收到 InputStart（Player 已 ready）时起一个链接 Body 的
+  进程，经 `Player.spell/5` 对每道法术发一次 0x82 action 0（竖直向上、不瞄准目标，`WorldRequest.quote/2`）；World 目录 digest
+  与上次校验相同就不报价。`rejects` 非空或 `:invalid_program` 的程序记入 Body 的 `spell_check.rejected` 并写
+  `npc_spell_rejected npc= name= program_sha= bytes= digest= reason=`，之后它的 `cast_spell` 就地回 `{:spell_rejected, 原因}`；
+  `:no_target` / `:stale_target`（〈取〉〈附〉需要目标）只校验到 World 的解码，照常可用；其余失败写 `npc_spell_unverified`、
+  照常可用；每次校验一行 `npc_spell_check npc= digest= usable= deferred= rejected= unverified=`。LLM 工具表的 `spell` 枚举仍取自
+  建脑时的 profile（被拒的名字还在枚举里，选中得 `spell_rejected`）。NPC 结构配额（每 NPC ≤ 4 等）属魔法 v2 切片 7。
 - **技能**：每个调用只有一个终态。取消命令有自己的 id：`%{id:, verb: :cancel_skill, call: 原技能调用号}`，
   受理回 `:done`（`data.call`），没有在途技能回 `no_active_skill`，已在取消中回 `already_cancelling`。
   被取消的技能仍以原调用号回终态：先等 worker 退出，再发带 `settle: 调用号` 的 `stop`，
@@ -156,7 +166,7 @@ flowchart LR
 - **观察**：Runtime 只把 Observation 转给声明 `observations?/0` 为 true 的技能（目前是 wilderness），
   其余 worker 邮箱不堆积观察。Observation 的 `self.body_state` 是本人 Session.BodyState 下行的原样投影
   （生命、可恢复生命、状态码、核心 / 皮肤温度、蛋白质、伤病；nil = 本会话还没收到），`self.caster` 是最近一次施法回复的
-  施法者能量 / 容量 / 相干度（nil = 还没施过法），`entities` 带 EntityEnter 的
+  施法者能量 / 容量 / 施法分辨率 `resolution_eff`（nil = 还没施过法），`entities` 带 EntityEnter 的
   `name`、`relation`（`MmoContracts.Relation.code/1`，按本角色这个观察者算）与 `relation_source`，Snapshot 只更新位置。
   这些都是派生缓存，真值在 Scene 的身体 owner 与阵营档案；关系只回答敌我颜色，不回答能否攻击。
 - **目录读取**：`read_catalog`（`what: :prefab | :prefabs | :materials | :tools`）经 `Perception.read/3` 读 World 的
@@ -319,6 +329,7 @@ NpcServer.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, bra
     "quarries" => %{"11" => %{"box" => [[10, 64, 4], [13, 64, 6]], "tool_id" => 1}},
     "expansion" => %{"region" => [[6, 8], [24, 24]], "spacing" => 2, "tool_id" => 1}}})
 # LLM 住民：goal、tools 必填；groups / skills（build、gather、expand、travel、design_house）/ spells / max_requests_per_hour / genesis 可选。
+# spells 是 %{名字 => 小写十六进制 IR v2}，取目录 v5 的 presets[].program_hex，如 %{"取能" => "020001000033e8"}。
 # 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE（https 只信这个 CA 文件，不给用系统 CA；见 `NpcServer.Http`）。
 NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})

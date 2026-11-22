@@ -11,8 +11,14 @@ defmodule NpcServer.NpcAbilitiesTest do
 
   @hex String.duplicate("2a", 32)
   @id :binary.copy(<<42>>, 32)
-  # 作者法术带（D-10）：名字 → 0x82 程序字节；这里是 Test-only 魔法目录 19c513f9… 的预设 ignite_near 原样。
-  @ignite ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":200000}}]})
+  # 作者法术带（D-10）：名字 → 0x82 v2 程序字节（IR v2）；这里是目录 v5 预设 scorch（灼点）与 lamp（灯）原样
+  # （ir-v2-samples.json）。
+  @ignite Base.decode16!("0201010008ff000100020000fa00000000029401000f3a980101001b15dc0000",
+            case: :lower
+          )
+  @lamp Base.decode16!("020101000700010002000096000000000000010010006401001b21f40000",
+          case: :lower
+        )
   @profile %{
     tools: %{1 => "镐", 9 => "点火器"},
     skills: %{build: %{}},
@@ -23,7 +29,7 @@ defmodule NpcServer.NpcAbilitiesTest do
   @full %{
     tools: %{1 => "镐", 9 => "点火器"},
     skills: %{build: %{}, design_house: %{}, gather: %{}, wilderness: %{}},
-    spells: %{"ignite" => @ignite, "light" => "{}"},
+    spells: %{"ignite" => @ignite, "light" => @lamp},
     genesis: true
   }
   # D-3：Demo LLM NPC 的分组（Voxim Docs/Gameplay/npc.exs 的 LLM 后端；工具带同 Demo）。
