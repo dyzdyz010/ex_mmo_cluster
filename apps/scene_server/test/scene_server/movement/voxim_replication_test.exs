@@ -47,7 +47,9 @@ defmodule SceneServer.Movement.VoximReplicationTest do
     assert length(Replication.observe(rep)) == 4
     flush()
     workers = Replication.workers(rep)
-    paused = hd(workers)
+
+    # 1..4 依次加入、各归当前最空的 worker，即 worker 0..3；暂停观察者 4 所在的最后一个，它随后离场。
+    paused = List.last(workers)
     :ok = :sys.suspend(paused)
 
     try do
@@ -130,6 +132,51 @@ defmodule SceneServer.Movement.VoximReplicationTest do
           do: length(SceneServer.Movement.ReplicationWorker.observe(worker))
 
     assert counts == [50, 50, 50, 50]
+    GenServer.stop(rep)
+  end
+
+  # 两个 Scene 交替领号时，本 Scene 收到的 session_epoch 步长为 2；按 epoch 取模只会用到 2 个 worker。
+  test "observers fill all four workers whatever stride the session epochs arrive with" do
+    {:ok, rep} = Replication.start_link(sink: MmoContracts.Session.Outbound)
+
+    join = fn epoch ->
+      Replication.join(rep, identity(epoch), epoch, epoch, self(), self())
+
+      Replication.result(rep, %{
+        identity: identity(epoch),
+        entity_id: epoch,
+        entity_epoch: epoch,
+        kind: 0,
+        life_generation: 1,
+        body_status: 0,
+        player_pid: self(),
+        active: true,
+        simulation_tick: 300,
+        collision_revision: 1,
+        state: %Session.State{
+          position: {epoch * 100.0, 500.0, 0.0},
+          velocity: {0.0, 0.0, 0.0},
+          grounded: 1,
+          yaw: 0
+        }
+      })
+    end
+
+    counts = fn ->
+      Replication.publish(rep, 300)
+
+      for worker <- Replication.workers(rep),
+          do: length(SceneServer.Movement.ReplicationWorker.observe(worker))
+    end
+
+    for epoch <- 2..16//2, do: join.(epoch)
+    assert counts.() == [2, 2, 2, 2]
+
+    # 离场空出的位置由下一个加入者补上，而不是按 epoch 落到已满的 worker。
+    Replication.leave(rep, identity(4), 4, 4, 300)
+    assert counts.() == [2, 1, 2, 2]
+    join.(18)
+    assert counts.() == [2, 2, 2, 2]
     GenServer.stop(rep)
   end
 end

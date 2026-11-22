@@ -189,14 +189,18 @@ defmodule SceneServer.Movement.Replication do
   end
 
   def handle_cast({:join, identity, id, epoch, player, gate}, state) do
-    member = %{entity_id: id, entity_epoch: epoch, player: player, gate: gate, value: nil}
+    worker = least_loaded_worker(state)
 
-    ReplicationWorker.join(
-      elem(state.workers, rem(epoch, tuple_size(state.workers))),
-      identity,
-      gate
-    )
+    member = %{
+      entity_id: id,
+      entity_epoch: epoch,
+      player: player,
+      gate: gate,
+      worker: worker,
+      value: nil
+    }
 
+    ReplicationWorker.join(elem(state.workers, worker), identity, gate)
     {:noreply, local_changed(%{state | members: Map.put(state.members, identity, member)})}
   end
 
@@ -272,9 +276,17 @@ defmodule SceneServer.Movement.Replication do
     %{state | dirty: false, local_dirty: false}
   end
 
+  # 观察者加入时归到当前成员最少的 worker（并列取下标最小者），归属记在成员上，直到 leave 或 handoff 移除成员。
+  # 不按 session_epoch 取模：epoch 由 WorldServer 全局发号，多个 Scene 交错领号、移交预留也占号，
+  # 单个 Scene 收到的 epoch 步长 s 不固定；等差数列模 m 只落在 m/gcd(s, m) 个余数类上，
+  # 两个 Scene 交替进人（s = 2）时只有一半 worker 有观察者。按成员数分配与发号方式无关。
+  defp least_loaded_worker(state) do
+    loads = Enum.frequencies_by(Map.values(state.members), & &1.worker)
+    Enum.min_by(0..(tuple_size(state.workers) - 1), &Map.get(loads, &1, 0))
+  end
+
   defp observer_worker(state, identity) do
-    member = Map.fetch!(state.members, identity)
-    elem(state.workers, rem(member.entity_epoch, tuple_size(state.workers)))
+    elem(state.workers, Map.fetch!(state.members, identity).worker)
   end
 
   defp drop_neighbour(state, peer, scene_id) do
