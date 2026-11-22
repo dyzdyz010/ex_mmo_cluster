@@ -202,10 +202,14 @@ facts on each existing 60 Hz Scene tick: a result arriving after its 20 Hz
 Player opportunity waits at most until the next Scene tick, without a barrier.
 No-change ticks skip frame construction and output; separately phased arrivals
 can produce up to 60 periodic publications per second, whose cost requires live
-measurement. Explicit first-frame flushing on target activation is unchanged. The
-Scene's consecutive entity epoch modulo four assigns each observer to exactly
-one worker; database entity IDs in the real 200-player sample occupied only
-two modulo-four buckets. Each worker owns
+measurement. Explicit first-frame flushing on target activation is unchanged. On
+join, each observer goes to the worker with the fewest current members (ties go
+to the lowest index); the choice is stored on the member until leave or handoff.
+Assignment no longer uses any identifier modulo four: database entity IDs in the
+real 200-player sample occupied only two modulo-four buckets, and
+`session_epoch` comes from one World-wide counter shared by all Scenes and
+transfer reservations, so a Scene receiving every second epoch would reach only
+two of four workers. Each worker owns
 its relations, generation counters and Gate routes; all targets remain visible
 to each partition. Join, frame and leave originate from the dispatcher in
 order. Leave reaches every partition and deletes both target relations and
