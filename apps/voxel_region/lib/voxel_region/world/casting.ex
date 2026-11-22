@@ -839,8 +839,8 @@ defmodule VoxelRegion.World.Casting do
   # 施法的可用资金（整数 mJ）：
   # - `available_mj`：交 `Cost.staged_failure/3` 判定的资金；`payable_mj`：中断时实际可扣的上限。
   # - 结构程序：二者都是余额。
-  # - 〈取〉【待设计方裁定，决策稿 §14 末条“待定”】暂按 v1 语义：构型损耗从取得的能量里付，判定用“余额 + η·ΔE”，
-  #   否则余额为 0 的角色永远在第 1 步中断、取不到能；中断时取能不发生，所以扣费以余额为限。裁定后只改本函数。
+  # - 〈取〉（用户 2026-11-21 裁定，决策稿 §14）：构型损耗从取得的能量里付，判定用“余额 + η·ΔE”，
+  #   否则余额为 0 的角色永远在第 1 步中断、取不到能；中断时取能不发生，所以扣费以余额为限。
   defp cast_funding(state, cid, effect) do
     balance_mj = balance_mj(state, cid)
     draw = energy_draw(state, effect, balance_mj)

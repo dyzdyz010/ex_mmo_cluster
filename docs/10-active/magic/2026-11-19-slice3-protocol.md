@@ -418,3 +418,4 @@ UE 作者资产 `DA_MagicCatalogV1` Publish → `Voxim/Content/Voxel/Magic/Publi
   - 〈取〉付费暂行：`cast_funding/3` 按“余额 + η·ΔE”判定资金（v1 语义，余额 0 也能取能），待设计方裁定。
   - 残余：存档拟态运行时暂无 World 级测试（切片 4 重建）；NPC 侧 `npc_world_request_test.exs:295`、`npc_cast_world_test.exs:223/249/271/312` 因协议与目录 v5 失败，待 NPC 迁移（N1/N2）。
   - 临时处理待设计方确认：t_k 时目标失效或数值违规按结算时拒绝（outcome 2，不扣能）；〈附〉形成距离取眼点到目标宏格中心；报价限频用 World 单调时钟 1 s 滑窗。
+- 2026-11-21：3c 提交（`1dd3ef7c`）。用户裁定 D-draw：〈取〉的构型损耗从取得的能量里付（`cast_funding/3`：资金 = 余额 + η·ΔE；中断时取能不发生，扣费以余额为限），即 3c 现行实现，不再待定；须通知设计方写进 §4.2。用户决定 NPC 迁移由本分支直接改 npc_server（NPC 会话不在线）；动手前核对 NPC 分支改动范围：`npc-life-20261111`、`npc-skill-s1a-20261119` 均改 body.ex / registry.ex / brain.ex，未改 actions.ex / world_request.ex。
