@@ -86,3 +86,6 @@ clients/Voxia/
 
 # Python 工具运行缓存。
 __pycache__/
+
+# Playwright MCP 的控制台日志
+.playwright-mcp/
