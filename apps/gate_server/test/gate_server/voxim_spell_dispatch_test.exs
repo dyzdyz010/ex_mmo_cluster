@@ -119,6 +119,18 @@ defmodule GateServer.VoximSpellDispatchTest do
     defp actor(state), do: Map.put(state.actor, :player, self())
   end
 
+  # Test-only: isolate World from background 500 ms thermal commits during the 892 ms windup
+  # so post-rejection World.seq assertions cannot race an unrelated thermal tick.
+  defmodule ManualClock do
+    @behaviour VoxelRegion.World.Clock
+    @impl true
+    def now(_), do: 0
+    @impl true
+    def schedule(_, _, _, _), do: make_ref()
+    @impl true
+    def cancel(_, _), do: false
+  end
+
   @magic "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
 
   setup do
@@ -133,6 +145,7 @@ defmodule GateServer.VoximSpellDispatchTest do
          root: root,
          observer: self(),
          name: nil,
+         clock: {ManualClock, nil},
          property_catalog_path:
            Path.join([
              @fixtures,
