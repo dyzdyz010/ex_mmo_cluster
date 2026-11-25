@@ -3,7 +3,7 @@
 分类：NPC 心智侧的决策稿（定范围、依据、约束段原文、测试矩阵与实施次序）。上位：三循环稿
 [`2026-11-23-npc-three-loop-framework-decision.md`](2026-11-23-npc-three-loop-framework-decision.md)，起因见 U-31 稿
 [`2026-11-24-npc-route-and-teleport-decision.md`](2026-11-24-npc-route-and-teleport-decision.md) §10 2026-11-25 末条（M-3c C1 不成立）。
-状态：**用户定方向（2026-11-25）；本稿写成约束段原文，尚未改 harness、未实跑。**
+状态：**用户定方向（2026-11-25）；约束段原文已写成（§4），新一版 harness 已实施并离线验证（§9，指纹 `464f047c848998fa`）；M-3d 计划未写、未实跑。**
 
 ## 1. 起因与用户的决定
 
@@ -162,3 +162,14 @@ What is not in the new text is gone from this section. The section is shown to m
   Jev 选，没有候选的开放槽交回表思考（`decide.py` 模块说明）；“我知道的区域”= 启动数据的区域、表思考记下的与执行时查过的三栏并集，
   列出离自己最近的至多 8 个（`semantic_types.json` region）；`note_region` 的接纳只查两个角的次序（`formats.py` M-3 工具表注释）；
   `say` 接纳后立刻经桥说出并记一条经历（`think.py` 模块说明）；`write_understanding` 整段替换、≤ 2000 字符。未改代码、未实跑。
+- 2026-11-25：§8 第 2 步完成（用户「可以，开始第 1 步」，即本稿 §8 第 2 步）。新一版 harness 在 `.demo/observe/npc-three-loop-m3d-20261125/`
+  （由 M-3c 复制；M-3c 的 harness 指纹仍是 `1e238a2472c3f61f`）。改动明细在该目录 `harness/README.md` 末节，要点：
+  - `formats.py` 一张表 `OUTPUT_CONSTRAINTS` 与共用句 `VALUES_CHOSEN_WHEN_USED`，`m3_mind_ops` / `m3_inner_ops` 把约束段接在现有说明之后；
+    文字与 §4 相同，只有两处由代码取值：样例取 G0 的 make_my_way 本身，“至多 8 个”取 `formats.LIST_CAP`
+    （从 `candidates.py` 挪来、在这里定义一次）。账本换成 `runs/spend-ledger-m3d.json`。
+  - **证据**（`python -m unittest`，Windows miniconda 3）：新类 `test_slot_think.OutputConstraintsTest` 3 条，实现前全红（`AttributeError`），
+    改后绿；账本用例改预期后 8 个子用例红、改后绿；随本步改预期的旧用例 1 条（B-2 那句不再在说明末尾，改成“说明里有这句”）。
+    原位变异 3 个都被抓到、文件逐字节恢复。test_m3 79 / test_slot_think 69 / test_decide 83 / test_run 52 / test_report 109 /
+    test_report_m3c 13 全绿；六个文件循环 10 次 60 / 60。`run.py dry`：三种预设未处理错误 0、被删措辞 0、评价词 0、严格模式问题 0。
+    表思考工具表摘要 `3c2c8cddd70bd3af` → `d44f6aec7ff3c1f5`（多约 3,400 字符），里思考 `2054afecd69fc856` → `429e3ea91999fe3c`。
+    harness 指纹 `464f047c848998fa`（未冻结；M-3d 计划写定后冻结）。未实跑、未调模型。
