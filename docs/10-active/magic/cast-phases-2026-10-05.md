@@ -39,3 +39,42 @@ Replica 物化边界：kind2 和 nil 都从副本存活表删除；原始 kind2 
 已观察验证（2026-10-05）：原始红灯 `combat-body-red.log`（缺少扫掠/接纳）与 `combat-wire-red.log`（Hello36）；首次 World 回归发现 nullable 对象误用严格 `not`，保留于 `combat-world-first.log`，修复后 `combat-world-green.log`。正式 Mix 图、隔离 DB：`scene_server` 的 ToolHit/ToolAction/Snapshot 11 项通过；`world_server` 的 `p0_body_world_test.exs` 3 项通过，实际 Native 移动后采到目标新位置和非零速度、双方回执相同、PG 身体存档重登去重、真实跨 Scene 移交后重投去重；`voxel_region` 的 magic_semblance/magic_semblance_world/magic_cost/magic_world/world 61 项通过；`mmo_contracts test --no-start` 136 项通过。后补 World 冻结交付不能驱散、重启恢复同一目标/金额，定向 3 项通过（`combat-world-persistence.log`）。World 测试仅替换人物查询和时钟，真实 World/NIF/日志未替换；真实 Player 测试用纯弹道输入验证组合边界，不冒称正式施法双客户端已验收。
 
 正式镜像 `voxim-server:20261005-combat-projectile`，image id `sha256:5e23de6321af5edcc8fa18e6eb5ef5a566fc036a1b94e7827f60299cdb57e30a`，构建 exit0，日志 `combat-server-build.log`；Hello37，UE 目录 `71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7`。没有修改魔法 Cost 或目录参数。实际正式 Cost 对比由 `combat_speed_quote.exs` 执行：fireball 前摇 2.9759839847→2.0762897908 s，报价 445361.3299→438968.3333 J，日志 `combat-speed-quote.log`。镜像已交 Voxim 主任务开始真实双客户端闭环；本记录不把构建/模块绿灯写成双端或分发验收。
+
+## 法杖光弹：整数 mJ 施法者账与开户充能（2026-11-20，服务端已实现；单客户端已实跑，待用户验收；双端未跑）
+
+Global system。法杖的能量就是既有的每角色施法者账 `World.caster_energy`，只有这一本账，不另设法杖账。
+
+- **整数 mJ**：账值改为整数毫焦（守恒量按整数最小单位结算，Voxim AGENTS 设计纪律 7；同 [Fowler, PoEAA “Money”](https://martinfowler.com/eaaCatalog/money.html) 以最小货币单位存整数的做法）。唯一读取入口 `World.Casting.balance_mj/2`。扣款 `cost_mj = round(报价总支出 J × 1000)`（Elixir `round/1` 半数远离零），走火判定比较 `可用_mj < cost_mj`，相干度判定不变；走火扣 `min(cost_mj, 余额_mj)`。`Magic.Cost.quote` v4 不变。
+- **热账同额**：物理部分仍记浮点 J（连续物理状态），废热改为 `cost_mj / 1000 − 物理 J`（走火为 `spent_mj / 1000`），所以每笔施法的施法者扣款 = 热账入账（`spell_heat_j` / `semblance_created_j` + `cast_waste_j`）。
+- **取能整数分账**（`Magic.Cost.draw/4`，唯一实现，入参全是 mJ）：`taken = min(round(请求 J × 1000), trunc(石 stored_j × 1000), round(容量 J × 1000) − 余额)`，`gained = round(η × taken)`，`loss = taken − gained`；石 `stored_j −= taken / 1000`，`caster_drawn_j += gained / 1000`，`draw_loss_j` 与石格热源 `+= loss / 1000`。
+- **迁移兼容**：来源 = 整数化之前已持久化的浮点 J 余额（如青岚生产日志、检查点）；原因 = 日志按键合并、不改写历史；规则 = `trunc(J × 1000)`（与魔法 v2 决策 P8 同一取整）；该键下次结算即写回整数；退出条件 = S1a A1 把施法者能量迁入 `Pages.character_row` 时一次性换算并删除该分支。
+- **开户一次性充能**：`World.send_caster_state`（Gate 在 QUIC 接纳时排一次，及客户端显式请求；NPC 不经过）在已加载魔法目录且账上**没有该 cid 的键**时，先提交一笔充能事务：`caster_energy: %{cid => 497_084_850}`，热账新增源项 `caster_granted_j += 497 084.85`（凭空注入、与 `caster_drawn_j` 同为施法者能量来源），主体 `{:character, cid}`，日志 `voxel_caster_grant seq=.. cid=.. granted_mj=..`。键随日志持久化，重连、冷重启、检查点后都不再充；已有键（含 0、旧浮点）不动。只读 `caster_state` 仍是纯读。`Access` 中该消息改归 `:character_intent`。
+- **光弹数值**（目录 `71ca543b…`、环境 293.15 K）：程序 `form.semblance{shape 0, radius_m 0.05, mass_kg 0.01, temperature_k 293.15, glow_w 100, lifetime_s 1} → act.throw{speed_mps 30} → act.break_on_hit{}`（普通 v1 施法意图；服务端只为固定前摇解析 holdable 的 basic_spell / basic_windup_s，见下）。真实 `Cost.quote` 与独立 Python 复算一致：总支出 9941.697170433505 J（物理 104.5 J）、前摇 1.9299314814115767 s → `cost_mj = 9_941_697`；充能 = 50 × cost_mj = `497_084_850` mJ（`World.Casting` 模块属性，唯一定义处）。
+- **线协议不变**：0x83 仍为 f64 J（`energy_j = 余额_mj / 1000`、`spent_j = spent_mj / 1000`），Hello 44 不变。`voxel_spell` 日志新增 `spent_mj=`、`energy_mj=`。
+- **战斗范围**：施法链路（Gate → `Player.cast_spell` → World）没有 `combat_scope` 判定；该判定只在伤害人物处（`Scene.tool_candidates`、`Player.receive_effect`、投射物命中采样）。
+- **普攻固定前摇 0.3 s（用户 2026-11-20 定）**：成本模型给光弹 1.93 s 前摇，作普攻太慢；只对持物普攻法术用作者定的固定前摇，其余法术不变，成本不变。
+  - 唯一来源：已发布属性目录 `holdables[].basic_windup_s`（s，> 0，只能随 `basic_spell` 出现；Voxim `Docs/Gameplay/author_actions.py` 作者表，法杖 0.3）。`Damage.load` 只取带 `basic_windup_s` 的 `{basic_spell, basic_windup_s}` 对为 `properties.basic_windups`，其余持物字段仍是客户端动作表；没有 `basic_windup_s` 的普攻照常按成本模型。
+  - 裁决（`World.Casting.basic_windup/3`，报价与施放共用 `prepare_spell` 一处）：请求程序与某个 `basic_spell` 按魔法目录 `Program.validate` 解析后**相等**（参数统一为浮点；不比原始字节——客户端 0x82 以 `%.17g` 重印数字，与目录字节不同），则 `windup_s := basic_windup_s`。服务端不知道玩家拿什么（装备在客户端），所以判定只看程序：同一程序从技能栏（M）施放也是 0.3 s——这是程序的规则，不是装备规则。改一个参数（如 lifetime_s 1→2，差一字节）即回到成本模型前摇。
+  - 成本不变：`total_j`、`cost_mj` 9 941 697、走火判定都用原报价。构型损耗公式里调整时长 T_adj = d·√(η/b) 是损耗最小的时长，强制 0.3 s 而照收最优时长的成本是用户定的玩法例外，不从公式推出。
+  - 广播的各步 `{调整 s, 注能 s}` 按同一比例 k = (basic_windup_s − release_lead_s) / Σ(调整 + 注能) 缩放：客户端施法进度条与姿态由施放记录的各步 + release_lead_s 推算，必须与服务端计时一致。现行魔法目录 release_lead_s 恰为 0.3，所以光弹各步为 0、只剩出手前置段。作者前摇须 ≥ release_lead_s（未加运行时防御，作者表注释写明）。
+  - 节奏：前摇 0.3 s 短于魔法目录 `cast_interval_ms` 500（间隔从上一次施放意图的接收时刻算，见 `Damage.admit_attack`），所以按住连发由 0.5 s 间隔决定；客户端按住/再按在间隔内等待，不提前发（否则 `cast_too_soon` 被拒并停止连发）。要更快只能改魔法目录间隔（影响所有法术），未改。
+  - 线协议、Hello 44、0x83 字段不变（0x83 `quote_windup_s` 报价即 0.3）。
+- **首次真实实跑（2026-11-20，Voxim `Saved/Tests/staff-20261120/`，本分支 native prod release，青岚世界副本、战斗关闭）**：
+  - aim-02 暴露既有 prod 崩溃：投射物采样任务结果 `{任务引用, 结果}` 经输入闸门排队时，`World.queue_ready_input/2` 的 info 日志 `kind=#{Admission.kind(...)}` 插入引用 → `String.Chars` 异常 → `VoxelRegion.World` 退出 → 两个场景 `canonical_incomplete`、玩家会话 reason 5。只在 info 日志级别（prod）且投射物采样到真实人物（Player actor 带 `life_generation`、配置了采样后端）时出现，测试环境默认 warning 级别、无后端，所以 CI 没覆盖到。修复：`Admission.kind/1` 对 `{引用, _}` 返回 `:projectile_result`（三处日志共用）；回归 `magic_staff_bolt_test`“投射物采样结果在 info 日志级别经输入闸门提交，World 不崩”（采样后端替身 + Player 形状施法者），去掉修复时按同一 `String.Chars` 崩溃红。
+  - World 崩溃时持久化了在飞投射物（带 `projectile_source`），冷重启恢复后立即向尚未启动的 Scene 采样 → `noproc` → `replica_snapshot_failed`，拓扑启动失败（run-04；当时换干净部署 server2 继续）。已修，见下“后续修复”。
+- **后续修复（2026-11-20，分支 `staff-bolt-followup-20261120`，未实跑）**：
+  - **瞄空的投掷照常接纳（用户定）**：rclick-01 对 ~25 m 外空地瞄准被拒 `out_of_domain` 的根因是 `Semblance.trace` 的抛物线自手边求交 `range_m`（30 m）路程未碰到实占用格即返回 miss，`Casting.spell_effect` 把 miss 直接映射成 `out_of_domain`；投掷路径没有任何权威域边界判定（World 是单一 canonical authority，页按需装入），所以不存在要保留的“离开权威域”分支。现规则：miss 时 `trace` 给出射程端点时刻，施法照常接纳、照常扣 cost_mj，记录 `contact = nil`、`flight_s = 射程端点时刻`；无投射物后端的运动学拟态到射程端点落地即散解（`Semblance.spent?/1`：无接触、有初速、已落地），有后端的〈触散〉光弹按既有结算规则改为按寿命实时采样飞行、寿命到期散解；两者都以 `Thermal.release` 散入空气，剩余能量记 `semblance_released_j`。地块权限只查成形处手边宏格。作用于目标格的加热／取能不变（瞄空仍 `out_of_domain`、非蓄能石仍 `invalid_target`）。客户端拒绝文案“投掷 30 m 内需落点”已过时，属 Voxim 侧。
+  - **重启恢复在飞投射物**：`Projectiles.settle_restored/1` 在 World 恢复完成时把尚无冻结交付的投射物按已持久年龄散入空气（`semblance_released_j`，一笔热提交删除记录），不再向后端采样。理由：实时采样以墙钟与当时人物为准，崩溃间隙不可追溯，恢复时 Scene 也未接入。已冻结的命中交付仍照原设计重投同一目标（其真实后端在 Scene 未起时同样会 `noproc`，未在本次处理）。
+  - **冻结命中重投等 Scene**：`WorldServer.Movement.character_owner/1` 把已部署路由上尚未启动的 Scene（`noproc`）视为无 owner，交付返回既有 `{:retry, :target_unavailable}`，World 保留冻结交付、50 ms 后重投，Scene 起后只交付一次（`projectile_scene_down_test` 改前 noproc 失败；`magic_semblance_world_test` 新增重投用例；未实跑）。
+  - **服务器时间线单一来源（2026-11-21，未实跑）**：devenv 运行 49 220 s 后 Scene 时间比墙钟快 2.025 s（该主机单调时钟未受 NTP 校频），客户端按 Scene 时间回复同步，光弹 τ ≈ 2 s、只显示已落地（证据 Voxim `Saved/Tests/devenv-20261120/projectile-delay-20261121/`）。根因：Scene 时间回复 = 启动墙钟 + 单调增量，World 的施放记录 t0、拟态 t0_us 与投射物采样时刻直接读墙钟。现由 `MmoContracts.ServerTime` 唯一定义服务器时间线（本 VM 首次加载时的墙钟锚点 + BEAM 单调 µs）：Scene 时间零点、Gate→Player 输入的跨节点时间戳、World 施放记录／拟态 t0、`Projectiles.progress` 与采样后端 `poll(shots, server_clock)` 都取它；World 可注入 `server_clock`（默认生产单调时钟），线格式不变。仍是墙钟的：交互 `at_ms`、`Session` epoch、日志 `at_us`。回归 `magic_staff_bolt_test`“单调与墙钟漂移 2 s”改前失败（t0 落后 Scene 时间 2.0 s）、改后通过。生产主机 chronyd 同步中，未见此漂移。
+  - aim-04（server2，新角色）：开户 497 084.85 J；单击一发报价前摇 0.3 s、扣 9 941.697 J → 487 143.153 J；按住连发 4 发、松开时在途 1 发，每发同额，余额逐发 477 201.456 → 437 434.668 J；服务端 `voxel_cast_begin windup_s=0.3 steps=[{0.0, 0.0}, …]`、`voxel_spell spent_mj=9941697`；施放意图间隔 0.559／0.501／0.535 s（受 `cast_interval_ms` 500 限），施放→结果 0.318–0.519 s。取能未实跑（部署上没有已充能蓄能石）。
+
+```mermaid
+flowchart LR
+  G["caster_granted_j<br/>(开户)"] --> E["caster_energy[cid]<br/>整数 mJ"]
+  D["caster_drawn_j<br/>(取能 gained)"] --> E
+  E -->|"cost_mj"| P["spell_heat_j / semblance_created_j<br/>(物理 J)"]
+  E -->|"cost_mj/1000 − 物理"| W["cast_waste_j<br/>(脚下废热)"]
+```
+
+Test-only 验证：`apps/voxel_region/test/magic_staff_bolt_test.exs`（目录 `fixtures/magic/71ca543b…` 为 UE 发布原字节）覆盖报价、开户一次与冷恢复、光弹扣款与热账同额、空账/不足走火、旧浮点余额、取能整数分账、瞄空光弹接纳与散解（运动学与实时采样两路）、加热／取能无效目标仍拒；`magic_semblance_world_test` 覆盖重启时在飞投射物散解记账且 World 存活；`apps/scene_server/test/scene_server/movement/cast_wait_lifecycle_test.exs` 用真实 Player（combat_scope nil）证明光弹照常结算；gate 的接纳 0x83 用例改为开户后余额。既有用例按整数规则改的期望见提交说明。客户端法杖、真实双端与分发未验证。

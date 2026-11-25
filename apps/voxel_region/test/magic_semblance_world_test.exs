@@ -238,6 +238,88 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     closed?(final)
   end
 
+  # 只测试：Scene 尚未接入时的真实后端形状（prod `WorldServer.Movement.Projectile` 调未启动的 Scene → 退出）。
+  defmodule UnavailableBackend do
+    def poll(_shots, _cv), do: exit({:noproc, {GenServer, :call, [:scene_not_started, :tool_candidates, 5000]}})
+    def notify(_hit, _seq), do: :ok
+  end
+
+  # 回归（2026-11-20 staff-20261120 run-04：World 崩溃时有一枚光弹在飞，重启恢复后首轮采样调用尚未启动的 Scene，
+  # World 退出、服务端起不来）。恢复时飞行中投射物按已持久年龄散入空气：年龄 0 时剩余能量 = 创建时物理能量
+  # C·(T − T_amb) + ½mv² + glow·寿命 = 1000 × (2000 − 293.15) + ½·2·12² + 100 × 60 = 1 712 994 J，全部记释放。
+  @tag :projectile
+  test "飞行中投射物随 World 持久化后重启：恢复时散解记账，不调用后端，World 存活", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    before = observe(c.w)
+    assert before.semblances[{seq, 0}].age_s == 0.0
+    :ok = stop_supervised(:world)
+    if Process.alive?(worker), do: Process.exit(worker, :kill)
+
+    w = start(c.root, UnavailableBackend)
+    monitor = Process.monitor(w)
+    # 后端节拍 50 ms：改前此窗口内 World 即因后端退出而 DOWN。
+    refute_receive {:DOWN, ^monitor, :process, _, _}, 500
+    restored = observe(w)
+    refute Map.has_key?(restored.semblances, {seq, 0})
+    assert_in_delta ledger(restored, :semblance_released_j) - ledger(before, :semblance_released_j), 1_712_994.0, 1.0e-6
+    assert ledger(restored, :projectile_body_j) == 0
+    closed?(restored)
+  end
+
+  # 只测试：真实后端在 Scene 未起时对冻结命中返回 `{:retry, :target_unavailable}`（world_server
+  # ProjectileSceneDownTest 证明），Scene 起后才交付；这里由测试进程逐次决定 Scene 是否已起。
+  defmodule SceneLateBackend do
+    def poll(shots, _cv) do
+      for {id, %{impact_delivery: hit} = s} <- shots do
+        send(ProjectileBackend, {:delivery_attempt, self(), hit})
+        result = receive do
+          :scene_down -> {:retry, :target_unavailable}
+          :scene_up -> {:ok, hit}
+        end
+        {id, s.age_s, {:delivered, result}}
+      end
+    end
+    def notify(hit, seq), do: send(ProjectileBackend, {:projectile_receipt, hit, seq})
+  end
+
+  # 回归（2026-11-20）：已落地未交付的命中随 World 崩溃持久，恢复时 Scene 尚未起。重投推迟到 Scene 可用：
+  # 期间冻结交付保留、不入身体账，World 存活；Scene 起后只交付一次、只释放一次。
+  @tag :projectile
+  test "恢复后冻结命中在 Scene 未起时保留重投，Scene 起后只交付一次", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    target = %{id: 2002, life_generation: 88, identity: :hold,
+      position: {0.5, 2.0, 2.0}, velocity: {0.1, 0.0, 0.0}}
+    send(worker, {:sample, 0.1, {0.5, target}})
+    assert_receive {:delivery_ready, old_worker, hit}, 2_000
+    :ok = stop_supervised(:world)
+    if Process.alive?(old_worker), do: Process.exit(old_worker, :kill)
+
+    w = start(c.root, SceneLateBackend)
+    monitor = Process.monitor(w)
+    for _ <- 1..2 do
+      assert_receive {:delivery_attempt, worker, ^hit}, 2_000
+      send(worker, :scene_down)
+    end
+    refute_received {:DOWN, ^monitor, :process, _, _}
+    waiting = observe(w)
+    assert waiting.semblances[{seq, 0}].impact_delivery == hit
+    assert ledger(waiting, :projectile_body_j) == 0
+
+    assert_receive {:delivery_attempt, worker, ^hit}, 2_000
+    send(worker, :scene_up)
+    assert_receive {:projectile_receipt, ^hit, _}, 2_000
+    final = observe(w)
+    refute Map.has_key?(final.semblances, {seq, 0})
+    assert ledger(final, :projectile_body_j) == hit.q_j
+    closed?(final)
+    refute_receive {:delivery_attempt, _, _}, 200
+    refute_received {:projectile_receipt, _, _}
+  end
+
   @tag :impact_snapshot
   test "触散：命中前存在，碰撞热提交删除并下发；余光和动能只释放一次，叶获热", c do
     assert {:ok, _} = draw(c, 1_000_000)
@@ -364,11 +446,13 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
 
   test "炽热拟态投掷：r 0.4 m、2 kg、2000 K 球以 12 m/s 投向孤立叶 → 落点精确、叶着火；支出与账闭合", c do
     assert {:ok, %{outcome: nil}} = draw(c, 1_000_000)
-    assert_in_delta energy(c), 1_798_946.2777903, 1.0e-6
+    # 施法者账是整数 mJ：取 2 MJ 得 round(0.9 × 2e9) = 1 800 000 000 mJ，减取能扣款 round(1 053 722.2097) = 1 053 722 → 1 798 946 278 mJ。
+    assert energy(c) == 1_798_946.278
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000)
-    # 支出 = E_phys 1 706 994 + E_loss 14 256.0775635 = 1 721 250.0775635 J（手算见 magic_semblance_test）；余 77 696.2002268 J。
-    assert_in_delta caster.spent_j, 1_721_250.0775635, 1.0e-3
-    assert_in_delta caster.energy_j, 77_696.2002268, 1.0e-3
+    # 支出 = E_phys 1 706 994 + E_loss 14 256.0775635 = 1 721 250.0775635 J（手算见 magic_semblance_test）
+    # → 扣款 round(1 721 250 077.5635) = 1 721 250 078 mJ；余 1 798 946 278 − 1 721 250 078 = 77 696 200 mJ。
+    assert caster.spent_j == 1_721_250.078
+    assert caster.energy_j == 77_696.2
     # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
     assert caster.quote_windup_s == 0.0
     s = observe(c.w)
@@ -565,19 +649,20 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert Map.has_key?(before.semblances, {seq, 0})
     fed = fn t -> t.thermal.supplied_j - ledger(t, :combustion_j) end
 
-    # 驱散只付构型损耗 2107.4444193 J（落脚下）；目标拟态 id 由线上给出，眼到球心 √(0² + 0.136² + 2.1²) ≈ 2.10 m < 6 m。
+    # 驱散只付构型损耗 2107.4444193 J → 整数扣款 round(2 107 444.4193) = 2 107 444 mJ（落脚下 2107.444 J）；
+    # 目标拟态 id 由线上给出，眼到球心 √(0² + 0.136² + 2.1²) ≈ 2.10 m < 6 m。
     assert {:ok, %{outcome: nil, caster: %{spent_j: dispel_j}}} =
              cast(c, c.presets["dispel"], @forward, at: 3_000_000, semblance: {seq, 0})
-    assert_in_delta dispel_j, 2107.4444193, 1.0e-6
+    assert dispel_j == 2107.444
     after_dispel = observe(c.w)
     assert after_dispel.semblances == %{}
     released = ledger(after_dispel, :semblance_released_j) - ledger(before, :semblance_released_j)
     assert released > 0
     closed?(after_dispel)
 
-    # 释放的热与脚下构型损耗都经有限热源进世界：热源放完后供热（去掉燃烧）增量 = 释放 + 2107.4444193 J。
+    # 释放的热与脚下废热都经有限热源进世界：热源放完后供热（去掉燃烧）增量 = 释放 + 2107.444 J。
     drained = Enum.find_value(1..10, fn _ -> t = commit(c.w); if t.thermal.sources == %{}, do: t end)
-    assert_in_delta fed.(drained) - fed.(before), released + 2107.4444193, 1.0e-3
+    assert_in_delta fed.(drained) - fed.(before), released + 2107.444, 1.0e-3
     # 驱散不追溯：叶继续燃烧。
     assert burning?(commit(c.w))
     # 已移除的 id 再驱散：stale_target，不扣能量。
@@ -624,12 +709,15 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
       |> then(& &1.thermal.semblances[{seq, 0}])
     end
 
+    # 每次重启后都与此刻持久化的最后一份比：两次重启之间 World 自身的墙钟热提交可能再推进并落盘拟态
+    # （年龄、温度），所以不能用第一次读到的记录去比压实后的恢复结果。
     w = restart(c)
     stored = persisted.()
     assert observe(w).semblances[{seq, 0}] == stored
     assert stored.temperature_k > 293.15 + 1
     :ok = World.compact(w)
     w = restart(%{c | w: w})
+    stored = persisted.()
     assert observe(w).semblances[{seq, 0}] == stored
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     cooled = commit(w).semblances[{seq, 0}]

@@ -57,7 +57,7 @@ defmodule SceneServer.Movement.Player do
         identity,
         batch,
         received_us \\ {node(), System.monotonic_time(:microsecond),
-         System.system_time(:microsecond)}
+         MmoContracts.ServerTime.server_us()}
       ),
       do: GenServer.cast(player, {:input, identity, batch, received_us})
 
@@ -2220,8 +2220,8 @@ defmodule SceneServer.Movement.Player do
   # 同节点使用原单调样本；跨节点沿现有服务器时间映射，不能相减两个 VM 的单调零点。
   defp input_monotonic(_state, {source, mono, _wall}) when source == node(), do: mono
 
-  defp input_monotonic(state, {_source, _mono, wall}),
-    do: state.time_mono_origin + wall - state.time_origin
+  defp input_monotonic(state, {_source, _mono, server_us}),
+    do: state.time_mono_origin + server_us - state.time_origin
 
   defp input_monotonic(_state, mono) when is_integer(mono), do: mono
 

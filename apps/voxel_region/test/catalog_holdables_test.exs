@@ -31,5 +31,27 @@ defmodule VoxelRegion.CatalogHoldablesTest do
       if id = row["combat_tool_id"], do: assert(new.tools[id]["target_mode"] in ["object", "direction"])
       assert Enum.all?(row["skill_tool_ids"], &Map.has_key?(new.tools, &1))
     end
+
+    # 没有 basic_windup_s 的目录：服务端没有固定前摇表。
+    assert new.basic_windups == []
+  end
+
+  # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户 2026-11-20 定）：UE 发布字节 16fe69c4（`fixtures/items/`，原样复制、
+  # 按 sha256 核对；CI 的 Voxim 钉版检出没有这份未提交发布物）。服务端只取 {basic_spell, basic_windup_s} 对；期望手写自作者表
+  # Voxim Docs/Gameplay/author_actions.py（BASIC_SPELL、basicWindupS 0.3），剑没有普攻法术。
+  @staff "16fe69c4e71d8530338b7ceea668892537b0be00215c3a6b4bcca04bb6100228"
+  test "the staff publication carries the bolt's authored basic wind-up 0.3 s" do
+    catalog = Damage.load(Path.expand("fixtures/items/#{@staff}.json", __DIR__))
+    assert Base.encode16(catalog.digest, case: :lower) == @staff
+
+    bolt = %{"v" => 1, "target" => %{"kind" => "aim"}, "emit" => "hand",
+      "steps" => [
+        %{"sym" => "form.semblance",
+          "args" => %{"shape" => 0, "radius_m" => 0.05, "mass_kg" => 0.01, "temperature_k" => 293.15, "glow_w" => 100, "lifetime_s" => 1}},
+        %{"sym" => "act.throw", "args" => %{"speed_mps" => 30}},
+        %{"sym" => "act.break_on_hit", "args" => %{}}
+      ]}
+
+    assert catalog.basic_windups == [{bolt, 0.3}]
   end
 end

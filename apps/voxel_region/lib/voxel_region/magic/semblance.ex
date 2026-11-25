@@ -6,7 +6,7 @@ defmodule VoxelRegion.Magic.Semblance do
   记录（World 持有于 `thermal.semblances`，id = {创建事务 seq, n}）：
   施法者 caster、形状 shape（0 球 / 1 立方，radius_m 为半径或半边长）、质量 mass_kg、热容 capacity（= 质量 × 目录比热，J/K）、
   温度 temperature_k、发光 glow_w、寿命 lifetime_s、已存在模拟时长 age_s、飞行中动能 kinetic_j、
-  运动 origin / velocity / t0_us（服务端墙钟 µs，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
+  运动 origin / velocity / t0_us（服务器时间线 µs，`MmoContracts.ServerTime`，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
   命中 contact（nil 或 `%{target, key, cell}`：弹道命中的热节点，作为散解时剩余能量的落点）。可选 `break_on_hit: true`
   由〈触散〉编译而来，碰撞端点散解；没有该键的既有记录保持驻留。solid 恒为 false（实体拟态是增量 5）。
 
@@ -24,7 +24,8 @@ defmodule VoxelRegion.Magic.Semblance do
     多条接触时按接触面积比例分摊，其余 (1 − F) 对天空；立方体接触面整面导热，其余面全部对天空（F = 0）。
     飞行中或无接触时全部暴露面对天空。
   - 剩余能量 = C·(T − T_amb) + 飞行中动能 + 发光余量 glow_w·(lifetime − age)。发光按 W·dt 计入光账（不进热账），
-    寿命到期、驱散或带指令的碰撞时移除，剩余能量作为有限热源释放；未用发光预算散解时进入热账。
+    寿命到期、驱散、带指令的碰撞或射程内未命中的投掷到达射程端点时移除，剩余能量作为有限热源释放（无接触即散入空气）；
+    未用发光预算散解时进入热账。
   """
 
   @gravity 9.81
@@ -56,7 +57,7 @@ defmodule VoxelRegion.Magic.Semblance do
   @doc """
   自眼睛经手边求首个实占用命中。`cast.(起点, 单位方向, 长度, state)` 返回 `{nil | {目标, 进入微格}, state}`。
   返回 `{{:hit, 落点时刻 s, 落点中心, 目标}, state}`；速度为零且眼 → 手无遮挡时 `{{:free, 手边}, state}`；
-  抛出后在 `max_path` 路程内无命中 `{:miss, state}`。
+  抛出后在 `max_path` 路程内无命中 `{{:miss, 射程端点时刻 s}, state}`：已求交的弦段覆盖到该时刻为止。
   """
   def trace(eye, hand, velocity, radius, max_path, state, cast) do
     length = distance(eye, hand)
@@ -80,7 +81,7 @@ defmodule VoxelRegion.Magic.Semblance do
     end
   end
 
-  defp arc(_hand, _v, _radius, _i, path, max_path, state, _cast) when path >= max_path, do: {:miss, state}
+  defp arc(_hand, _v, _radius, i, path, max_path, state, _cast) when path >= max_path, do: {{:miss, i * @step_s}, state}
 
   defp arc(hand, v, radius, i, path, max_path, state, cast) do
     t0 = i * @step_s
@@ -199,6 +200,10 @@ defmodule VoxelRegion.Magic.Semblance do
   @doc "触散指令只在实际碰撞端点生效；未带该指令的旧记录继续驻留。"
   def break_on_hit?(%{break_on_hit: true, contact: contact} = s) when contact != nil, do: landed?(s)
   def break_on_hit?(_s), do: false
+
+  @doc "射程内未命中的投掷在射程端点落地即散解（无接触、有初速）；静止手边形态（速度 0）不受影响。"
+  def spent?(%{contact: nil, velocity: velocity} = s), do: velocity != {0.0, 0.0, 0.0} and landed?(s)
+  def spent?(_s), do: false
 
   @doc "本段模拟时长不越过任何落点或寿命端点，使落地转换与发光账在端点上精确结算。"
   def cap(semblances, duration) do

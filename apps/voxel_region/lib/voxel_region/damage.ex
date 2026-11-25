@@ -327,13 +327,23 @@ defmodule VoxelRegion.Damage do
           (liquid != nil and id != 0 and not VoxelRegion.Phase.liquid?(id) and not VoxelRegion.Phase.enabled?(m) and
              not MmoContracts.VoxelMaterialCatalog.flora?(id) and is_integer(t) and t >= 0 and t <= capacity)
       end)
+    # 持物普攻法术的作者前摇（Voxim 交互设计"2026-11-20 修订"法杖）：holdables 其余字段是客户端动作表，服务端只取
+    # 带 basic_windup_s（s，正数）的 basic_spell（v1 程序 JSON 对象）成对的表；程序对魔法目录的合法性在施放时判定
+    # （`World.Casting.basic_windup/3`）。没有 basic_windup_s 的普攻法术照常按成本模型前摇。
+    basic_windups =
+      for %{"basic_spell" => program, "basic_windup_s" => windup_s} <- Map.get(data, "holdables", []) do
+        true = is_map(program) and is_number(windup_s) and windup_s > 0
+        {program, windup_s * 1.0}
+      end
+
     %{
       liquid: liquid,
       digest: :crypto.hash(:sha256, bytes),
       materials: materials,
       tools: tools,
       retired: retired,
-      attachments: specification
+      attachments: specification,
+      basic_windups: basic_windups
     }
   end
 

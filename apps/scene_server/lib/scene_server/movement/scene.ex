@@ -162,7 +162,7 @@ defmodule SceneServer.Movement.Scene do
       tick: 0,
       mono_origin: monotonic,
       time_mono_origin: monotonic,
-      time_origin: System.system_time(:microsecond),
+      time_origin: MmoContracts.ServerTime.server_us(),
       timeline_origin_us: Keyword.get(opts, :timeline_origin_us),
       world_monitor: Process.monitor(Keyword.fetch!(opts, :world_ref)),
       physics_steps: 0,

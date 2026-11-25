@@ -793,14 +793,17 @@ defmodule VoxelRegion.World.Thermal do
     state = %{state | thermal: Map.put(thermal, :semblances, kept)}
 
     kept
-    |> Enum.filter(fn {_, s} -> not Map.has_key?(s, :projectile_source) and (Magic.Semblance.expired?(s) or Magic.Semblance.break_on_hit?(s)) end)
+    |> Enum.filter(fn {_, s} ->
+      not Map.has_key?(s, :projectile_source) and
+        (Magic.Semblance.expired?(s) or Magic.Semblance.break_on_hit?(s) or Magic.Semblance.spent?(s))
+    end)
     |> Enum.sort()
     |> Enum.reduce(state, fn {id, s}, state ->
       release_semblance(state, id, s, Magic.Semblance.break_on_hit?(s) and not Magic.Semblance.expired?(s))
     end)
   end
 
-  # 移除拟态（寿命到期、驱散或触散命中）：剩余能量（显热 + 飞行动能 + 发光余量）记 semblance_released_j；已落地且接触宏格仍是
+  # 移除拟态（寿命到期、驱散、触散命中或未命中投掷到达射程端点）：剩余能量（显热 + 飞行动能 + 发光余量）记 semblance_released_j；已落地且接触宏格仍是
   # 同一未细分热节点时作为有限热源落入该格（0.5 s 放完），否则（飞行中、无接触、接触格已变）散入空气。
   defp release_semblance(state, id, s, impact?) do
     {cell, state} = release_cell(state, s)

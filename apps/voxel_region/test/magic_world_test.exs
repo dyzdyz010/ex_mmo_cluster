@@ -107,32 +107,35 @@ defmodule VoxelRegion.MagicWorldTest do
   @stone_micro {20, 12, 4}
   @leaf_micro {4, 20, 28}
 
-  test "取能：10 MJ 石取 1 MJ、η 0.9 → 施法者得 0.9 MJ（付 1053.7222 J 构型损耗后余 898 946.2778 J）、石格热源 0.1 MJ、石剩 9 MJ；热提交后两处有限热源全部进世界", c do
+  # 施法者账是整数 mJ（扣款 = round(总支出 × 1000)，取能 taken / gained 按整数分账）：取能扣款 round(1 053 722.2097) = 1 053 722 mJ。
+  test "取能：10 MJ 石取 1 MJ、η 0.9 → 施法者得 0.9 MJ（付整数扣款 1053.722 J 后余 898 946.278 J）、石格热源 0.1 MJ、石剩 9 MJ；热提交后两处有限热源全部进世界", c do
     before = observe(c.w)
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = spell(c, c.a, @stone_micro, draw_program(1_000_000))
     # 前摇开始事务 before.seq + 1（只带施放记录），结算事务 before.seq + 2。
     assert seq == before.seq + 2
     s = observe(c.w)
-    # ΔE = min(1 MJ, 10 MJ, 5 MJ − 0) = 1 MJ；得 0.9 × 1 MJ = 900 000 J；E_loss = 1053.7222097 J（契约表“取能”）。
-    assert_in_delta caster.energy_j, 898_946.2777903, 1.0e-6
-    assert_in_delta caster.spent_j, 1053.7222097, 1.0e-6
+    # ΔE = min(1e9, 1e10, 5e9 − 0) = 1 000 000 000 mJ；得 round(0.9 × 1e9) = 900 000 000 mJ；E_loss = 1053.7222097 J（契约表“取能”）
+    # → 扣款 1 053 722 mJ；余额 900 000 000 − 1 053 722 = 898 946 278 mJ。
+    assert caster.energy_j == 898_946.278
+    assert caster.spent_j == 1053.722
     assert_in_delta caster.quote_j, 1053.7222097, 1.0e-6
     assert {caster.quote_s, caster.capacity_j, caster.coherence} == {1.0, 5.0e6, 4.0}
-    assert_in_delta energy(c), 898_946.2777903, 1.0e-6
+    assert energy(c) == 898_946.278
     assert battery(s).stored_j == 9.0e6
-    assert_in_delta ledger(s, :caster_drawn_j), 900_000.0, 1.0e-6
-    assert_in_delta ledger(s, :draw_loss_j), 100_000.0, 1.0e-6
-    assert_in_delta ledger(s, :cast_waste_j), 1053.7222097, 1.0e-6
+    assert ledger(s, :caster_drawn_j) == 900_000.0
+    assert ledger(s, :draw_loss_j) == 100_000.0
+    # 废热 = 扣款 / 1000 − 物理能量（取能为 0）= 1053.722 J：施法者扣款与热账入账相等。
+    assert_in_delta ledger(s, :cast_waste_j), 1053.722, 1.0e-9
     # 验收式：石减少 1 MJ = 施法者取得 + 取能损耗；施法支出 = spell_heat_j (0) + cast_waste_j。
     assert_in_delta ledger(s, :caster_drawn_j) + ledger(s, :draw_loss_j), 1.0e7 - battery(s).stored_j, 1.0e-6
-    # 有限热源：石格 0.1 MJ、脚下 1053.7222 J，都在一个 500 ms 提交内放完（功率 = 能量 / 0.5 s）。
+    # 有限热源：石格 0.1 MJ、脚下 1053.722 J，都在一个 500 ms 提交内放完（功率 = 能量 / 0.5 s）。
     assert_in_delta s.thermal.sources[{2, 1, 0}].remaining_j, 100_000.0, 1.0e-6
     assert_in_delta s.thermal.sources[{2, 1, 0}].power_w, 200_000.0, 1.0e-6
-    assert_in_delta s.thermal.sources[{0, 0, 0}].remaining_j, 1053.7222097, 1.0e-6
-    assert_in_delta s.thermal.sources[{0, 0, 0}].power_w, 2107.4444193, 1.0e-6
+    assert_in_delta s.thermal.sources[{0, 0, 0}].remaining_j, 1053.722, 1.0e-9
+    assert_in_delta s.thermal.sources[{0, 0, 0}].power_w, 2107.444, 1.0e-9
     after_commit = commit(c.w)
     assert after_commit.thermal.sources == %{}
-    assert_in_delta after_commit.thermal.supplied_j - s.thermal.supplied_j, 101_053.7222097, 1.0e-3
+    assert_in_delta after_commit.thermal.supplied_j - s.thermal.supplied_j, 101_053.722, 1.0e-3
   end
 
   # 功率取槽上限 200 kW（0.4 MJ 在 2 s 内放完）：同样 0.4 MJ 以契约预设的 50 kW 投入时，孤立叶在 ε 0.9 辐射环境里
@@ -141,17 +144,18 @@ defmodule VoxelRegion.MagicWorldTest do
     {:ok, _} = spell(c, c.a, @stone_micro, draw_program(1_000_000), at: 1_000_000)
     s0 = commit(c.w)
     assert {:ok, %{outcome: nil, caster: caster}} = spell(c, c.a, @leaf_micro, heat_program(400_000, 200_000), at: 2_000_000)
-    # 总支出 = 0.4 MJ + E_loss 2292.5445548 J（契约表“远程点火”）= 402 292.5445548 J；
-    # 余额 898 946.2777903 − 402 292.5445548 = 496 653.7332355 J。
-    assert_in_delta caster.spent_j, 402_292.5445548, 1.0e-4
-    assert_in_delta caster.energy_j, 496_653.7332355, 1.0e-4
+    # 总支出 = 0.4 MJ + E_loss 2292.5445548 J（契约表“远程点火”）= 402 292.5445548 J → 扣款 round(402 292 544.5548) = 402 292 545 mJ；
+    # 余额 898 946 278 − 402 292 545 = 496 653 733 mJ。
+    assert caster.spent_j == 402_292.545
+    assert caster.energy_j == 496_653.733
     s = observe(c.w)
     assert s.thermal.sources[{0, 2, 3}] == %{remaining_j: 400_000.0, power_w: 200_000.0}
     assert ledger(s, :spell_heat_j) == 400_000.0
-    assert_in_delta ledger(s, :cast_waste_j), 1053.7222097 + 2292.5445548, 1.0e-4
+    # 两笔废热：取能 1053.722 J + 点火 402 292.545 − 400 000 = 2292.545 J。
+    assert_in_delta ledger(s, :cast_waste_j), 1053.722 + 2292.545, 1.0e-6
     # 同一目标已有热源：第二次点火拒绝，不扣能量。
     assert {:error, :heat_source_busy} = spell(c, c.a, @leaf_micro, heat_program(400_000), at: 3_000_000)
-    assert_in_delta energy(c), 496_653.7332355, 1.0e-4
+    assert energy(c) == 496_653.733
     # 0.4 MJ / 200 kW = 2 s = 4 个提交放完；叶 ΔT 上限 0.4 MJ / 1200 J/K ≈ 333 K，散热后仍越过燃点 523.15 K。
     burning = Enum.find_value(1..40, fn _ ->
       t = commit(c.w)
@@ -163,14 +167,15 @@ defmodule VoxelRegion.MagicWorldTest do
     # 燃烧另记 combustion_j；两者之差的增量即热源注入，与施法账同额。
     fed = fn t -> t.thermal.supplied_j - ledger(t, :combustion_j) end
     assert ledger(done, :combustion_j) > 0
-    assert_in_delta fed.(done) - fed.(s0), 402_292.5445548, 1.0e-2
+    assert_in_delta fed.(done) - fed.(s0), 402_292.545, 1.0e-2
     IO.puts("MAGIC_IGNITE burning_at_s=#{burning.thermal.elapsed_s - s0.thermal.elapsed_s} temperature=#{cell(burning, {0, 2, 3}).temperature_kelvin}")
   end
 
   test "走火：余额 100 kJ、成本 301 986.49 J → 走完前摇后余额 0、脚下热源 100 kJ、目标无热源；结果为已提交事务", c do
-    # 余额 100 kJ：取能 R 使 0.9 R − 1053.7222097 = 100 000 → R = 112 281.913566… J。
-    {:ok, _} = spell(c, c.a, @stone_micro, draw_program(112_281.91356628455), at: 1_000_000)
-    assert_in_delta energy(c), 100_000.0, 1.0e-6
+    # 余额 100 kJ = 100 000 000 mJ：取能 R = 112 281.913 J → 请求 112 281 913 mJ，取得 round(0.9 × 112 281 913) =
+    # round(101 053 721.7) = 101 053 722 mJ，减取能扣款 1 053 722 mJ → 恰为 100 000 000 mJ。
+    {:ok, _} = spell(c, c.a, @stone_micro, draw_program(112_281.913), at: 1_000_000)
+    assert energy(c) == 100_000.0
     s0 = commit(c.w)
     waste0 = ledger(s0, :cast_waste_j)
     # 0.3 MJ 加热：b = 1000·1.3^1.5 = 1482.228 W，E_loss = 2·2.831793·√(50·b) + b·0.3 = 1986.4898170 J；
@@ -232,20 +237,21 @@ defmodule VoxelRegion.MagicWorldTest do
   end
 
   test "冷重启：施法者能量随日志重放与检查点保留；不自动回复", c do
+    # 整数账（见取能用例）：898 946 278 mJ，经日志重放与检查点逐 mJ 保留。
     {:ok, _} = spell(c, c.a, @stone_micro, draw_program(1_000_000), at: 1_000_000)
-    assert_in_delta energy(c), 898_946.2777903, 1.0e-6
+    assert energy(c) == 898_946.278
     w = restart(c)
     c = %{c | w: w}
-    assert_in_delta energy(c), 898_946.2777903, 1.0e-6
+    assert energy(c) == 898_946.278
     assert battery(observe(w)).stored_j == 9.0e6
     assert :ok = World.compact(w)
     w = restart(c)
     c = %{c | w: w}
-    assert_in_delta energy(c), 898_946.2777903, 1.0e-6
+    assert energy(c) == 898_946.278
     # 未施法的角色能量为 0；多次热提交后施法者能量不变。
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     for _ <- 1..3, do: commit(w)
-    assert_in_delta energy(c), 898_946.2777903, 1.0e-6
+    assert energy(c) == 898_946.278
     assert {:ok, %{energy_j: +0.0}} = World.caster_state(w, 2002)
   end
 end

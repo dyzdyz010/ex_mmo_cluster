@@ -1,7 +1,7 @@
 defmodule SceneServer.Movement.Clock do
   @moduledoc "Scene 与 Player 共用的60Hz公共时间映射；已发布碰撞水位单独约束物理消费。"
   @doc "生产单调时钟；测试可注入相同接口。"
-  def now(_), do: System.monotonic_time(:microsecond)
+  defdelegate now(ref), to: MmoContracts.ServerTime
   @doc "安排下一次公共 tick。"
   def schedule(_, pid, delay), do: Process.send_after(pid, :tick, delay)
   @doc "读取本运行时注入的单调时钟。"

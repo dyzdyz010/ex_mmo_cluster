@@ -258,16 +258,22 @@ defmodule GateServer.VoximSpellDispatchTest do
         VoxelRegion.TestSupport.observe(world, [1001], {{-2, -2, -2}, {2, 2, 2}}).casts[1001]
       end)
 
-  test "QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）", c do
-    assert {:ok, _} =
-             Dispatch.handle(
-               {:voxel_caster_state_request, %{request_id: 0, logical_scene_id: 1}},
-               c.state
-             )
+  # 接纳即开户：该角色尚无施法者账，World 先提交一次性充能事务（seq 1 → 2），余额 497 084 850 mJ = 497 084.85 J
+  # （50 发法杖光弹的整数扣款 9 941 697 mJ，推导见 World.Casting）；同一请求再发一次（重连）不再充。
+  test "QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）：首次开户充能，再请求不重复", c do
+    request = {:voxel_caster_state_request, %{request_id: 0, logical_scene_id: 1}}
+    assert {:ok, _} = Dispatch.handle(request, c.state)
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
+                    <<0x83, 0::64, 2::64, 497_084.85::float-64, 5.0e6::float-64, 4.0::float-64,
                       +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+
+    assert {:ok, _} = Dispatch.handle(request, c.state)
+
+    assert_receive {:mmo_voxel_bytes, :session,
+                    <<0x83, 0::64, 2::64, 497_084.85::float-64, _::binary>>}
+
+    assert World.seq(c.world) == 2
   end
 
   test "报价调用回复延迟时，World 仍先发报价再发身体状态；迟到回复不重发旧相干度", c do

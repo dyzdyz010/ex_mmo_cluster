@@ -1279,7 +1279,7 @@ defmodule MmoContracts.Voxel.Codec do
       origin_x/y/z:f64, velocity_x/y/z:f64, t0_us:u64, flight_s:f64, rest_x/y/z:f64
 
   位置 p(τ) = origin + velocity·τ − ½·9.81·τ²·ŷ，τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
-  静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务端墙钟（与 SessionStart.server_time_us 同源）。
+  静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务器时间线 `MmoContracts.ServerTime`（与 SessionStart.server_time_us 同源）。
   碰撞结束（live = 2）携带最终完整记录且 break_on_hit 必须为 1，只能用于增量；客户端以此事件结束飞行并播放碰撞，
   不由本地时钟或普通删除推测碰撞。热模拟按固定步推进，确认可早于墙钟轨迹终点。旧存档无 break_on_hit 时编码为 0。
   普通删除（live = 0）除 id 外全为 0；过期与驱散不冒充碰撞。
@@ -1362,7 +1362,7 @@ defmodule MmoContracts.Voxel.Codec do
       caster:u64, live:u8 (1 前摇中 / 0 已结算), outcome:u8 (0 成功 / 1 走火 / 2 结算时拒绝；live=1 时为 0),
       t0_us:u64, origin_x/y/z:f64, n:u8, n × (adjust_s:f64, inject_s:f64), program_len:u16, program bytes
 
-  t0_us 是服务端墙钟（与拟态 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
+  t0_us 是服务器时间线 `MmoContracts.ServerTime`（与拟态 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
   origin 是施法者手边位置（canonical 米，Y-up）；program 为施放意图里的规范程序字节原样。
   已结算记录除 caster、live、outcome 外全为 0（n = 0、program_len = 0）。
   """

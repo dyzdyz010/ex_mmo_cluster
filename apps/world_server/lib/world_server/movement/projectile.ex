@@ -3,13 +3,13 @@ defmodule WorldServer.Movement.Projectile do
   alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
   alias VoxelRegion.Magic.Semblance
 
-  @doc "在 World 异步工作中逐次采当前 owner；位置只归属这一实际采样时刻。"
-  def poll(shots, _cv) do
+  @doc "在 World 异步工作中逐次采当前 owner；位置只归属这一实际采样时刻（World 的服务器时间线时钟）。"
+  def poll(shots, clock) do
     Enum.map(shots, fn {id, s} ->
       result =
         case s do
           %{impact_delivery: hit} -> {:delivered, deliver(hit)}
-          _ -> sample(s)
+          _ -> sample(s, clock)
         end
 
       {id, s.age_s, result}
@@ -25,10 +25,10 @@ defmodule WorldServer.Movement.Projectile do
     end
   end
 
-  defp sample(s) do
+  defp sample(s, clock) do
     source = s.projectile_source
     targets = contexts(source.identity.scene_id)
-    now = System.system_time(:microsecond)
+    now = MmoContracts.ServerTime.server_us(clock)
     age = min(max(s.age_s, (now - s.t0_us) / 1.0e6), s.lifetime_s)
 
     actor =

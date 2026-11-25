@@ -9,14 +9,21 @@ defmodule WorldServer.Movement do
     end
   end
 
-  @doc "从已部署 Scene 的当前成员查询角色 owner；移交重叠时取新会话，不保存第二份角色路由表。"
+  @doc """
+  从已部署 Scene 的当前成员查询角色 owner；移交重叠时取新会话，不保存第二份角色路由表。
+  路由已部署但 Scene 进程尚未启动（World 恢复先于 Scene）时该 Scene 没有 owner，投射物交付按目标不可用重试。
+  """
   def character_owner(cid) do
     Application.fetch_env!(:world_server, :movement_routes)
-    |> Enum.map(fn {_, route} ->
-      SceneServer.Movement.Scene.character_owner(route.scene_ref, cid)
-    end)
+    |> Enum.map(fn {_, route} -> scene_owner(route.scene_ref, cid) end)
     |> Enum.reject(&is_nil/1)
     |> Enum.max_by(& &1.identity.session_epoch, fn -> nil end)
+  end
+
+  defp scene_owner(scene, cid) do
+    SceneServer.Movement.Scene.character_owner(scene, cid)
+  catch
+    :exit, {:noproc, _} -> nil
   end
 
   @doc "显式连接两个相邻 Scene 的只读复制；只在控制面执行，输入热路径不调用。"

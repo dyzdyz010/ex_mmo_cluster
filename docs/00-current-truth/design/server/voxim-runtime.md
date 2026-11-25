@@ -42,7 +42,7 @@ flowchart LR
 取能、远程点火、拟态、投掷、驱散、命中瓦解、前摇与符文预警均已有当前源码，不再等待 Hello 23 / 24 / 25 / 27 分支合并。规则正文见 [Voxim Magic](../../../../../Voxim/Docs/Magic.md)，本页只索引服务端边界：
 
 - [Magic.Catalog](../../../../apps/voxel_region/lib/voxel_region/magic/catalog.ex) 是发布目录的唯一服务端读取与校验入口。当前强制 **v4**，要求 `rest_pose`、`release_lead_s`；姿态为六关节整数角、5° 的倍数、绝对值不超过 175°。目录字节的 SHA-256 标识发布物；运行时不兼容旧 v2 四关节目录。
-- `Magic.Program` 在信任边界解析程序；`Magic.Cost` 是报价、构型损耗与前摇时长的共同计算源。`World.Casting` 接纳领域目标、权限与能量账并提交效果。施法者能量、蓄能石、热源与拟态沿既有 World 日志和检查点持久化。
+- `Magic.Program` 在信任边界解析程序；`Magic.Cost` 是报价、构型损耗与前摇时长的共同计算源。`World.Casting` 接纳领域目标、权限与能量账并提交效果。施法者能量、蓄能石、热源与拟态沿既有 World 日志和检查点持久化。施法者账是整数 mJ（旧浮点 J 余额按 trunc 读入，迁移兼容），玩家 `send_caster_state` 对无账角色提交一次开户充能（热账源项 `caster_granted_j`）；法杖光弹即普通 v1 施法意图，数值与规则见 [施法分段 · 法杖光弹](../../../10-active/magic/cast-phases-2026-10-05.md#法杖光弹整数-mj-施法者账与开户充能2026-11-20服务端已实现客户端与真实双端待接)。
 - **Player 拥有前摇与出手授权**：`Casting.begin_cast` 保存待支付领域负载并发送 `cast_prepared`；Player 设置 timer，到期从当前 `actor_context` 取位置、身份、身体状态与相干度，发送 `authorize_cast`。World 匹配同一动作与 Player，合入授权时 actor 与方向后重新裁决并结算，不按开始时姿态自动结算。
 - `pending_casts` 与符文 `casts` 是运行状态，冷重启不恢复未支付施法。取消／结算拒绝返回明确原因；成功提交的结束记录可以发布 `outcome 2`，不能把拒绝概括为所有内存与观察状态都毫无变化。`quote_windup_s` 来自同一次 `Cost.quote`，登录与结算状态为 0。
 

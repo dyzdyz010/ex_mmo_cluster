@@ -14,6 +14,79 @@ defmodule VoxelRegion.World.Casting do
 
   @hand_reach 0.5
 
+  # 开户一次性充能（整数 mJ）= 50 发法杖光弹的整数扣款。光弹程序（客户端法杖左键发出的普通 v1 施法意图）：
+  #   form.semblance{shape 0, radius_m 0.05, mass_kg 0.01, temperature_k 293.15, glow_w 100, lifetime_s 1}
+  #   → act.throw{speed_mps 30} → act.break_on_hit{}
+  # 目录 71ca543b、环境 293.15 K 下 `Magic.Cost.quote` 总支出 9941.697170433505 J → cost_mj = round(×1000) = 9_941_697；
+  # 50 × 9_941_697 = 497_084_850。目录或光弹程序变化时按同一推导重算这里（测试 `MagicStaffBoltTest` 用真实报价复核）。
+  @initial_charge_mj 50 * 9_941_697
+
+  @doc "开户一次性充能（整数 mJ），推导见本模块属性注释。"
+  def initial_charge_mj, do: @initial_charge_mj
+
+  @doc """
+  施法者能量余额（整数 mJ）：`state.caster_energy` 是施法者唯一能量账，值为整数毫焦（守恒量按整数最小单位结算）。
+  没有键 = 0（尚未开户；开户见 `open_account/2`）。
+  """
+  def balance_mj(state, cid) do
+    case Map.get(state.caster_energy, cid, 0) do
+      mj when is_integer(mj) ->
+        mj
+
+      # 迁移兼容：来源 = 整数化之前已持久化的浮点 J 余额（如青岚生产日志与检查点）；原因 = 日志按键合并、不改写历史条目；
+      # 规则 = 向零截断到 mJ（与魔法 v2 决策 P8 同一取整）；该键下一次结算即写回整数。
+      # 退出条件：S1a A1 把施法者能量迁入 `Pages.character_row` 时一次性换算，届时删除本分支。
+      j when is_float(j) ->
+        trunc(j * 1000)
+    end
+  end
+
+  # 报价的整数扣款：总支出（J）× 1000 后按 `round/1`（半数远离零）取整，这个整数就是从施法者账上扣的值。
+  defp cost_mj(quote), do: round(quote.total_j * 1000)
+
+  # 走火判定的整数账版本：相干度先判，沿用 `Magic.Cost.misfire/3` 的同一规则（把可用能量取为报价总支出，
+  # 能量分支不会触发）；能量在整数 mJ 上比较，可用 < 扣款即 `:misfire_energy`。
+  defp misfire(quote, cost_mj, available_mj, catalog) do
+    cond do
+      Magic.Cost.misfire(quote, quote.total_j, catalog) == :misfire_coherence -> :misfire_coherence
+      available_mj < cost_mj -> :misfire_energy
+      true -> nil
+    end
+  end
+
+  @doc """
+  开户：已加载魔法目录且施法者账上没有这个 cid 的键时，提交一笔一次性充能事务（余额 = `initial_charge_mj/0`），
+  热账源项 `caster_granted_j` 记下这笔凭空注入的能量（与 `caster_drawn_j` 同为施法者能量的来源项）。
+  键一经提交就随日志持久化，所以重连与冷重启都不会再充；已有键（含 0 与旧浮点余额）不动。
+  只由 `send_caster_state`（玩家 QUIC 接纳与显式状态请求）调用；只读的 `caster_state` 与 NPC 不经过这里。
+  提交失败显式返回 `{:error, reason}` 并记日志，状态不变。
+  """
+  def open_account(%{magic: nil} = state, _cid), do: {:ok, state}
+
+  def open_account(state, cid) do
+    if Map.has_key?(state.caster_energy, cid), do: {:ok, state}, else: grant(state, cid)
+  end
+
+  defp grant(state, cid) do
+    next = %{state | seq: state.seq + 1,
+      caster_energy: Map.put(state.caster_energy, cid, @initial_charge_mj),
+      thermal: Thermal.ledger(state.thermal, :caster_granted_j, @initial_charge_mj / 1000)}
+    txn = %{seq: next.seq, entries: [], coarse: [], caster_energy: %{cid => @initial_charge_mj}, thermal: next.thermal}
+
+    case Log.append_log(state, next, txn, {:character, cid}) do
+      :ok ->
+        next = Log.remember_entry(next, txn)
+        Observation.fanout(next, txn)
+        Observation.fanout_canonical(next, txn, [], [], state)
+        Logger.info("voxel_caster_grant seq=#{next.seq} cid=#{cid} granted_mj=#{@initial_charge_mj}")
+        {:ok, next}
+
+      {:error, reason} ->
+        Logger.warning("voxel_caster_grant_failed cid=#{cid} reason=#{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
   @doc "前摇到使用／取消之间仍会重新裁决的射程、脚下与驱散释放依赖；不以定时租约或观察窗口替代。"
   def residency_dependencies(%{pending_casts: casts}) when map_size(casts) == 0,
     do: {:ok, {[], [], []}}
@@ -35,9 +108,10 @@ defmodule VoxelRegion.World.Casting do
 
   # quote_windup_s（Hello 28）：只有报价回复带完整前摇（含目录出手前置段，与施放计时共用 `Cost.quote`），
   # 登录推送与施放结算后的状态为 0。
-  def caster_view(state, cid, quote, spent, windup_s) do
-    %{seq: state.seq, energy_j: Map.get(state.caster_energy, cid, 0.0), capacity_j: state.magic.capacity_j,
-      coherence: coherence(state, cid), quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent,
+  # 账是整数 mJ；线上（0x83）仍是 f64 J，这里是唯一的 mJ → J 换算出口。`spent_mj` 为本次扣款（整数 mJ）。
+  def caster_view(state, cid, quote, spent_mj, windup_s) do
+    %{seq: state.seq, energy_j: balance_mj(state, cid) / 1000, capacity_j: state.magic.capacity_j,
+      coherence: coherence(state, cid), quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent_mj / 1000,
       quote_windup_s: windup_s}
   end
 
@@ -75,16 +149,37 @@ defmodule VoxelRegion.World.Casting do
     with true <- state.magic != nil and state.magic.digest == request.catalog_digest,
          {:ok, program} <- Magic.Program.parse(request.program, state.magic),
          :ok <- warm_semblance(program, state.thermal.config["ambient_kelvin"]) do
-      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
+      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"]) |> basic_windup(state, program)
 
       if request.action == 0,
-        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0, quote.windup_s)}}, state},
+        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0, quote.windup_s)}}, state},
         else: cast_spell(state, from, actor, request, program, quote)
     else
       false -> {:reply, {:error, :stale_magic_catalog}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  @doc """
+  持物普攻法术的固定前摇（Voxim 交互设计"2026-11-20 修订"，用户 2026-11-20 定）：程序与已发布属性目录某持物的
+  `basic_spell` 按魔法目录解析后相等，前摇即取该持物的作者值 `basic_windup_s`；其余程序照常用成本模型前摇。
+  判定只看程序本身（服务端不知道玩家拿着什么），所以同一程序从技能栏施放也是这个前摇——这是程序的规则，不是装备规则。
+  成本（总支出、扣款、走火）不变。广播的各步 `{调整 s, 注能 s}` 按同一比例缩放，使 Σ(调整 + 注能) + release_lead_s
+  等于该前摇：客户端由施放记录推算施法进度与姿态，必须与服务端计时一致。作者前摇须 ≥ 魔法目录 release_lead_s。
+  """
+  def basic_windup(quote, %{properties: nil}, _program), do: quote
+
+  def basic_windup(quote, state, program) do
+    case Enum.find(state.properties.basic_windups, fn {spell, _} -> Magic.Program.validate(spell, state.magic) == {:ok, program} end) do
+      nil ->
+        quote
+
+      {_, windup_s} ->
+        k = (windup_s - state.magic.release_lead_s) / Enum.sum(for {a, i} <- quote.steps, do: a + i)
+        %{quote | windup_s: windup_s, steps: for({a, i} <- quote.steps, do: {a * k, i * k})}
+    end
+  end
+
   def cast_spell(state, from, actor, request, program, quote) do
     with false <- Map.has_key?(state.pending_casts, actor.cid),
          {:ok, _checked, _state} <- check_cast(state, actor, request, program) do
@@ -111,12 +206,12 @@ defmodule VoxelRegion.World.Casting do
     end
   end
 
-  # 施放记录：t0 = World 墙钟（与拟态 t0_us 同源），出发点 = 手边（与投掷拟态同一来源），程序字节原样。
+  # 施放记录：t0 = 服务器时间线（与 Scene 时间回复、拟态 t0_us 同源），出发点 = 手边（与投掷拟态同一来源），程序字节原样。
   def begin_cast(state, from, actor, request, program, quote) do
     {dx, dy, dz} = request.direction
     {ex, ey, ez} = actor.eye
 
-    record = %{live: 1, t0_us: System.system_time(:microsecond), steps: quote.steps, program: request.program,
+    record = %{live: 1, t0_us: MmoContracts.ServerTime.server_us(state.server_clock), steps: quote.steps, program: request.program,
       origin: {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}}
 
     case commit_casts(state, {:character, actor.cid}, %{actor.cid => record}) do
@@ -234,8 +329,11 @@ defmodule VoxelRegion.World.Casting do
       {:error, :semblance_limit, state}
     else
       case Magic.Semblance.trace(actor.eye, hand, velocity, form["radius_m"], state.magic.range_m, state, &semblance_cast/4) do
-        {:miss, state} ->
-          {:error, :out_of_domain, state}
+        # 射程内无命中（用户 2026-11-20 定）：照常接纳，沿已求交弹道飞到射程端点、无接触散解（散入空气）；
+        # 有投射物后端的〈触散〉光弹在结算时照既有规则改为按寿命实时采样飞行。
+        {{:miss, t}, state} ->
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: Magic.Semblance.position(hand, velocity, t), contact: nil}, throw)
+          {:ok, %{sym: "form.semblance", args: form, launch: launch, cells: [Magic.Semblance.macro(hand)]}, state}
 
         {{:free, point}, state} ->
           launch = %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: nil}
@@ -244,13 +342,16 @@ defmodule VoxelRegion.World.Casting do
         {{:hit, t, rest, target}, state} ->
           node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
           contact = %{target: target, key: VoxelRegion.ThermalGeometry.key(node), cell: Damage.macro(target)}
-          launch = %{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}
-          launch = if Enum.any?(throw, &(&1.sym == "act.break_on_hit")), do: Map.put(launch, :break_on_hit, true), else: launch
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}, throw)
           {:ok, %{sym: "form.semblance", args: form, launch: launch,
                   cells: Enum.uniq([Magic.Semblance.macro(rest), contact.cell])}, state}
       end
     end
   end
+
+  # 〈触散〉编译为记录上的 break_on_hit。
+  defp break_flag(launch, throw),
+    do: if(Enum.any?(throw, &(&1.sym == "act.break_on_hit")), do: Map.put(launch, :break_on_hit, true), else: launch)
 
   # 拟态弹道的 canonical 求交：同一 Amanatides-Woo 射线，命中返回目标与进入的微格。
   def semblance_cast(origin, direction, length, state) do
@@ -313,20 +414,28 @@ defmodule VoxelRegion.World.Casting do
 
   def spell_subject(_state, _effect), do: :ok
 
-  # 取能的构型损耗从取得的能量里付（可支付 = 余额 + η·ΔE），否则空施法者永远取不了能。
-  # 走火：扣 min(总支出, 余额) 全部落脚下，不产生其他效果。账：石减少 = caster_drawn_j + draw_loss_j；
-  # 施法支出 spent = spell_heat_j + semblance_created_j + cast_waste_j。
+  # 施法者账是整数 mJ（`balance_mj/2`）：扣款 cost_mj = round(总支出 × 1000)，走火判定在整数上比较。
+  # 取能的构型损耗从取得的能量里付（可支付 = 余额 + 取得 gained_mj），否则空施法者永远取不了能。
+  # 走火：扣 min(cost_mj, 余额) 全部落脚下，不产生其他效果。账：石减少 = caster_drawn_j + draw_loss_j；
+  # 施法支出 spent = spell_heat_j + semblance_created_j + cast_waste_j，其中废热 = cost_mj / 1000 − 物理能量，
+  # 使每笔施法的施法者扣款与热账入账相等（物理部分仍是连续物理状态，用浮点 J）。
   # 拟态：新记录 id = {本事务 seq, 0}，物理能量记 semblance_created_j；驱散：剩余能量记 semblance_released_j
   # 并作为有限热源落入接触宏格（或散入空气），已发生的燃烧与热不撤销。
   def settle_spell(before, actor, request, %{session: session, previous: previous, effect: effect, foot: foot}, quote) do
     magic = before.magic
     cid = actor.cid
     seq = before.seq + 1
-    balance = Map.get(before.caster_energy, cid, 0.0)
+    balance = balance_mj(before, cid)
+    cost = cost_mj(quote)
     stone = if effect.sym == "energy.draw", do: property_state(before, effect.target)
-    draw = stone && Magic.Cost.draw(effect.args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
-    available = if draw, do: balance + draw.gained_j, else: balance
-    outcome = Magic.Cost.misfire(quote, available, %{magic | coherence: magic.coherence * actor.coherence_factor})
+
+    draw =
+      stone &&
+        Magic.Cost.draw(round(effect.args["energy_j"] * 1000), trunc(Map.get(stone, :stored_j, 0.0) * 1000), balance, magic)
+
+    available = if draw, do: balance + draw.gained_mj, else: balance
+    outcome = misfire(quote, cost, available, %{magic | coherence: magic.coherence * actor.coherence_factor})
+    waste = cost / 1000 - quote.physical_j
     thermal = %{before.thermal | active: true}
 
     {spent, left, rows, thermal} =
@@ -335,20 +444,20 @@ defmodule VoxelRegion.World.Casting do
           source = %{target: target, power_w: args["power_w"], remaining_j: args["energy_j"]}
           thermal = %{thermal | sources: Map.put(thermal.sources, Damage.macro(target), source)}
 
-          {quote.total_j, balance - quote.total_j, [],
-           thermal |> Thermal.ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, quote.loss_j)}
+          {cost, balance - cost, [],
+           thermal |> Thermal.ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, waste)}
 
         {nil, %{sym: "energy.draw", target: target}} ->
-          row = Map.put(stone, :stored_j, Map.get(stone, :stored_j, 0.0) - draw.taken_j)
+          row = Map.put(stone, :stored_j, Map.get(stone, :stored_j, 0.0) - draw.taken_mj / 1000)
 
           thermal =
             thermal
-            |> Thermal.deposit_heat(target, draw.loss_j)
-            |> Thermal.ledger(:caster_drawn_j, draw.gained_j)
-            |> Thermal.ledger(:draw_loss_j, draw.loss_j)
-            |> cast_waste(foot, quote.loss_j)
+            |> Thermal.deposit_heat(target, draw.loss_mj / 1000)
+            |> Thermal.ledger(:caster_drawn_j, draw.gained_mj / 1000)
+            |> Thermal.ledger(:draw_loss_j, draw.loss_mj / 1000)
+            |> cast_waste(foot, waste)
 
-          {quote.loss_j, available - quote.total_j, [row], thermal}
+          {cost, available - cost, [row], thermal}
 
         {nil, %{sym: "form.semblance", args: form, launch: launch}} ->
           launch =
@@ -360,27 +469,27 @@ defmodule VoxelRegion.World.Casting do
             else
               launch
             end
-          s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, System.system_time(:microsecond)))
+          s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, MmoContracts.ServerTime.server_us(before.server_clock)))
 
           thermal =
             thermal
             |> Map.update(:semblances, %{{seq, 0} => s}, &Map.put(&1, {seq, 0}, s))
             |> Thermal.ledger(:semblance_created_j, quote.physical_j)
-            |> cast_waste(foot, quote.loss_j)
+            |> cast_waste(foot, waste)
 
-          {quote.total_j, balance - quote.total_j, [], thermal}
+          {cost, balance - cost, [], thermal}
 
         {nil, %{sym: "act.dispel", id: id, semblance: s, release: cell}} ->
           thermal =
             thermal
             |> Thermal.release(id, s, cell)
-            |> cast_waste(foot, quote.loss_j)
+            |> cast_waste(foot, waste)
 
-          {quote.total_j, balance - quote.total_j, [], thermal}
+          {cost, balance - cost, [], thermal}
 
         _misfire ->
-          spent = min(quote.total_j, balance)
-          {spent, balance - spent, [], cast_waste(thermal, foot, spent)}
+          spent = min(cost, balance)
+          {spent, balance - spent, [], cast_waste(thermal, foot, spent / 1000)}
       end
 
     rows = Enum.map(rows, &%{&1 | seq: seq, request_id: 0})
@@ -409,7 +518,7 @@ defmodule VoxelRegion.World.Casting do
         Logger.info(
           "voxel_spell seq=#{seq} cid=#{cid} request_id=#{request.request_id} sym=#{effect.sym} outcome=#{outcome || :cast} " <>
             "structure=#{quote.structure} quote_j=#{quote.total_j} loss_j=#{quote.loss_j} windup_s=#{quote.windup_s} " <>
-            "spent_j=#{spent} energy_j=#{left} " <>
+            "spent_mj=#{spent} energy_mj=#{left} spent_j=#{spent / 1000} energy_j=#{left / 1000} " <>
             "cells=#{inspect(effect.cells)} foot=#{inspect(Damage.macro(foot))}"
         )
 

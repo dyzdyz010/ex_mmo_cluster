@@ -443,7 +443,11 @@ defmodule VoxelRegion.World do
   """
   def magic_digest(server), do: VoxelRegion.World.PageLoad.call(server, :magic_digest, 300_000)
 
-  @doc "全局系统功能：由 World 有序出口发送登录施法者状态，和报价、结算及身体变化共用同一发送者。"
+  @doc """
+  全局系统功能：由 World 有序出口发送登录施法者状态，和报价、结算及身体变化共用同一发送者。
+  已加载魔法目录且该角色尚无施法者账时，先提交一笔开户一次性充能事务（`World.Casting.open_account/2`），
+  所以这是写入口；只读查询用 `caster_state/2`。
+  """
   def send_caster_state(server, cid, request_id, recipient),
     do: VoxelRegion.World.PageLoad.call(server, {:send_caster_state, cid, request_id, recipient}, 300_000)
 
@@ -666,6 +670,8 @@ defmodule VoxelRegion.World do
         # 缓存容量由Cache维护；二进制GC阈值沿用VM策略，不由缓存预算抬高回收下限。
         state = %{
           clock: Keyword.get(opts, :clock, {Clock, nil}),
+          # 发给客户端的施放／拟态时刻与 Scene 移动时间回复同一条线（MmoContracts.ServerTime）；测试可注入单调时钟。
+          server_clock: Keyword.get(opts, :server_clock, {MmoContracts.ServerTime, nil}),
           circuit_component_limit: VoxelRegion.World.CircuitAdmission.configure(opts),
           source: source,
           source_state: source_state,
@@ -858,7 +864,7 @@ defmodule VoxelRegion.World do
 
         state = schedule_liquid(state)
         state = Thermal.wake(state)
-        state = VoxelRegion.World.Projectiles.wake(state)
+        state = state |> VoxelRegion.World.Projectiles.settle_restored() |> VoxelRegion.World.Projectiles.wake()
         {:ok, state}
 
       error -> error
@@ -1260,17 +1266,24 @@ defmodule VoxelRegion.World do
   defp call(:magic_digest, _, state), do: {:reply, state.magic && state.magic.digest, state}
 
   defp call({:caster_state, cid}, _, state) do
-    reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0, 0.0)}, else: {:error, :magic_unavailable}
+    reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0, 0.0)}, else: {:error, :magic_unavailable}
     {:reply, reply, state}
   end
 
+  # 玩家施法者状态出口（QUIC 接纳与显式请求）：先开户（无键时一次性充能并提交），再按开户后的账发状态。
   defp call({:send_caster_state, cid, request_id, recipient}, from, state) do
-    {:reply, result, state} = call({:caster_state, cid}, from, state)
-    case result do
-      {:ok, caster} -> publish_caster_state(recipient, request_id, caster)
-      {:error, _} -> :ok
+    case open_account(state, cid) do
+      {:ok, state} ->
+        {:reply, result, state} = call({:caster_state, cid}, from, state)
+        case result do
+          {:ok, caster} -> publish_caster_state(recipient, request_id, caster)
+          {:error, _} -> :ok
+        end
+        {:reply, result, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
-    {:reply, result, state}
   end
 
   defp call({:spell_intent, actor, request}, from, state) do
@@ -1995,7 +2008,7 @@ defmodule VoxelRegion.World do
     state = %{state | caster_coherence: Map.put(state.caster_coherence, cid, value)}
 
     if changed and state.magic != nil do
-      publish_caster_state({gate, identity}, 0, caster_view(state, cid, @no_quote, 0.0, 0.0))
+      publish_caster_state({gate, identity}, 0, caster_view(state, cid, @no_quote, 0, 0.0))
     end
 
     {:noreply, state}

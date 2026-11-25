@@ -82,7 +82,7 @@ defmodule VoxelRegion.World.Observation do
       :circuit_peltier_absorbed_j, :circuit_peltier_released_j, :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
       :transform_j, :transform_units, :transform_reductant_fuel_j,
-      :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j,
+      :caster_granted_j, :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j,
       :semblance_created_j, :semblance_exchanged_j, :semblance_light_j, :semblance_released_j, :body_exchange_j,
       :projectile_body_j, :projectile_rejected_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
