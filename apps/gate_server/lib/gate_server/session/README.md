@@ -17,6 +17,7 @@ Scene 决定发言人与听众，Gate 不解释台词、调用模型或等待记
 | `auth.ex` | token / cid / 角色档案，Gate 侧唯一鉴权信任边界 |
 | [`WorldServer.Session`](../../../../world_server/lib/world_server/session.ex)（跨 app 公共 API） | 角色会话占用的唯一 owner；分配 identity / session epoch、替换重复登录并提交移交；由 WorldServer 监督 |
 | `call.ex` | 跨进程调用，exit → 显式 error |
+| [`../telemetry.ex`](../telemetry.ex) | 玩家使用遥测：连接进程在入场 / 结束时、编辑 worker 在首个确认意图后调用，经一次性 Task 写 `auth_audit`，失败只记警告；见[设计稿](../../../../../docs/10-active/cross-cutting/2026-11-10-player-telemetry.md) |
 
 B2 的 Ready 前材料库存查询与作者权限拒绝测试属于本会话边界，位于
 `test/gate_server/voxim_production_dispatch_test.exs`（只测试）。它调用真实 Dispatch、Sink 和 World，

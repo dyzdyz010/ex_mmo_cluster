@@ -18,6 +18,8 @@ defmodule GateServer.Session.QuicConnection do
        hello_seen: false,
        identity: nil,
        cid: nil,
+       joined_ms: nil,
+       end_reason: nil,
        route: nil,
        player: nil,
        pending_transfer: nil,
@@ -419,7 +421,15 @@ defmodule GateServer.Session.QuicConnection do
   def handle_info({:mmo_datagram, _, _}, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, state) do
+  def terminate(reason, state) do
+    if state.joined_ms,
+      do:
+        GateServer.Telemetry.session_end(
+          state.cid,
+          state.joined_ms,
+          to_string(state.end_reason || inspect(reason))
+        )
+
     if state.edit_worker, do: Process.exit(state.edit_worker, :kill)
 
     if state.pending_transfer do
@@ -702,8 +712,12 @@ defmodule GateServer.Session.QuicConnection do
           }
 
           case result do
-            {:ok, player} -> %{state | player: player}
-            {:error, :closed} -> state
+            {:ok, player} ->
+              GateServer.Telemetry.session_start(join.cid)
+              %{state | player: player, joined_ms: System.monotonic_time(:millisecond)}
+
+            {:error, :closed} ->
+              state
           end
 
         _ ->
@@ -921,7 +935,7 @@ defmodule GateServer.Session.QuicConnection do
       "mmo_session_closed reason=#{reason} code=#{code} cid=#{inspect(state.cid)} identity=#{inspect(state.identity)} detail=#{detail}"
     )
 
-    shutdown(state, code)
+    shutdown(%{state | end_reason: reason}, code)
   end
 
   defp shutdown(%{identity: nil} = state, code) do

@@ -46,6 +46,8 @@ defmodule GateServer.VoximPrefabPublishDispatchTest do
       voxim_overlay: true,
       player: player,
       identity: actor.identity,
+      # Dispatch 的 state 契约含 :cid（生产由连接进程填入）；确认后的遥测按它找账号。
+      cid: actor.cid,
       world_ref: world,
       sink: Sink.quic(self(), :session)
     }

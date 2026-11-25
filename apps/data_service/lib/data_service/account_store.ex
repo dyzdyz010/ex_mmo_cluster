@@ -64,6 +64,30 @@ defmodule DataService.AccountStore do
       if constraint?(e), do: {:error, :registration_failed}, else: reraise(e, __STACKTRACE__)
   end
 
+  @doc """
+  玩家遥测：把会话事件（`session_start` / `session_end`）追加进 `auth_audit`，对象是角色所属账号；
+  没有账号的角色（NPC）不记。只追加，不读不改任何账号真值。`now` 为 Unix 秒，与其他审计行一致。
+  """
+  def record_session_event(cid, action, details, now)
+      when action in ["session_start", "session_end"] do
+    sql(
+      "INSERT INTO auth_audit(actor,action,object_id,details,at) SELECT 'gate',$2::varchar,c.account::text,$3::jsonb,$4::bigint FROM characters c WHERE c.id=$1 AND c.account IS NOT NULL",
+      [cid, action, details, now]
+    )
+
+    :ok
+  end
+
+  @doc "玩家遥测：账号第一次被服务端确认的世界意图。每个账号终身只记一行（由语句内的 NOT EXISTS 保证）。"
+  def record_first_edit(cid, now) do
+    sql(
+      "INSERT INTO auth_audit(actor,action,object_id,details,at) SELECT 'gate','first_edit',c.account::text,'{}'::jsonb,$2::bigint FROM characters c WHERE c.id=$1 AND c.account IS NOT NULL AND NOT EXISTS (SELECT 1 FROM auth_audit a WHERE a.action='first_edit' AND a.object_id=c.account::text)",
+      [cid, now]
+    )
+
+    :ok
+  end
+
   @doc "查询注册策略。"
   def policy,
     do: one("SELECT invite_required FROM auth_registration_policy WHERE id=1", []).invite_required

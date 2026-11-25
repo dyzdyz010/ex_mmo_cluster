@@ -135,6 +135,7 @@ defmodule GateServer.Session.Dispatch do
       SceneServer.Movement.Intent.run(state, intent, Map.take(state, [:received_us, :clock_node]))
 
     reply(state, request, result)
+    if match?({:ok, _}, result), do: GateServer.Telemetry.first_edit(state.cid)
     if refresh, do: send_material_balances(state, state.cid, request.request_id)
 
     if kind == :voxel_tool_intent and request.action == 1 and match?({:ok, _}, result) and
