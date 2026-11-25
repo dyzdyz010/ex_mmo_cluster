@@ -191,7 +191,7 @@ Add a one-time command: basic-action calls with their values, done in order when
 
 `<CALLS>` 取一次真实 find_route 回答里第一条路线的前两步（不手写）。现有候选：M-3d pit-3 表思考会话 outer2 第 2 轮的回答（日志 seq 164）：
 `{"atom": "move_to", "args": {"x": 29.5, "y": 506, "z": 47.5}}, {"atom": "dig_cell", "args": {"tool_id": 1, "x": 28, "y": 507, "z": 47}}`。
-这两步就是坑场景自己的出坑路线（M-3d 五次的 find_route 回答起点都在坑里），用不用它见正文 §九 第 3 题。
+这两步就是坑场景自己的出坑路线（M-3d 五次的 find_route 回答起点都在坑里），正文 §一 已定 ⑪：不用它，改在实跑准备里于出生点附近只读查一次 find_route，取前两步。
 
 ### B.5 close_todo
 
