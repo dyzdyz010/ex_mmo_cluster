@@ -669,3 +669,4 @@ flowchart LR
 - 2026-11-25T15:55Z：第 1 步（store 计划侧：种类 command、after 与提交时检查、关闭结局、last_run.status、三种事实、append_judged_fact）完成并经统筹核对，指纹 `9a792b3ae2b1f0c0`。另按 §十 回填清单第 1–7 条与同义处回填现行文档（只加注）。
 - 2026-11-25T16:10Z：第 2 步（store 心智侧：way_judgments 栏、named_regions；一次性指令不能当 parent）完成并经统筹核对，指纹 `ed3d6db46d0861ef`。
 - 2026-11-25T16:35Z：第 3 步（queue_view：window_ended、item_status、after_status、stop_asked、one_shot_facts_due、open_items；doable 改由 item_status）完成并经统筹核对，指纹 `5c119302ca0dd413`。
+- 2026-11-25T16:55Z：第 4 步（契约数据：semantic_types.json 的 arg_sources，24 原子 70 参数 3 节点；accept 读入）完成并经统筹核对，指纹 `61f693d14b124669`。
