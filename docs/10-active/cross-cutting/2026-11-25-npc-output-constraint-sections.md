@@ -4,6 +4,7 @@
 [`2026-11-23-npc-three-loop-framework-decision.md`](2026-11-23-npc-three-loop-framework-decision.md)，起因见 U-31 稿
 [`2026-11-24-npc-route-and-teleport-decision.md`](2026-11-24-npc-route-and-teleport-decision.md) §10 2026-11-25 末条（M-3c C1 不成立）。
 状态：**用户定方向（2026-11-25）；约束段原文已写成（§4），新一版 harness 已实施并离线验证（§9，指纹 `464f047c848998fa`）；M-3d 已实跑（§9 末条）：约束段只部分改变行为，自写经验里写死挖 / 放格的判定 C4 不成立，原因已按环节定位，下一轮的做法待用户定。**
+2026-11-25 补：下一轮已由 [M-3e 稿](2026-11-25-npc-m3e-timeliness-and-way-sources-decision.md) 定（用户全照建议）；本稿 §2 依据、§4 原文、§5 的唯一定义处与“接纳边界不变”被该稿取代，各处已加注（§9 末条）。
 
 ## 1. 起因与用户的决定
 
@@ -18,6 +19,9 @@ M-3c 正式系列（`.demo/observe/npc-three-loop-m3c-20261124/plan.md` §10）�
 - 对统筹提案（每种输出一段约束；先只靠提示词、代码不加专门的拒绝规则；改了另开一轮小验证）的答复：「可以，按这个方案开始写约束段」（2026-11-25）。
 
 ## 2. 外部依据（AGENTS 2.2.8；2026-11-25 取原文）
+
+（2026-11-25 本节依据被用户口径取代：提示词只写输出什么、为了什么、举一个例子，不抠细节、不写防御性条款；M-3d 里约束段被逐字引用却引出误读，是取代的理由之一。
+见 [M-3e 稿](2026-11-25-npc-m3e-timeliness-and-way-sources-decision.md) D-8 的依据。下文原文保留作记录。）
 
 Anthropic 官方文档 *Define tools*（`platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools`）“Best practices for tool definitions”：
 
@@ -57,6 +61,9 @@ Anthropic 官方文档 *Define tools*（`platform.claude.com/docs/en/agents-and-
 ## 4. 约束段原文（英文，写进工具说明；中文是给人读的对照）
 
 写法：每段接在该输出现有说明之后（现有说明逐字保留），只写机制与形式；共用的句子只定义一次（DRY），由各段引用。
+
+（2026-11-25 本节原文被 [M-3e 稿附录 B](2026-11-25-npc-m3e-timeliness-and-way-sources-appendix.md) 取代：每种输出改为一段完整说明，整段替换“现有说明 + 约束段”两截；
+删了什么、为什么见附录 B.16。下文是 M-3d 用的版本，留作记录。）
 
 **共用句 `VALUES_CHOSEN_WHEN_USED`**（经验、待办、日程三段都用）：
 
@@ -126,8 +133,11 @@ What is not in the new text is gone from this section. The section is shown to m
 - 唯一定义处：M-3d 新一版 harness 的 `formats.py`，一张表 `OUTPUT_CONSTRAINTS`（输出名 → 约束段）加共用句 `VALUES_CHOSEN_WHEN_USED`；
   `m3_mind_ops` / `m3_inner_ops` 把约束段接在现有说明后面。M-3c 的 harness 冻结不动（它的报告绑着指纹 `1e238a2472c3f61f`），
   新版本照 M-3c 的做法另起目录复制（`.demo/observe/npc-three-loop-m3d-<日期>/`）。
+  （2026-11-25 M-3e 起唯一定义处改为 `formats.OUTPUT_TEXT`，输出名 → 一段完整说明，取代 `OUTPUT_CONSTRAINTS`、`VALUES_CHOSEN_WHEN_USED` 等的拼接，见 M-3e 稿 D-8。）
 - 进产品时（通用心智稿 §7）这张表随心智原子的说明一起迁移，不另写一份。
 - 代码侧的接纳边界不变（用户定：先只靠提示词）；B-2 / B-10 与 `do_listed` 的清单规则照旧。
+  （2026-11-25 被 M-3e 稿 D-6 取代：M-3d 读数是提示词约束不住，用户定由程序校验格式；接纳边界按“经验参数来源契约”整条拒绝不合格的经验，
+  B-2 / B-10 与 `do_listed` 查树的规则并入该契约。）
 
 ## 6. 测试矩阵（按 `../Voxim/Docs/Testing.md`）
 
@@ -191,3 +201,5 @@ What is not in the new text is gone from this section. The section is shown to m
     被接纳时时段已过的日程正式 35 / 203，不执行也不留事实（M-3c 起就有）。
   - **待用户定**：下一轮候选 6 项（`report/per-link.md` §6：约束段那两句的歧义、写明谁选与怎么列、一次性具体动作的写法、计时与过期事实、
     里思考推送心智只列能用的、要不要加接纳边界规则）；下一轮计划按环节重写（用户已定）。
+- 2026-11-25：下一轮由 [M-3e 稿](2026-11-25-npc-m3e-timeliness-and-way-sources-decision.md) 定，上条候选 6 项都在该稿处理，用户全照建议。按其 §十 第 3 条回填本稿，只加注、原文保留：
+  §2 依据被用户口径取代（D-8）；§4 原文被该稿附录 B 取代；§5 唯一定义处改为 `OUTPUT_TEXT`（D-8），“代码侧的接纳边界不变”被 D-6 取代。

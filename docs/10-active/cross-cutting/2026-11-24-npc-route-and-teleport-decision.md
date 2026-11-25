@@ -117,10 +117,12 @@ flowchart TB
 
 - **`do_listed`**：“依次做这份清单里的原子调用；第一个失败就停，整体失败（带那一步的原子与原因）”——与 `do_in_order` 同一语义，只是子节点来自一个参数的值。这是方式树的一个通用节点：任何“系统函数产出的原子调用清单”都可以用它执行，路线是第一个用途。
 - **接纳边界**：`do_listed` 引用的参数必须是“由列举器产出清单”的语义类型（目前只有 `route`）；清单内容只来自候选，表思考写不进去（同 B-2 / B-10 守点位的做法）。
+  （2026-11-25 这条并入 [M-3e 稿](2026-11-25-npc-m3e-timeliness-and-way-sources-decision.md) D-6 的经验参数来源契约，唯一定义处 `semantic_types.json` 的 `arg_sources.nodes.do_listed`。）
 - **估算不作门（三循环稿 U-32）**：`do_listed` 每一步只按那个原子的权威结局判成败——不按 `find_route` 的估计设时限，
   不因实际比估计长或短判失败（`dig_cell` 本来就敲到成空气为止，不按估计击数封顶）；路线槽列候选也不按估计值设阈值筛掉，
   估计值原样作为候选的事实给 Jev，由它比较。
 - **`route`**：带 `region_from` 的收窄组（同料源、点位：先选区域，再列这个区域的路线；B-7 回退照用）。候选 = `find_route` 对所选区域列出的路线；列不出时按 B-3 写 `no_candidates` 事实并挡住条目，原因句即 `find_route` 的原因。
+  （2026-11-25 M-3e 稿 D-7 收窄 B-7：经验参数声明里写了区域名的固定区域槽不走 B-7 回退——区域是固定的，Jev 答都不合适时投 `slot_open` 请表思考。）
 - **起始方式（G0）加一条** `make_my_way(region, route)`：`do_listed(route)`。名字、说明在实施时按 G0 的写法定。
 
 ### 5.4 原子 `dig_cell`
@@ -312,4 +314,6 @@ flowchart TB
     (4) 改了就是新的 harness 指纹，另开一轮小验证（判定先写定）。§9 第 5 步（进产品）等这一项有结论之后再做。
   - 用户答复提案：「可以，按这个方案开始写约束段」。盘点、依据与约束段原文另起一稿：
     [`2026-11-25-npc-output-constraint-sections.md`](2026-11-25-npc-output-constraint-sections.md)。
+- 2026-11-25：按 [M-3e 稿](2026-11-25-npc-m3e-timeliness-and-way-sources-decision.md) §十 第 4 条回填 §5.3（用户看过该稿、全照建议），只加注、原文保留：
+  `do_listed` 只收列举器清单类型这条并入经验参数来源契约（`arg_sources.nodes.do_listed`，D-6）；B-7 收窄回退不用于写了区域名的固定区域槽（D-7）。
 
