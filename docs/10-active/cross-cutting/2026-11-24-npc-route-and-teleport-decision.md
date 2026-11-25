@@ -1,7 +1,7 @@
 # NPC 走不通时：系统函数列路线、经验逐步执行，加一个传送原子（2026-11-24）
 
 分类：NPC 能力的决策稿（定契约、所有权、依据、测试矩阵与实施次序；不改代码）。
-状态：**方向由用户定（2026-11-24，三循环稿 U-30、U-31）；§9 第 1、2 步已实施（产品代码 + 测试 + 文档），第 3 步（harness 新版本，`.demo/observe/npc-three-loop-m3c-20261124/`）已实施，见 §10；第 4 步（隔离节点 + M-3c 计划）起未做。**
+状态：**方向由用户定（2026-11-24，三循环稿 U-30、U-31）；§9 第 1、2 步已实施（产品代码 + 测试 + 文档），第 3 步（harness 新版本，`.demo/observe/npc-three-loop-m3c-20261124/`）已实施，见 §10；第 4 步的准备已做（隔离节点换代码、场景与冒烟、M-3c 计划与判定，0 次模型请求），冒烟发现第 2 步的一处缺陷（§10 末条），修法与实跑待用户定。**
 
 - 上位：[`2026-11-23-npc-three-loop-framework-decision.md`](2026-11-23-npc-three-loop-framework-decision.md)（下称“三循环稿”）的 U-30（脱困分两层）与 U-31（本稿的五项决定）。
 - 起因：M-3b 正式系列 N-1——角色挖料挖成坑、或走上台地后，表思考按 look 的逐格高度在推理里手算台阶与走道，known-3、bare-3 各有一轮把 32,768 个输出 token 全用在这种推算上，运行停（`.demo/observe/npc-three-loop-m3-20261123/results.md` M-3b 一节）。
@@ -245,4 +245,25 @@ flowchart TB
   - **第 4 步要做的**：受控 Body 的 profile 加 `dig_cell` 技能（`profile-m2b.exs` 与在跑的隔离节点共用，在 M-3c 的新环境里另写一份，不改它）；桥服务端不用改
     （经 `Abilities.command/4` 转发任意原子）；隔离节点换上第 1–2 步的代码（只动本线的隔离节点）；写 M-3c 计划与判定（判定器加 routes 事件、do_listed 每步结局、
     传送的读数；“困在坑里”的前提由产品原子在场景准备阶段挖出来，需要“造路走不通”时用作者入口装保护区）；新开账本、额度先报用户。
+- 2026-11-25：§9 第 4 步的准备（用户「可以，开始第四步的准备」；0 次模型请求，花费 0）。计划、判定、冒烟记录都在
+  `.demo/observe/npc-three-loop-m3c-20261124/plan.md`（下称 M-3c plan）。
+  - **环境**：M-3c 目录另起 `env/`（`profile-m3c.exs` = m2b 那份加 `dig_cell`；`body-m3c.exs`、`reset-world-m3c.sh` 只换起 Body 的 profile）与 `bridge/`
+    （复制 M-3 桥，读 profile-m3c，body.json 登记的 profile 不对就显式失败）；m2b 的 profile 与 M-3 的桥没动。账本缺省改成 `runs/spend-ledger-m3c.json`。
+    harness 多一个可观测字段：observe 的 `bridge` 事件写那一刻身体的位置（判定器据此判“出了坑”）。
+  - **隔离节点换代码**：`reset-world-m3c.sh` 在 UDP 看护下跑一次，增量编译 voxel_region 4 / scene_server 2 / npc_server 14 个文件、无告警，93 s；
+    本线进程 UDP 0、没有新的 Tcpip 4266；新 Body 的技能含 `dig_cell`。
+  - **场景（Test-only 夹具 `scripts/trap.py`，不手写世界）**：经桥 `move_to` 到坑口、逐层 `dig_cell` 挖 3 层（坑挖在出生点之外：传送的落点就是出生点）；
+    walled 变体再经 `World.author_regions/2` 装作者保留区。前提用 `find_route` 核对。第一次只挖一列时胶囊搭在邻列的棱上没掉下去
+    （`move_to` 落在容差内、偏格心 0.146 m），改为挖脚下圆盘覆盖的全部列（这次是 2×1）。
+  - **冒烟（看护下，0 次模型请求）**：坑：walk no_path，dig 与 dig_place 都列出；照 dig_place 的 calls 逐个做，4 步全 done、走到地块；传送读条 10.6 s、
+    落在出生点，紧接着第二次回 `teleport_cooldown` 与可再用的游戏钟时刻；walled：三类都 no_path、protected 97，传送出坑。
+  - **发现（第 2 步的缺陷）**：照 dig 路线的 calls 做，第一步 `dig_cell` 被拒 `blocked`。`Path.find_with_edits` 一步里的身体格自上而下列，
+    `NpcServer.Route` 照这个次序发 `dig_cell`；`dig_cell`（`Gather.mine/3`）从眼睛（脚 + 1.5）向格心探测，上台阶时眼睛与下格同高，
+    看上格的视线先碰到还没敲的下格。平走时先上后下是对的，上台阶时应先下后上——§5.4“从这里挖得到由路线保证”在上台阶时不成立。
+    第 2 步的集成测试只走了平沟，没抓到。建议修法（待用户定，M-3c plan §4.1）：`Route` 把同一步里的 `dig_cell` 按离规划站位眼睛的远近由近到远发
+    （视线只会被比目标更近的格挡住），先补上台阶的反例（现在红）再改；Path 不动。
+  - **M-3c 计划与判定**（发问前写定，M-3c plan §5，判定器 `scripts/report_m3c.py` 与 13 个反例 / 正例，6 条规则的变异都被抓到）：
+    C0 运行有效、前提成立；C1 正式 5 次里 ≥ 4 次经路线或传送出坑；C2 正式运行 DeepSeek `length` 截停 0；C3 判定 1、2、3、5 不回退。
+    读数：DeepSeek 单轮最长输出、两种做法各被选几次、出坑用时等。运行：小集成 1 次 → 冻结 harness → 正式 5 次（pit 3、walled 2）；
+    驱动 `scripts/series_m3c.sh`。花费：新账本，整轮 15 美元线不变，现实估计约 2–3 美元。实跑未开始，等用户定（M-3c plan §9）。
 
