@@ -44,6 +44,7 @@
 - [`2026-09-21-prefab-macro-cells-design.md`](cross-cutting/2026-09-21-prefab-macro-cells-design.md) — Prefab 里的宏格（VXPD v3，宏格 = 隐式叶子、归属表、对齐、造价与溯源）与 Prefab Designer 内核；已定方向，未实施
 - [`2026-10-07-character-capability-library.md`](cross-cutting/2026-10-07-character-capability-library.md) — 角色能力函数库（统一执行入口 Intent、能力库 Abilities 与 LLM / 行为树投影、NPC 补齐、gather + Settler 行为树、NPC 施法）；2026-10-08 设计定稿，I1 实施中
 - [`2026-10-29-npc-motion-hast-sec-evaluation.md`](cross-cutting/2026-10-29-npc-motion-hast-sec-evaluation.md) — NPC 动作表现调研：HAST-SEC 实为动捕片段检索、不引入；会商业化、先走跑后交互；Motion Matching 走跑进入隔离 probe，Control Rig IK 交互与离线生成未批准
+- [`2026-11-10-player-telemetry.md`](cross-cutting/2026-11-10-player-telemetry.md) — 玩家使用遥测：Gate 把 `session_start` / `session_end` / `first_edit` 追加进 `auth_audit`，供 D1/D7 留存、时长与注册漏斗统计；已实现，未部署
 
 ### field-emergence
 
