@@ -666,4 +666,5 @@ flowchart LR
   写入 §一（已定 ⑨–⑪）、§3.0 A-13 / A-14、§七 风险 1 / 4 / 10、§九 与附录 B.4 的引用。**待用户定的题清零；仍未实施、未实跑。**
 - 2026-11-25T15:25Z：开始离线实施（第十个统筹会话）。第 0 步：M-3d 的 `harness/`、`configs/`、`scripts/` 复制到 `.demo/observe/npc-three-loop-m3e-20261125/`，基线测试全绿（harness 79 / 69 / 83 / 52，
   scripts 109 / 13 / 18 / 11），指纹 `464f047c848998fa`（同 M-3d）。第 1–21 步各交一个单独代理会话；§八 允许的两处并行因各步在同一副本里做原位变异会互相误红，统筹改为全部串行。进度明细在该目录 `plan.md`。
-- 2026-11-25T15:55Z：第 1 步（store 计划侧：种类 command、after 与提交时检查、关闭结局、last_run.status、三种事实、append_judged_fact）完成并经统筹核对，指纹 `9a792b3ae2b1f0c0`。另按 §八 回填清单第 1–7 条与同义处回填现行文档（只加注）。
+- 2026-11-25T15:55Z：第 1 步（store 计划侧：种类 command、after 与提交时检查、关闭结局、last_run.status、三种事实、append_judged_fact）完成并经统筹核对，指纹 `9a792b3ae2b1f0c0`。另按 §十 回填清单第 1–7 条与同义处回填现行文档（只加注）。
+- 2026-11-25T16:10Z：第 2 步（store 心智侧：way_judgments 栏、named_regions；一次性指令不能当 parent）完成并经统筹核对，指纹 `ed3d6db46d0861ef`。
