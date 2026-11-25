@@ -17,6 +17,9 @@ defmodule SceneServer.Movement.Path do
 
   `smooth/7` 把格路径拉直成要依次走到的水平点：同一层上，只要胶囊（半径 `radius`）扫过的每一列都是这一层的
   站立格，中间的格心就跳过；换层的那一步不跳，仍走格心。开阔平地上结果就是 `[目标点]`，即原来的直线。
+
+  `find_with_edits/7` 在同一套规则上多两种“改格”的走法（敲掉挡路的实心格、放一格当脚下的地），代价由调用方给；
+  它只规划、不改任何东西，供 NPC 的路线查询列候选（决策稿 docs/10-active/cross-cutting/2026-11-24-npc-route-and-teleport-decision.md §5.2）。
   """
 
   @doc """
@@ -48,6 +51,51 @@ defmodule SceneServer.Movement.Path do
           estimate,
           {grid, step, height, Keyword.get(opts, :max_nodes, :infinity)}
         )
+    end
+  end
+
+  @doc """
+  带改格的寻路（只规划，不改任何东西）。站立、迈步、下落沿用 `find/7` 的规则，另允许两种改格：
+
+    * **敲**：迈进下一列时身体要占的格、上台阶时起步列头顶要让出的净空格里，`:solid` 的格可以敲掉；
+    * **放**：下一列脚下那一格是 `:open` 时可以放一格当地面（垫一级台阶、搭过一格的空）。
+
+  不在表里的格（液体、细化格、快照之外的未知）既不能敲也不能放。下落途中不改格。
+
+  `edit` 是调用方给的代价函数 `(:dig | :place, cell) -> 代价 | :forbidden`，代价以“走一步 = 1”为单位。
+  Path 不认识材料、保护区与余额：哪些格能改、改一格算多少，都由调用方决定。
+  `goals` 是目标站立格（脚所在的格）的集合，到其中任一格即算到；空集合回 `:no_path`。
+  `start` 与可选 `trusted_start`、`max_nodes` 同 `find/7`。
+
+  每一步都在“原地形 + 这条路此前各步的改格”上判（已敲掉的格算空气、已放的格算实心，不重复计代价），
+  所以给出的路线按顺序执行时，每一步相对这份快照都成立。去重按站立格，有改格时不保证全局最省。
+  返回 `{:ok, %{steps: [%{to: 格, dig: [格], place: [格]}], cost: 代价}}`（不含起点）、`:no_path`
+  或 `{:error, :search_limit}`。同一步里 `dig` 先列起步列头顶的格（自下而上），再列目标列的身体格（自上而下），
+  `place` 在 `dig` 之后做；够不够得着、敲不敲得动仍由执行时的权威裁决。
+  `edit` 对任何格都回 `:forbidden` 时，与 `find/7` 走的是同一种路。
+  """
+  def find_with_edits(grid, start, goals, step, height, edit, opts \\ []) do
+    landed = land(grid, start, height)
+    from = if Keyword.get(opts, :trusted_start, false), do: landed || start, else: landed
+
+    if from == nil or MapSet.size(goals) == 0 do
+      :no_path
+    else
+      {xs, zs} = goals |> Enum.map(fn {x, _, z} -> {x, z} end) |> Enum.unzip()
+      {x0, x1} = Enum.min_max(xs)
+      {z0, z1} = Enum.min_max(zs)
+
+      # 到目标列外接矩形的水平距离：每步至少代价 1、至多换一列，所以不高估。
+      estimate = fn {x, _, z} -> outside(x, x0, x1) + outside(z, z0, z1) end
+
+      weighted(
+        :gb_sets.singleton({estimate.(from), 0, from}),
+        %{from => %{g: 0, parent: nil, step: nil, overlay: %{}}},
+        MapSet.new(),
+        {goals, estimate},
+        {grid, step, height, edit},
+        Keyword.get(opts, :max_nodes, :infinity)
+      )
     end
   end
 
@@ -158,6 +206,148 @@ defmodule SceneServer.Movement.Path do
       true -> nil
     end
   end
+
+  # 带权 A*：代价不再都是 1，所以按出队定型（closed），同一格找到更省的到达方式时更新。每个节点带着从起点到它
+  # 这一路的改格（overlay：格 → :open | :solid），后续的走法在“原地形 + overlay”上判。
+  defp weighted(_queue, nodes, _closed, _goal, _rules, limit)
+       when is_integer(limit) and map_size(nodes) > limit,
+       do: {:error, :search_limit}
+
+  defp weighted(queue, nodes, closed, {goals, estimate} = goal, rules, limit) do
+    if :gb_sets.is_empty(queue) do
+      :no_path
+    else
+      {{_, g, cell}, queue} = :gb_sets.take_smallest(queue)
+      node = Map.fetch!(nodes, cell)
+
+      cond do
+        # 已定型的格，或这一项是被更省的到达方式取代后留下的旧项。
+        MapSet.member?(closed, cell) or g > node.g ->
+          weighted(queue, nodes, closed, goal, rules, limit)
+
+        MapSet.member?(goals, cell) ->
+          {:ok, %{steps: route(nodes, cell, []), cost: g}}
+
+        true ->
+          {queue, nodes} =
+            for {next, cost, step} <- edit_moves(rules, cell, node.overlay),
+                not MapSet.member?(closed, next),
+                reduce: {queue, nodes} do
+              {queue, nodes} ->
+                reached = g + cost
+
+                case nodes do
+                  %{^next => %{g: known}} when known <= reached ->
+                    {queue, nodes}
+
+                  _ ->
+                    {:gb_sets.add({reached + estimate.(next), reached, next}, queue),
+                     Map.put(nodes, next, %{
+                       g: reached,
+                       parent: cell,
+                       step: step,
+                       overlay: apply_edits(node.overlay, step)
+                     })}
+                end
+            end
+
+          weighted(queue, nodes, MapSet.put(closed, cell), goal, rules, limit)
+      end
+    end
+  end
+
+  defp route(nodes, cell, steps) do
+    case Map.fetch!(nodes, cell) do
+      %{parent: nil} -> steps
+      %{parent: parent, step: step} -> route(nodes, parent, [step | steps])
+    end
+  end
+
+  defp apply_edits(overlay, %{dig: dig, place: place}) do
+    overlay = Enum.reduce(dig, overlay, &Map.put(&2, &1, :open))
+    Enum.reduce(place, overlay, &Map.put(&2, &1, :solid))
+  end
+
+  defp outside(v, lo, _hi) when v < lo, do: lo - v
+  defp outside(v, _lo, hi) when v > hi, do: v - hi
+  defp outside(_v, _lo, _hi), do: 0
+
+  # 一格的四个邻列，每列可能有几种到法：高 0..step 格处（平走或上台阶，可带改格）与下落。
+  # 不改格时每列至多一种到法，且与 step_to/5 相同（平走、上台阶、下落三者的条件互斥）。
+  defp edit_moves({grid, step, height, edit}, {x, _y, z} = from, overlay) do
+    view = fn cell -> Map.get(overlay, cell) || sample(grid, cell) end
+
+    for {dx, dz} <- [{1, 0}, {-1, 0}, {0, 1}, {0, -1}],
+        move <- column_moves(view, edit, from, {x + dx, z + dz}, step, height),
+        do: move
+  end
+
+  defp column_moves(view, edit, from, column, step, height) do
+    rises =
+      for k <- 0..step, move = rise(view, edit, from, column, k, height), move != nil, do: move
+
+    rises ++ List.wrap(drop(view, edit, from, column, height))
+  end
+
+  # 迈到下一列高 k 格处（k = 0 是平走）：起步列头顶要让出 k 格净空，目标列身体格要空，脚下一格要实心；
+  # 挡着的实心格可以敲掉，脚下缺的空气格可以放一格。
+  defp rise(view, edit, {x, y, z}, {nx, nz}, k, height) do
+    headroom = for i <- 1..k//1, do: {x, y + height - 1 + i, z}
+    body = for i <- (height - 1)..0//-1, do: {nx, y + k + i, nz}
+    to = {nx, y + k, nz}
+
+    with {:ok, dig, dig_cost} <- clear_cost(view, edit, headroom ++ body),
+         {:ok, place, place_cost} <- floor_cost(view, edit, {nx, y + k - 1, nz}) do
+      {to, 1 + dig_cost + place_cost, %{to: to, dig: dig, place: place}}
+    else
+      _ -> nil
+    end
+  end
+
+  # 下一列身体格空（或敲掉）而脚下是空气：落到这一列第一个站立格；下落途中不改格。
+  defp drop(view, edit, {_x, y, _z}, {nx, nz}, height) do
+    body = for i <- (height - 1)..0//-1, do: {nx, y + i, nz}
+
+    with :open <- view.({nx, y - 1, nz}),
+         {:ok, dig, dig_cost} <- clear_cost(view, edit, body),
+         dug = fn cell -> if cell in dig, do: :open, else: view.(cell) end,
+         to when to != nil <- land(dug, {nx, y - 1, nz}, height) do
+      {to, 1 + dig_cost, %{to: to, dig: dig, place: []}}
+    else
+      _ -> nil
+    end
+  end
+
+  # 这些格要成为空气：:open 不用改；:solid 按 edit 敲掉；不在表里的格、或 edit 不许敲的格，这一走法不成立。
+  defp clear_cost(view, edit, cells) do
+    Enum.reduce_while(cells, {:ok, [], 0}, fn cell, {:ok, dig, cost} ->
+      with :solid <- view.(cell),
+           {:ok, amount} <- price(edit.(:dig, cell)) do
+        {:cont, {:ok, [cell | dig], cost + amount}}
+      else
+        :open -> {:cont, {:ok, dig, cost}}
+        _ -> {:halt, :blocked}
+      end
+    end)
+    |> case do
+      {:ok, dig, cost} -> {:ok, Enum.reverse(dig), cost}
+      :blocked -> :blocked
+    end
+  end
+
+  # 脚下这一格要实心：:solid 不用改；:open 按 edit 放一格；不在表里的格、或 edit 不许放的格，这一走法不成立。
+  defp floor_cost(view, edit, cell) do
+    with :open <- view.(cell),
+         {:ok, amount} <- price(edit.(:place, cell)) do
+      {:ok, [cell], amount}
+    else
+      :solid -> {:ok, [], 0}
+      _ -> :blocked
+    end
+  end
+
+  defp price(:forbidden), do: :blocked
+  defp price(amount) when is_number(amount) and amount >= 0, do: {:ok, amount}
 
   # 沿列向下找第一个站立格；途中遇到非 :open 的格（实心、液体、未知）就停。
   defp land(grid, {x, y, z} = cell, height) do
