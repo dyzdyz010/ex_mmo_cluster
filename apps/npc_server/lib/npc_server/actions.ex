@@ -40,6 +40,7 @@ defmodule NpcServer.Actions do
     micro = Spatial.micro_resolution()
     cell = [x: :integer, y: :integer, z: :integer]
     vector = {:tuple, [:number, :number, :number]}
+    teleport = SceneServer.Movement.Player.teleport_terms()
 
     [
       %{
@@ -66,6 +67,20 @@ defmodule NpcServer.Actions do
         done: "零输入帧已被权威处理且身体停稳（data.position、settled）。",
         params: [],
         build: fn _, _ -> %{verb: :stop} end
+      },
+      %{
+        name: "teleport_to_spawn",
+        group: :move,
+        description:
+          "传送回自己的出生点（第一次来到这个世界时的落脚处，死亡复活也回到这里），不花材料。正在进行的移动先停下；" <>
+            "然后要站着不动读条 #{teleport.windup_s} 秒，期间离开起点超过 #{teleport.interrupt_m} 米即取消；" <>
+            "成功之后 #{div(teleport.cooldown_game_s, 3600)} 小时（游戏钟）内不能再用。",
+        done:
+          "已落在出生点、身体位置已更新（data.from、data.to）。被拒时 reason 原样来自权威：teleport_cooldown（data.ready_at 是" <>
+            "可再用的游戏钟时刻，data.wait_game_minutes 是还要等的游戏分钟）、teleport_moved（读条中移动了）、" <>
+            "cast_too_soon（施法或另一个读条正在进行）、dead。",
+        params: [],
+        build: fn _, _ -> %{verb: :teleport_to_spawn} end
       },
       %{
         name: "probe_toward",

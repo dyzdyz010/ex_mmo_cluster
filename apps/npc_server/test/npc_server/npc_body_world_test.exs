@@ -2627,6 +2627,8 @@ defmodule NpcServer.NpcBodyWorldTest do
     args = %{
       "move_to" => %{"x" => 6.5, "z" => 10.5, "y" => nil},
       "stop" => %{},
+      # 传送回出生点：本例出生后没走开，读条 10 s 后原地落回出生柱。
+      "teleport_to_spawn" => %{},
       "probe_toward" => %{"direction" => [1, 0, 0], "tool_id" => 1},
       "use_tool" => %{"tool_id" => 1, "target" => pillar},
       "dismantle" => %{"tool_id" => 1, "target" => pillar},
@@ -2663,6 +2665,7 @@ defmodule NpcServer.NpcBodyWorldTest do
       "inspect" => %{},
       "query_balances" => %{},
       "read_catalog" => %{"what" => "tools", "definition" => nil},
+      "find_route" => %{"x0" => 3, "z0" => 9, "x1" => 5, "z1" => 11, "tool_id" => 1},
       "get_view" => %{},
       "look_at" => %{
         "entity_id" => nil,

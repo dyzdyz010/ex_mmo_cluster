@@ -152,6 +152,10 @@ defmodule NpcServer.Offers do
     "remove_focus" => {:withheld, "关注 / 本地目标组：统一形态没有战斗调用方。"},
     "clear_targets" => {:withheld, "关注 / 本地目标组：统一形态没有战斗调用方。"},
     "toggle_mark" => {:withheld, "关注 / 本地目标组：统一形态没有战斗调用方。"},
+    # 三循环框架（U-31，决策稿 2026-11-24-npc-route-and-teleport-decision.md）的原子：由 harness 的路线槽 / 表思考使用。
+    "find_route" => {:withheld, "三循环框架的只读路线查询（U-31）：统一形态还没有路线类候选的生成器。"},
+    "dig_cell" => {:withheld, "三循环框架的原子（U-31）：随 find_route 列出的路线逐步执行，统一形态还没有生成器。"},
+    "teleport_to_spawn" => {:withheld, "三循环框架的原子（U-31）：用不用由表思考判断，统一形态还没有生成器。"},
     "remember" => {:withheld, "统一形态的记忆归 Life + Hindsight，再给记忆工具会出第二真值。"},
     "recall" => {:withheld, "统一形态的记忆归 Life + Hindsight，再给记忆工具会出第二真值。"},
     "search_memory" => {:withheld, "统一形态的记忆归 Life + Hindsight，再给记忆工具会出第二真值。"},

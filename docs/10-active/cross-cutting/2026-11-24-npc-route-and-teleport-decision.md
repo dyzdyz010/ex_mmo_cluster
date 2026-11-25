@@ -1,7 +1,7 @@
 # NPC 走不通时：系统函数列路线、经验逐步执行，加一个传送原子（2026-11-24）
 
 分类：NPC 能力的决策稿（定契约、所有权、依据、测试矩阵与实施次序；不改代码）。
-状态：**方向由用户定（2026-11-24，三循环稿 U-30、U-31）；未实施，`apps/` 未改。**
+状态：**方向由用户定（2026-11-24，三循环稿 U-30、U-31）；§9 第 1、2 步已实施（产品代码 + 测试 + 文档，见 §10），第 3 步（harness 新版本）起未做。**
 
 - 上位：[`2026-11-23-npc-three-loop-framework-decision.md`](2026-11-23-npc-three-loop-framework-decision.md)（下称“三循环稿”）的 U-30（脱困分两层）与 U-31（本稿的五项决定）。
 - 起因：M-3b 正式系列 N-1——角色挖料挖成坑、或走上台地后，表思考按 look 的逐格高度在推理里手算台阶与走道，known-3、bare-3 各有一轮把 32,768 个输出 token 全用在这种推算上，运行停（`.demo/observe/npc-three-loop-m3-20261123/results.md` M-3b 一节）。
@@ -103,12 +103,12 @@ flowchart TB
 | 输入 | 起点 = 身体的权威位置（同 `move_to` 的 `trusted_start`）；目标 = 一个区域 `x0,z0,x1,z1`，到达区域里任一站立格即算到。区域与起点都须在一次 survey 的范围内（每边 ≤ 32 列、离自己 ≤ 32 m，同三循环稿 H-10），超出写原因 |
 | 地形 | 一次 `World.material_snapshot/3`（与 look、`move_to` 同一只读入口），用完即丢、不留副本；盒子上限实施时按该入口的上限定，超出写原因 |
 | 移动 | 站立、迈步、下落全部用 `Path` 现有规则。新增两种：**敲**——迈进下一列时身体要占的格或头顶净空里有实心格，先把它们敲掉；**放**——下一列脚下缺一个站立格（一格深的洞、要垫一级台阶），在那里放一格 |
-| 代价（时间，秒） | 走一步按 `Path` 每步代价换算；敲一格 = ⌈血量 / `Damage.amount/3`⌉ × 工具间隔（产品同一公式与同一份目录，不另立硬度表）；放一格 = 一次放置的时间，另计一个单位材料 |
+| 代价（时间，秒） | 走一步 = `1 / speed` 秒（权威下发的移动 profile，1 格 = 1 米；现行 speed 8 → 0.125 s）；敲一格 = ⌈血量 / `Damage.amount/3`⌉ × 工具间隔（产品同一公式与同一份目录，不另立硬度表）；放一格 = 一个工具间隔（World 不限放置频率，按“一个工具动作”计），材料另计（格数 × 每格单位）。交给 `Path` 时除以走一步的秒数（§10） |
 | 不敲的格（代价无穷） | 保护区（`Access.writable?/3` 为假）；伤害为 0；不是天然宏格（`Gather.mine/3` 只挖天然宏格）；有别人的放置记录；挨着液体（mineflayer `dontCreateFlow`、Baritone 的液体检查） |
-| 放的材料 | 余额里的一种可放材料，按客观规则取（实施时定规则，只看数量等客观量，U-10）；候选写明用哪种、要多少、余额够不够 |
+| 放的材料 | 余额里能放（非液体、挡路、够一格）的生产材料中，够放格数最多的一种，同数取材料号小的（只看数量，U-10）；候选写明用哪种、要多少、余额够不够 |
 | 候选 | 按客观类别各列最省的一条：**只走**、**允许敲**、**允许敲和放**（Mindcraft 先不破坏、再允许破坏）；某一类的结果与更简单的一类相同就不重复列。至多 3 条，不截 |
 | 每条写明 | 逐步清单（`move_to` / `dig_cell` / `place` 的实参）；步数；要敲几格（按材料分）、约几击、约几秒；要放几格、用哪种料多少、余额够不够；终点 |
-| 列不出 | 写原因与计数（同 `site/4` 的写法）：超出范围、搜索上限（`Path` 的 `search_limit`，不冒充没路）、被挡格按原因计数（保护区 n、敲不动 n、别人放的 n、挨水 n）、料不够 |
+| 列不出 | 写原因与计数（同 `site/4` 的写法）：超出范围（`region_too_large` / `too_far`，命令即拒）、没有这类路线（`no_path`；规划盒有界、搜索穷尽，不设节点上限，所以不会出现 `search_limit`，§10）、没有能放的材料（`no_material`）、与更简单的一类相同（`same_as_walk` / `same_as_dig`）；被挡格按原因计数（保护区 n、敲不动 n、别人放的 n、挨水 n） |
 | 用途 | 路线槽的列举器；表思考的只读查询（与路线槽同一个函数、逐字同一份回答，同 B-12 `find_places`）。不写世界、不进心智 |
 
 `Path` 的扩展方式：调用方传一个“改格代价”函数（`cell, :dig | :place → 秒 | :forbidden`），`Path` 只负责在搜索里把“敲 / 放之后能站、能迈”按自己的规则判，仍不认识 World、不调 World。代价函数由 npc_server 用 World 的公开只读口（目录、保护区、余额）构造；保护区若 World 尚无公开只读口，由 World 加一个，不穿透内部 state（AGENTS 2.6，实施时核）。
@@ -188,3 +188,36 @@ flowchart TB
 
 - 2026-11-24：用户定 U-30（脱困分两层）。统筹核对本地事实（§2，更正初查两处）、取外部原文（§3），向用户提案 D1–D5；用户「全部按推荐来」，定 U-31 与“往框架里填内容、不为特定问题造专门方案”的原则。本稿起草，未改代码、未实跑、未调模型。
 - 2026-11-24：用户确认冷却按游戏钟（「冷却按游戏钟」），§9 第 1 步完成：`SceneServer.Movement.Path.find_with_edits/7`（带权 A*，每个节点带着这一路的改格，后续走法在“原地形 + 改格”上判，所以给出的路线按顺序执行时每步都成立；不保证有改格时全局最省）。World 放普通材料不要求下方有支撑（`world/production.ex` `plant_support/2`“其余材料不看下方”），所以“搭一格过空”是合法走法。冻结样例 `movement_path_cases.json` 加 `edit_cases` 8 条（手算：敲一格成台阶、放一级出坑、只敲不放出不了一维的坑、敲得快就穿墙 / 敲得慢就绕路、禁敲的格绕开且先敲头顶、液体不敲不放、搭一格过空），并把原有 20 条没有 `goal_y` 的样例在“不许改格”下逐条对照 `find/7`。改前红（`path.ex` 换回 HEAD：61 个里新增 30 个失败，原有 31 个过），改后 61 / 61；命令 `wsl.exe -e bash .demo/observe/mixtest-scene.sh test/scene_server/movement/path_test.exs`（worktree 自己的 `_build/test`，OTP 29.1.2 + Elixir 1.20.5）；`mix format --check-formatted` 通过。
+- 2026-11-24：§9 第 2 步完成（新统筹会话；用户授权「继续开新会话做第二步吧」）。提交 `8f28855f`（World 只读口）、`a0d204d3`（Player 传送接口），npc_server 部分与本条同一笔。
+  - **开工核对的三件事**：(a) World 没有保护区的公开只读口——`Access.writable?/3` 要 World 内部的 `state.protection`。按 AGENTS 2.6 在 World 加
+    `World.protected_cells(server, cid, cells)`（与写意图同一判定、主体 `{:character, cid}`，保护区常驻内存不装页），`Access` 登记 `:read`、`Closure` 登记无页。
+    (b) Player 拿游戏钟：`MmoContracts.WorldTime` 是纯函数；冷却 = 两个墙钟时刻的游戏时间差（墙钟差 × 倍率 24，与 Test-only 偏移无关）满 1 游戏小时，
+    从放行时刻起算；起点 `teleported_at_us` 由 Player 持有，随 Scene 移交带走（`@carried_fields`），会话重建清零。(c) 代价单位：走一步 = `1 / speed` 秒
+    （移动 profile，现行 0.125 s）；放置在 World 里不限频（`world/production.ex` `build_material` 只查射程、余额、格子），放一格按一个工具间隔计（§5.2 已改）。
+  - **实施取舍**：`dig_cell` 做成内置技能 `Skills.DigCell`（`Gather.mine/3` 是探测 → 逐击 → 复探 → look 的多步流程，Body 只执行单条命令；技能壳不复制流程），
+    要在 `profile.skills` 里配。`find_route` 是 `:sense` 组只读条目（新模块 `NpcServer.Route`，Body 的只读请求，在执行进程里算）；`teleport_to_spawn` 是 `:move` 组 Body 动词。
+    规划盒 = 起点列与区域的外接盒外扩 `Body.path_margin/0`（6），竖直脚上下 6；快照多取一圈，只用来判“挨着液体”。三类候选的“相同”按**没用上这一类多出的能力**判
+    （允许敲却没敲 = `same_as_walk`；允许放却没放 = `same_as_dig` 或 `same_as_walk`），不按步序逐项比较。`calls` 里只走的连续几步合成一次 `move_to`，但每段都落在
+    `move_to` 自己的取盒里（外接盒外扩 6、单程 ≤ 32 m），执行时它按自己的盒也找得到这段路。
+    **不设节点上限**：最坏情形（最大规划盒 45×13×45 全岩体、处处可敲、目标不可达）穷尽搜索一次 477 ms，上限 20 000 时 392 ms，10 000 时 163 ms
+    （2 个调度器，`.demo/observe/npc-route-u31-20261124/bench_path.exs`）。上限省不了多少时间，却会把确定的“没有”变成“算到上限”，所以不截；三类合计最坏约 1.5 s，在 Body 的执行进程里。
+    Player 的传送与施法 / 信标 / 分选共用动作槽，不经 World（非流送 Scene 也可用）；回执在 `Voxel.Relocate` 生效的那个 tick（`relocated/1`）。
+    Body 先按 `stop` 停稳再交给 Player；收到回执后等 OwnerAck 到达 apply_tick（位置缓存与 Brain 的观察都已是落点）才报完成，避免紧接着的 `move_to` 从旧位置算路（§8 风险 3）。
+    冷却拒绝的可再用时刻由 Body 换成游戏钟（`WorldTime.at/1` 加 Runtime 同一份 Test-only 偏移），并给出还要等的游戏分钟。
+    瞬移事件 `revive_relocate` / `revive_relocated` 带 `reason`（death / beacon / teleport），另有 `teleport_channel` / `teleport_depart` / `teleport_rejected`。
+  - **对现有行为的影响（要用户知道）**：`teleport_to_spawn`（`:move`）与 `find_route`（`:sense`，要工具带）随组授予。授 `:move` / `:sense` 组的 LLM 后端 profile
+    （Demo 的 groups，以及 `groups: nil` 的登记行）会看到这两个工具（`npc_abilities_test` 的 Demo 工具表、`npc_body_world_test` 的接缝参数表已随之补）；
+    统一形态（Offers）把三者都登记为 withheld（还没有生成器）。产品条目说明与其它条目一样写中文；harness 用的英文说明在第 3 步随新 harness 写（同 M-2a 的
+    `en_atoms.json` 做法），不写评价词。
+  - **原子表导出**：`.demo/observe/npc-route-u31-20261124/atoms.json`（`dump_atoms.exs`，profile 同 M-0，加 `dig_cell` 技能）共 43 条：新增 `teleport_to_spawn`、`find_route`、
+    `dig_cell`，其余 40 条与 M-0 的 `.demo/observe/npc-mind-ops-20261121/atoms.json` 逐字相同。M-0 那份未动（冻结 harness 仍读它），第 3 步的新 harness 切到新路径。
+  - **测试（先红后绿；命令都在 WSL 里跑：`.demo/observe/mixtest-app.sh <app> <文件…>` 或 `mixtest-scene.sh`，用 worktree 自己的 `_build/test`，OTP 29.1.2 + Elixir 1.20.5）**：
+    voxel_region `protection_world_test`“作者保留区域”一例加只读口断言：实现换回 HEAD 时 `UndefinedFunctionError`（0/1），改后连同 `access_test`、`closure_entries_test` 12/12。
+    scene_server 新 `teleport_to_spawn_test`（非流送 / 流送落点、回执恰好一次、冷却时刻、动作槽、打断、死亡、事件字段）：HEAD 时 0/3，改后 3/3；连同 `beacon_travel`、`revive_relocation` 15/15。
+    npc_server 新 `npc_route_test`（2.1 代价手算表；2.2 真实 World 上三类路线的手算期望、照 calls 做能走出沟、保护区 78 / 敲不动 2 / 别人放的 1 的计数、`dig_cell` 入账与
+    `protected_region`；Body 传送先停后读条、完成时 Brain 已看到落点、冷却给游戏钟时刻），加上 `npc_abilities_test`（Demo 工具表、逐条目手写期望表补两行）：
+    实现换回 HEAD 时 35/40（失败的恰是这 5 个）；改后连同 offers、skills、gather、两个施法、两个 Body 测试共 104/104（7 个按标签排除的是原有的 live / 浸泡类）。
+    `mix format --check-formatted` 对本次改的、HEAD 时已格式化的文件全部通过；voxel_region 的 `world.ex`、`access.ex`、`world/closure.ex`、`protection_world_test.exs`
+    在 HEAD 时就不是 `mix format` 排版，新增行跟随原文件风格，没有重排整个文件。编译无新告警。
+  - **残余风险**：“挨液体不敲”没有集成测试（夹具不开液体模拟；`Path` 的液体规则由 2.1 冻结样例覆盖）；敲的次数按满血估（快照不带已受的伤）；作者 prefab 宏格在快照里看不出，
+    规划时当天然格，执行时 `dig_cell` 以 `foreign` 拒绝；传送冷却不持久；路线过期照 §8 第 1 条处理；Body 的传送只在非流送 Scene 上集成测过（流送落点由 Player 测试覆盖）。

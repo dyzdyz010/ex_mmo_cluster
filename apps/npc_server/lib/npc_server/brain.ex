@@ -78,6 +78,7 @@ defmodule NpcServer.Brain do
 
       %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
       %{id:, verb: :stop}                                       # 顶替在途的移动命令；settle: 技能调用号 见上文取消
+      %{id:, verb: :teleport_to_spawn}                          # 先停下（顶替在途移动），再经 Player 读条传送回出生点（见下）
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}   # 可选 target: %{granularity: 5, owner: {cid, 0}} 探测人物
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data；direction 可省（见下）
       %{id:, verb: :dismantle, direction:, tool_id:, target:}   # 拆解 prefab 构件，按剩余燃料退料；direction 可省
@@ -96,6 +97,7 @@ defmodule NpcServer.Brain do
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
       %{id:, verb: :read_catalog, what: :prefab | :prefabs | :materials | :tools, definition: <<32 字节>> | nil}
                                                                  # 读目录；:prefab 必须给 definition，其余为 nil
+      %{id:, verb: :find_route, min: {x0, z0}, max: {x1, z1}, tool_id:}   # 只读路线查询（`NpcServer.Route`），区域同 survey 的限制
       %{id:, verb: :cast_spell, program: <<程序字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
       %{id:, verb: :cancel_cast}                                 # 取消在前摇的施法（同一 client_intent_seq 的 0x82 action 2）
       %{id:, verb: :genesis_edit, edits: [{{x, y, z}, material}]}   # 创世：只有启动选项 genesis: true 的 Body 受理（见下）
@@ -171,6 +173,13 @@ defmodule NpcServer.Brain do
   `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
   `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回
   `already_released`（原样来自 Player）。
+  `find_route` 的 `:done` data 是 `NpcServer.Route` moduledoc 的回答形状（`routes` 每条带依次调用的原子 `calls`、代价与终点，
+  `omitted` 写列不出的类别与原因，`undiggable` 按原因计数）；区域每边超过 32 列回 `region_too_large`、离自己超过 32 m 回 `too_far`
+  （不访问 World），工具不在目录里回 `invalid_tool`。
+  `teleport_to_spawn`（`Player.teleport_to_spawn/4`）：Body 先按 `stop` 停稳，再交给 Player 读条（期间工具 / 世界意图回 `casting`）；
+  `:done` 在瞬移生效、Body 的位置已是落点之后，`data` = `%{from:, to:}`（米制位置）。拒绝原样来自 Player：`teleport_cooldown`
+  （`data` = `%{ready_at: MmoContracts.WorldTime.at/1 的游戏钟时刻, wait_game_minutes:}`）、`teleport_moved`、`cast_too_soon`、
+  `dead`、`cast_cancelled`；被新的移动命令顶替（还在停下阶段时）回 `:superseded`；会话丢失回 `session_lost`。
 
   ## 对话
 

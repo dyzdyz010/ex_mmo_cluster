@@ -54,6 +54,7 @@ defmodule NpcServer.NpcAbilitiesTest do
       {"move_to", %{"x" => 14, "z" => 10.5, "y" => nil},
        %{verb: :move_to, position: {14, 10.5}, tolerance: 0.5, y: nil}},
       {"stop", %{}, %{verb: :stop}},
+      {"teleport_to_spawn", %{}, %{verb: :teleport_to_spawn}},
       # 方向 [3,0,4] 长 5 → 单位向量 (0.6, 0, 0.8)。
       {"probe_toward", %{"direction" => [3, 0, 4], "tool_id" => 1},
        %{verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}}},
@@ -188,6 +189,8 @@ defmodule NpcServer.NpcAbilitiesTest do
       {"query_balances", %{}, %{verb: :query_balances}},
       {"read_catalog", %{"what" => "prefab", "definition" => String.upcase(@hex)},
        %{verb: :read_catalog, what: :prefab, definition: @id}},
+      {"find_route", %{"x0" => 15, "z0" => -9, "x1" => 17, "z1" => 11, "tool_id" => 1},
+       %{verb: :find_route, min: {15, -9}, max: {17, 11}, tool_id: 1}},
       {"get_view", %{}, %{verb: :get_view}},
       {"look_at", %{"entity_id" => 7, "entity_epoch" => 9, "x" => nil, "y" => nil, "z" => nil},
        Map.put(target, :verb, :look_at)},
@@ -454,7 +457,7 @@ defmodule NpcServer.NpcAbilitiesTest do
   end
 
   test "the Demo LLM profile projects exactly the hand-listed tools; dialogue follows its own group" do
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan) ==
+    assert ~w(move_to stop teleport_to_spawn probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog find_route remember recall search_memory set_plan) ==
              Enum.map(Abilities.tools(@demo), & &1.name)
 
     llm = %{goal: "g", endpoint: %{model: "m"}} |> Map.merge(@demo)
@@ -465,7 +468,7 @@ defmodule NpcServer.NpcAbilitiesTest do
       balances: nil
     }
 
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan wait) ==
+    assert ~w(move_to stop teleport_to_spawn probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog find_route remember recall search_memory set_plan wait) ==
              Enum.map(NpcServer.Brain.Llm.body(llm, observation, []).tools, & &1.name)
 
     # instructions 只依赖 profile 的工具表：不点名被 groups 裁掉的工具（Demo 没有 :attend 组，也没配技能）。
@@ -474,7 +477,7 @@ defmodule NpcServer.NpcAbilitiesTest do
     pruned =
       Enum.map(Abilities.entries(@full), & &1.name) --
         String.split(
-          "move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan"
+          "move_to stop teleport_to_spawn probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog find_route remember recall search_memory set_plan"
         )
 
     assert "get_aim" in pruned and "design_house" in pruned
