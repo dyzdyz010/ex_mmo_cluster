@@ -193,7 +193,8 @@ flowchart LR
     不访问 World）：一次 `World.material_snapshot/3` 取规划盒（起点列与区域外接盒外扩 `Body.path_margin/0`，竖直脚上下同样多，再加一圈判液体），
     `World.protected_cells/3` 取保护区，按 `SceneServer.Movement.Path.find_with_edits/7` 求三类路线。代价按时间：走一步 `1 / speed` 秒，
     敲一格 ⌈满血 / 每击伤害⌉ × 工具间隔（与 World 同一 `Damage.amount/3`），放一格一个工具间隔（材料另计）；保护区、伤害为 0、
-    别人放的、挨液体的格不敲。规划盒有界，搜索穷尽，`no_path` 是确定的“没有”。回答形状与已知限制见 `Route` moduledoc。
+    别人放的、挨液体的格不敲。规划盒有界，搜索穷尽，`no_path` 是确定的“没有”。同一步要敲的几格按离站位眼睛由近到远发出
+    （`Route.dig_order/3`：`dig_cell` 从眼睛瞄格心，上台阶时先敲下格）。回答形状与已知限制见 `Route` moduledoc。
     秒数与击数是估计（字段名 `estimated_*`），只作候选间比较与大脑的参考，不作能不能做的条件、不作执行时限（三循环稿 U-32）。
     一行日志 `npc_find_route cid= start= region= routes= omitted= undiggable= goals= elapsed_ms=`。
   - `dig_cell{x, y, z, tool_id}`（技能，要在 `profile.skills` 里配 `dig_cell`）：不移动，挖不成以 `blocked` / `foreign` 或权威原因结束。
