@@ -668,3 +668,4 @@ flowchart LR
   scripts 109 / 13 / 18 / 11），指纹 `464f047c848998fa`（同 M-3d）。第 1–21 步各交一个单独代理会话；§八 允许的两处并行因各步在同一副本里做原位变异会互相误红，统筹改为全部串行。进度明细在该目录 `plan.md`。
 - 2026-11-25T15:55Z：第 1 步（store 计划侧：种类 command、after 与提交时检查、关闭结局、last_run.status、三种事实、append_judged_fact）完成并经统筹核对，指纹 `9a792b3ae2b1f0c0`。另按 §十 回填清单第 1–7 条与同义处回填现行文档（只加注）。
 - 2026-11-25T16:10Z：第 2 步（store 心智侧：way_judgments 栏、named_regions；一次性指令不能当 parent）完成并经统筹核对，指纹 `ed3d6db46d0861ef`。
+- 2026-11-25T16:35Z：第 3 步（queue_view：window_ended、item_status、after_status、stop_asked、one_shot_facts_due、open_items；doable 改由 item_status）完成并经统筹核对，指纹 `5c119302ca0dd413`。
