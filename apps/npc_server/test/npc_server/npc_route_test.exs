@@ -119,8 +119,8 @@ defmodule NpcServer.NpcRouteTest do
         move_to.(8.5, 10.5, 64)
       ],
       moves: 4,
-      seconds: 2.5,
-      dig: %{cells: 1, hits: 4, seconds: 2.0, by_material: %{@stone => 1}},
+      estimated_seconds: 2.5,
+      dig: %{cells: 1, estimated_hits: 4, estimated_seconds: 2.0, by_material: %{@stone => 1}},
       place: nil,
       end: [8, 64, 10]
     }
@@ -153,8 +153,8 @@ defmodule NpcServer.NpcRouteTest do
                  move_to.(8.5, 10.5, 64)
                ],
                moves: 4,
-               seconds: 1.0,
-               dig: %{cells: 0, hits: 0, seconds: 0.0, by_material: %{}},
+               estimated_seconds: 1.0,
+               dig: %{cells: 0, estimated_hits: 0, estimated_seconds: 0.0, by_material: %{}},
                place: %{cells: 1, material: @stone, units: 512, balance: 512, enough: true},
                end: [8, 64, 10]
              }

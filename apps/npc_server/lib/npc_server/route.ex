@@ -31,8 +31,11 @@ defmodule NpcServer.Route do
   **放的材料**（客观规则）：余额里能放、挡路、非液体、够一格的生产材料中，够放格数最多的一种（同数取材料号小的）。
 
   **回答**（Body Outcome 的 data）：`%{seq, start, region, tool_id, step_seconds, goals, routes, omitted, undiggable}`。
-  `routes` 每条 `%{kind: :walk | :dig | :dig_place, calls: [%{atom: 名, args: 实参}], moves, seconds, dig, place, end}`——
-  `dig = %{cells, hits, seconds, by_material: %{材料 => 格数}}`，`place = %{cells, material, units, balance, enough}`（不放为 nil）。
+  `routes` 每条 `%{kind: :walk | :dig | :dig_place, calls: [%{atom: 名, args: 实参}], moves, estimated_seconds, dig, place, end}`——
+  `dig = %{cells, estimated_hits, estimated_seconds, by_material: %{材料 => 格数}}`，`place = %{cells, material, units, balance, enough}`（不放为 nil）。
+  **估计值只是参考**（三循环稿 U-32）：`estimated_*` 是按目录与 profile 算的估计，实际执行会有出入（格已受伤会快、被挡会慢），
+  只用来在候选之间比较、供大脑参考；它们不是能不能做的条件，执行时不按它们设时限、不因偏离它们判失败——每一步只由权威的结局裁决。
+  `calls`、格数、材料与余额（`enough`）是事实，不是估计。
   某类的最省路线没有用上这一类多出的能力（允许敲却没敲、允许放却没放），就与更简单的一类相同，不重复列（Mindcraft 先不破坏、
   再允许破坏），记进 `omitted`：`%{kind, reason}`，reason ∈ `:no_path`（规划盒有界、搜索穷尽，是确定的“没有”）、
   `:same_as_walk`、`:same_as_dig`、`:no_material`（没有可放的材料）。`undiggable` 按原因数规划盒里敲不了的实心格
@@ -65,7 +68,8 @@ defmodule NpcServer.Route do
         description:
           "查从自己现在的位置到区域 (x0,z0)–(x1,z1)（整数列闭区间，每边最多 #{columns} 列、各边离自己不超过 #{reach} 米）里任一站立处的路线，" <>
             "不改世界。按三类各列最省的一条：walk 只走；dig 允许用 tool_id 敲掉挡路的天然格；dig_place 还允许在脚下缺地处放一格。" <>
-            "每条给出依次调用的原子 calls（move_to / dig_cell / place 的实参，按顺序照做即可）、步数、要敲几格（按材料分）、约几击几秒、" <>
+            "每条给出依次调用的原子 calls（move_to / dig_cell / place 的实参，按顺序照做即可）、步数、要敲几格（按材料分）、" <>
+            "估计要几击几秒（estimated_*：估计值，实际会有出入，只作比较参考）、" <>
             "要放几格、用哪种材料多少、余额够不够、总秒数与终点。某类与更简单的一类相同就不重复列；列不出的类别在 omitted 里写原因：" <>
             "no_path = 附近没有这类路线，no_material = 没有能放的材料。" <>
             "undiggable 数出附近敲不了的格：protected（别人的保护区）、ineffective（这把工具敲不动）、placed_by_other（别人放的）、liquid（挨着液体）。",
@@ -238,7 +242,7 @@ defmodule NpcServer.Route do
 
     Logger.info(
       "npc_find_route cid=#{cid} start=#{inspect(start)} region=#{inspect([x0, z0, x1, z1], charlists: :as_lists)} " <>
-        "routes=#{inspect(Enum.map(routes, &{&1.kind, Float.round(&1.seconds * 1.0, 2)}))} " <>
+        "routes=#{inspect(Enum.map(routes, &{&1.kind, Float.round(&1.estimated_seconds * 1.0, 2)}))} " <>
         "omitted=#{inspect(Enum.map(omitted, &{&1.kind, &1.reason}))} undiggable=#{inspect(undiggable)} " <>
         "goals=#{MapSet.size(goals)} elapsed_ms=#{System.monotonic_time(:millisecond) - started}"
     )
@@ -342,17 +346,21 @@ defmodule NpcServer.Route do
     placed = Enum.flat_map(steps, & &1.place)
 
     dig =
-      Enum.reduce(dug, %{cells: 0, hits: 0, seconds: 0.0, by_material: %{}}, fn cell, acc ->
-        {:ok, hits, seconds, material} = Map.fetch!(digs, cell)
+      Enum.reduce(
+        dug,
+        %{cells: 0, estimated_hits: 0, estimated_seconds: 0.0, by_material: %{}},
+        fn cell, acc ->
+          {:ok, hits, seconds, material} = Map.fetch!(digs, cell)
 
-        %{
-          acc
-          | cells: acc.cells + 1,
-            hits: acc.hits + hits,
-            seconds: acc.seconds + seconds,
-            by_material: Map.update(acc.by_material, material, 1, &(&1 + 1))
-        }
-      end)
+          %{
+            acc
+            | cells: acc.cells + 1,
+              estimated_hits: acc.estimated_hits + hits,
+              estimated_seconds: acc.estimated_seconds + seconds,
+              by_material: Map.update(acc.by_material, material, 1, &(&1 + 1))
+          }
+        end
+      )
 
     place =
       if placed != [] do
@@ -371,7 +379,7 @@ defmodule NpcServer.Route do
       kind: kind,
       calls: calls(steps, start, placing_material(placing), plan.tool_id),
       moves: length(steps),
-      seconds: cost * plan.step_seconds,
+      estimated_seconds: cost * plan.step_seconds,
       dig: dig,
       place: place,
       # 已在区域里时没有步，终点就是起点。

@@ -194,6 +194,7 @@ flowchart LR
     `World.protected_cells/3` 取保护区，按 `SceneServer.Movement.Path.find_with_edits/7` 求三类路线。代价按时间：走一步 `1 / speed` 秒，
     敲一格 ⌈满血 / 每击伤害⌉ × 工具间隔（与 World 同一 `Damage.amount/3`），放一格一个工具间隔（材料另计）；保护区、伤害为 0、
     别人放的、挨液体的格不敲。规划盒有界，搜索穷尽，`no_path` 是确定的“没有”。回答形状与已知限制见 `Route` moduledoc。
+    秒数与击数是估计（字段名 `estimated_*`），只作候选间比较与大脑的参考，不作能不能做的条件、不作执行时限（三循环稿 U-32）。
     一行日志 `npc_find_route cid= start= region= routes= omitted= undiggable= goals= elapsed_ms=`。
   - `dig_cell{x, y, z, tool_id}`（技能，要在 `profile.skills` 里配 `dig_cell`）：不移动，挖不成以 `blocked` / `foreign` 或权威原因结束。
   - `teleport_to_spawn`（`:move` 组）：Body 先按 `stop` 停稳（顶替在途移动），再交给 Player 读条；Player 在瞬移生效那个 tick 回执，
