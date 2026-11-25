@@ -41,7 +41,9 @@ defmodule NpcServer.Route do
   `:same_as_walk`、`:same_as_dig`、`:no_material`（没有可放的材料）。`undiggable` 按原因数规划盒里敲不了的实心格
   （`protected`、`ineffective`、`placed_by_other`、`liquid`）。`calls` 里只走的连续几步合成一次 `move_to`，但每段都落在
   `move_to` 自己的取盒里（起终点外接盒外扩同一 margin、单程不超过 reach），执行时它按自己的盒也找得到这段路；
-  改格前先 `move_to` 到规划的站位，再按 `Path` 给的次序 `dig_cell`、`place`。
+  改格前先 `move_to` 到规划的站位，再 `dig_cell`、`place`。同一步里的 `dig_cell` 按 `dig_order/3`（离站位眼睛由近到远）发出：
+  `dig_cell` 从眼睛向格心探测，第一下命中的不是目标就 `blocked`；`Path` 列的“目标列身体格自上而下”在平走时是对的，
+  上台阶时眼睛与下格同高、要先敲下格（2026-11-25 M-3c 冒烟实见，U-31 稿 §10）。
 
   已知限制：满血按目录估（快照不带已受的伤），敲的次数是上限；作者 prefab 宏格（只记 macro_owners）在快照里看不出，规划会当天然格，
   执行时 `dig_cell` 以 `foreign` 拒绝；规划后世界变了，某步被权威拒绝，失败照常写成事实（U-31 稿 §8）。
@@ -49,7 +51,7 @@ defmodule NpcServer.Route do
   require Logger
   alias MmoContracts.VoxelMaterialCatalog
   alias NpcServer.{Body, Context, Perception}
-  alias SceneServer.Movement.Path
+  alias SceneServer.Movement.{Path, Player}
   alias VoxelRegion.{Damage, Phase, World}
 
   # 不给 Path 节点上限：规划盒本身有界（水平 ≤ 45、竖直 13 格），最坏情形（全岩体处处可敲、目标不可达）穷尽搜索一次约 0.48 s
@@ -112,6 +114,8 @@ defmodule NpcServer.Route do
            tool_id: tool,
            step: floor(profile.step_height),
            height: Context.clearance(profile),
+           # 站位上眼睛的高度要用（`dig_order/3`）：站在格心时胶囊中心 = 脚 + 半高。
+           half_height: profile.half_height,
            step_seconds: 1 / profile.speed
          }}
     end
@@ -133,6 +137,23 @@ defmodule NpcServer.Route do
     else
       :ineffective
     end
+  end
+
+  @doc """
+  同一步里要敲的格按什么次序敲（纯函数）：按格心离站位眼睛的距离由近到远。`stand` 是站立格（脚所在的格），眼睛 =
+  站在格心时胶囊中心（脚 + `half_height`）的 `SceneServer.Movement.Player.eye_position/1`，与执行时 `dig_cell` 用的是同一个眼点。
+
+  道理：`dig_cell`（`Skills.Gather.mine/3`）从眼睛向目标格心探测，第一下命中的不是目标就以 `blocked` 结束；视线只会被比目标
+  更近的格挡住，所以先敲近的，这一步要敲的格之间就不会互相挡视线。平走时眼睛与上面一格同高（先上后下），上台阶时与下面一格
+  同高（先下后上）。眼下都能瞄到的几格谁先谁后都行（距离相同时的先后不作保证）。视线斜穿这一步之外的实心格仍可能 `blocked`，
+  由权威裁决、写成事实（U-31 稿 §8 风险 1）。
+  """
+  def dig_order(cells, {sx, sy, sz}, half_height) do
+    {ex, ey, ez} = Player.eye_position({sx + 0.5, sy + half_height, sz + 0.5})
+
+    Enum.sort_by(cells, fn {x, y, z} ->
+      (x + 0.5 - ex) ** 2 + (y + 0.5 - ey) ** 2 + (z + 0.5 - ez) ** 2
+    end)
   end
 
   # World 工具结算对伤害类动作走 `Damage.amount/3`（材料都带 damage 响应，目录加载时校验）；别的动作没有“敲掉一格”。
@@ -377,7 +398,7 @@ defmodule NpcServer.Route do
 
     %{
       kind: kind,
-      calls: calls(steps, start, placing_material(placing), plan.tool_id),
+      calls: calls(steps, start, placing_material(placing), plan),
       moves: length(steps),
       estimated_seconds: cost * plan.step_seconds,
       dig: dig,
@@ -391,8 +412,9 @@ defmodule NpcServer.Route do
   defp placing_material(%{material: material}), do: material
 
   # 路线步 → 原子调用。`from` = 这段走路开始时站的格（起点或上一次改格的站位），`walked` = 此后走过、还没发出的格。
-  # 只走的步只攒进 `walked`；要改格时先把攒下的走路发出去（到改格的站位），再按 Path 的次序 dig_cell、place；最后发出剩下的走路。
-  defp calls(steps, start, material, tool) do
+  # 只走的步只攒进 `walked`；要改格时先把攒下的走路发出去（到改格的站位），再 dig_cell（按 `dig_order/3`）、place（按 Path 的次序）；
+  # 最后发出剩下的走路。
+  defp calls(steps, start, material, %{tool_id: tool, half_height: half_height}) do
     {calls, from, walked} =
       Enum.reduce(steps, {[], start, []}, fn %{to: to, dig: dig, place: place},
                                              {calls, from, walked} ->
@@ -402,7 +424,7 @@ defmodule NpcServer.Route do
           stand = List.last(walked) || from
 
           edits =
-            Enum.map(dig, &call("dig_cell", &1, %{tool_id: tool})) ++
+            Enum.map(dig_order(dig, stand, half_height), &call("dig_cell", &1, %{tool_id: tool})) ++
               Enum.map(place, &call("place", &1, %{material: material, tool_id: tool}))
 
           {calls ++ walk(from, walked) ++ edits, stand, [to]}

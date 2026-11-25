@@ -7,6 +7,7 @@ defmodule NpcServer.NpcRouteTest do
   （`NpcServer.Skills.DigCell`）、原子 `teleport_to_spawn`（Body → `Player.teleport_to_spawn/4`）。
 
   - 2.1 `Route.dig_cost/2`：手算的目录行（1 / 3 / 4 / 5 击、伤害为 0、倍率 0、最长前缀倍率、非伤害类工具）。
+  - 2.1 `Route.dig_order/3`：同一步要敲的格按离站位眼睛由近到远（上台阶先下后上、平走先上后下；手算距离）。
   - 2.2 在真实 World / Scene / Player / Body 上（`NpcServer.NpcWorld` 夹具：y ≤ 63 实心石料，镐每击 28、间隔 0.5 s、射程 6 m；
     移动 profile 速度 8 m/s → 走一步 0.125 s，台阶 1 格、身高 2 格）。地形、保护区、余额都只经作者入口
     （`World.apply_edits/2`、`World.author_regions/2`、`World.material_supply/4`）与邻居的正常放置入口一次写入；
@@ -58,6 +59,20 @@ defmodule NpcServer.NpcRouteTest do
       assert {:ok, 2, 1.0} = Route.dig_cost(material(100.0, 2.0, both), blade)
       # 不是伤害类动作的工具敲不掉格。
       assert :ineffective = Route.dig_cost(material(28.0, 2.0), %{@pick | "action" => "heat"})
+    end
+  end
+
+  describe "Route.dig_order/3（2.1 手算）" do
+    # 站在 (5, 61, 10)、半高 0.9：站在格心时胶囊中心 (5.5, 61.9, 10.5)，眼睛（Player.eye_position/1：中心 + 0.6）(5.5, 62.5, 10.5)。
+    # 格心离眼睛：(6, 62, 10) 1.0；(6, 63, 10)、(6, 61, 10) 都是 √2。
+    test "离眼睛由近到远：上台阶先下后上，平走先上后下" do
+      stand = {5, 61, 10}
+
+      # 上台阶到 (6, 62, 10)：身体要占 (6, 62)、(6, 63)。Path 列的是自上而下；眼睛与下格同高，先敲下格。
+      assert [{6, 62, 10}, {6, 63, 10}] = Route.dig_order([{6, 63, 10}, {6, 62, 10}], stand, 0.9)
+
+      # 平走到 (6, 61, 10)：身体要占 (6, 61)、(6, 62)。眼睛与上格同高，先敲上格（与 Path 的次序相同）。
+      assert [{6, 62, 10}, {6, 61, 10}] = Route.dig_order([{6, 62, 10}, {6, 61, 10}], stand, 0.9)
     end
   end
 
@@ -160,7 +175,9 @@ defmodule NpcServer.NpcRouteTest do
              }
            ]
 
-    # 照“允许敲”的 calls 逐步做：落进沟里、敲掉一格（4 击，石料进余额）、走上东边地面。
+    # 照“允许敲”的 calls 逐步做：敲掉一格（4 击，石料进余额）、走上东边地面。第一步 move_to 沟底实际没有落进沟里：
+    # 胶囊搭在沟沿的棱上停住（2026-11-25 诊断：身体在 (5.72, 64.78, 10.5)），move_to 只按水平容差报完成；从那里看 (6, 63, 10)
+    # 照样看得见，所以这一例照做走得出去，但不证明身体到过沟底（已知限制见 U-31 稿 §10 2026-11-25；上台阶的次序另见下一例）。
     for {call, n} <- Enum.with_index(dig_route.calls),
         do: assert(%{status: :done} = perform(body, {:step, n}, call), inspect(call))
 
@@ -219,6 +236,72 @@ defmodule NpcServer.NpcRouteTest do
                atom: "find_route",
                args: %{x0: 60, z0: 10, x1: 61, z1: 10, tool_id: 1}
              })
+  end
+
+  # 地形：x 3..5、z 9..11 除 (4, 10) 外挖成三格深的沟（y 61..63 写成空气），NPC 直接出生在沟底 (5, ·, 10)（脚 61）。
+  # 区域 = 东边地面 x 8..9、z 10（目标脚 64）。从沟底到地面要升 3 格、每步至多升 1 格，“允许敲”的最省路线只有一条：
+  # (5,61,10) 上一级到 (6,62,10)，敲掉身体要占的 (6,62,10)、(6,63,10)〔1 + 2 × 16〕→ 上一级到 (7,63,10)，敲掉 (7,63,10)〔1 + 16〕
+  # → (8,64,10)〔1〕，共 51 步 = 6.375 s。站在 (5,61,10) 时眼睛在 (5.5, 62.5, 10.5)，与 (6,62,10) 同高：先敲它（离眼睛 1.0）
+  # 再敲 (6,63,10)（√2）；反过来时视线可能先碰到还没敲的 (6,62,10)、以 blocked 拒绝（2026-11-25 M-3c 冒烟实见：身体偏向下一列时）。
+  # 出生在沟底而不是从柱顶跳下：从柱顶 move_to 沟底时胶囊会搭在沟沿的棱上停住，move_to 只按水平容差报完成（已知限制，
+  # U-31 稿 §10 2026-11-25），那时身体不在规划的站位上，测的就不是敲的次序了。
+  @tag timeout: 300_000
+  test "上台阶要敲两格时先敲与眼睛同高的那格；照 calls 做走得出三格深的沟" do
+    fixture = NpcWorld.start()
+    world = fixture.world
+    trench = for x <- 3..5, z <- 9..11, {x, z} != {4, 10}, y <- 61..63, do: {{x, y, z}, 0}
+    {:ok, _} = World.apply_edits(world, trench)
+
+    %{body: body} =
+      NpcWorld.body(fixture, {NpcServer.Brain.Routine, @profile}, spawn: {5.5, 66.0, 10.5})
+
+    assert {5.5, _, 10.5} = settled_at(body, 61.9)
+
+    move_to = fn x, z, y -> %{atom: "move_to", args: %{x: x, z: z, y: y}} end
+    dig = fn x, y, z -> %{atom: "dig_cell", args: %{x: x, y: y, z: z, tool_id: 1}} end
+
+    answer = route(body, :route, {8, 10, 9, 10})
+    assert answer.start == [5, 61, 10]
+
+    assert answer.omitted == [
+             %{kind: :walk, reason: :no_path},
+             %{kind: :dig_place, reason: :no_material}
+           ]
+
+    assert answer.routes == [
+             %{
+               kind: :dig,
+               calls: [
+                 dig.(6, 62, 10),
+                 dig.(6, 63, 10),
+                 move_to.(6.5, 10.5, 62),
+                 dig.(7, 63, 10),
+                 move_to.(8.5, 10.5, 64)
+               ],
+               moves: 3,
+               estimated_seconds: 6.375,
+               dig: %{
+                 cells: 3,
+                 estimated_hits: 12,
+                 estimated_seconds: 6.0,
+                 by_material: %{@stone => 3}
+               },
+               place: nil,
+               end: [8, 64, 10]
+             }
+           ]
+
+    for {call, n} <- Enum.with_index(hd(answer.routes).calls),
+        do: assert(%{status: :done} = perform(body, {:step, n}, call), inspect(call))
+
+    assert %{
+             {6, 62, 10} => %{material: 0},
+             {6, 63, 10} => %{material: 0},
+             {7, 63, 10} => %{material: 0}
+           } =
+             NpcWorld.cells(world, [{6, 62, 10}, {6, 63, 10}, {7, 63, 10}])
+
+    assert {8, 64, 10} = Body.foot(settled_at(body, 64.9), 0.9)
   end
 
   # 只测试：把每个 Outcome 连同 Brain 此刻看到的最新位置转给测试进程；自己不发命令。
