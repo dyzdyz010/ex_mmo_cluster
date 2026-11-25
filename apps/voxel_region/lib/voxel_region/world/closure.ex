@@ -33,7 +33,7 @@ defmodule VoxelRegion.World.Closure do
       {:seq, 0}, {:simulation_windows, 0}, {:simulation_windows, 2}, {:interactions_since, 2}, {:admission_status, 0}, {:retry_simulation_io, 0},
       {:liquid_activity, 0}, {:source, 0}, {:author_regions, 2}, {:magic_range, 0},
       {:magic_digest, 0}, {:caster_state, 2}, {:send_caster_state, 4}, {:tool_range, 2},
-      {:tool_definition, 2}, {:material_balances, 2}, {:production_options, 2}, {:material_supply, 4}, {:beacon_directory, 2},
+      {:tool_definition, 2}, {:material_balances, 2}, {:production_options, 2}, {:protected_cells, 3}, {:material_supply, 4}, {:beacon_directory, 2},
       {:publish_prefabs, 2}, {:prefab_catalog, 0}, {:published_prefab_metadata, 0}, {:material_catalog, 0},
       {:parcel_prepare, 2}, {:prefab_request, 2}, {:prefab_inputs, 3}, {:prefab_loaded, 4}, {:prefab_ready, 3}, {:prefab_known, 3},
       {:publish_prefab, 4}, {:stats, 0}, {:residency_status, 0}, {:maintain_residency, 0}, {:subscribe, 5},

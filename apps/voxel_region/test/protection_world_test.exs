@@ -232,6 +232,11 @@ defmodule VoxelRegion.ProtectionWorldTest do
       denied(w, fn -> use_tool(w, b, {25, 0, 0}, 1) end)
       assert {:ok, _} = use_tool(w, a, {25, 0, 0}, 1)
       assert {:ok, _} = use_tool(w, b, {15, 0, 0}, 1)
+
+      # 只读口与上面的写入判定一致：保留区对谁都不能改；A 的区域只对别人不能改；野外谁都能改。y 不限，返回保持输入顺序。
+      cells = [{4, 0, 0}, {25, 7, 0}, {15, 0, 0}, {9, -3, 5}, {20, 0, -5}]
+      assert World.protected_cells(w, @b, cells) == [{4, 0, 0}, {25, 7, 0}, {9, -3, 5}, {20, 0, -5}]
+      assert World.protected_cells(w, @a, cells) == [{4, 0, 0}, {9, -3, 5}]
     end
   end
 
