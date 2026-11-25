@@ -670,3 +670,4 @@ flowchart LR
 - 2026-11-25T16:10Z：第 2 步（store 心智侧：way_judgments 栏、named_regions；一次性指令不能当 parent）完成并经统筹核对，指纹 `ed3d6db46d0861ef`。
 - 2026-11-25T16:35Z：第 3 步（queue_view：window_ended、item_status、after_status、stop_asked、one_shot_facts_due、open_items；doable 改由 item_status）完成并经统筹核对，指纹 `5c119302ca0dd413`。
 - 2026-11-25T16:55Z：第 4 步（契约数据：semantic_types.json 的 arg_sources，24 原子 70 参数 3 节点；accept 读入）完成并经统筹核对，指纹 `61f693d14b124669`。
+- 2026-11-25T17:25Z：第 5 步（接纳：读钟一次、回执 game_time、Q3、after 透传、关闭结局、accept.RULES 21 个码、原子记录字段）完成并经统筹核对，指纹 `730e95f8682ff4f3`；§3.11 漏列的 run.py / fakes.py 夹具各补 after: None。
