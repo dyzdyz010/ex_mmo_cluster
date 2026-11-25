@@ -173,3 +173,6 @@ What is not in the new text is gone from this section. The section is shown to m
     test_report_m3c 13 全绿；六个文件循环 10 次 60 / 60。`run.py dry`：三种预设未处理错误 0、被删措辞 0、评价词 0、严格模式问题 0。
     表思考工具表摘要 `3c2c8cddd70bd3af` → `d44f6aec7ff3c1f5`（多约 3,400 字符），里思考 `2054afecd69fc856` → `429e3ea91999fe3c`。
     harness 指纹 `464f047c848998fa`（未冻结；M-3d 计划写定后冻结）。未实跑、未调模型。
+- 2026-11-25：用户定 §8 第 3 步的做法：「可以，开新会话做第 2 步，额度沿用 15 美元」——M-3d 的计划与判定由新统筹会话写
+  （接力说明 `.demo/observe/npc-three-loop-m3d-20261125/handoff-brief.md` 第七版），账本 `runs/spend-ledger-m3d.json` 整轮硬上限 15 美元，
+  实跑仍等用户看过计划再定。
