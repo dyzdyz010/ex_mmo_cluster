@@ -35,11 +35,12 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 40 rejects pre-integration wire versions" do
-    assert Session.Codec.protocol_version() == 44
-    hello = %Session.Hello{protocol_version: 44, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 45 rejects pre-integration wire versions" do
+    assert Session.Codec.protocol_version() == 45
+    hello = %Session.Hello{protocol_version: 45, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 44::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 45::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<44::16>> <> tail)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<35::16>> <> tail)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
   end
@@ -153,6 +154,7 @@ defmodule MmoContracts.MagicWireTest do
       caster: 1001,
       shape: 0,
       break_on_hit: true,
+      no_gravity: false,
       radius_m: 0.4,
       temperature_k: 2000.0,
       glow_w: 0.0,
@@ -175,11 +177,29 @@ defmodule MmoContracts.MagicWireTest do
     assert Codec.encode_semblances(internal) == @semblances
     assert Codec.decode_semblances(@semblances) == {:ok, @delta}
     assert Codec.encode_semblances(%{}) == <<>>
-    # Persisted pre-directive records encode as a persistent ball (zero byte at offset 22).
-    old = Map.delete(@delta[{9, 0}], :break_on_hit)
+
+    # Persisted pre-flag records (missing break_on_hit / no_gravity) encode flags = 0 at offset 22.
+    old = @delta[{9, 0}] |> Map.delete(:break_on_hit) |> Map.delete(:no_gravity)
     expected_old = @semblances |> binary_part(135, 135) |> put(22, 0)
     assert Codec.encode_semblances(%{{9, 0} => old}) == expected_old
-    assert {:ok, %{{9, 0} => %{break_on_hit: false}}} = Codec.decode_semblances(expected_old)
+
+    assert {:ok, %{{9, 0} => %{break_on_hit: false, no_gravity: false}}} =
+             Codec.decode_semblances(expected_old)
+
+    # Hello 45: byte 22 is bitflags (bit 0 = break_on_hit, bit 1 = no_gravity), valid values 0..3.
+    live = binary_part(@semblances, 135, 135)
+
+    for {flags, break_on_hit, no_gravity} <- [
+          {0, false, false},
+          {1, true, false},
+          {2, false, true},
+          {3, true, true}
+        ] do
+      record = %{@delta[{9, 0}] | break_on_hit: break_on_hit, no_gravity: no_gravity}
+      expected = put(live, 22, flags)
+      assert Codec.encode_semblances(%{{9, 0} => record}) == expected
+      assert Codec.decode_semblances(expected) == {:ok, %{{9, 0} => record}}
+    end
 
     batch = fn complete, semblances ->
       %MmoContracts.Voxel.PropertyBatch{
@@ -205,7 +225,6 @@ defmodule MmoContracts.MagicWireTest do
              <<0::32, 270::32>> <> @semblances <> <<0::32>>
 
     assert {:ok, %{semblances: @semblances}} = Codec.decode_m1(frame)
-    live = binary_part(@semblances, 135, 135)
 
     assert {:ok, %{semblances: ^live}} =
              Codec.decode_m1(elem(Codec.encode_m1(batch.(1, live)), 1))
@@ -220,6 +239,12 @@ defmodule MmoContracts.MagicWireTest do
     assert Codec.encode_semblances(%{{9, 0} => impact}) == ended
     assert Codec.decode_semblances(ended) == {:ok, %{{9, 0} => impact}}
 
+    # Hello 45: live=2 with flags=3 (break_on_hit + no_gravity) is valid; live=2 with flags=2 (no break_on_hit) is rejected.
+    straight_impact = %{impact | no_gravity: true}
+    straight_ended = put(ended, 22, 3)
+    assert Codec.encode_semblances(%{{9, 0} => straight_impact}) == straight_ended
+    assert Codec.decode_semblances(straight_ended) == {:ok, %{{9, 0} => straight_impact}}
+
     assert {:ok, %{semblances: ^ended}} =
              Codec.decode_m1(elem(Codec.encode_m1(batch.(0, ended)), 1))
 
@@ -227,15 +252,17 @@ defmodule MmoContracts.MagicWireTest do
              Codec.decode_m1(elem(Codec.encode_m1(batch.(1, ended)), 1))
 
     assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 0))
+    assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 2))
 
-    # 反例：乱序、重复、未知形状、删除记录带非零字段、截断。
+    # 反例：乱序、重复、未知形状、未定义 flags 位（>= 4）、删除记录带非零字段、截断。
     <<gone::binary-size(135), kept::binary-size(135)>> = @semblances
 
     for bad <- [
           kept <> gone,
           kept <> kept,
           put(kept, 21, 2),
-          put(kept, 22, 2),
+          put(kept, 22, 4),
+          put(kept, 22, 255),
           put(gone, 40, 1),
           binary_part(@semblances, 0, 200)
         ],

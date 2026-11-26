@@ -292,6 +292,36 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
     newer = %{hit | key: {123, 51, 0}}
     assert {:error, :stale_owner} = WorldServer.Movement.Projectile.deliver(newer)
     assert Player.body_snapshot(restored) == saved
+
+    # Hello 45：20 m 水平 30 m/s 投射物身体采样——无重力直线命中目标胶囊，有重力下坠 ½·9.81·(2/3)² = 2.18 m 脱靶。
+    {:ok, target_ctx} = Player.hit_context(restored)
+    {tx, ty, tz} = target_ctx.position
+
+    long_shot = %{
+      projectile_source: source,
+      origin: {tx - 20.0, ty, tz},
+      velocity: {30.0, 0.0, 0.0},
+      age_s: 0.0,
+      flight_s: 1.0,
+      lifetime_s: 1.0,
+      radius_m: 0.05,
+      t0_us: MmoContracts.ServerTime.server_us() - 750_000
+    }
+
+    [{_, _, {:sample, _, _, {frac, hit_target}, _}}] =
+      WorldServer.Movement.Projectile.poll(
+        [{{52, 0}, Map.put(long_shot, :no_gravity, true)}],
+        {MmoContracts.ServerTime, nil}
+      )
+
+    assert hit_target.id == ctx.cid + 1
+    assert frac > 0.0 and frac < 1.0
+
+    [{_, _, {:sample, _, _, nil, _}}] =
+      WorldServer.Movement.Projectile.poll(
+        [{{53, 0}, Map.put(long_shot, :no_gravity, false)}],
+        {MmoContracts.ServerTime, nil}
+      )
   end
 
   @tag :thermal

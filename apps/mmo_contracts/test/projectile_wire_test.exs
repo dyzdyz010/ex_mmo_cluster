@@ -4,8 +4,8 @@ defmodule MmoContracts.ProjectileWireTest do
   alias MmoContracts.Session
   alias Session.Codec
 
-  test "Hello40 和人物命中 108B 手写字段顺序" do
-    assert Codec.protocol_version() == 44
+  test "Hello45 和人物命中 108B 手写字段顺序" do
+    assert Codec.protocol_version() == 45
 
     bytes =
       <<255, 1::16, 1, 14, 108::32, 1::64, 2::64, 3::64, 40::64, 30::64, 0::32, 10::64, 11::64,

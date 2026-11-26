@@ -61,21 +61,22 @@ defmodule MmoContracts.OreSortWireTest do
     assert {:error, :invalid_message} = Voxel.Codec.decode(head <> <<8>> <> rest)
   end
 
-  test "Hello 44：Hello 43 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 44
+  test "Hello 45：Hello 43/44 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 45
 
     {:ok, packet} =
       Session.Codec.encode(%Session.Hello{
-        protocol_version: 44,
+        protocol_version: 45,
         kernel_id: <<1::256>>,
         profile_id: <<2::256>>
       })
 
-    <<prefix::binary-size(9), 0x00, 0x2C, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 0x00, 0x2D, tail::binary>> = IO.iodata_to_binary(packet)
 
-    assert {:ok, %Session.Hello{protocol_version: 44}} =
-             Session.Codec.decode(prefix <> <<44::16>> <> tail)
+    assert {:ok, %Session.Hello{protocol_version: 45}} =
+             Session.Codec.decode(prefix <> <<45::16>> <> tail)
 
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<44::16>> <> tail)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<43::16>> <> tail)
   end
 end
