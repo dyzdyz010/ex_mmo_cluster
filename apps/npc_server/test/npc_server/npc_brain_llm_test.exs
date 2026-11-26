@@ -1089,7 +1089,8 @@ defmodule NpcServer.NpcBrainLlmTest do
 
     # 工具表 = Abilities 全部组（未配置 groups、无技能）+ wait；say 与世界动作同一决策入口。
     # 放置阶段 §7（2026-10-09）：感知组新增 survey。
-    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target say scoop search_memory select_target set_focus set_plan stop survey toggle_mark use_tool wait) ==
+    # U-31 稿 §9 第 2 步（8ac22da8）：Route 组新增只读查询 find_route，移动组新增 teleport_to_spawn。
+    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat find_route get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target say scoop search_memory select_target set_focus set_plan stop survey teleport_to_spawn toggle_mark use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
 
     assert Enum.all?(body.tools, &(&1.strict == true))
