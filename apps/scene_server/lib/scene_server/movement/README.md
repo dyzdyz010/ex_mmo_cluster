@@ -1,5 +1,10 @@
 # Movement module map
 
+2026-11-04 设计导航：[动量、接触与角色操作设计](../../../../../docs/10-active/movement-sync/2026-11-04-momentum-contact-design.md)
+是该主线唯一当前设计入口，有限驱动力方向已由用户确认，尚未实施；
+[研究稿](../../../../../docs/10-active/movement-sync/2026-11-04-momentum-contact-research.md)只保留证据与候选方案。
+本导航不表示动量、接触损伤或新运动事件已接入；下述既有运行状态与未完成项继续有效。
+
 Player接纳移交后只保留已导入的碰撞／输入／有序队列，删除一次性的`import`与`tail`原件。
 Player仍为temporary，DynamicSupervisor不会保留其重启参数；该监督者空闲1000ms后休眠，
 回收交接时的垃圾二进制引用，活跃Player自身不增加休眠或强制GC。WorldServer.Session同样采用空闲休眠。
