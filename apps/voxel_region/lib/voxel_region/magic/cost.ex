@@ -224,10 +224,16 @@ defmodule VoxelRegion.Magic.Cost do
     steps
     |> Enum.with_index(1)
     |> Enum.find_value(fn {step, k} ->
-      cond do
-        step.complexity > resolution -> Tuple.append(charge_through(quote, k, available_mj), :omega)
-        step.spent_mj > available_mj -> Tuple.append(charge_through(quote, k, available_mj), :energy)
-        true -> nil
+      cause =
+        cond do
+          step.complexity > resolution -> :omega
+          step.spent_mj > available_mj -> :energy
+          true -> nil
+        end
+
+      if cause do
+        {^k, spent_mj} = charge_through(quote, k, available_mj)
+        {k, spent_mj, cause}
       end
     end)
   end
