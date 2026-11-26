@@ -37,11 +37,11 @@ defmodule VoxelRegion.CatalogHoldablesTest do
   end
 
   # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户 2026-11-20 定；魔法 v2 切片 3 迁至 IR v2）：
-  # `fixtures/items/08bb766b…` 为 Voxim `author_actions.py holdables` 真实发布物（magic-v2-online 62042c84，原样复制、按 sha256 核对），basic_spell 为小写十六进制 IR v2 字节
-  # （〈握〉〈形 球 0.05 m，0.01 kg〉〈辉 100 W〉〈蓄 2 kJ〉〈投 30 m/s〉｜当〈遇〉则〈散〉），
+  # `fixtures/items/c9aa29e6…` 为 Voxim `author_actions.py holdables` 真实发布物（magic-v2-online 7affe19e，原样复制、按 sha256 核对），basic_spell 为小写十六进制 IR v2 字节
+  # （〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1742 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉），
   # basic_windup_s 仍为 0.3；剑没有普攻法术。旧 v1 JSON 对象在加载边界直接拒绝。
-  @staff "08bb766b665b8c7423341d78c4a63dcc9a3ff47bfe37c192b7b4854c96e105bc"
-  @bolt_hex "02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00"
+  @staff "c9aa29e60c2cafd8b3d64de718ca90f79b8131992187140740463a11d28458f5"
+  @bolt_hex "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00"
   test "the staff publication carries the bolt's IR v2 bytes and authored basic wind-up 0.3 s" do
     path = Path.expand("fixtures/items/#{@staff}.json", __DIR__)
     catalog = Damage.load(path)

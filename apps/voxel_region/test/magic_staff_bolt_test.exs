@@ -18,7 +18,7 @@ defmodule VoxelRegion.MagicStaffBoltTest do
   IR v2 法杖光弹（复用 v5 目录 `e337873b…` 既有 14 符号，42 B）：
   `〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1742 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉`
   hex = `020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00`
-  （物品目录夹具 `fixtures/items/08bb766b…` 是客户端真实发布物，在客户端重新发布前仍是旧程序；本文件用测试内持物表。）
+  （物品目录夹具 `fixtures/items/c9aa29e6…` 是客户端真实发布物，与此程序一致；`catalog_holdables_test.exs` 读它。本文件用测试内持物表。）
   """
   use ExUnit.Case, async: false
   require Logger
