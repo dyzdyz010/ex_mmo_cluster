@@ -57,6 +57,12 @@ defmodule GateServer.Session.QuicConnection do
 
   @type t :: %__MODULE__{}
 
+  # 上行帧长度上限（信任边界首帧即拒，防止未鉴权或恶意大长度头无限攒缓冲导致 OOM）：
+  # control 流最大合法帧远小于 128 KiB（单字段 UTF-8 上限 u16）；
+  # voxel 流需容纳玩家运行时 VXPD 发布（VoxelRegion.Prefab.limits().bytes ≈ 15.3 MiB），留 2 倍余量至 32 MiB。
+  @max_control_frame_bytes 131_072
+  @max_voxel_frame_bytes 33_554_432
+
   @doc "在 listener 转交连接 owner 之前创建邮箱。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -88,9 +94,14 @@ defmodule GateServer.Session.QuicConnection do
 
   @impl true
   def handle_cast(:activate, state) do
-    {:ok, _} = :quicer.async_accept_stream(state.conn, %{active: true})
-    :ok = :quicer.async_handshake(state.conn)
-    {:noreply, state}
+    with {:ok, _} <- :quicer.async_accept_stream(state.conn, %{active: true}),
+         :ok <- :quicer.async_handshake(state.conn) do
+      {:noreply, state}
+    else
+      error ->
+        Logger.warning("mmo_session_activate_failed error=#{inspect(error)}")
+        {:stop, :normal, %{state | closing: true, end_reason: :transport_closed}}
+    end
   end
 
   @impl true
@@ -155,11 +166,18 @@ defmodule GateServer.Session.QuicConnection do
       when is_reference(ref),
       do: {:stop, :normal, close(state, :auth_rejected, "auth_session_down")}
 
+  def handle_info({:quic, :new_stream, _stream, _props}, %{closing: true} = state),
+    do: {:noreply, state}
+
   def handle_info({:quic, :new_stream, stream, %{flags: flags}}, state) do
     if flags == 0 and map_size(state.streams) < 2 do
-      :ok = :quicer.setopt(stream, :active, true)
-      {:ok, _} = :quicer.async_accept_stream(state.conn, %{active: true})
-      {:noreply, put_in(state.streams[stream], %{purpose: nil, buffer: <<>>, started: false})}
+      with :ok <- :quicer.setopt(stream, :active, true),
+           {:ok, _} <- :quicer.async_accept_stream(state.conn, %{active: true}) do
+        {:noreply, put_in(state.streams[stream], %{purpose: nil, buffer: <<>>, started: false})}
+      else
+        error ->
+          {:noreply, close(state, :transport_closed, "new_stream_error " <> inspect(error))}
+      end
     else
       {:noreply, close(state, :protocol_violation, "unexpected_stream")}
     end
@@ -200,10 +218,15 @@ defmodule GateServer.Session.QuicConnection do
     if state.closing do
       {:noreply, state}
     else
-      entry = Map.fetch!(state.streams, stream)
-      state = put_in(state.streams[stream].buffer, entry.buffer <> bytes)
-      state = %{state | bytes_in: state.bytes_in + byte_size(bytes)}
-      {:noreply, consume(state, stream)}
+      case Map.fetch(state.streams, stream) do
+        {:ok, entry} ->
+          state = put_in(state.streams[stream].buffer, entry.buffer <> bytes)
+          state = %{state | bytes_in: state.bytes_in + byte_size(bytes)}
+          {:noreply, consume(state, stream)}
+
+        :error ->
+          {:noreply, close(state, :protocol_violation, "unknown_stream")}
+      end
     end
   end
 
@@ -351,6 +374,9 @@ defmodule GateServer.Session.QuicConnection do
     {:noreply, flush_reliable(state, purpose)}
   end
 
+  def handle_info({:quic, :send_complete, _stream, true}, %{closing: false} = state),
+    do: {:noreply, close(state, :transport_closed, "send_canceled")}
+
   def handle_info(
         {:mmo_datagram, identity, message},
         %{identity: identity, closing: false} = state
@@ -379,22 +405,29 @@ defmodule GateServer.Session.QuicConnection do
           {state, bytes, queued_at, records} =
             pack_datagram(state, message, bytes, queued_at, iterator)
 
-          {:ok, count} = :quicer.async_send_dgram(state.conn, bytes)
+          case :quicer.async_send_dgram(state.conn, bytes) do
+            {:ok, count} ->
+              {:noreply,
+               %{
+                 state
+                 | datagram_busy: true,
+                   datagrams_sent: state.datagrams_sent + 1,
+                   bytes_out: state.bytes_out + count,
+                   snapshot_records_sent: state.snapshot_records_sent + records,
+                   snapshot_datagrams_sent:
+                     state.snapshot_datagrams_sent + if(records > 0, do: 1, else: 0),
+                   snapshot_bytes_sent:
+                     state.snapshot_bytes_sent + if(records > 0, do: count, else: 0),
+                   queue_age_us:
+                     max(state.queue_age_us, System.monotonic_time(:microsecond) - queued_at)
+               }}
 
-          {:noreply,
-           %{
-             state
-             | datagram_busy: true,
-               datagrams_sent: state.datagrams_sent + 1,
-               bytes_out: state.bytes_out + count,
-               snapshot_records_sent: state.snapshot_records_sent + records,
-               snapshot_datagrams_sent:
-                 state.snapshot_datagrams_sent + if(records > 0, do: 1, else: 0),
-               snapshot_bytes_sent:
-                 state.snapshot_bytes_sent + if(records > 0, do: count, else: 0),
-               queue_age_us:
-                 max(state.queue_age_us, System.monotonic_time(:microsecond) - queued_at)
-           }}
+            {:error, :closed} ->
+              {:noreply, %{state | closing: true}}
+
+            error ->
+              {:noreply, close(state, :transport_closed, "dgram_send_error " <> inspect(error))}
+          end
         else
           {:noreply, close(state, :protocol_violation, "snapshot_exceeds_datagram_limit")}
         end
@@ -547,6 +580,12 @@ defmodule GateServer.Session.QuicConnection do
         else
           close(state, :protocol_violation, "stream_purpose purpose=#{purpose}")
         end
+
+      %{purpose: 1, buffer: <<length::32, _::binary>>} when length > @max_control_frame_bytes ->
+        close(state, :protocol_violation, "frame_too_large purpose=1 length=#{length}")
+
+      %{purpose: 2, buffer: <<length::32, _::binary>>} when length > @max_voxel_frame_bytes ->
+        close(state, :protocol_violation, "frame_too_large purpose=2 length=#{length}")
 
       %{purpose: purpose, buffer: <<length::32, payload::binary-size(length), tail::binary>>}
       when purpose != nil ->
@@ -930,9 +969,11 @@ defmodule GateServer.Session.QuicConnection do
         }
 
       {:error, :closed} ->
-        # Observed when the peer closes after receiving a malformed test frame
-        # while a prior SEND_COMPLETE is already queued in this mailbox.
+        # 对端在收到异常帧后可能已关闭流，此时前一条 SEND_COMPLETE 仍排在本邮箱里。
         %{state | closing: true}
+
+      error ->
+        close(state, :transport_closed, "stream_send_error " <> inspect(error))
     end
   end
 
@@ -953,7 +994,17 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   defp shutdown(%{identity: nil} = state, code) do
-    :ok = :quicer.async_shutdown_connection(state.conn, 0, Session.Codec.pre_auth_close(code))
+    case :quicer.async_shutdown_connection(state.conn, 0, Session.Codec.pre_auth_close(code)) do
+      :ok ->
+        :ok
+
+      {:error, :closed} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("mmo_pre_auth_shutdown_failed reason=#{inspect(reason)}")
+    end
+
     %{state | closing: true}
   end
 

@@ -870,6 +870,143 @@ defmodule T1TransportTest do
     assert {:ok, _} = :quicer.async_send(stream, tail, 0)
     assert_receive {:quic, :shutdown, ^conn, 0x10009}, 5000
   end
+
+  test "oversized pre-auth control frame header closes immediately without buffering", %{
+    conn: conn
+  } do
+    {:ok, stream} = :quicer.start_stream(conn, [{:active, true}])
+
+    # 仅发 5 字节（purpose 1 + 超过 128 KiB 上限的长度头），服务端应立即以 protocol_violation 关闭。
+    assert {:ok, 5} = :quicer.async_send(stream, <<1, 131_073::32>>, 0)
+    assert_receive {:quic, :shutdown, ^conn, 0x10008}, 2000
+    refute_receive {:join, _, _, _}, 50
+  end
+
+  test "oversized authenticated voxel frame header closes with protocol_violation", %{
+    conn: conn,
+    hello: hello
+  } do
+    control_stream = control(conn, hello)
+    assert_receive {:join, identity, _, _}, 5000
+
+    {:ok, voxel} = :quicer.start_stream(conn, [{:active, true}])
+    assert {:ok, 5} = :quicer.async_send(voxel, <<2, 33_554_433::32>>, 0)
+
+    {:ok, echoed} = Session.Codec.encode(hello)
+    {:ok, ending} = Session.Codec.encode(%Session.SessionEnd{identity: identity, reason: 8})
+    echoed = IO.iodata_to_binary(echoed)
+    ending = IO.iodata_to_binary(ending)
+    expected = <<1, byte_size(echoed)::32, echoed::binary, byte_size(ending)::32, ending::binary>>
+    assert receive_bytes(control_stream, byte_size(expected), <<>>) == expected
+  end
+
+  test "listener survives failed controlling_process handoff without dropping active sessions", %{
+    listener: listener,
+    conn: conn,
+    hello: hello,
+    port: port
+  } do
+    control(conn, hello)
+    assert_receive {:join, _identity, _, active_sink}, 5000
+
+    # 用一条已关闭的真实 QUIC 连接模拟 accept 后、转交 owner 前对端断开。
+    {:ok, doomed} =
+      :quicer.connect(
+        ~c"localhost",
+        port,
+        [
+          alpn: [~c"voxim-m1"],
+          verify: :verify_peer,
+          cacertfile:
+            String.to_charlist(Path.join(System.fetch_env!("VOXIM_TEST_CERTS"), "ca.pem")),
+          datagram_receive_enabled: 1
+        ],
+        5000
+      )
+
+    :ok = :quicer.close_connection(doomed)
+    send(listener, {:quic, :new_conn, doomed, %{}})
+
+    # listener 必须存活（可通过同步 sys 调用确认已处理该消息），且已有会话未受影响。
+    _ = :sys.get_state(listener)
+    assert Process.alive?(listener)
+    assert Process.alive?(active_sink)
+
+    # 后续新连接仍能正常完成握手。
+    {:ok, fresh_conn} =
+      :quicer.connect(
+        ~c"localhost",
+        port,
+        [
+          alpn: [~c"voxim-m1"],
+          verify: :verify_peer,
+          cacertfile:
+            String.to_charlist(Path.join(System.fetch_env!("VOXIM_TEST_CERTS"), "ca.pem")),
+          datagram_receive_enabled: 1
+        ],
+        5000
+      )
+
+    on_exit(fn -> :quicer.async_shutdown_connection(fresh_conn, 0, 0) end)
+  end
+
+  test "datagram send on closed handle and canceled stream send transition cleanly to closing", %{
+    conn: conn,
+    hello: hello,
+    port: port
+  } do
+    control(conn, hello)
+    assert_receive {:join, identity, _, sink}, 5000
+
+    # 构造一条已关闭的真实 quicer 句柄，验证 flush_datagrams 不会因 {:error, :closed} MatchError 崩溃。
+    {:ok, closed_conn} =
+      :quicer.connect(
+        ~c"localhost",
+        port,
+        [
+          alpn: [~c"voxim-m1"],
+          verify: :verify_peer,
+          cacertfile:
+            String.to_charlist(Path.join(System.fetch_env!("VOXIM_TEST_CERTS"), "ca.pem")),
+          datagram_receive_enabled: 1
+        ],
+        5000
+      )
+
+    :ok = :quicer.close_connection(closed_conn)
+
+    ack = %Movement.OwnerAck{
+      identity: identity,
+      server_tick: 1,
+      processed_input_seq: 1,
+      collision_revision: 1,
+      state: %Session.State{
+        position: {0.0, 1.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        grounded: 1,
+        yaw: 0
+      },
+      substituted_through_seq: 0
+    }
+
+    state = :sys.get_state(sink)
+
+    {:noreply, queued} =
+      GateServer.Session.QuicConnection.handle_info(
+        {:mmo_datagram, identity, ack},
+        %{state | conn: closed_conn, datagram_busy: false}
+      )
+
+    assert {:noreply, %{closing: true}} =
+             GateServer.Session.QuicConnection.handle_info(:flush_datagrams, queued)
+
+    # send_complete 携带 canceled=true 时必须显式关闭，不能悄悄卡死 busy。
+    assert {:noreply, %{closing: true}} =
+             GateServer.Session.QuicConnection.handle_info(
+               {:quic, :send_complete, :any_stream, true},
+               %{state | closing: false}
+             )
+  end
 end
 
 defmodule M4aGateTransferTest do
