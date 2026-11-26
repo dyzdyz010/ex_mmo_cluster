@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC 流程与模块关系图（2026-11-23）</title>
+<style>
+  /* 本页自带的角色配色（不覆盖宿主主题变量） */
+  html { --c-auth:#8a8880; --c-auth-w:#efeee9; --c-exec:#2f9e44; --c-exec-w:#e5f5e7;
+         --c-jev:#2a78d6; --c-jev-w:#e8f1fc; --c-llm:#8b5cf6; --c-llm-w:#f1eafd;
+         --c-mind:#e07b0c; --c-mind-w:#fdf1e3; --c-ext:#d6336c; --c-ext-w:#fdebf1;
+         --c-fact:#b08d00; --c-fact-w:#fff7d6; --c-ret:#c92a2a; --c-ret-w:#fdecec; }
+  html[data-mode="dark"] { --c-auth:#a3a198; --c-auth-w:#2a2a28; --c-exec:#51c46a; --c-exec-w:#16301c;
+         --c-jev:#4b95ec; --c-jev-w:#14263d; --c-llm:#a585f8; --c-llm-w:#271d3d; --c-mind:#f0962e; --c-mind-w:#3a2814;
+         --c-ext:#ec5a8c; --c-ext-w:#3a1624; --c-fact:#d9b627; --c-fact-w:#352d0c; --c-ret:#f06767; --c-ret-w:#3a1616; }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--background,#fafaf8); color:var(--foreground,#171717);
+         font-family:var(--font-sans, system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif);
+         font-size:15px; line-height:1.65; }
+  main { max-width:1180px; margin:0 auto; padding:24px 22px 64px; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:.01em; }
+  h2 { font-size:21px; margin:46px 0 6px; padding-top:10px; border-top:1px solid var(--border,#e4e4e0); }
+  h3 { font-size:16.5px; margin:26px 0 6px; }
+  p { margin:6px 0 10px; }
+  .sub { color:var(--muted-foreground,#6b6a66); }
+  .small { font-size:13px; }
+  code { font-family:var(--font-mono, ui-monospace, Consolas, monospace); font-size:.88em;
+         background:var(--muted,#f0efeb); padding:1px 5px; border-radius:4px; }
+
+  nav.toc { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; gap:6px; padding:10px 0;
+            background:var(--background,#fafaf8); border-bottom:1px solid var(--border,#e4e4e0); margin-bottom:8px; }
+  nav.toc a { text-decoration:none; color:var(--foreground,#171717); font-size:13px; padding:3px 10px;
+              border:1px solid var(--border,#e4e4e0); border-radius:999px; background:var(--card,#fff); }
+  nav.toc a:hover { background:var(--accent,#f0efeb); color:var(--accent-foreground,#171717); }
+  nav.toc .sep { width:1px; background:var(--border,#e4e4e0); margin:2px 4px; }
+
+  .card { background:var(--card,#fff); color:var(--card-foreground,#171717); border:1px solid var(--border,#e4e4e0);
+          border-radius:calc(var(--radius,8px) + 2px); padding:14px 16px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  @media (max-width:820px){ .grid2,.grid3 { grid-template-columns:1fr; } }
+
+  .badge { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; border:1px solid; white-space:nowrap; vertical-align:1px; }
+  .b-live { color:var(--c-exec); border-color:var(--c-exec); background:var(--c-exec-w); }
+  .b-plan { color:var(--c-llm); border-color:var(--c-llm); background:var(--c-llm-w); }
+  .b-ret  { color:var(--c-ret);  border-color:var(--c-ret);  background:var(--c-ret-w); }
+  .b-keep { color:var(--c-jev);  border-color:var(--c-jev);  background:var(--c-jev-w); }
+  .b-now  { color:var(--c-mind); border-color:var(--c-mind); background:var(--c-mind-w); }
+
+  .legend { display:flex; flex-wrap:wrap; gap:8px 16px; font-size:13px; margin:10px 0 2px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .sw { width:16px; height:12px; border-radius:3px; border:1.5px solid; display:inline-block; }
+  .sw.auth{border-color:var(--c-auth);background:var(--c-auth-w)} .sw.exec{border-color:var(--c-exec);background:var(--c-exec-w)}
+  .sw.jev{border-color:var(--c-jev);background:var(--c-jev-w)} .sw.llm{border-color:var(--c-llm);background:var(--c-llm-w)}
+  .sw.mind{border-color:var(--c-mind);background:var(--c-mind-w)} .sw.ext{border-color:var(--c-ext);background:var(--c-ext-w)}
+  .sw.fact{border-color:var(--c-fact);background:var(--c-fact-w)}
+
+  .diagram { background:var(--card,#fff); border:1px solid var(--border,#e4e4e0); border-radius:calc(var(--radius,8px) + 2px);
+             padding:14px 10px; margin:10px 0 8px; overflow-x:auto; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .diagram pre.src { text-align:left; font-size:12px; white-space:pre-wrap; margin:0; color:var(--muted-foreground,#6b6a66); }
+  .diagram .fallback-note { font-size:12px; color:var(--c-ret); text-align:left; margin-bottom:6px; }
+  .caption { font-size:13px; color:var(--muted-foreground,#6b6a66); margin:2px 2px 0; }
+
+  ul.tight { margin:4px 0 8px; padding-left:20px; } ul.tight li { margin:2px 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid var(--border,#e4e4e0); padding:7px 8px; text-align:left; vertical-align:top; }
+  th { font-weight:600; color:var(--muted-foreground,#6b6a66); font-size:13px; }
+  tr.r-auth td:first-child { border-left:4px solid var(--c-auth); }
+  tr.r-exec td:first-child { border-left:4px solid var(--c-exec); }
+  tr.r-jev  td:first-child { border-left:4px solid var(--c-jev); }
+  tr.r-llm  td:first-child { border-left:4px solid var(--c-llm); }
+  tr.r-mind td:first-child { border-left:4px solid var(--c-mind); }
+
+  .compare h3 { margin-top:2px; }
+  .compare .card { border-top:4px solid; }
+  .compare .live { border-top-color:var(--c-exec); } .compare .plan { border-top-color:var(--c-llm); }
+
+  .lane { border-left:4px solid; padding-left:12px; }
+  .lane.auth{border-color:var(--c-auth)} .lane.jev{border-color:var(--c-jev)} .lane.llm{border-color:var(--c-llm)} .lane.mind{border-color:var(--c-mind)}
+
+  .path { border-radius:calc(var(--radius,8px) + 2px); padding:12px 14px; border:1.5px solid var(--c-llm); background:var(--c-llm-w); }
+  .path .n { display:inline-flex; width:24px; height:24px; border-radius:50%; align-items:center; justify-content:center;
+             background:var(--c-llm); color:#fff; font-weight:700; font-size:13px; margin-right:6px; }
+  .path b { font-size:15px; }
+
+  ol.steps { list-style:none; padding:0; margin:12px 0; counter-reset:s; display:grid; grid-template-columns:repeat(6,1fr); gap:8px; }
+  @media (max-width:900px){ ol.steps { grid-template-columns:1fr 1fr; } }
+  ol.steps li { counter-increment:s; position:relative; border:1px solid var(--border,#e4e4e0); border-radius:calc(var(--radius,8px) + 2px);
+                background:var(--card,#fff); padding:28px 10px 10px; font-size:13px; }
+  ol.steps li::before { content:counter(s); position:absolute; top:6px; left:10px; font-weight:700; color:var(--muted-foreground,#6b6a66); }
+  ol.steps li.cur { border:2px solid var(--c-mind); background:var(--c-mind-w); }
+  ol.steps li b { display:block; font-size:14px; margin-bottom:2px; }
+
+  .note { border-left:4px solid var(--c-fact); background:var(--c-fact-w); padding:8px 12px; border-radius:6px; margin:10px 0; font-size:14px; }
+  .src-list li { font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NPC 流程与模块关系图</h1>
+<p class="sub">整理于 2026-11-23，分支 <code>npc-life-20261111</code>。只画<strong>已经确定</strong>的内容：现行运行中的 <code>"npc"</code> 形态，以及用户已经定下、尚未实施的“通用心智”重设计。各种取值（轮数、条数等）仍待定的地方不画成定论。</p>
+
+<div class="legend">
+  <span><i class="sw auth"></i>权威（Body / Scene / World）</span>
+  <span><i class="sw exec"></i>执行（行为树、技能、执行器）</span>
+  <span><i class="sw jev"></i>Jev（封闭选择）</span>
+  <span><i class="sw llm"></i>LLM（DeepSeek 写作 / 思考）</span>
+  <span><i class="sw mind"></i>心智与记忆（Life、Hindsight）</span>
+  <span><i class="sw ext"></i>外部服务</span>
+  <span><i class="sw fact"></i>事实 / 触发</span>
+</div>
+
+<nav class="toc">
+  <a href="#overview">0 一页看懂</a>
+  <a href="#cluster">1 在集群里的位置</a>
+  <span class="sep"></span>
+  <a href="#layers">2 现行：分层与时间尺度</a>
+  <a href="#modules">3 现行：模块关系</a>
+  <a href="#select">4 现行：活动选择</a>
+  <a href="#dialogue">5 现行：对话回合</a>
+  <a href="#life">6 现行：经历与慢层</a>
+  <span class="sep"></span>
+  <a href="#new-loop">7 新设计：闭环</a>
+  <a href="#new-own">8 新设计：所有权</a>
+  <a href="#new-sleep">9 新设计：睡眠</a>
+  <a href="#migrate">10 旧→新与迁移</a>
+  <a href="#sources">出处</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="overview">0　一页看懂：两套东西，一个在跑，一个已定</h2>
+<div class="grid2 compare">
+  <div class="card live">
+    <h3><span class="badge b-live">现行 · 在跑</span>　<code>"npc"</code> 统一形态</h3>
+    <p>进青岚上线用的就是它（<code>deploy/npc/qinglan/register.exs</code>）。一条控制链，慢层给快层提供上下文：</p>
+    <ul class="tight">
+      <li><b>规划</b>：LLM（DeepSeek）写日计划、推进任务、写反思日记，都在 Life 里、稀疏地跑</li>
+      <li><b>选择</b>：活动结束时，Jev 从<b>代码生成的候选</b>（<code>Offers</code>）里取第一名</li>
+      <li><b>执行</b>：行为树 <code>Trees.npc</code> + 技能，逐步交给 Body，由权威裁决</li>
+      <li><b>心智</b>：Life（情绪、关系、人格卡、近期经历）+ Hindsight（记忆与认识），发问时现读拼成心智快照</li>
+    </ul>
+  </div>
+  <div class="card plan">
+    <h3><span class="badge b-plan">已定 · 未实施</span>　通用心智（从平地重设计）</h3>
+    <p>用户 2026-11-21 定方向、11-22/23 补充 U-10 ~ U-13。现在在 M-2c（隔离 probe，不改 <code>apps/</code>），<b>不进本次上线</b>，将来原地替换 <code>"npc"</code> 内部。</p>
+    <ul class="tight">
+      <li><b>世界原子是唯一真值</b>；“会做什么”是角色自己写的<b>经验</b>（带参数的树），可错可改</li>
+      <li><b>Jev 只从角色自己写的条目里挑</b>，并做“要不要停下想”的叫醒判断</li>
+      <li><b>进 LLM 思考只有三条路</b>：叫醒判断说停 / 待办表空 / 入睡整合</li>
+      <li><b>代码只给事实</b>，主观判断只由 Jev 与 LLM 做</li>
+    </ul>
+  </div>
+</div>
+<p class="note">读图提示：第 2–6 节是<b>现在</b>运行时真实发生的流程；第 7–10 节是<b>将来</b>要换成的样子。两者共用的底座（Body、世界权威、Abilities、技能、Hindsight、Jev 客户端、Life 的情绪与人格）在第 10 节的对照表里标为“保留”。</p>
+
+<!-- ============================================================ -->
+<h2 id="cluster">1　NPC 在集群里的位置</h2>
+<p>NPC 是<b>服务端里的一个“玩家”</b>：它的身体 Body 走和玩家完全相同的意图入口，世界真值仍只在 Scene / World。决策侧只能看观察、发命令、读只读查询，所有出站 HTTP（模型、Hindsight）都经 <code>NpcServer.Http</code> 这一个出口。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart LR
+  subgraph CL["客户端"]
+    UE["Voxim（UE5.8）<br/>玩家"]:::auth
+  end
+  subgraph SRV["voxim_server release（Linux）"]
+    GATE["gate_server<br/>协议解码 · 鉴权 · 转发"]:::auth
+    SCENE["scene_server<br/>移动 · AOI · 对话听众"]:::auth
+    WORLD["voxel_region / world_server<br/>体素 · prefab · 材料事务"]:::auth
+    DATA[("data_service<br/>PostgreSQL")]:::mind
+    subgraph NPC["npc_server"]
+      BODY["Body<br/>NPC 的身体"]:::exec
+      DEC["决策侧<br/>Runtime · 大脑 · Life"]:::mind
+    end
+  end
+  subgraph EXT["外部服务（经 Http 唯一出口）"]
+    JEV["Jev（Typesafe API）<br/>封闭选择打分"]:::ext
+    DS["DeepSeek<br/>LLM 写作 / 思考"]:::ext
+    HS[("Hindsight 容器<br/>经历 · 召回 · 认识")]:::ext
+  end
+  UE <-->|QUIC| GATE
+  GATE --> SCENE
+  BODY -->|"意图（与玩家同一入口<br/>Movement.Intent.run）"| SCENE
+  SCENE -->|"观察 · Outcome · 来话"| BODY
+  SCENE --> WORLD
+  DEC <-->|"命令 / Outcome"| BODY
+  DEC -->|"只读查询<br/>look · survey · 生产选项"| WORLD
+  DEC -->|"登记行 · Life 持久行 · 花费账本"| DATA
+  DEC --> JEV
+  DEC --> DS
+  DEC --> HS
+</script></div>
+<p class="caption">铁律：世界真值只在权威侧；记忆与认识只是“我记得”；NPC 的动作失败由权威回 <code>rejected</code> + 原因，不在 NPC 侧伪造成功。</p>
+
+<!-- ============================================================ -->
+<h2 id="layers">2　<span class="badge b-live">现行</span>　分层与时间尺度</h2>
+<p>一个 NPC 只有一种形态。<b>慢层给快层上下文，快层把经历和例外交给慢层；慢层从不阻塞快层</b>——任何一层在等更慢的层时，都有“继续现在这样”可做。</p>
+<table>
+  <thead><tr><th style="width:12%">位置</th><th style="width:22%">谁坐在这里</th><th>回答什么问题</th><th style="width:20%">多快 / 多久跑一次</th><th style="width:16%">管多长的事</th></tr></thead>
+  <tbody>
+    <tr class="r-llm"><td><b>规划</b></td><td>LLM（DeepSeek，经 Life 的写作接口）</td><td>今天想做成什么；任务的下一步；回头看写日记</td><td>3–30 秒；稀疏（日计划每天 ≤ 2 次、任务推进间隔 ≥ 3 分钟）</td><td>一个游戏日及以上</td></tr>
+    <tr class="r-jev"><td><b>选择</b></td><td><code>Selector</code>（位置）+ Jev（判断者）</td><td>现在做哪件事（含要不要放下手头的事）</td><td>Jev ≈ 0.6 秒；连同并行召回 2–4 秒；活动结束 / 连续失败 / 被直呼时问</td><td>几十秒到几十分钟</td></tr>
+    <tr class="r-exec"><td><b>执行</b></td><td>行为树 <code>Trees.npc</code> + 技能</td><td>这件事的下一步怎么做</td><td>每 tick，无模型；要台词 / 房屋设计的那一步 3–30 秒</td><td>几秒到几分钟</td></tr>
+    <tr class="r-auth"><td><b>权威</b></td><td>Body、Scene、World</td><td>这个动作成不成立</td><td>每 tick</td><td>一步</td></tr>
+    <tr class="r-mind"><td><b>心智</b></td><td>Life：情绪、关系、人格卡、未封存近期经历</td><td>我什么心情、我是什么样的人、刚才发生了什么</td><td>每个权威事件即时；情绪半衰期 120 秒</td><td>分钟到小时；人格以天计</td></tr>
+    <tr class="r-mind"><td><b>记忆</b></td><td>Hindsight</td><td>我经历过什么、我怎么看这些事</td><td>召回 1–3 秒；写入与巩固后台 10–60 秒；认识满 600 秒才刷新</td><td>整个一生</td></tr>
+  </tbody>
+</table>
+<p class="caption">“位置”和“判断者”是两个维度：能算的归代码（可行性过滤、紧急避险），封闭但要综合判断的归 Jev，答案开放的归 LLM（台词、房屋设计是某项活动里的一步，由那个技能去问 LLM）。</p>
+
+<!-- ============================================================ -->
+<h2 id="modules">3　<span class="badge b-live">现行</span>　一个 NPC 内部的模块关系</h2>
+<p>每个 NPC 一个 <code>Runtime</code>，组合 Body 与大脑。<code>Abilities</code> 是决策侧唯一的能力定义，行为树与候选生成都从它取。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart TB
+  REG["Registry + Bootstrap<br/>登记行 → {大脑, profile}<br/>节点重启后拉起"]:::auth
+  subgraph RT["Runtime（每个 NPC 一个）"]
+    TREE["Brain.Tree + Trees.npc<br/>树根第一步：choose_activity"]:::exec
+    SK["技能 worker<br/>build · gather · travel · expand · design_house"]:::exec
+    ASK["发问 worker<br/>活动选择 / 对话回合"]:::jev
+  end
+  BODY["Body<br/>观察 · 命令 · Outcome"]:::exec
+  SEL["Selector<br/>选择位置：何时问 · 最近选过什么"]:::jev
+  OFF["Offers<br/>候选：登记项 · 对人 · 说话 · 吃 · 合成"]:::jev
+  MIND["Mind<br/>拼心智快照（英文 state）"]:::mind
+  JEV["Jev 客户端<br/>候选里取 top1"]:::jev
+  SPK["Skills.Speak<br/>写一句台词"]:::llm
+  AB["Abilities<br/>唯一能力定义"]:::auth
+  subgraph LIFE["Life（心智 owner，持久行在 PostgreSQL）"]
+    ST["情绪 · 关系 · 人格卡<br/>未封存近期经历"]:::mind
+    BG["慢层：反思 · 日计划 · 任务推进"]:::llm
+    HA["Hindsight 适配器"]:::mind
+  end
+  SB["SpendBudget<br/>每天花费额度"]:::fact
+  HSX[("Hindsight")]:::ext
+  DSX["DeepSeek"]:::ext
+  REG --> RT
+  TREE -->|命令| BODY
+  SK -->|步骤命令| BODY
+  BODY -->|Outcome| TREE
+  BODY -->|"观察 · 事件 · 来话"| ST
+  TREE -->|choose_activity| ASK
+  ASK --> SEL
+  SEL --> OFF
+  SEL --> MIND
+  MIND -->|现读| ST
+  MIND -->|"认识 + 召回"| HA
+  SEL --> JEV
+  ASK -->|对话回合答话| SPK
+  AB --> TREE
+  AB --> OFF
+  HA <--> HSX
+  BG --> DSX
+  SPK --> DSX
+  ST --> BG
+  SB -.->|"到线：停后台慢层"| BG
+</script></div>
+<p class="caption">登记表里还有 <code>settler</code> / <code>llm</code> / <code>life</code> / <code>patrol</code> 等旧形态，生产登记只用 <code>"npc"</code>，这里不画它们（新设计迁移后它们退役，见第 10 节）。</p>
+
+<!-- ============================================================ -->
+<h2 id="select">4　<span class="badge b-live">现行</span>　活动选择：一次“现在做什么”</h2>
+<p>选择本身是树根的一步命令，走现成的 <code>act → Runtime → Outcome</code> 通道：异步、带命令号、过期应答丢弃。身体在等 Jev 时不被锁住。</p>
+<div class="diagram"><script type="text/x-mermaid">
+sequenceDiagram
+  autonumber
+  participant T as 行为树 Trees.npc
+  participant R as Runtime
+  participant W as 发问 worker
+  participant L as Life
+  participant H as Hindsight
+  participant O as Offers
+  participant J as Jev
+  participant B as Body / 世界权威
+  T->>R: choose_activity（附：上一项怎样结束）
+  R->>W: 起 worker
+  W->>L: 刚结束的活动写成一条经历
+  W->>L: 读心智：情绪 · 关系 · 近期经历 · 认识
+  L->>H: 按处境分路召回（至多 4 路并行）
+  H-->>L: 相关记忆
+  W->>O: 生成本轮候选（吃 / 合成现读 World）
+  W->>J: 心智快照 + 有序候选
+  J-->>W: top1（不设置信度门槛）
+  W-->>R: 选中的候选
+  R-->>T: Outcome = 候选名（按命令号回树）
+  T->>B: 执行被选中的分支（技能 / 去某处并停留）
+  B-->>T: 每步 Outcome（done / rejected …）
+  Note over T,B: 活动结束或连续失败 → 回到第 1 步
+</script></div>
+
+<!-- ============================================================ -->
+<h2 id="dialogue">5　<span class="badge b-live">现行</span>　对话回合：边聊边干</h2>
+<p>玩家直接对 NPC 说话时，Runtime 另起一个回合；<b>当前技能的步骤照常投给 Body，不等回合</b>。一次只有一个回合在途，回合中再来的话只记日志，但照样进经历。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart LR
+  S["Scene 权威来话<br/>玩家直呼"]:::fact --> R["Runtime"]:::exec
+  R -->|起一个回合 worker| W["回合 worker<br/>读心智 + 来话原文"]:::jev
+  W -->|"心智快照 + 来话 + 封闭选项"| J{"Jev"}:::jev
+  J -->|keep_working_and_answer| X["Skills.Speak<br/>LLM 写一句"]:::llm
+  X --> B["Body say<br/>同一会话"]:::exec
+  J -->|keep_working_silently| N["只记日志"]:::auth
+  J -->|"选某项活动<br/>（含对来话者说话）"| P["记下预选<br/>当前活动记 interrupted<br/>树在步骤边界停下"]:::exec
+  P --> T["树从根重来：choose_activity<br/>由预选直接应答，不再问 Jev"]:::exec
+  R -.->|"技能步骤照常投给 Body"| K["当前技能 worker"]:::exec
+</script></div>
+
+<!-- ============================================================ -->
+<h2 id="life">6　<span class="badge b-live">现行</span>　经历怎样往上走：Life 与后台慢层</h2>
+<p>向下是上下文，向上是经历。经历只认权威来源；四段记忆首尾相接：<b>眼前（秒）→ 近期经历与情绪（分钟到小时）→ 召回与认识（小时到天）→ 人格（天）</b>。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart LR
+  subgraph IN["经历入口（只认权威来源）"]
+    E1["World 事件<br/>建设被帮助 / 被破坏"]:::fact
+    E2["每帧观察<br/>相遇 · 附近建造 / 拆除"]:::fact
+    E3["活动结局"]:::fact
+    E4["对话<br/>听到的 · 说出的"]:::fact
+  end
+  IN --> EMO["情绪即时变化<br/>规则评价 · 半衰期 120 s"]:::mind
+  IN --> TAIL["未封存近期经历<br/>Life 持久行"]:::mind
+  TAIL -->|"攒成片段（约 3000 字）"| RET[("Hindsight 写入<br/>后台巩固")]:::ext
+  RET --> UND["认识缓存<br/>有新内容且满 600 s 刷新"]:::mind
+  IN --> REF{"反思计分到点？"}:::fact
+  REF -->|是| RJ["写日记（LLM）<br/>不合格重问一次"]:::llm
+  OBS["每帧观察"]:::fact --> DP{"日计划回顾到点？<br/>每天至多 2 次 · 间隔 ≥ 3 分钟"}:::fact
+  DP -->|是| PLAN["LLM 写意图清单<br/>校验合格才采用"]:::llm
+  OBS --> TK{"有等着推进的任务？<br/>≥ 3 分钟 · 每天 12 次"}:::fact
+  TK -->|是| TASK["LLM 推进任务的下一步"]:::llm
+  EMO --> SNAP[("心智快照<br/>发问时现读拼出")]:::mind
+  TAIL --> SNAP
+  UND --> SNAP
+  RJ -->|"我近来怎么想"| SNAP
+  PLAN -->|"计划与约定"| SNAP
+  TASK -->|"任务栏"| SNAP
+  SB["SpendBudget 到停止线"]:::fact -.->|暂停| REF
+  SB -.->|暂停| DP
+  SB -.->|暂停| UND
+</script></div>
+<p class="caption">SpendBudget 到线时只停后台（认识刷新、反思、日计划等）；写入经历、读认识、选择、说话、召回照常。日计划回顾与任务推进共用一个规划槽，反思有自己的槽。</p>
+
+<!-- ============================================================ -->
+<h2 id="new-loop">7　<span class="badge b-plan">已定 · 未实施</span>　新设计：通用心智闭环</h2>
+<p><b>下行是心智</b>（各区 → 推送 → 挑选 → 执行 → 权威），<b>上行是事实</b>（结局、查询摘要、新事件写成经历，同时交给叫醒判断）。思考不碰执行：思考里只能改自己的记忆、做只读查询和 <code>say</code>，其余世界动作要先排进待办，再由挑选与执行器去做。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart TB
+  Z[("心智区（角色自己的）<br/>待办表：日程 / 待办 · 经验 · 近期经历<br/>日记 · 认识（Hindsight）")]:::mind
+  PUSH["推送心智<br/>我是谁 · 此刻 · 背包装备 · 各区"]:::mind
+  EMPTY{"待办表此刻空？<br/>代码只看有没有，不看内容"}:::fact
+  PICK{"Jev 挑选<br/>只从自己写的条目里挑"}:::jev
+  BIND["LLM 绑定实参<br/>可回答“现在不做”"]:::llm
+  RUN["执行器<br/>逐步经 Body，每步等权威终态"]:::exec
+  AUTH["Body / Scene / World<br/>权威裁决"]:::auth
+  FACT["刚发生的事（只写事实）<br/>结局与原因 · 查询摘要 · 没写方式 · 新世界事件"]:::fact
+  WAKE{"Jev 叫醒判断<br/>carry_on / stop_and_think"}:::jev
+  THINK["思考会话（DeepSeek）<br/>拉：只读查询 · 召回<br/>写：心智原子"]:::llm
+  SLEEP["睡着<br/>不发世界命令"]:::exec
+  CONS["睡眠整合会话（DeepSeek）<br/>写认识 · 写 / 废经验"]:::llm
+  ACC["接纳边界<br/>格式 + 语义校验一次<br/>不合格把原因交回模型"]:::auth
+
+  Z --> PUSH --> EMPTY
+  EMPTY -->|"空 → ② 规划思考"| THINK
+  EMPTY -->|不空| PICK
+  PICK -->|"方式是带参数的经验"| BIND --> RUN
+  PICK -->|"方式是原子 / 无参经验"| RUN
+  PICK -->|"条目没写方式"| FACT
+  PICK -->|"方式是 sleep_until"| SLEEP
+  RUN --> AUTH --> FACT
+  SLEEP -->|"③ 入睡时一次"| CONS
+  SLEEP -->|"到点醒 / 睡着时的世界事件"| FACT
+  FACT -->|写成经历| Z
+  FACT --> WAKE
+  WAKE -->|carry_on| EMPTY
+  WAKE -->|"① stop_and_think"| THINK
+  THINK -->|只读查询| AUTH
+  THINK --> ACC
+  CONS --> ACC
+  ACC --> Z
+</script></div>
+
+<h3>进 LLM 思考只有三条路（之外没有任何代码会开思考）</h3>
+<div class="grid3">
+  <div class="path"><span class="n">1</span><b>叫醒判断说“停下想”</b><p class="small">每个执行结局、挑中没写方式的条目、每个新世界事件（含睡着时）之后，Jev 在完整心智上二选一。挑选里不再有固定的 <code>think_it_over</code> 选项。</p></div>
+  <div class="path"><span class="n">2</span><b>待办表空 → 规划思考</b><p class="small">挑选前，此刻没有落在时段里的日程、也没有已到“不早于”的未关待办，系统就直接开一次思考。只看有没有，不看内容；排什么由思考决定，代码不替角色填条目。</p></div>
+  <div class="path"><span class="n">3</span><b>入睡 → 睡眠整合</b><p class="small">角色自己排的睡眠条目被执行时开一次整合：只改记忆的组织（写认识、写 / 废经验），不排日程、不行动、不查询。</p></div>
+</div>
+
+<h3>几个关键名词</h3>
+<table>
+  <tbody>
+    <tr><td style="width:18%"><b>世界原子</b></td><td><code>Abilities</code> 的一个条目（动作或只读查询），角色唯一可确信的真理。长技能（gather、build、travel）对心智来说也是原子：发出去，等一个终态。</td></tr>
+    <tr><td><b>经验</b></td><td>角色自己持有的、由原子组成的树，像带参数描述的函数（名字、意图、参数、树），附使用统计（completed / failed / interrupted 分开计）。醒着能写、改、废；睡眠时整合。</td></tr>
+    <tr><td><b>条目与方式</b></td><td>条目 = 一项日程或待办，只写“做什么 + 用哪条经验”，不带实参；方式可以是一条经验、一个原子、<code>sleep_until</code>，或空（想做但还不知道怎么做）。</td></tr>
+    <tr><td><b>心智原子</b></td><td>思考时改写自己记忆的操作：<code>write_journal</code>、<code>set_schedule</code>、<code>add_todo</code>、<code>close_todo</code>、<code>write_experience</code>、<code>retire_experience</code>；每种一份严格格式。</td></tr>
+    <tr><td><b>推 / 拉</b></td><td>关于自己、有上界、几乎每次都用得上的<b>推</b>进提示词（身份、身体、背包、此刻、各区）；无界的内容思考时<b>拉</b>（召回、目录、地形格子）。</td></tr>
+    <tr><td><b>代码只给事实</b></td><td>代码只做四件事：转述权威事实、原样转交角色自己写的东西、接纳处格式校验、资源上限。不把 05:42 写成“早上”，不替角色关条目，不借上限替角色决定停下。</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="new-own">8　<span class="badge b-plan">已定 · 未实施</span>　新设计：谁拥有什么</h2>
+<div class="grid3">
+  <div class="card lane auth">
+    <h3 style="margin-top:0">产品真值（代码，唯一确信）</h3>
+    <ul class="tight small">
+      <li><b>Abilities 条目</b>：原子的名字、参数规格、done 含义、英文说明</li>
+      <li><b>prepare</b>：运行时限制（范围、格数、射程）与具体原因码</li>
+      <li><b>结果投影</b>：查询结果给模型看的样子，由各查询原子的 owner 定义（如 <code>Perception.project</code>），不另行截断</li>
+      <li><b>Body / World</b>：世界状态与裁决，现查，不存进记忆当真值</li>
+    </ul>
+  </div>
+  <div class="card lane mind">
+    <h3 style="margin-top:0">角色记忆（数据，可错可改）</h3>
+    <ul class="tight small">
+      <li><b>类型化存储</b>（Life 持久行）：日程、待办、经验与统计、条目的“上次运行”结局——是 Jev 选项与执行器的真值，要精确</li>
+      <li><b>Hindsight</b>：经历、日记、认识——要按问题召回</li>
+      <li><b>Life</b>：情绪、关系、人格卡、未封存尾部</li>
+      <li><b>启动数据</b>：登记时写入一次的通用经验库 G0 + 场地起始知识，写进去就归角色</li>
+    </ul>
+  </div>
+  <div class="card lane jev">
+    <h3 style="margin-top:0">判断者（只有它们做主观判断）</h3>
+    <ul class="tight small">
+      <li><b>Jev</b>：挑选（现在做哪条）、叫醒（要不要停下想）</li>
+      <li><b>DeepSeek</b>：叫醒后的思考、规划思考、睡眠整合、给经验绑定实参</li>
+      <li>输出一律经<b>接纳边界</b>校验一次再写进记忆</li>
+    </ul>
+  </div>
+</div>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart LR
+  subgraph P["产品真值（代码）"]
+    AB["Abilities 条目"]:::auth
+    PR["prepare<br/>限制 + 原因码"]:::auth
+    PJ["结果投影"]:::auth
+    AU["Body / World 权威"]:::auth
+  end
+  subgraph M["角色记忆（数据）"]
+    TS[("类型化存储<br/>日程 · 待办 · 经验与统计")]:::mind
+    HD[("Hindsight<br/>经历 · 日记 · 认识")]:::mind
+  end
+  subgraph J["判断者"]
+    JV["Jev：挑选 / 叫醒"]:::jev
+    LM["DeepSeek：思考 · 整合 · 绑定"]:::llm
+  end
+  BOOT["启动数据文件<br/>G0 + 起始知识（版本化）"]:::fact
+  BOOT -->|登记时写入一次| TS
+  BOOT -->|起始知识| HD
+  AB -->|"工具表"| LM
+  LM -->|心智原子| ACC["接纳边界"]:::auth
+  ACC --> TS
+  ACC --> HD
+  TS --> JV
+  JV --> EXE["执行器<br/>（数据树编译成 Brain.Tree）"]:::exec
+  EXE --> AU
+  PR --> AU
+  AU --> PJ
+  PJ --> EXE
+  PJ --> LM
+</script></div>
+
+<!-- ============================================================ -->
+<h2 id="new-sleep">9　<span class="badge b-plan">已定 · 未实施</span>　新设计：睡眠与整合</h2>
+<p>作息由角色自己排：睡眠就是一条普通条目，方式写 <code>sleep_until</code>，几点睡几点起都由思考写、由 Jev 挑；代码不规定必须睡。</p>
+<div class="diagram"><script type="text/x-mermaid">
+flowchart LR
+  AW["醒着<br/>挑选 · 执行 · 叫醒 · 思考<br/>（可写 / 改 / 废经验）"]:::exec -->|"Jev 挑中睡眠条目"| ASL["入睡<br/>经历记下入睡时刻与设定醒来时刻"]:::fact
+  ASL --> CON["睡眠整合会话（不经 Jev）<br/>写认识 · 写 / 废经验<br/>经历原文不可改"]:::llm
+  CON --> SL["睡着<br/>不发世界命令"]:::exec
+  SL -->|世界事件| WK{"Jev 叫醒判断"}:::jev
+  WK -->|carry_on| SL
+  WK -->|"stop_and_think<br/>（记 woken）"| TH["思考"]:::llm
+  SL -->|"到 sleep_until"| UP["醒来：woke_up"]:::fact
+  UP --> WK2{"Jev 叫醒判断"}:::jev
+  WK2 -->|carry_on| AW
+  WK2 -->|stop_and_think| TH
+  TH --> AW
+</script></div>
+<ul class="tight small">
+  <li><b>整合的不变量</b>：经历原文不可改（整合前后逐字相同）；认识是派生物，只由整合写；经验改写或废弃前旧版本记日志；整合不写日记。</li>
+  <li><b>产品化时</b>：Hindsight 白天关自动巩固，入睡时巩固 + 刷新认识（现行 <code>"npc"</code> 照旧，不提前改）。“认识”的唯一写者 M-2c 之后定。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="migrate">10　旧部件去向与迁移次序</h2>
+<table>
+  <thead><tr><th style="width:34%">现有部件</th><th style="width:12%">去向</th><th>在新设计里</th></tr></thead>
+  <tbody>
+    <tr><td><code>Abilities</code> 与各域模块（Actions、Perception、Dialogue、Skills）</td><td><span class="badge b-keep">保留·加厚</span></td><td>成为世界原子契约的唯一 owner；补英文说明、结果投影、结果形状声明</td></tr>
+    <tr><td><code>Perception.prepare</code> / <code>project</code></td><td><span class="badge b-keep">保留·加厚</span></td><td><code>prepare</code> 补原因码；投影补到全部查询原子</td></tr>
+    <tr><td>技能 build / gather / travel / expand / design_house</td><td><span class="badge b-keep">保留</span></td><td>作为长动作原子；design_house 内部问模型的部分暂不动</td></tr>
+    <tr><td>Body、Runtime 命令通道、<code>Brain.Tree</code></td><td><span class="badge b-keep">保留</span></td><td><code>Brain.Tree</code> 作经验树的唯一执行器；Body / Perception 加“睡着”状态</td></tr>
+    <tr><td><code>Jev</code> 客户端</td><td><span class="badge b-keep">保留</span></td><td><code>Selector</code> 的一次问法拆成“挑选”与“叫醒”两问，选项改从角色自己的条目来</td></tr>
+    <tr><td>Life：情绪、关系、人格卡、未封存尾部、Hindsight 适配器</td><td><span class="badge b-keep">保留</span></td><td>Hindsight mission 与自我认识问句改成与职业无关；巩固改到入睡</td></tr>
+    <tr><td><code>SpendBudget</code></td><td><span class="badge b-keep">保留</span></td><td>思考会话花费的唯一 owner</td></tr>
+    <tr><td><code>Mind.snapshot</code> 等四处心智渲染</td><td><span class="badge b-now">合一</span></td><td>一个各区渲染器，Jev 与 LLM 共用</td></tr>
+    <tr><td>三种模型客户端（Writer、Responses、Jev 的 openai 入口）</td><td><span class="badge b-now">合一</span></td><td>思考用一个 DeepSeek 严格工具调用客户端；其余随调用方退役</td></tr>
+    <tr><td>Runtime 的 <code>choose_activity</code> / 预选 / 对话回合</td><td><span class="badge b-ret">退役</span></td><td>由心智闭环替代</td></tr>
+    <tr><td><code>Trees.npc</code>、<code>Offers</code> 生成器、计划词表、覆盖登记</td><td><span class="badge b-ret">退役</span></td><td>能做什么来自经验，不来自代码</td></tr>
+    <tr><td>Life 的日计划、任务推进、反思</td><td><span class="badge b-ret">退役</span></td><td>由心智原子 + 三条进思考的路取代（规划思考接“每天排计划”，睡眠整合接“整理记忆”）</td></tr>
+    <tr><td><code>Trees.settler</code>、<code>Brain.Patrol</code> / <code>Social</code> / <code>Llm</code>、<code>Life.Appraisal</code>；登记名 <code>llm</code> / <code>life</code></td><td><span class="badge b-ret">退役</span></td><td>行为已转写进启动经验库 G0；<code>Brain.Routine</code> 可留作测试替身</td></tr>
+  </tbody>
+</table>
+
+<h3>迁移次序（当前在第 1 步）</h3>
+<ol class="steps">
+  <li class="cur"><b>M-2c probe</b>只改 harness 与桥，不动 <code>apps/</code>；进行中</li>
+  <li><b>产品契约</b>原子英文说明、原因码、结果投影、“睡着”状态；无行为变化</li>
+  <li><b>心智核心</b>类型化存储、接纳边界、树编译、思考 / 整合会话、Jev 两问、渲染器</li>
+  <li><b>接入唯一生产根</b>原地替换 <code>"npc"</code> 内部，不另开正式登记名</li>
+  <li><b>退役旧形态</b>根级 readiness / CLI 联合验证通过之后一次退役</li>
+  <li><b>文档同步</b>总纲、current-truth、npc_server README 瘦身</li>
+</ol>
+<p class="note">进青岚的现行上线（E8b 长跑、E9 分发）用的是现有 <code>"npc"</code>，与新设计正交；新设计<b>不进本次上线</b>。</p>
+
+<!-- ============================================================ -->
+<h2 id="sources">出处</h2>
+<ul class="src-list">
+  <li>总纲（现行分层、心智快照、回路）：<code>docs/10-active/cross-cutting/2026-11-12-npc-architecture-overview.md</code></li>
+  <li>通用心智决策稿（第 7–10 节全部来源）：<code>docs/10-active/cross-cutting/2026-11-21-npc-generic-mind-decision.md</code> §0、§3、§4.1–4.13、§7</li>
+  <li>对话通道：<code>docs/10-active/cross-cutting/2026-11-18-npc-dialogue-lane-decision.md</code></li>
+  <li>模块现状（选择、Life、反思、日计划、任务、花费额度）：<code>apps/npc_server/lib/npc_server/README.md</code></li>
+  <li>进度与交接：<code>docs/10-active/cross-cutting/2026-11-11-npc-coordination.md</code></li>
+</ul>
+<p class="caption">图由 mermaid 渲染（从 cdn.jsdelivr.net 加载）；离线打开时会显示每张图的文字源码。</p>
+
+</main>
+
+<script type="module">
+  // 角色配色：按宿主背景亮度选浅色 / 深色两套，mermaid 需要实际色值
+  const PALETTE = {
+    light: { auth:['#efeee9','#8a8880'], exec:['#e5f5e7','#2f9e44'], jev:['#e8f1fc','#2a78d6'], llm:['#f1eafd','#8b5cf6'],
+             mind:['#fdf1e3','#e07b0c'], ext:['#fdebf1','#d6336c'], fact:['#fff7d6','#b08d00'] },
+    dark:  { auth:['#2a2a28','#a3a198'], exec:['#16301c','#51c46a'], jev:['#14263d','#4b95ec'], llm:['#271d3d','#a585f8'],
+             mind:['#3a2814','#f0962e'], ext:['#3a1624','#ec5a8c'], fact:['#352d0c','#d9b627'] },
+  };
+
+  // 任意 CSS 颜色 → [r,g,b]（借 canvas 归一化，兼容 oklch / hsl）
+  function toRgb(color) {
+    const c = document.createElement('canvas'); c.width = c.height = 1;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2]];
+  }
+  function cssVar(name, fallback) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  }
+  function currentMode() {
+    const bg = getComputedStyle(document.body).backgroundColor || '#fafaf8';
+    const [r, g, b] = toRgb(bg);
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128 ? 'dark' : 'light';
+  }
+
+  const blocks = [...document.querySelectorAll('pre.mermaid-src')].map((pre, i) => ({
+    host: pre.parentElement, src: pre.textContent.trim(), id: 'npcd' + i,
+  }));
+
+  let mermaid = null;
+  try {
+    mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
+  } catch (e) {
+    for (const b of blocks) {
+      const note = document.createElement('div'); note.className = 'fallback-note';
+      note.textContent = '图形库没有加载成功（可能离线），下面是这张图的文字源码：';
+      b.host.prepend(note); b.host.querySelector('pre').className = 'src';
+    }
+  }
+
+  async function renderAll() {
+    const mode = currentMode();
+    document.documentElement.dataset.mode = mode;
+    if (!mermaid) return;
+    const p = PALETTE[mode];
+    const fg = cssVar('--foreground', mode === 'dark' ? '#f0efec' : '#171717');
+    const muted = cssVar('--muted-foreground', mode === 'dark' ? '#a3a198' : '#6b6a66');
+    const card = cssVar('--card', mode === 'dark' ? '#1a1a19' : '#ffffff');
+    const font = cssVar('--font-sans', 'system-ui, "Segoe UI", "Microsoft YaHei", sans-serif');
+    mermaid.initialize({
+      startOnLoad: false, theme: 'base', securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis', padding: 10, nodeSpacing: 34, rankSpacing: 44 },
+      sequence: { mirrorActors: false, messageAlign: 'center', actorMargin: 36 },
+      themeVariables: {
+        fontFamily: font, fontSize: '14px', background: card,
+        primaryColor: p.auth[0], primaryBorderColor: p.auth[1], primaryTextColor: fg,
+        textColor: fg, lineColor: muted, clusterBkg: 'transparent', clusterBorder: muted,
+        titleColor: fg, edgeLabelBackground: card,
+        actorBkg: p.jev[0], actorBorder: p.jev[1], actorTextColor: fg, actorLineColor: muted,
+        signalColor: fg, signalTextColor: fg, labelBoxBkgColor: p.fact[0], labelBoxBorderColor: p.fact[1],
+        noteBkgColor: p.fact[0], noteBorderColor: p.fact[1], noteTextColor: fg,
+        sequenceNumberColor: card,
+      },
+    });
+    // 给每张 flowchart 追加角色 classDef
+    const defs = Object.entries(p).map(([k, [fill, stroke]]) =>
+      `classDef ${k} fill:${fill},stroke:${stroke},stroke-width:1.6px,color:${fg}`).join('\n');
+    for (const b of blocks) {
+      const src = b.src.startsWith('flowchart') ? b.src + '\n' + defs : b.src;
+      try {
+        const { svg } = await mermaid.render(b.id + '-' + mode + '-' + Date.now(), src);
+        b.host.innerHTML = svg;
+      } catch (err) {
+        b.host.innerHTML = '';
+        const note = document.createElement('div'); note.className = 'fallback-note';
+        note.textContent = '这张图渲染失败：' + (err && err.message ? err.message : err);
+        const pre = document.createElement('pre'); pre.className = 'src'; pre.textContent = b.src;
+        b.host.append(note, pre);
+      }
+    }
+  }
+
+  await renderAll();
+  // 宿主主题切换时重画
+  let lastMode = currentMode();
+  const recheck = () => { const m = currentMode(); if (m !== lastMode) { lastMode = m; renderAll(); } };
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', recheck);
+  new MutationObserver(recheck).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+</script>
+</body>
+</html>

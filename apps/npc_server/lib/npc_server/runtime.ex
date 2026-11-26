@@ -22,6 +22,19 @@ defmodule NpcServer.Runtime do
   （含按处境分路的记忆召回，至多 4 路，见 `Mind.recall_queries/2`）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`，
   选中的是生成的候选时另带它冻结的执行参数：说话与对人的登记项 `kind: 种类, target: 目标`、进食 / 合成 `action: {动作名, 参数}`；心智或候选读不到、
   发问失败或 worker 崩溃是 rejected）。选中的候选整份记进选择器状态（`select.activities[].candidate`），活动结束时的经历读它。等应答期间本进程照常处理观察与其他命令。
+  重问节奏由 `Selector.pause/2` 定（唯一 owner）：收到 `choose_activity` 时立即起发问 worker，worker 先把刚结束那项活动的
+  经历交给 Life，再等放行；本层记下 `到期 tick = 当前观察的 tick + pause`，到期前不放行（不读心智、不问 Jev），由之后的观察
+  推进到期再放行，所以真正的发问在“到期且经历已保存”之后。成功路径 pause 为 0，同一个事件里就放行；预选应答（对话回合停下）
+  不经过 pause。经历保存失败时 worker 立即以 rejected 结束（不等放行），按发问失败处理（退避）。
+  观察的 tick 比上一次看到的还小（钟回退：会话重建、换了场景钟）时不放行，按剩余等待重算：新的起点 = 当前 tick，
+  新的到期 = 当前 tick + max(原到期 − 回退前最后看到的 tick, 0)，记一行 `npc_select_wait … rebased=true`。
+  留着期间被玩家直呼，是否提前由 `Selector.ask_when_addressed?/1` 定（活动失败后的间隔提前，发问失败的退避不提前）：
+  没有回合在途时在来话到达时判；回合在途时再来的直呼只记 `dropped`、不放行（`address/2`），由那个回合决定停下时
+  （活动已自己失败结束、无可停之事）在 `stop_for/3` 里判同一条规则。
+  同时只有一次发问：树只有一个 `choose_activity` 叶子；收到新的 `choose_activity` 时若还有未放行的旧项，是不变量被破坏，显式 raise。
+  日志：pause > 0 时记 `npc_select_wait cid= trigger= failures= pause_ticks= due_tick=`（钟回退重算时再记一行，末尾加
+  ` rebased=true`），放行时记 `npc_select_wait_over cid= trigger= tick= cause=<due|addressed>`；`observe` 的 `select_wait`
+  是留着、还没放行的那次（`nil` 或 `%{trigger:, pause_ticks:, due_tick:}`，重算后是重算的值）。
   选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
   一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
   （`Life.activity/2`，`Selector.experience/1` 的结果）。上一项经历保存成功后才发问；失败由 Life 保留同一输入继续提交。
@@ -69,7 +82,8 @@ defmodule NpcServer.Runtime do
           Application.fetch_env!(:npc_server, :world_clock_test_offset_us),
         observation: nil,
         skill: nil,
-        # 选择器状态（正在做的活动与最近几次选择）；在途的一次发问 `%{id: 命令号, ref: worker 的 monitor}`。
+        # 选择器状态（正在做的活动与最近几次选择）；在途的一次发问 `%{id: 命令号, ref: worker 的 monitor}`，
+        # 正常发问另带 `trigger`、`from`（收到命令时的 tick）、`due`（到期 tick）、worker 的 `pid` 与是否已放行 `released`。
         select: Selector.new(),
         selecting: nil,
         # 对话回合（moduledoc）：nil 或 `%{phase:, speech: 来话, worker: %{pid, ref, timer} | nil, started_ms:}`；
@@ -88,7 +102,10 @@ defmodule NpcServer.Runtime do
     {[], runtime}
   end
 
-  @doc "读取近期对话、正在进行的技能与选择器状态（`select`，形状见 `NpcServer.Selector`）；不触发决策或外部调用。"
+  @doc """
+  读取近期对话、正在进行的技能、选择器状态（`select`，形状见 `NpcServer.Selector`）与留着、还没放行的发问
+  （`select_wait`：`nil` 或 `%{trigger:, pause_ticks:, due_tick:}`）；不触发决策或外部调用。
+  """
   def observe(runtime), do: GenServer.call(runtime, :observe)
 
   defp loop(state) do
@@ -131,7 +148,10 @@ defmodule NpcServer.Runtime do
             _ -> :ok
           end
 
-          deliver(%{state | observation: observation}, {:observation, observation})
+          # 观察推进 tick：留着的发问到期就在这里放行（`release_when_due/1`）。
+          %{state | observation: observation}
+          |> deliver({:observation, observation})
+          |> release_when_due()
 
         :observation_lost ->
           if state.life, do: NpcServer.Life.observation_lost(state.life)
@@ -169,7 +189,8 @@ defmodule NpcServer.Runtime do
             heard: state.heard,
             skill: state.skill && state.skill.command,
             dialogue_turn: observe_turn(state.dialogue_turn),
-            select: state.select
+            select: state.select,
+            select_wait: select_wait(state.selecting)
           })
 
           state
@@ -181,6 +202,7 @@ defmodule NpcServer.Runtime do
             |> Map.put(:dialogue, state.heard)
             |> Map.put(:dialogue_turn, observe_turn(state.dialogue_turn))
             |> Map.put(:select, state.select)
+            |> Map.put(:select_wait, select_wait(state.selecting))
           )
 
           state
@@ -366,6 +388,7 @@ defmodule NpcServer.Runtime do
   # 经历保存失败是一次显式失败（rejected，树稍后重问），预选不保留：那时的心智里已有这句来话，正常发问看得到它。
   defp execute(%{preselected: selection} = state, %{verb: :choose_activity} = command)
        when selection != nil do
+    no_waiting_selection!(state)
     parent = self()
     experience = Selector.experience(state.select)
     life = state.life
@@ -382,35 +405,65 @@ defmodule NpcServer.Runtime do
     %{state | preselected: nil, selecting: %{id: command.id, ref: ref}}
   end
 
-  # 活动选择：先记下上一项活动的结局，再在独立 worker 里发问（Life 的读取、记忆召回与 Jev 请求都不阻塞本进程）。
+  # 活动选择：先记下上一项活动的结局，并立即起发问 worker——它先把刚结束的那项活动的经历交给 Life（此刻交，留着期间靠近的人
+  # 不算进那项活动），再等本进程发 `{:select_go, 观察}` 才读心智、问 Jev（Life 的读取、记忆召回与 Jev 请求都不阻塞本进程）。
+  # 什么时候发 go 由 Selector 定（`Selector.pause/2`：成功路径 0，同一个事件里就发；活动失败后、发问失败后要等），
+  # 所以真正的发问在“到期且经历已保存”之后（worker 按顺序做这两步）。
   # 同一时刻只有一次发问：树只有一个 choose_activity 叶子，拿到它的 Outcome 之前不会再发。
   defp execute(state, %{verb: :choose_activity} = command) do
+    no_waiting_selection!(state)
     {trigger, select} = Selector.ended(state.select, command.ended)
+    %{profile: profile, life: life, context: context} = state
     parent = self()
-    %{profile: profile, observation: observation} = state
+    id = command.id
+    tick = state.observation.self.tick
+    pause = Selector.pause(select, trigger)
     history = Selector.history(select)
 
     # 经历是“做了什么、结果如何”：一项活动刚结束时记一条。发问失败后的重问（retry）带的是同一份报告，不再记。
     experience = if trigger in ["completed", "failed"], do: Selector.experience(select)
-    life = state.life
 
-    {_pid, ref} =
+    {pid, ref} =
       :erlang.spawn_opt(
         fn ->
           result =
-            with :ok <- record_experience(life, experience),
-                 {:ok, question} <-
-                   Selector.question(profile, observation, history, state.context) do
-              send(parent, {:select_asked, question})
-              Selector.ask(profile, question, trigger, observation.self.entity_id)
+            case record_experience(life, experience) do
+              # 经历保存失败：不等放行，立即以失败结束（Life 保留同一输入继续提交；本次按发问失败退避）。
+              {:error, _} = error ->
+                error
+
+              :ok ->
+                receive do
+                  {:select_go, observation} ->
+                    with {:ok, question} <-
+                           Selector.question(profile, observation, history, context) do
+                      send(parent, {:select_asked, question})
+                      Selector.ask(profile, question, trigger, observation.self.entity_id)
+                    end
+                end
             end
 
-          send(parent, {:select_finished, command.id, result})
+          send(parent, {:select_finished, id, result})
         end,
         [:link, :monitor]
       )
 
-    %{state | select: select, selecting: %{id: command.id, ref: ref}}
+    # from：等待的起点；seen：最后看到的观察 tick（钟回退时据它算剩余）；waited：这次是否要等（放行时据它记日志）。
+    selecting = %{
+      id: id,
+      trigger: trigger,
+      from: tick,
+      due: tick + pause,
+      seen: tick,
+      waited: pause > 0,
+      pid: pid,
+      ref: ref,
+      released: false
+    }
+
+    state = %{state | select: select, selecting: selecting}
+    if pause > 0, do: log_wait(state, "")
+    release_when_due(state)
   end
 
   defp execute(state, command) do
@@ -418,8 +471,82 @@ defmodule NpcServer.Runtime do
     state
   end
 
+  # 同时只有一次发问（树只有一个 choose_activity 叶子，拿到 Outcome 前不会再发；预选只在有正在做的活动时产生，
+  # 而留着的那次意味着结局已记、没有正在做的活动）。正常路径不可达，到了就是不变量被破坏：显式 raise，不静默覆盖。
+  defp no_waiting_selection!(%{selecting: %{released: false, id: old}}),
+    do: raise("choose_activity arrived while selection #{inspect(old)} is still waiting")
+
+  defp no_waiting_selection!(_state), do: :ok
+
+  defp log_wait(%{selecting: selecting, select: select, observation: observation}, suffix) do
+    failures = if select.retry, do: select.retry.failures, else: 0
+
+    Logger.info(
+      "npc_select_wait cid=#{observation.self.entity_id} trigger=#{selecting.trigger} failures=#{failures} " <>
+        "pause_ticks=#{selecting.due - selecting.from} due_tick=#{selecting.due}#{suffix}"
+    )
+  end
+
   defp record_experience(_life, nil), do: :ok
   defp record_experience(life, experience), do: NpcServer.Life.activity(life, experience)
+
+  # 留着的发问（`released: false`）到期就放行；每个观察都过一次这里（`loop/1`）。观察的 tick 比上一次看到的还小（会话重建、
+  # 场景换了钟）时，原到期 tick 已不在同一条钟上：按剩余等待重算（起点 = 当前 tick，剩余 = 原到期 − 回退前最后看到的 tick，
+  # 下限 0），既不卡在一个永远等不到的 tick 上，也不因钟回退提前放行。没到期或没有留着的发问只记下看到的 tick。
+  defp release_when_due(
+         %{
+           selecting: %{released: false, due: due, seen: seen} = selecting,
+           observation: %{self: %{tick: tick}}
+         } =
+           state
+       ) do
+    cond do
+      tick < seen ->
+        rebased = %{selecting | from: tick, due: tick + max(due - seen, 0), seen: tick}
+        state = %{state | selecting: rebased}
+        log_wait(state, " rebased=true")
+        release_when_due(state)
+
+      tick >= due ->
+        release(state, :due)
+
+      true ->
+        %{state | selecting: %{selecting | seen: tick}}
+    end
+  end
+
+  defp release_when_due(state), do: state
+
+  # 放行：把此刻的观察（连同最新的对话）交给 worker，它读心智、问 Jev。等过的那次（pause > 0）记一行 `npc_select_wait_over`。
+  defp release(%{selecting: selecting, observation: observation} = state, cause) do
+    send(selecting.pid, {:select_go, Map.put(observation, :heard, state.heard)})
+
+    if selecting.waited do
+      Logger.info(
+        "npc_select_wait_over cid=#{observation.self.entity_id} trigger=#{selecting.trigger} " <>
+          "tick=#{observation.self.tick} cause=#{cause}"
+      )
+    end
+
+    %{state | selecting: %{selecting | released: true}}
+  end
+
+  # 留着的发问期间被玩家直呼：提不提前由 Selector 定（`Selector.ask_when_addressed?/1`）。
+  defp ask_on_address(%{selecting: %{released: false, trigger: trigger}} = state) do
+    if Selector.ask_when_addressed?(trigger), do: release(state, :addressed), else: state
+  end
+
+  defp ask_on_address(state), do: state
+
+  # observe 的 `select_wait`：留着、还没放行的那次发问。
+  defp select_wait(%{released: false} = selecting),
+    do: %{
+      trigger: selecting.trigger,
+      pause_ticks: selecting.due - selecting.from,
+      due_tick: selecting.due
+    }
+
+  defp select_wait(_selecting), do: nil
 
   defp finish_select(%{selecting: %{id: id}} = state, result) do
     cid = state.observation.self.entity_id
@@ -517,14 +644,15 @@ defmodule NpcServer.Runtime do
   # —— 对话通道（moduledoc）——
 
   # 玩家定向来话：统一形态（Tree 后端）正有活动在做时起一个回合；回合在途时再来的只记 dropped（它已进 heard 与 Life）。
-  # 没有活动在做（树停在 choose_activity 等应答、或发问失败等重问）时不起回合：来话已在心智里，正常发问会看到它。
+  # 没有活动在做（树停在 choose_activity 等应答、或留着等重问）时不起回合：来话已在心智里，正常发问会看到它；
+  # 留着的那次是否因此提前放行由 Selector 定（`ask_on_address/1`）。
   # 带中断策略的技能照旧在被直接叫到时立即检查一次（`Scheduler`）。
   defp address(
          %{dialogue_turn: nil, backend: NpcServer.Brain.Tree} = state,
          %{speaker_kind: 0} = speech
        ) do
     case Selector.current(state.select) do
-      nil -> wake_policy(state)
+      nil -> state |> wake_policy() |> ask_on_address()
       activity -> start_turn(state, speech, activity)
     end
   end
@@ -664,9 +792,10 @@ defmodule NpcServer.Runtime do
   # 回合决定期间活动自己结束了（树已在问下一项）就没有可停的事：这次决定作废，正常发问的心智里已有这句来话。
   defp stop_for(state, speech, choice) do
     case Selector.current(state.select) do
+      # 回合决定期间活动自己失败结束、发问留着：这次停下作废，但它是一次直呼的响应——是否提前放行按同一条规则判。
       nil ->
         log_turn(state, speech, :failed, reason: :no_activity_to_stop)
-        state
+        ask_on_address(state)
 
       activity ->
         name = NpcServer.Life.State.person_name(speech.speaker_name)

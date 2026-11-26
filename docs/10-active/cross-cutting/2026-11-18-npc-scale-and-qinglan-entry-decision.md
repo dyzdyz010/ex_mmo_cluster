@@ -54,7 +54,8 @@ flowchart LR
   B --> C[合并主线<br/>CI 全绿]
   C --> D[部署配置<br/>变量 · Hindsight · 凭据]
   D --> E[青岚放置<br/>出生点 · 去处 · 对话 UI]
-  E --> F[分发流程<br/>冻结版本 · 镜像 · 打包冒烟]
+  E --> L[本机长跑<br/>生产限额 · 6–12 h]
+  L --> F[分发流程<br/>冻结版本 · 镜像 · 打包冒烟]
 ```
 
 | # | 条目 | 现状 |
@@ -64,9 +65,10 @@ flowchart LR
 | E3 | 生产限额下的内存与 CPU：World + N 个 NPC + Hindsight 峰值低于告警线 3400 MiB（或 Hindsight 另放，见 D-2） | **3 人同机已过**（`limits3-03`，带 M-3c 的 2 核配置）：release 峰值 1854 MiB（启动加载世界），窗口内两边同一时刻合计最大 2200 MiB，tick 不掉速，召回失败 0；6 人同机不过（`limits6-01`，召回失败 11）。D-2 定同机、首批限 3 人（§7） |
 | E4 | 每 NPC 每小时的 token 与请求次数（含 Hindsight 自己的模型用量），按生产节奏外推成本，在 D-3 的预算内 | **读数已有**（`scale3-direct-02` 截断于 37.4 min，用户定采用）：每 NPC 每小时约 266 万 token、约 $0.71（高峰价）；3 人每天最坏约 $51，在 D-3 的 $50 档附近，进青岚前须由产品侧额度兜住，见 §7 |
 | E5 | 生产网络路径（HTTP/2 直连 DeepSeek）下 N 人同场无排队失败、无取消残留 | 未测（实跑都经本机明文代理，走 HTTP/1）；M-1 改一轮直连 |
-| E6 | 分支合并 master、CI 全绿 | PR #11 draft，181 提交 |
-| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | 未做。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
-| E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | 未做；对话 UI 只在测试地图实跑过 |
+| E6 | 分支合并 master、CI 全绿 | **已合并**（2026-11-20）：PR #11 在 `1069899a` 上 CI 全绿后转 ready，用户同意后快进推到 master（`29531ea4..1069899a`，216 提交，SHA 原样保留）；master 上 CI 见 §7 |
+| E7 | 部署：NPC 变量进 `.env` 与 `.env.example`；Hindsight 的镜像、卷、备份与恢复写进 runbook；凭据只进部署环境 | **仓内完成**（`76c286db`，见 §7）；青岚落地属 E9。原定（用户 2026-11-20 定：app 4600m + Hindsight 2048m 同机；deploy/ 新建生产 Hindsight 镜像，补丁与模型烘入；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权）。**同机部署时 Hindsight 必带 M-3c 的 2 核配置**：ONNX 线程补丁（或升级到含上游 b18f425 的版本后改设 `OMP_NUM_THREADS=2`）、`OMP_NUM_THREADS=2`、`HINDSIGHT_API_WORKER_MAX_SLOTS=2`、`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`、两项分批 8；取值与依据见 M-3 驱动 README“M-3c”一节（`.demo/observe/npc-limits-20261118/`，Test-only），写 runbook 时搬入部署配置 |
+| E8 | 青岚放置：首批居民的出生点、去处与活动用青岚实际地形（离线几何先验）；客户端对话界面在青岚关卡可用 | **放置完成**：登记包 `deploy/npc/qinglan/`（`9318cb16` + `2439fb12`），短排练 `e8r-02` R1–R4 过、R5（Hindsight 内存峰值触及 2048 MiB 限额，匿名 1183 MiB、余为页缓存，oom 0）不过，见 §7；对话 UI 在 L_Qinglan 静态核查已装配，实机验证并入 E9 打包冒烟 |
+| E8b | 本机长跑：生产限额（app 4600m + Hindsight 2048m）、3 人、6–12 h、跨一次每日重启；看内存走势、后台积压能否排空、每天花费与额度重置、重启后接着生活 | **`e8b-01` 不通过（2026-11-20，原判保留）**：L3 运转、L4 召回不过——开跑第 7 min 起召回风暴（召回中位 11–15 s > 产品 10 s 超时，选择失败约 4000 次），三人 6 个整小时零选择；重启能清、后台一开始又复发。L1 存活、L2 内存（Hindsight 匿名峰值 1597 MiB）、L5 重启接着生活、L6 积压、L7 花费过。根因分析中，见 §7 |
 | E9 | 分发：冻结客户端 / 服务端 / 协议版本，镜像推送后本地同镜像 + 新打包客户端冒烟（含 NPC 说话主链路） | 按 Voxim 分发规则，未做 |
 
 ## 5. 测试矩阵（本层只验链路与量读数；阈值只在测试侧）
@@ -139,3 +141,49 @@ flowchart LR
   内存峰值 1838 MiB、积压能排空；**`limits6-01`（6 人）不通过**——召回失败 11：首次建库时 6 人 24 个建模操作挤在 2 个名额里，5 人首次选择 `life_initialization_timeout`（只在首次建库发生）；
   认识刷新期间召回超时 6 次，窗口末刷新积压仍在涨（最老 253 s）。原判保留、不重跑。明细与证据：驱动 README“M-3c 实跑结果”、`runs/limits3-03/`、`runs/limits6-01/`。
 - **D-2 定**（用户 2026-11-19）：**Hindsight 与 voxim_server 同机部署，首批限 3 人**；部署时带 M-3c 配置（E7）。扩到 3 人以上前须先另放 Hindsight 或重新实测。
+- 2026-11-20（第二十四个统筹会话）：**E6 合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871），用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR 显示 merged。推 master 照例触发 Docker Publish（阿里云 ACR `:master` / `:latest`），青岚生产用本机构建的 `voxim-server:<版本>`，不受影响。
+- 2026-11-20：**E7 用户定**（三问）：内存 app 4600m + Hindsight 2048m（统筹建议 4000m，用户选 4600m；守护按“告警 = 上限 − 1200、重启 = 上限 − 700”改为 3400 / 3900）；deploy/ 新建生产 Hindsight 镜像（ORT 补丁与嵌入 / 重排模型烘入、`HF_HUB_OFFLINE=1`）；E7 范围 = 仓内配置 + 本机启动核对。
+- 2026-11-20：**新增 E8b 本机长跑**（用户同意，原话：“可以”）：起因是用户问线上 24 h 运行时 NPC 能否“活”，现有证据最长 37.4 min，见 §4 E8b 行。
+- 2026-11-20：**E6 master CI**：推 master 后 run 44726904203 的 `Test gate_server` 挂在魔法侧 `VoximSpellDispatchTest`（`World.seq` 5 ≠ 4，同一提交在 PR 上通过；魔法侧未提交改动正修此断言），只重跑失败作业后 12 项全绿。**E6 完成。**
+- 2026-11-20：**E8 用户定**：首批放在出生点附近、保留区外（已核：NPC 的放置 / 采集同受保留区约束，测试场地 x 20–28、z 31–43 落在出生前庭 / 庭院保留区里，不能照搬）；离线选点用生产只读导出的体素日志（每步命令先报用户）。
+  **人选（用户原话）**：“一个npc是具备上述两种人所有的能力的……能力都具备，只是活动倾向不同”——3 人用同一份完整活动表（去处 + 采集 + 建造，说话与对人由生成器给），差别只来自人格卡、情绪与经历；不再按“采建型 / 去处型”分配活动。
+  生产只读探查第 1 步（用户同意，一条 ssh）：`voxel_overlay_log` 8.9 MB、库 64 MB；青岚 CV 5678792257079112004 只有 33 行（seq 3623240–3623272），另两个旧 CV 各约 2360 行；主机 7679 MiB、已用 2355、负载 0。输出 `.demo/observe/npc-e8-20261120/prod-probe-1.txt`。
+- 2026-11-20：生产只读导出第 2 步（用户同意，原话：“可以，执行第 2 步”）：`pg_dump -Fc -t voxel_overlay_log` 经 ssh 流回本机，7.2 MB，只含该表；清单与 sha256 见 `.demo/observe/npc-e8-20261120/README.md`。
+- 2026-11-20：**E7 仓内完成**（`76c286db`）：`deploy/hindsight/` 生产镜像（基底按 digest 钉死、ORT 补丁与 bge / flashrank 模型烘入并校验版本、M-3c 配置在镜像 ENV）、compose `hindsight` 服务（回环、2048m、固定 worker id）、`.env.example` Hindsight 一组与开关名改正、`upgrade.sh` 官方 `hindsight-admin` 备份、README Hindsight 一节、守护 3400 / 3900。独立评审 1 阻塞（升级脚本在 Hindsight 未运行时停服后中断）+ 5 应修（青岚不用这套 compose、恢复后须重启、核对命令打出 key、核对查不出 LLM 配错、模型未钉版本）均已修，本机重建与单容器核对通过（Test-only 记录 `.demo/observe/npc-e7-20261120/README.md`）。
+  **E9 落地待办**：hindsight 服务并进青岚自己的 compose（`-p voxim_qinglan`，卷 `voxim_qinglan_hindsight_data`）、key 进 `release.env` 的接法、备份进 cutover、核对主机端口 24650 空闲与该主机 compose 版本能否展开 `${HINDSIGHT_PORT}`、app 限额与守护替换；控制台进程（9999）关不关待定（关掉省内存但要重测）。
+- 2026-11-20：**更正**：上条“已压实为检查点”是统筹会话的推断，错。选点子会话读代码与导出确认：现行 World 的世界真值在 M2 页表（`voxel_safe_prefix` / `voxel_world_globals` / `voxel_page_segment` / `voxel_identity_locator`），启动走 `World.restore_pages/1` 读前缀与页、只重放前缀之后的日志；`PageStore.collect` 删掉 ≤ 前缀的日志行，日志只是滚动尾巴。导出里青岚 CV 34 行全是 kind 3 热模拟元数据，没有编辑、建筑、余额与保留区 / 认领区。**只凭这份导出选点不成立**，选点停在恢复路径核对；生成基线与生产一致（worldgen `620378ec…`、kernel `9ef4581c…`、properties `e63744e2…`）。证据 `.demo/observe/npc-e8-20261120/site/plan.md`。需另取页表导出（待用户同意）。
+- 2026-11-20：生产只读导出第 3 步（用户同意，原话：“同意，之后都同意，不要问我了”）：同一快照导出 5 张体素页表 / 日志表，46.6 MB，只含这 5 张表；清单见 `.demo/observe/npc-e8-20261120/README.md`。用户此后授权 E8 起的后续步骤不再逐步询问（统筹会话仍在对话里先说明再做；写生产 / 部署前照样先报）。
+- 2026-11-20：**E8 离线选点完成**（还原第 3 步导出的生产页表，现行 release `02bcc8f0` 走前缀路径起 World：`voxel_page_restore prefix=3625862 suffix=9`，就绪 seq 3625871，两 Scene 起来）。
+  保留区经产品读路径读全：庭院 (0,40)–(47,87)、出生前庭 (0,20)–(48,39)、如园、1 处玩家认领 (4,137)–(5,137)；编辑盒 x −64..128、y 448..640、z −64..128。
+  方案：全部在 Scene 1、出生前庭以西的地台（x ≤ −1.5），彼此 ≤ 31 m（`build` 不先走路须在 8 m 内、`gather` 起步须在 32 m 内，出生点南北 32 m 内无石料，只剩西侧）；3 个出生点、5 个去处、采集盒（材料 11，24 格天然石）、建造锚点，全部过产品判据。
+  另发现：生产属性目录是 `e6db8dee…`，不是主检出 RUNBOOK:100 记的 `e63744e2…`（用旧目录 World 起不来），E9 前更正 RUNBOOK。证据 `.demo/observe/npc-e8-20261120/site/plan.md`、`site.json`、`site-alt-steps.json`，判据脚本 `e8_site.exs`（登记前对新导出重跑 `calc`）。资源：Windows UDP 88 不变，4266 记录号 128241 不变，release / 私有库 / 私有目录全部清理。
+- 2026-11-20：**E8 统筹裁定**（用户授权统筹自行推进，原话：“之后都同意，不要问我了”；以下两条用户可推翻）：
+  ① 建造用纯石料定义 `324e53ee`（作者定义 “Jiangnan Steps”，庭院石阶，锚点微格 [−40,4135,192]）代替 `079f`（实为园林构件 “ScholarRock Clipped 02”、需 252 微格石灰石，编辑盒内无天然石灰石、生产不能补料，建造必然 `insufficient_material`）。活动名与 criterion 按石阶写，不叫小屋。理由：happy path 上唯一能建成的现成定义；另作纯石料小屋是新内容，冻结期不做。
+  ② 采集用射程内唯一的石料——布局给玩家的作者料堆 Stone A / B（不会再生，约 3 次采集后采光，之后 `gather` 以 `exhausted` 结束），criterion 写“只在不够建造时才采”；不换到约 74 m 外未核的天然陡坡（会把活动区拉成两片）。料堆消耗与玩家影响由 E8b 长跑观察。
+- 2026-11-20（第二十五个统筹会话）：**E8 登记包与短排练**。登记包 `deploy/npc/qinglan/`（`residents.json` 石砚 / 柳莺 / 林眺三卡共用一份活动表；`register.exs` 经 rpc 登记、以石砚会话把 `324e53ee` 发布为 `stone steps`），独立评审后提交 `9318cb16`。
+  短排练（Test-only，生产页表世界 + E7 Hindsight 镜像 + 生产限额形态 + DeepSeek 直连，`.demo/observe/npc-e8-20261120/rehearsal/`）：`e8r-01` R1 不过（出生点 y = 516 陷地，`find_spawn` 探针是胶囊中心），修为 518（`2439fb12`）；
+  `e8r-02` R1–R4 过、**R5 不过**（Hindsight `memory.peak` 触及 2048 MiB 限额：匿名峰值 1183 MiB，其余是可回收文件页缓存，oom_kill 0，召回失败 0；匿名 15 min 内 641 → 1160 MiB 上升，E8b 看走势）。15 min 花费 $0.239（Hindsight 占 82%）。
+  行为观察（冻结期不改）：`build` 不先走路，石砚 15 次 `out_of_reach`；作者料堆 15 min 内 24 → 6 格。明细见统筹页“第二十五个统筹会话的进展”。
+  **客户端对话 UI**：L_Qinglan 的 `BP_QinglanController` 与测试图同用 `WBP_Dialogue`（静态核查），实机验证并入 E9 打包冒烟（另验与青岚 HUD 是否遮挡）。
+- 2026-11-20（第二十五个统筹会话）：**冻结的一项例外——`build` 先走到射程内**。用户看了 `e8r-02` 的行为观察后问“建造前不会先走过去这个为什么不修？”，统筹据此把它定为 happy path 缺陷、在冻结期内修（只此一项，不加新功能）。
+  新行为：`NpcServer.Skills.Build` 先照原样 `prefab_place`；权威回 `out_of_reach` 时按定义足迹（`World.prefab_cells/4`）经 `Blueprint.stands/2` 求站位，由近到远 `Travel.walk/2` 走过去再放；一个站位都走不到 → `unreachable`，走到过仍够不着 → `out_of_reach`；射程仍只由 World 判。
+  上面“E8 离线选点完成”一条里“`build` 不先走路须在 8 m 内”的约束随之解除（原文不改）；登记包 `build_steps` 的 criterion 删去“须先走过去”一句——**须在含此修复的 release 上登记**，旧 release 上用新文案会退回 `e8r-02` 的失败模式。
+  长跑 `e8b-01` 在修复前已起跑（release `0c9a01c9`），照跑完，其建造读数作修复前对照；修复的实跑验证另跑一轮短排练。料堆：用户说明“料堆被采的快这是现在创世才有的特权”，统筹理解为现阶段只有创世 NPC 能造料、普通居民采光料堆是预期状态，不处理，长跑只记剩余。
+- 2026-11-20（第二十五个统筹会话）：**E8b 长跑 `e8b-01` 不通过（原判保留）**。release `0c9a01c9`（建造修复前）、生产页表世界、E7 Hindsight、生产限额同钉 2 核、3 人、窗口 8 h（15:04–23:04Z）、21:00Z 只停起 release 一次（停机 51.4 s）。
+  **召回风暴**：15:11:49Z 起三人再无成功选择，`npc_select_failed {:mind_unavailable, :timeout}` 约 4005 次、`:pool_timeout` 91 次；召回中位 11–15 s、最长 33 s（产品心智召回超时 10 s），起于 Hindsight 做 `refresh_mental_model` 时，后台积压清空后不消退；Hindsight 平均 1.56 核。重启后 60–85 s 三人恢复选择，21:03Z 后台一开始即复发。
+  过的项：L1 存活（oom_kill 0）、L2 内存（release 峰值 2074 MiB；Hindsight 匿名峰值 1597 MiB < 2048，`memory.peak` 触限为页缓存，斜率 +9 MiB/h，但大部分时间空转、不代表正常负载）、L5（Bootstrap 三人 `{:ok,_}`、经历与任务重启前后连续）、L6（最老积压 762 s，settle 10 s 归 0）、L7（$0.599；北京零点换日账本归零、额度未误停）。资源全部回收、守护未触发、4266 未变。
+  **结论**：生产限额同机 2 核下，现形态不能证明“线上 24 h 能活”；E9 推迟到风暴修复并复测之后。根因分析子会话在查（是否“超时放弃 → 服务端照算 → 排队请求个个超时”的自持重试，及修法选项：产品侧重试退避 / 截止传播、Hindsight 并发与 CPU 隔离、或改 D-2 另放 Hindsight——后者需用户定）。
+  旁支：同轮日志 6 次 `{:unknown_activity, "speak_to:<cid>"}`，待查。建造修复已提交 `99296b54`（`e8b-01` 修复前对照：建成 1、`out_of_reach` 41），实跑验证并入风暴修复后的复测。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-01.md`、`runs/e8b-01/verdict.json`）。
+- 2026-11-21（第二十五个统筹会话）：**E8b 第二轮 `e8b-02` 不通过（第 2 h 检查点停跑，原判保留）**。release `0cb563b5`（含 build 先走到射程内 `99296b54`、选择重问退避 `0cb563b5`），01:46:56Z 登记，02:46:58Z 第 1 h 末重启（停机 38.2 s，Bootstrap 三人 `{:ok,_}`），03:47Z 检查点 L3、L4 皆 False 即停。
+  - 前 20 min 正常；**建造修复生效**：石砚一次 World `out_of_reach` 后走过去建成石阶，此后只回 `occupied`（0–2 h 选建造 23、建成 1、占用 21、`out_of_reach` / `unreachable` 结局 0）。
+  - 02:06Z 起召回超时，02:16Z 起多数发问失败；**退避把失败期发问率压到每人 0.74–0.79 次/min（e8b-01 为 2.7–3.0）**，但交互召回中位 4.2 → 8.4 s，两小时客户端放弃召回 222 / 241 次，0–2 h 召回失败 204；第 1 h 石砚、柳莺零选择；重启后 5 min 内无人选择（L5 False，经历与登记连续性本身过）。
+  - **新读数**：同期 Hindsight 只用了钉给它的 2 核中的 0.86 核——瓶颈像是单次召回的串行耗时而非 CPU 吃满（推断，未证实；FlashRank 执行器 / 准入 / DB 待分阶段计时）。
+  - 未判（截断）：L1 / L2 / L6 / L7；部分读数：$1.003、oom_kill 0、release 峰值 2024 MiB、Hindsight 匿名峰值 1703 MiB。资源全部回收、守护未触发、4266 仍 128574。证据 `.demo/observe/npc-e8-20261120/longrun/`（`logs/report-e8b-02.md`、`runs/e8b-02/checkpoint.json`）。
+  - **结论**：退避去掉了重试的自我放大，但召回本身在库长大后仍超时；下一步落在召回成本 / 容量（召回隔离稿 D-4 / D-3d），需用户定。候选方向：Hindsight 自带的 Jev 整组重排（`HINDSIGHT_API_RERANKER_PROVIDER=typesafe`，`engine/cross_encoder.py:984`，候选当 Choice 选项一次排完，超限分组并行 + 决赛；外部服务、重排调用不进 Hindsight LLM 追踪即花费额度看不到，需补计量）、减候选（`RERANKER_MAX_CANDIDATES`）、不重排（`rrf`）、产品侧少发召回、加核 / 拆机。先在 e8b-02 记忆库副本上离线对比（核·秒、延迟、token、结果重合）。E9 继续推迟。
+- 2026-11-21（第二十五个统筹会话）：**E8b 第三轮 `e8b-03b`（Hindsight 重排改用 Jev，`HINDSIGHT_API_RERANKER_PROVIDER=typesafe`，Test-only 私有容器覆盖）在 2 h 检查点停跑，不通过（原判保留）**。第一次起跑 `e8b-03` 准备阶段失败（WSL 侧指纹门不认 release 复用，未建资源）。
+  - 第 0 h 通畅：召回超时 0、交互召回中位 498 ms / p90 824 ms、Hindsight 0.11 核（e8b-02 为 0.86）、重排 1012 次中位 333 ms；三人选择 77 / 58 / 74。
+  - **09:15:40Z 起召回以 500 失败**（L4：127 次 `{:mind_unavailable, {:http_status, 500}}`）：Jev 重排回 **HTTP 400 `max_tokens_exceeded`**（共 125 次），Hindsight 召回不降级、直接报错。推断：库长大后候选池（中位 54、最大 260 项）的 token 超出 Jev 单题上限，Hindsight 按自己的分词估算（预算 26k）切组仍低估。第 1 h 石砚零选择（L3），重启后 5 min 内无人选择（L5）；风暴段 09:26Z 起 10 个 5 min 桶未恢复。延迟本身仍正常（第 1 h 召回中位 701 ms），失败是硬错误而非过载。
+  - 花销（2 h）：产品 $0.34、Hindsight $1.34、Jev 重排 $1.30（第 0 h $0.46、第 1 h $0.84，随库增长），合计 $2.99。资源全部回收、4266 仍 128574、UDP 90 → 88。证据 `.demo/observe/npc-e8-20261120/longrun/runs/e8b-03b/`（`checkpoint.json`、`hindsight-container.log`）。
+  - 同轮行为观察：林眺对自建石阶说法前后矛盾，根因见统筹页（结局措辞把 `occupied` 写成 “something else”，Offers 照提供做不成的建造项）；固定单锚点是登记包的设计，产品已有 `expand`（区域内自找空地）。
+  - 更正与补充（子会话最终报告，同日）：400 的根因已实测——Hindsight 按 OpenAI 系分词估 token、每组留 2.6 万，Jev 实际约 0.467 token/字节，250 候选约 73 KB 以上的组超出每问 32k（成功的最大一次 72,863 字节 / 32,855 token）；400 非瞬时、不重试，`rerank()` 不接、不退回 RRF。花销按回执：重排 $0.907（另有 125 次被拒调用按字节估上界 $0.392，是否收费不明），合计 $2.584、上界 $2.985，外推每天约 $31。召回分阶段中位：总 534 ms，重排 384 ms（76%）；由两轮对比推断 e8b-02 的 5–9 s 大头在本机 FlashRank。可选修法另有 `HINDSIGHT_API_RERANKER_MAX_TOKENS_PER_CANDIDATE`、TypeSafe 长上下文请求头（文档称可到 262k），均未验证。明细 `.demo/observe/npc-e8-20261120/longrun/logs/report-e8b-03b.md`。
+

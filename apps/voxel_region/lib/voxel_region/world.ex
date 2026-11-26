@@ -355,6 +355,14 @@ defmodule VoxelRegion.World do
   def production_options(server, cid),
     do: VoxelRegion.World.PageLoad.call(server, {:production_options, cid})
 
+  @doc """
+  全局系统功能（只读）：`cells` 里角色 `cid` 不能改的宏格（在保护区内、区域不归它持有），保持输入顺序。判定与写意图提交时
+  同一个函数（`VoxelRegion.Access.writable?/3`，主体 `{:character, cid}`）；保护区常驻内存，不装页。
+  调用方：NPC 路线查询（`NpcServer.Route`）判断哪些格敲不动、放不了；执行时 World 仍按提交那一刻重新裁决。
+  """
+  def protected_cells(server, cid, cells),
+    do: VoxelRegion.World.PageLoad.call(server, {:protected_cells, cid, cells})
+
   @doc "全局系统功能：服务端授权供给材料，同角色/来源只记账一次；不经 Gate 暴露。"
   def material_supply(server, cid, supply_id, quantities),
     do: VoxelRegion.World.PageLoad.call(server, {:material_supply, cid, supply_id, quantities}, 300_000)
@@ -1413,6 +1421,9 @@ defmodule VoxelRegion.World do
     do: {:reply, Enum.map(state.production_materials, &Production.balance_state(state, cid, &1)), state}
 
   defp call({:production_options, cid}, _, state), do: {:reply, Production.feasible(state, cid), state}
+
+  defp call({:protected_cells, cid, cells}, _, state),
+    do: {:reply, Enum.reject(cells, &Access.writable?({:character, cid}, state.protection, [&1])), state}
 
   defp call({:material_supply, cid, supply_id, quantities}, _, state) do
     key = {cid, supply_id}

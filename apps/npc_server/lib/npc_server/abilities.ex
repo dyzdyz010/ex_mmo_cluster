@@ -4,7 +4,7 @@ defmodule NpcServer.Abilities do
   docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §5）。
 
   组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Genesis`（创世 fill_box / set_cells）、
-  `Perception`（look / survey / inspect / query_balances / read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
+  `Perception`（look / survey / inspect / query_balances / read_catalog）、`Route`（find_route）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
   `Skills`（已配置的长技能）、`Selector`（选择下一项活动，只在 profile 带候选表时）。每个条目只有
   `%{name, group, done, description, params, build}`：
 
@@ -42,7 +42,17 @@ defmodule NpcServer.Abilities do
   的 `act` 叶子（与 LLM 共用同一组规格，句柄 granularity 0..3；静态参数在建树时经 `command/4` 译码一次）。g5 只由直接产出
   规范命令的代码 Brain（如 Routine）发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
   """
-  alias NpcServer.{Actions, Attention, Dialogue, Genesis, Memory, Perception, Selector, Skills}
+  alias NpcServer.{
+    Actions,
+    Attention,
+    Dialogue,
+    Genesis,
+    Memory,
+    Perception,
+    Route,
+    Selector,
+    Skills
+  }
 
   # D-2：2026-10-08 对当前代理做过一次 strict 工具 live 请求（enum、nullable、定长数组、嵌套对象），代理接受并按 schema 调用。
   @strict true
@@ -81,7 +91,7 @@ defmodule NpcServer.Abilities do
           build: (map(), map() -> map())
         }
 
-  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Dialogue、Memory、Skills、Selector）。"
+  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Route、Attention、Dialogue、Memory、Skills、Selector）。"
   @spec entries(map()) :: [entry()]
   def entries(profile) do
     groups = Map.get(profile, :groups)
@@ -92,6 +102,7 @@ defmodule NpcServer.Abilities do
             Actions.spells(profile) ++
             Genesis.entries(profile) ++
             Perception.entries() ++
+            Route.entries() ++
             Attention.entries() ++
             Dialogue.entries() ++
             Memory.entries() ++ Skills.entries(profile) ++ Selector.entries(profile),

@@ -1,0 +1,119 @@
+{
+  "scene_id": 1,
+  "tools": {"1": "镐"},
+  "activities": [
+    {
+      "name": "build_steps",
+      "criterion": "Build the stone steps at (-5, 516, 24) on the road shoulder west of the spawn square, or rebuild them if they are gone. Only one set of steps fits there. It takes 14680064 units of material 11 (stone).",
+      "skill": "build",
+      "place_name": "stone steps",
+      "args": {
+        "definition": "324e53ee00459b0c78a9383f9161e0574512244c5c5506a4391972668adbf6dc",
+        "anchor_micro": [-40, 4135, 192],
+        "orientation": 0
+      }
+    },
+    {
+      "name": "gather_stone",
+      "criterion": "Cut stone (material 11) from the stone piles beside the workshop, but only when I do not have enough stone to build the stone steps (14680064 units). The piles are shared with everyone and do not grow back. Steady, ordinary work.",
+      "skill": "gather",
+      "args": {
+        "box": [[-8, 516, 52], [-3, 517, 54]],
+        "material": 11,
+        "units": 14680064,
+        "tool_id": 1
+      }
+    },
+    {
+      "name": "tend_the_steps",
+      "criterion": "Stand for a while at the spot by the west gate road where the stone steps stand or are meant to stand, and look after the place.",
+      "place": [-3.5, 27.5],
+      "place_name": "stone steps",
+      "stay_ticks": 3600
+    },
+    {
+      "name": "greet_at_the_gate",
+      "criterion": "Wait at the west gate of the spawn square, where newcomers walk past.",
+      "place": [-1.5, 31.5],
+      "place_name": "the west gate",
+      "stay_ticks": 4800
+    },
+    {
+      "name": "watch_the_workshop",
+      "criterion": "Go to the workshop and watch what people are making there.",
+      "place": [-8.5, 45.5],
+      "place_name": "the workshop",
+      "stay_ticks": 4800
+    },
+    {
+      "name": "check_the_stone_piles",
+      "criterion": "Walk over to the stone and timber piles and see how much is left.",
+      "place": [-8.5, 50.5],
+      "place_name": "the material piles",
+      "stay_ticks": 3600
+    },
+    {
+      "name": "look_over_the_west_slope",
+      "criterion": "Go to the west end of the terrace and look out over the slope, alone for a while.",
+      "place": [-22.5, 31.5],
+      "place_name": "the west terrace edge",
+      "stay_ticks": 5400
+    }
+  ],
+  "residents": [
+    {
+      "name": "石砚",
+      "spawn": [-2.5, 518, 26.5],
+      "who": "Shi Yan, a stonemason",
+      "persona": {
+        "traits": {
+          "hardworking": 9,
+          "self-disciplined": 8,
+          "thorough": 8,
+          "practical": 8,
+          "orderly": 7,
+          "responsible": 7,
+          "talkative": 4,
+          "extraverted": 4
+        },
+        "personal": "Takes quiet pride in laying stone well. Would rather be building or looking after the stone steps than standing idle, and cuts stone only when there is not enough to build. Finds long chatter tiring; a nod is greeting enough."
+      }
+    },
+    {
+      "name": "柳莺",
+      "spawn": [-2.5, 518, 25.5],
+      "who": "Liu Ying, a sociable villager",
+      "persona": {
+        "traits": {
+          "extraverted": 9,
+          "talkative": 8,
+          "friendly": 8,
+          "cheerful": 8,
+          "energetic": 7,
+          "trustful": 7,
+          "kind": 7,
+          "hardworking": 5
+        },
+        "personal": "Loves meeting people. Likes to wait at the west gate of the spawn square, where newcomers walk past, and chat with whoever comes by. Likes to stroll past the stone steps and see how the place is coming along, but would rather be where the people are."
+      }
+    },
+    {
+      "name": "林眺",
+      "spawn": [-8.5, 518, 26.5],
+      "who": "Lin Tiao, a curious loner",
+      "persona": {
+        "traits": {
+          "curious": 9,
+          "reflective": 8,
+          "imaginative": 7,
+          "artistically appreciative": 7,
+          "analytical": 6,
+          "extraverted": 2,
+          "talkative": 3,
+          "angry": 3
+        },
+        "personal": "Happiest alone at the west end of the terrace, looking out over the slope, or quietly watching what people make at the workshop. Notices small changes in the land and in the material piles. Likes to stop by the stone steps and the workshop just to look, but crowds are tiring."
+      }
+    }
+  ]
+}

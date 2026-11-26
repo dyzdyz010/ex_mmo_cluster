@@ -36,14 +36,14 @@ defmodule NpcServer.Trees do
 
   作者保证：定义（宏格或 micro 构件均可）占着锚点格（`anchor_micro` 所在的 macro 格，否则 occupied 时认不出是自家）；各站位与采石盒站位
   两两水平距离不超过 `Perception.reach()`（维护工地时是单程 move_to，不做分段与长途寻路）；配了扩张时，扩张区域（含外扩 2 格的站位）
-  也在这个范围里，否则远处扩张出来的工地在维护时 `too_far`、本轮跳过（`expand` 自己找地时会分段走）；站位离锚点格在工具射程内。
+  也在这个范围里，否则远处扩张出来的工地在维护时 `too_far`、本轮跳过（`expand` 自己找地时会分段走）；站位离锚点格在工具射程内
+  （不在时 `build` 会自己再走到足迹站位，见 `NpcServer.Skills.Build`；之后若缺料，`gather` 从足迹站位出发，那里不在上面
+  “站位两两不超过 reach” 的保证内，可能 `too_far`）。
   被占一律跳过、不清场。
   """
 
   # 瞬态原因之后等 1 秒（60 tick）。
   @pause 60
-  # 选择发问失败后隔多久再问（tick，60 Hz）：10 秒，与 Runtime 的技能检查节拍同量级，不追着接口重试。
-  @retry 600
 
   @doc """
   瞬态失败原因的唯一定义：`NpcServer.Brain.Tree.transient/0`（命令没被执行、或角色暂时不能行动）再加 `:world_timeout`。
@@ -145,7 +145,8 @@ defmodule NpcServer.Trees do
   |---|---|
   | 发问时机 | 只在一项活动结束（成功或失败）回到树根时；活动进行中不改选 |
   | 等应答 | 树停在 `choose_activity` 这一步，不发任何命令，身体原地不动 |
-  | 发问失败 | 这一轮不执行任何活动，等 `@retry` tick 后下一轮再问（不取缺省活动、不沿用上一次的选择） |
+  | 发问失败 | 这一轮不执行任何活动，下一个事件带同一份报告再发 `choose_activity`（不取缺省活动、不沿用上一次的选择） |
+  | 重问节奏 | 树不等：什么时候真正发问由 `NpcServer.Selector.pause/2` 定（唯一 owner），Runtime 把命令留到那一 tick——连续发问失败按 decorrelated jitter 退避（10–120 s），活动以失败结束后至少隔 20 s（其间被直呼则立即发问，`Selector.ask_when_addressed?/1`），成功结束后不等。留着期间树停在 `choose_activity`，同“等应答” |
   | 活动失败 | 不终止树：结局记为 `:failure`，失败的动作与原因取黑板 `:last_failure`，随下一次发问报给选择器 |
   | 对话打断 | 玩家来话、对话回合决定停下时 Runtime 调 `Brain.Tree.halt/1`：在途技能取消、移动停下，树从根重来；这轮的 `choose_activity` 由 Runtime 的预选应答，不问 Jev（黑板里的旧结局不记账） |
   """
@@ -191,7 +192,8 @@ defmodule NpcServer.Trees do
 
     round = {:seq, [choose, {:succeed, {:sel, branches}, store: :ended}]}
 
-    {{:repeat, :forever, {:sel, [round, {:wait, @retry}]}}, %{choice: nil, ended: nil}}
+    # 发问失败（round 失败）不终止树，也不在这里等：下一个事件开下一轮，重问节奏归 Selector（moduledoc “重问节奏”）。
+    {{:repeat, :forever, {:succeed, round, []}}, %{choice: nil, ended: nil}}
   end
 
   defp run({:skill, name, args}), do: {:act, name, args}

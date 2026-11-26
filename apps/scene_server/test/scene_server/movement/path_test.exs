@@ -127,4 +127,103 @@ defmodule SceneServer.Movement.PathTest do
 
     assert {:error, :search_limit} == Walk.find(query, {0, 1, 0}, {3, 0}, 1, 0, 2, max_nodes: 1)
   end
+
+  # ---- find_with_edits/7：敲 / 放两种改格（决策稿 2026-11-24-npc-route-and-teleport-decision.md §5.2）----
+
+  defp cell([x, y, z]), do: {x, y, z}
+
+  # 样例的改格代价：dig / place 为 null 即不许；forbidden 里的格两种都不许。
+  defp edit_prices(c) do
+    forbidden = MapSet.new(c["forbidden"] || [], &cell/1)
+
+    fn kind, at ->
+      price = if kind == :dig, do: c["dig"], else: c["place"]
+      if price == nil or MapSet.member?(forbidden, at), do: :forbidden, else: price
+    end
+  end
+
+  defp forbid_all(_kind, _cell), do: :forbidden
+
+  for c <- @suite["edit_cases"] do
+    test "frozen edit case: #{c["name"]}" do
+      c = unquote(Macro.escape(c))
+
+      expected =
+        if c["steps"] do
+          steps =
+            for s <- c["steps"],
+                do: %{
+                  to: cell(s["to"]),
+                  dig: Enum.map(s["dig"], &cell/1),
+                  place: Enum.map(s["place"], &cell/1)
+                }
+
+          {:ok, %{steps: steps, cost: c["cost"]}}
+        else
+          :no_path
+        end
+
+      assert expected ==
+               Walk.find_with_edits(
+                 grid(c),
+                 cell(c["start"]),
+                 MapSet.new(c["goals"], &cell/1),
+                 @suite["step"],
+                 @suite["height"],
+                 edit_prices(c)
+               )
+    end
+  end
+
+  # 不许改格时与 find/7 走同一种路：每条没有 goal_y 的冻结样例，目标列的任一层都算到。
+  for c <- @suite["cases"], c["goal_y"] == nil do
+    test "with every edit forbidden it walks as find/7 does: #{c["name"]}" do
+      c = unquote(Macro.escape(c))
+      [gx, gz] = c["goal"]
+
+      expected =
+        if c["path"] do
+          {:ok,
+           %{
+             steps: Enum.map(c["path"], &%{to: cell(&1), dig: [], place: []}),
+             cost: length(c["path"])
+           }}
+        else
+          :no_path
+        end
+
+      assert expected ==
+               Walk.find_with_edits(
+                 grid(c),
+                 cell(c["start"]),
+                 MapSet.new(-1..12, &{gx, &1, gz}),
+                 @suite["step"],
+                 @suite["height"],
+                 &forbid_all/2,
+                 trusted_start: c["trusted_start"] == true
+               )
+    end
+  end
+
+  test "the edit suite covers digging, placing, forbidding and no route" do
+    cases = @suite["edit_cases"]
+    steps = Enum.flat_map(cases, &(&1["steps"] || []))
+
+    assert length(cases) >= 8
+    assert Enum.any?(cases, &(&1["steps"] == nil))
+    assert Enum.any?(cases, &(&1["forbidden"] != nil))
+    assert Enum.any?(steps, &(&1["dig"] != [])) and Enum.any?(steps, &(&1["place"] != []))
+  end
+
+  test "find_with_edits: no goals is no route, and a search budget is exhaustion rather than no route" do
+    grid = grid(%{"rows" => ["1133"]})
+    dig = fn _kind, _cell -> 1 end
+
+    assert :no_path == Walk.find_with_edits(grid, {0, 1, 0}, MapSet.new(), 1, 2, dig)
+
+    assert {:error, :search_limit} ==
+             Walk.find_with_edits(grid, {0, 1, 0}, MapSet.new([{3, 3, 0}]), 1, 2, dig,
+               max_nodes: 1
+             )
+  end
 end

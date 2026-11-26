@@ -250,7 +250,8 @@ jobs:
         run: mix ecto.create -r DataService.Repo && mix ecto.migrate -r DataService.Repo
 
       - name: Run npc_server tests
-        run: cd apps/npc_server && mix test --no-start
+        # --slowest：两个最长套件按项列出耗时，作为把长单项移出 PR 默认集的依据（只报告，不改判定）。
+        run: cd apps/npc_server && mix test --no-start --slowest 20
         # NPC 全部算法与真实 Scene / World 集成；外部模型测试需显式启用。
 
   test-data-service:
@@ -582,7 +583,7 @@ jobs:
         run: cd apps/voxel_region && mix compile
 
       - name: Run voxel_region tests
-        run: cd apps/voxel_region && mix test --no-start
+        run: cd apps/voxel_region && mix test --no-start --slowest 20
 
   test-mmo-contracts:
     name: Test mmo_contracts

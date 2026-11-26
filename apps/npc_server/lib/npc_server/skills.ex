@@ -9,6 +9,7 @@ defmodule NpcServer.Skills do
   @builtins %{
     build: NpcServer.Skills.Build,
     design_house: NpcServer.Skills.HouseDesign,
+    dig_cell: NpcServer.Skills.DigCell,
     expand: NpcServer.Skills.Expand,
     gather: NpcServer.Skills.Gather,
     speak: NpcServer.Skills.Speak,

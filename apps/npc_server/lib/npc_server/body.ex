@@ -15,6 +15,8 @@ defmodule NpcServer.Body do
   所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:voxel_region, :edit_bounds`）内，
   与玩家连接共用 `EditBounds.prefab_within?/4`，越界回 `:out_of_bounds`。`say` 经同一执行进程调用 Scene.say；台词只认权威 Speech 回声。
   目录读取（`read_catalog`）经 `NpcServer.Perception.read/3` 读 World 的公共只读目录。
+  路线查询（`find_route`）同属只读请求：`NpcServer.Route.prepare/3` 以身体位置与移动 profile 校验范围（太大 / 太远回原因），
+  执行进程里 `NpcServer.Route.find/3` 取地形与目录算路线，不写世界。
   创世编辑（`genesis_edit`，能力组 `:genesis`，见 `NpcServer.Genesis`）只在启动选项 `genesis: true` 时受理，否则
   `:not_permitted`；`Genesis.prepare/3` 校验后由执行进程以主体 `{:genesis, cid}` 交给 `World.apply_edits/3`（授权与保护区见 `VoxelRegion.Access`）。
 
@@ -34,6 +36,12 @@ defmodule NpcServer.Body do
   投给已退出 Player 的施放没有回复，由本进程收尾：会话丢失时在途施法以 `session_lost` 结束；跨 Scene 移交后仍监视旧 Player，
   它退出时移交前提交、仍无终态的施法同样以 `session_lost` 结束。之后迟到的回复因表中无 id 被忽略：每次施法恰好一个终态。
 
+  传送回出生点（`teleport_to_spawn`）的 owner 是 `Player.teleport_to_spawn/4`：本进程先按 `stop` 同一零输入与停稳判据停下
+  （顶替在途移动），停稳后以 `{本进程, {:npc_teleport, id}}` 为回复目标投递，登记在在途世界事务表里（id → `:teleport_to_spawn`）。
+  Player 在瞬移生效的那个 tick 回执 `{:ok, %{from, to, apply_tick}}`；本进程等 OwnerAck 的 server_tick 到达 apply_tick
+  （位置缓存已是落点、Brain 已看到这份观察）才报完成，紧接着的 `move_to` 从新位置算路。冷却拒绝的可再用时刻换成游戏钟
+  （`MmoContracts.WorldTime.at/1`，加 Runtime 同一份 Test-only 偏移）。会话丢失、移交后旧 Player 退出时与施法同样以
+  `session_lost` 收尾（两者都是“Player 按 reply_to 回复”的在途动作，见 `@player_replies`）。
   `move_to` 带寻路：起步时经 `World.material_snapshot/3` 取一盒地形（与 `look` 同一个只读入口），交给
   `SceneServer.Movement.Path` 算出路点后即丢弃，不留体素副本；台阶高度与角色高度取自权威随 SessionStart 下发的
   移动 profile（玩家客户端收到的同一份）。哪些格能踩、能穿过只用 `NpcServer.Perception.walk_kind/1`（细化格与液体
@@ -47,16 +55,18 @@ defmodule NpcServer.Body do
   # transient：会话丢失由 Body 自己重新 claim，不经监督者；只有崩溃才重启，被同 cid 顶替（{:shutdown, :replaced}）不重启。
   use GenServer, restart: :transient
   require Logger
-  alias MmoContracts.{Movement, Session}
+  alias MmoContracts.{Movement, Session, WorldTime}
   alias VoxelRegion.EditBounds
   alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
   alias VoxelRegion.World
-  alias NpcServer.{Attention, Context, Genesis, Perception, Sight, WorldRequest}
+  alias NpcServer.{Attention, Context, Genesis, Perception, Route, Sight, WorldRequest}
   @attention_verbs Attention.verbs()
   # 世界写意图的动词（经 WorldRequest 拼成线同形请求：施法 0x82 交给 Player.cast_spell/5，其余进 Intent.run/3）；
   # 余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
   @world_verbs WorldRequest.verbs()
   @prefab_kinds [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1]
+  # 由 Player 按 reply_to 回复的在途动作（施法、传送回出生点）：投给已退出 Player 的没有回复，会话丢失 / 旧 Player 退出时由本进程收尾。
+  @player_replies [:cast_spell, :teleport_to_spawn]
 
   @lead 8
   @backlog 120
@@ -216,6 +226,8 @@ defmodule NpcServer.Body do
        retired: %{},
        # 最近一次施法回复里的施法者状态 %{energy_j, capacity_j, coherence}；nil = 还没施过法。派生缓存，真值在 World。
        caster: nil,
+       # 传送回出生点已生效、等 OwnerAck 到达 apply_tick 再报完成：%{id, tick, data}；nil = 没有。
+       landing: nil,
        request_seq: 0,
        # 对话请求号独立于 Brain 的任意 term 命令 id；不自动重发。
        speech_seq: 0,
@@ -287,10 +299,10 @@ defmodule NpcServer.Body do
     Process.send_after(self(), :claim, @reclaim_ms)
     state = think(state, :observation_lost)
 
-    # 施法的回复只按 reply_to 来、执行进程不再兜底：会话没了，在途施法在这里以 session_lost 结束（见 lose_casts/2）。
+    # 施法与传送的回复只按 reply_to 来、执行进程不再兜底：会话没了，它们在这里以 session_lost 结束（见 lose_replies/2）。
     # 其余世界调用照常各回结果。
     # 在途表按命令 id 键（Brain 自增分配，键序即提交次序）；逐个 emit 的结果次序取键序，不用 map 遍历次序。
-    casts = for {id, :cast_spell} <- Enum.sort(state.world), do: id
+    replies = for {id, verb} <- Enum.sort(state.world), verb in @player_replies, do: id
 
     state = %{
       state
@@ -312,7 +324,7 @@ defmodule NpcServer.Body do
         attention: Attention.new()
     }
 
-    state = lose_casts(state, casts)
+    state = lose_replies(state, replies)
 
     case state.move do
       nil ->
@@ -538,6 +550,34 @@ defmodule NpcServer.Body do
   def handle_info({{:npc_cast, id}, result}, state),
     do: handle_info({:npc_world_result, id, result, nil}, state)
 
+  # 传送回出生点的回执（Player 在瞬移生效的那个 tick 回）：等 OwnerAck 到达 apply_tick 再报完成（`finish_landing/1`）；
+  # 冷却拒绝带可再用时刻（换成游戏钟），其余拒绝与世界事务结果同一映射。id 已不在表中时忽略。
+  def handle_info({{:npc_teleport, id}, {:ok, %{apply_tick: tick} = landed}}, state)
+      when is_map_key(state.world, id),
+      do:
+        {:noreply,
+         finish_landing(%{
+           state
+           | landing: %{id: id, tick: tick, data: Map.take(landed, [:from, :to])}
+         })}
+
+  def handle_info({{:npc_teleport, id}, {:error, {:teleport_cooldown, ready_ms}}}, state)
+      when is_map_key(state.world, id) do
+    {:teleport_to_spawn, world} = Map.pop(state.world, id)
+
+    {:noreply,
+     emit(%{state | world: world}, %{
+       id: id,
+       verb: :teleport_to_spawn,
+       status: :rejected,
+       reason: :teleport_cooldown,
+       data: cooldown(ready_ms)
+     })}
+  end
+
+  def handle_info({{:npc_teleport, id}, {:error, _} = result}, state),
+    do: handle_info({:npc_world_result, id, result, nil}, state)
+
   # 成功报价 / 结算时 World 先发给 caster_recipient 的施法者状态：只更新 Observation 的 self.caster，不产生 Outcome。
   def handle_info({:mmo_spell_reply, {:npc_cast, _}, _request, %{caster: caster}}, state),
     do: {:noreply, %{state | caster: Map.take(caster, [:energy_j, :capacity_j, :coherence])}}
@@ -588,17 +628,17 @@ defmodule NpcServer.Body do
          {:ok, fresh, route, next} <-
            WorldServer.Session.prepare_transfer(state.claims, identity, target, artifact),
          :ok <- WorldServer.Session.commit_transfer(state.claims, identity, fresh, state.cid) do
-      # 旧 Player 已 seal：它处理过的施放都已回复（前摇中的被 seal 撤销，World 回 cast_cancelled），之后投给它的回
-      # invalid_state；执行进程投递时它已退出的，没有任何回复。所以有在途施法时留着对旧 Player 的监视（见 retired）。
-      # 旧会话的施法不能再取消（取消按新会话身份匹配），从 casts 里去掉。
-      casts = for {id, :cast_spell} <- Enum.sort(state.world), do: id
+      # 旧 Player 已 seal：它处理过的施放都已回复（前摇中的被 seal 撤销，World 回 cast_cancelled；读条中的传送回
+      # cast_cancelled），之后投给它的回 invalid_state；执行进程投递时它已退出的，没有任何回复。所以有在途施法或传送时
+      # 留着对旧 Player 的监视（见 retired）。旧会话的施法不能再取消（取消按新会话身份匹配），从 casts 里去掉。
+      replies = for {id, verb} <- Enum.sort(state.world), verb in @player_replies, do: id
 
       retired =
-        if casts == [] do
+        if replies == [] do
           Process.demonitor(state.player_monitor, [:flush])
           state.retired
         else
-          Map.put(state.retired, state.player_monitor, casts)
+          Map.put(state.retired, state.player_monitor, replies)
         end
 
       Logger.info(
@@ -626,10 +666,10 @@ defmodule NpcServer.Body do
   def handle_info({:DOWN, _, :process, player, reason}, %{player: player} = state),
     do: {:noreply, lose_session(state, {:player_down, reason})}
 
-  # 移交前的旧 Player 退出：移交时在途、至今仍无终态的施法再也不会有回复。
+  # 移交前的旧 Player 退出：移交时在途、至今仍无终态的施法与传送再也不会有回复。
   def handle_info({:DOWN, ref, :process, _, _}, state) when is_map_key(state.retired, ref) do
-    {casts, retired} = Map.pop(state.retired, ref)
-    {:noreply, lose_casts(%{state | retired: retired}, casts)}
+    {replies, retired} = Map.pop(state.retired, ref)
+    {:noreply, lose_replies(%{state | retired: retired}, replies)}
   end
 
   def handle_info({:npc_runtime_outcome, outcome}, state),
@@ -651,7 +691,11 @@ defmodule NpcServer.Body do
       }
       |> finish_move()
 
-    state = think(state, {:observation, observation(state, session)})
+    state =
+      state
+      |> think({:observation, observation(state, session)})
+      |> finish_landing()
+
     {state, {_, _, yaw} = steering, limit} = steering(state, due)
     {frames, inflight} = govern(state, frames(state.sent, due, state.yaw, steering), limit)
     state = %{state | inflight: inflight}
@@ -720,6 +764,24 @@ defmodule NpcServer.Body do
 
   defp finish_move(state), do: state
 
+  # 传送回出生点的停下阶段结束：交给 Player（异步，读条与冷却由它判），之后的零输入照常送；结果见 {:npc_teleport, id}。
+  defp finish_settled_move(state, %{verb: :teleport_to_spawn, id: id}, _settled) do
+    seq = state.request_seq + 1
+
+    Player.teleport_to_spawn(
+      state.player,
+      state.identity,
+      %{client_intent_seq: seq},
+      {self(), {:npc_teleport, id}}
+    )
+
+    Logger.info(
+      "npc_teleport_requested cid=#{state.cid} id=#{inspect(id)} position=#{inspect(state.position)}"
+    )
+
+    %{state | move: nil, request_seq: seq, world: Map.put(state.world, id, :teleport_to_spawn)}
+  end
+
   defp finish_settled_move(state, move, settled) do
     within = move.target == nil or distance(state.position, move.target) <= move.tolerance
 
@@ -737,9 +799,11 @@ defmodule NpcServer.Body do
   defp steering(%{move: %{zero_from: nil, path: :planning}} = state, _due),
     do: {state, {0, 0, state.yaw}, 0.0}
 
-  # 移动命令只写未来槽：零输入从下一个未送且未过期的序号开始。
-  defp steering(%{move: %{zero_from: nil, verb: :stop} = move} = state, due),
-    do: {%{state | move: %{move | zero_from: max(state.sent, due) + 1}}, {0, 0, state.yaw}, 0.0}
+  # 移动命令只写未来槽：零输入从下一个未送且未过期的序号开始。传送回出生点先停下，与 stop 同一零输入。
+  defp steering(%{move: %{zero_from: nil, verb: verb} = move} = state, due)
+       when verb in [:stop, :teleport_to_spawn],
+       do:
+         {%{state | move: %{move | zero_from: max(state.sent, due) + 1}}, {0, 0, state.yaw}, 0.0}
 
   defp steering(%{move: %{zero_from: nil} = move} = state, due) do
     move = advance(move, state.position)
@@ -977,6 +1041,20 @@ defmodule NpcServer.Body do
         settle: Map.get(command, :settle)
       })
 
+  # 传送回出生点：先停下（顶替在途移动，停稳判据同 stop），停稳后交给 Player（`finish_settled_move/3`）。
+  defp apply_command(state, %{id: id, verb: :teleport_to_spawn}),
+    do:
+      move(state, %{
+        id: id,
+        verb: :teleport_to_spawn,
+        target: nil,
+        tolerance: nil,
+        zero_from: nil,
+        path: [],
+        from: nil,
+        mark: nil
+      })
+
   # 世界写意图：拼成线解码同形的 {kind, request}；需按眼点补方向而位置还不知道（claim 后、首个 ACK 前）时回 invalid_session。
   defp apply_command(state, %{id: id, verb: verb} = command) when verb in @world_verbs do
     eye = state.position && Player.eye_position(state.position)
@@ -1025,10 +1103,13 @@ defmodule NpcServer.Body do
   end
 
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:query_balances, :look, :survey, :inspect, :read_catalog] do
+       when verb in [:query_balances, :look, :survey, :inspect, :read_catalog, :find_route] do
     case read_call(state, command) do
       nil ->
         invalid(state, command)
+
+      {:error, reason} ->
+        emit(state, %{id: id, verb: verb, status: :rejected, reason: reason, data: nil})
 
       call ->
         submit(state, id, call)
@@ -1106,6 +1187,15 @@ defmodule NpcServer.Body do
   defp read_call(%{position: position, profile: %{} = profile}, %{verb: :survey} = command),
     do: Perception.prepare(position, command, Context.clearance(profile))
 
+  # 路线查询：起点是身体的权威位置，台阶 / 身高 / 步速取自权威下发的移动 profile（同 move_to）。
+  defp read_call(
+         %{position: {_, _, _} = position, profile: %{} = profile},
+         %{verb: :find_route} = command
+       ),
+       do: Route.prepare(position, profile, command)
+
+  defp read_call(_state, %{verb: :find_route}), do: nil
+
   defp read_call(%{position: position}, command),
     do: Perception.prepare(position, command)
 
@@ -1145,15 +1235,17 @@ defmodule NpcServer.Body do
   defp remember_cast(casts, id, {:voxel_spell_intent, request}), do: Map.put(casts, id, request)
   defp remember_cast(casts, _id, _intent), do: casts
 
-  # 投给已退出 Player 的施放不会再有回复：这些施法若仍在途，各以 session_lost 结束（已授权的可能已结算，Brain 以
-  # look / inspect 现算）；之后迟到的 {{:npc_cast, id}, _} 因表中无 id 被忽略。
-  defp lose_casts(state, ids) do
+  # 投给已退出 Player 的施放 / 传送不会再有回复：这些动作若仍在途，各以 session_lost 结束（已授权的施法可能已结算、
+  # 已放行的传送可能已落地，Brain 以 look / 观察现算）；之后迟到的 {{:npc_cast | :npc_teleport, id}, _} 因表中无 id 被忽略。
+  defp lose_replies(state, ids) do
     Enum.reduce(ids, state, fn id, state ->
       case Map.pop(state.world, id) do
-        {:cast_spell, world} ->
-          emit(%{state | world: world, casts: Map.delete(state.casts, id)}, %{
+        {verb, world} when verb in @player_replies ->
+          landing = if match?(%{id: ^id}, state.landing), do: nil, else: state.landing
+
+          emit(%{state | world: world, casts: Map.delete(state.casts, id), landing: landing}, %{
             id: id,
-            verb: :cast_spell,
+            verb: verb,
             status: :rejected,
             reason: :session_lost,
             data: nil
@@ -1163,6 +1255,33 @@ defmodule NpcServer.Body do
           state
       end
     end)
+  end
+
+  # 传送已生效且 OwnerAck 已到 apply_tick（位置缓存是落点）：报完成。
+  defp finish_landing(%{landing: %{id: id, tick: tick, data: data}} = state)
+       when state.tick >= tick do
+    {:teleport_to_spawn, world} = Map.pop(state.world, id)
+
+    emit(%{state | world: world, landing: nil}, %{
+      id: id,
+      verb: :teleport_to_spawn,
+      status: :done,
+      reason: nil,
+      data: data
+    })
+  end
+
+  defp finish_landing(state), do: state
+
+  # 冷却拒绝的 data：可再用时刻换成游戏钟（与 Runtime 观察里的 world_time 同一函数、同一份 Test-only 偏移）与还要等的游戏分钟。
+  defp cooldown(ready_ms) do
+    offset = Application.fetch_env!(:npc_server, :world_clock_test_offset_us)
+    wait_ms = max(0, ready_ms - System.system_time(:millisecond))
+
+    %{
+      ready_at: WorldTime.at(ready_ms * 1000 + offset),
+      wait_game_minutes: ceil(wait_ms * WorldTime.params().rate / 60_000)
+    }
   end
 
   defp reject_move(%{move: move} = state, reason, data \\ nil) do
@@ -1388,6 +1507,9 @@ defmodule NpcServer.Body do
   defp execute(session, call, _ingress)
        when elem(call, 0) in [:look, :survey, :inspect, :catalog],
        do: {Perception.read(session.world_ref, session.cid, call), nil}
+
+  defp execute(session, {:route, plan}, _ingress),
+    do: {Route.find(session.world_ref, session.cid, plan), nil}
 
   # 取消前摇（0x82 action 2）：与玩家同一个同步入口 Player.spell/4，角色 owner 撤销后回 :controlled。
   defp execute(session, {:voxel_spell_intent, request}, ingress) do

@@ -9,12 +9,8 @@ defmodule NpcServer.NpcCastWorldTest do
   Body。施法命令经 `Abilities.command/4` 构造（作者法术带 `profile.spells`），Body 不知道的目录 digest 由执行进程经
   `World.magic_digest/1` 填入。不注入施法者能量或身体真值：新 NPC 能量 0。
 
-  期望值手算自夹具 JSON 与 Voxim Docs/Magic.md §4、§13.6（公式见 `VoxelRegion.Magic.Cost` moduledoc，这里不调用它）：
-  程序 = 目录预设 ignite_near（act.heat，energy_j 400 000）。rest_pose 全 0 → act.heat 姿态 [45, −90, 90, −90, 0, 0]°：
-  d = √(45² + 90² + 90² + 90²)° = 162.2498…° = 2.8317933498 rad；S = 1（权重），H = 400 000 J，
-  b = b0·(S + H/E_ref)^α = 1000·1.4^1.5 = 1656.5023393 W；T_adj = d·√(η/b) = 2.8317933·√(50/1656.5023) = 0.4919834945 s，
-  T_inj = E/P_max = 400 000/1 000 000 = 0.4 s，release_lead_s = 0 → 前摇 0.8919834945 s；
-  E_loss = 2·d·√(η·b) + b·T_inj = 2·2.8317933·√82 825.117 + 662.6009 = 2292.5445548 J → 报价 402 292.5445548 J。
+  期望值：报价与前摇取自权威 `VoxelRegion.Magic.Cost.quote/2`（同一魔法目录文件、同一作者法术程序）；公式由 voxel_region
+  `magic_test` 按契约手算表证明，这里只证明 NPC 施法经正式入口拿到 World 的原样回复，不在 NPC 侧重算物理。
   结构 S = 1 ≤ 相干度 4（目录 4.0 × 健康身体系数 1.0），能量 0 < 报价 → 走火 misfire_energy，
   支出 = min(报价, 余额 0) = 0、施放后能量 0。
   """
@@ -34,9 +30,6 @@ defmodule NpcServer.NpcCastWorldTest do
   # 作者法术带（D-10）：目录预设 ignite_near 原样。
   @ignite ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":200000}}]})
   @spells %{spells: %{"ignite" => @ignite}}
-  # 手算见 moduledoc。
-  @quote_j 402_292.5445548
-  @windup_ms 892
 
   defmodule Route do
     def route(1),
@@ -220,6 +213,17 @@ defmodule NpcServer.NpcCastWorldTest do
     assert %{status: :rejected, reason: :casting} = outcome(:dig)
   end
 
+  # 权威报价：与 World 同一魔法目录文件、同一作者法术程序，调用唯一实现 `Cost.quote/2`。
+  defp authority_quote do
+    alias VoxelRegion.Magic.{Catalog, Cost, Program}
+    catalog = Catalog.load(Path.join([@fixtures, "magic", @magic <> ".json"]))
+    {:ok, program} = Program.parse(@ignite, catalog)
+    Cost.quote(program, catalog)
+  end
+
+  # 等过整段前摇的上界（毫秒，向上取整）。
+  defp windup_ms, do: ceil(authority_quote().windup_s * 1000)
+
   test "T4.1 施放：前摇中工具回 casting、再施放回 cast_too_soon；前摇结束后 World 结算为走火，Outcome 带原样回复",
        %{world: world, body: body} do
     handle = probe(body)
@@ -234,11 +238,11 @@ defmodule NpcServer.NpcCastWorldTest do
     assert %{status: :done, data: %{seq: seq, outcome: :misfire_energy, caster: caster}} =
              outcome(:cast)
 
-    assert System.monotonic_time(:millisecond) - started >= @windup_ms
+    assert System.monotonic_time(:millisecond) - started >= trunc(authority_quote().windup_s * 1000)
     assert is_integer(seq) and caster.seq == seq
     assert caster.energy_j == 0.0 and caster.spent_j == 0.0
     assert caster.quote_s == 1.0 and caster.capacity_j == 5.0e6 and caster.coherence == 4.0
-    assert_in_delta caster.quote_j, @quote_j, 1.0e-4
+    assert caster.quote_j == authority_quote().total_j
 
     # Observation 的 self.caster 只取自施法回复（{:mmo_spell_reply, …}）。
     assert_receive {:caster, %{energy_j: +0.0, capacity_j: 5.0e6, coherence: 4.0}}
@@ -260,7 +264,7 @@ defmodule NpcServer.NpcCastWorldTest do
     # 等过整段前摇：World 不在取消后结算。结算的回复会被 Body 忽略（id 已不在表中），能量 0 → 0 也看不出差别；
     # 而 World 结算时先发给 caster_recipient 的施法者状态会经 Observation 的 self.caster 出现（初值 nil，会话一直在），
     # 它不出现才说明没有结算。
-    refute_receive {:caster, _}, @windup_ms + 300
+    refute_receive {:caster, _}, windup_ms() + 300
     refute_received {:outcome, %{id: :cast}}
     assert {:ok, %{energy_j: ^energy}} = World.caster_state(world, @npc)
 
@@ -300,7 +304,7 @@ defmodule NpcServer.NpcCastWorldTest do
         assert :ok = Player.stop(player)
 
         assert %{status: :rejected, reason: :cast_cancelled} = outcome(:cast)
-        refute_receive {:outcome, %{id: :cast}}, @windup_ms + 600
+        refute_receive {:outcome, %{id: :cast}}, windup_ms() + 600
       end)
 
     # 判定器自检：捕获到了本 cid 的施放开始行，才说明这段日志看得见 World 的 info 行；整段前摇之后仍没有结算行。
@@ -320,6 +324,6 @@ defmodule NpcServer.NpcCastWorldTest do
 
     assert %{status: :rejected, reason: reason} = outcome(:cast)
     assert reason in [:session_lost, :invalid_session]
-    refute_receive {:outcome, %{id: :cast}}, @windup_ms + 600
+    refute_receive {:outcome, %{id: :cast}}, windup_ms() + 600
   end
 end

@@ -46,7 +46,8 @@ defmodule SceneServer.Movement.Player do
     :movement_scales,
     :life_generation,
     :effect_receipts,
-    :tool_action
+    :tool_action,
+    :teleported_at_us
   ]
 
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
@@ -103,9 +104,37 @@ defmodule SceneServer.Movement.Player do
   @doc "取消当前分选（0x7F action 7）：等 World 开始校验或读条中即打断，回 `:ok`；没有分选或已在提交回 `{:error, :already_released}`。"
   def cancel_sort(player, identity), do: GenServer.call(player, {:cancel_sort, identity})
 
-  # 读条动作种类 → World 的开始 / 结束消息。
+  @doc """
+  传送回会话出生柱（NPC 原子 `teleport_to_spawn`；只给 NPC，没有线协议）的角色 owner 入口：异步排进，调用方不等读条。
+  request = `%{client_intent_seq}`（与施法、信标同一防重放序号）。与施法 / 信标 / 分选共用动作槽，读条与打断距离见
+  `teleport_terms/0`，移动打断回 `:teleport_moved`；不经 World（不写世界、不花材料）。放行后走死亡复活的同一瞬移
+  （`relocate/3`：落点 = `state.probe` 柱上按入场规则现找的落脚处，找不到与复活同样以会话失败结束），冷却从放行时刻起算、
+  按游戏钟（`MmoContracts.WorldTime`），由本进程持有、随 Scene 移交带走，会话重建后清零。
+  结果恰好一个，经 `GenServer.reply(reply_to, …)`：瞬移生效时（`Voxel.Relocate` 的 apply_tick）`{:ok, %{from, to, apply_tick}}`；
+  拒绝 `{:error, :dead | :cast_too_soon | :invalid_state | {:teleport_cooldown, 可再用时刻的 Unix 毫秒} | :teleport_moved |
+  :cast_cancelled}`。决策稿 docs/10-active/cross-cutting/2026-11-24-npc-route-and-teleport-decision.md §5.5。
+  """
+  def teleport_to_spawn(player, identity, request, {waiter, _} = reply_to) when is_pid(waiter),
+    do: GenServer.cast(player, {:teleport, identity, request, reply_to})
+
+  # 传送回出生点的条款：读条秒数；冷却 = 1 游戏小时（游戏微秒，倍率 24 时现实 150 秒）；读条中离开起点多远即打断（米，信标与分选同一距离）。
+  @teleport_windup_s 10
+  @teleport_cooldown_game_us 3_600_000_000
+  @channel_interrupt_m 0.25
+
+  @doc "传送回出生点的条款：读条秒数、冷却游戏秒数、读条中的打断距离（米）。NPC 原子说明按它插值，不另写数字。"
+  def teleport_terms,
+    do: %{
+      windup_s: @teleport_windup_s,
+      cooldown_game_s: div(@teleport_cooldown_game_us, 1_000_000),
+      interrupt_m: @channel_interrupt_m
+    }
+
+  # 读条动作种类 → World 的开始 / 结束消息（传送不经 World，不在表里）。
   @channel_prepare %{beacon: :prepare_beacon, sort: :prepare_sort}
   @channel_commit %{beacon: :commit_beacon, sort: :commit_sort}
+  # 读条中走开即打断时回的原因。
+  @channel_moved %{beacon: :beacon_moved, sort: :cast_cancelled, teleport: :teleport_moved}
 
   @doc """
   施放（0x82 action 1）的角色 owner 入口：异步排进与 `spell/4` 同一处理，调用方不等前摇。前摇与授权由本进程推进，
@@ -244,8 +273,13 @@ defmodule SceneServer.Movement.Player do
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
-        # 瞬移目标探针柱（复活或传送信标）；revive 状态机推进期间有效，换完清空。
+        # 瞬移目标探针柱（复活、传送信标或传送回出生点）与原因（:death | :beacon | :teleport，进瞬移事件）；
+        # revive 状态机推进期间有效，换完清空。
         relocate_to: nil,
+        relocate_reason: nil,
+        # 传送回出生点：上次放行的墙钟微秒（冷却按游戏钟从它起算，随 Scene 移交带走）；放行后、落地前等回执的调用方。
+        teleported_at_us: nil,
+        teleport_reply: nil,
         # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
         climate: nil
       })
@@ -599,7 +633,65 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
-  def handle_cast({kind, _, _, from}, state) when kind in [:beacon, :sort] do
+  # 传送回出生点：不经 World，本进程直接开始读条（起点即此刻位置）；冷却由本进程按游戏钟判。
+  def handle_cast(
+        {:teleport, identity, request, from},
+        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
+      ) do
+    ready_at = teleport_ready_at(state)
+
+    reject = fn reason, facts ->
+      character_event(
+        state,
+        state,
+        :teleport_rejected,
+        Map.merge(%{client_intent_seq: request.client_intent_seq, reason: reason}, facts)
+      )
+
+      {:noreply, state}
+    end
+
+    cond do
+      state.body.status == :dead ->
+        GenServer.reply(from, {:error, :dead})
+        reject.(:dead, %{})
+
+      state.action != nil or request.client_intent_seq <= state.action_seq ->
+        GenServer.reply(from, {:error, :cast_too_soon})
+        reject.(:cast_too_soon, %{})
+
+      ready_at != nil and System.system_time(:microsecond) < ready_at ->
+        ready_at_ms = div(ready_at + 999, 1000)
+        GenServer.reply(from, {:error, {:teleport_cooldown, ready_at_ms}})
+        reject.(:teleport_cooldown, %{ready_at_ms: ready_at_ms})
+
+      true ->
+        key = MmoContracts.Action.key(identity, request.client_intent_seq)
+        timer = Process.send_after(self(), {:release_cast, key}, @teleport_windup_s * 1000)
+
+        character_event(state, state, :teleport_channel, %{
+          client_intent_seq: request.client_intent_seq,
+          from: Tuple.to_list(state.state.position),
+          probe: Tuple.to_list(state.probe),
+          windup_s: @teleport_windup_s
+        })
+
+        action = %{
+          key: key,
+          kind: :teleport,
+          request: request,
+          phase: :windup,
+          timer: timer,
+          from: from,
+          origin: state.state.position
+        }
+
+        next = %{state | action: action, action_seq: request.client_intent_seq}
+        {:noreply, publish_movement_scale(next, next.body)}
+    end
+  end
+
+  def handle_cast({kind, _, _, from}, state) when kind in [:beacon, :sort, :teleport] do
     GenServer.reply(from, {:error, :invalid_state})
     {:noreply, state}
   end
@@ -712,6 +804,30 @@ defmodule SceneServer.Movement.Player do
   end
 
   def handle_info({:beacon_prepared, _, _}, state), do: {:noreply, state}
+
+  # 传送回出生点的读条到点：死亡、会话失败、移交中则取消；否则冷却从此刻起算，走死亡复活的同一瞬移，落地时回执（`relocated/1`）。
+  def handle_info(
+        {:release_cast, key},
+        %{action: %{key: key, kind: :teleport, phase: :windup} = action} = state
+      ) do
+    if state.body.status == :dead or state.failure != nil or state.transfer != nil do
+      {:noreply, cancel_cast(state, :cast_cancelled)}
+    else
+      character_event(state, state, :teleport_depart, %{
+        client_intent_seq: action.request.client_intent_seq,
+        from: Tuple.to_list(state.state.position),
+        probe: Tuple.to_list(state.probe)
+      })
+
+      state = %{
+        clear_cast(state)
+        | teleported_at_us: System.system_time(:microsecond),
+          teleport_reply: action.from
+      }
+
+      {:noreply, relocate(state, state.probe, :teleport)}
+    end
+  end
 
   def handle_info(
         {:release_cast, key},
@@ -1548,7 +1664,7 @@ defmodule SceneServer.Movement.Player do
     })
 
     case state.action do
-      %{kind: kind, from: from} when kind in [:beacon, :sort] ->
+      %{kind: kind, from: from} when kind in [:beacon, :sort, :teleport] ->
         GenServer.reply(from, {:error, reason})
         clear_cast(state)
 
@@ -1564,20 +1680,29 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
-  # 传送信标与分选读条中离开起点超过 0.25 m 即打断（Voxim Docs/Gameplay/Beacon.md §3；分选 Docs/Items.md §3.2 回 cast_cancelled）。
+  # 传送信标、分选与传送回出生点读条中离开起点超过 @channel_interrupt_m 即打断（Voxim Docs/Gameplay/Beacon.md §3；
+  # 分选 Docs/Items.md §3.2 回 cast_cancelled；原因按 @channel_moved）。
   defp interrupt_channel(
          %{
            action: %{kind: kind, phase: :windup, origin: {ox, oy, oz}},
            state: %{position: {x, y, z}}
          } = state
        )
-       when kind in [:beacon, :sort] do
-    if (x - ox) * (x - ox) + (y - oy) * (y - oy) + (z - oz) * (z - oz) > 0.0625,
-      do: cancel_cast(state, if(kind == :beacon, do: :beacon_moved, else: :cast_cancelled)),
-      else: state
+       when is_map_key(@channel_moved, kind) do
+    if (x - ox) * (x - ox) + (y - oy) * (y - oy) + (z - oz) * (z - oz) >
+         @channel_interrupt_m * @channel_interrupt_m,
+       do: cancel_cast(state, Map.fetch!(@channel_moved, kind)),
+       else: state
   end
 
   defp interrupt_channel(state), do: state
+
+  # 传送回出生点的冷却按游戏钟：两个墙钟时刻的游戏时间差 = 墙钟差 × 倍率（`MmoContracts.WorldTime.game_us/1` 的定义，
+  # 与 Test-only 偏移无关），满 1 游戏小时才可再用。返回可再用的墙钟微秒；没传送过为 nil。
+  defp teleport_ready_at(%{teleported_at_us: nil}), do: nil
+
+  defp teleport_ready_at(%{teleported_at_us: at}),
+    do: at + ceil(@teleport_cooldown_game_us / MmoContracts.WorldTime.params().rate)
 
   defp clear_cast(state) do
     if state.action.timer, do: Process.cancel_timer(state.action.timer)
@@ -1639,7 +1764,7 @@ defmodule SceneServer.Movement.Player do
       probe: Tuple.to_list(state.probe)
     })
 
-    relocate(state, state.probe)
+    relocate(state, state.probe, :death)
   end
 
   defp revive(state) do
@@ -1647,10 +1772,11 @@ defmodule SceneServer.Movement.Player do
     %{state | body: Body.revive(), life_generation: state.life_generation + 1}
   end
 
-  # 瞬移到探针柱：复活回会话出生柱（`state.probe`），传送信标到落点。柱上按入场同一规则重找落脚点（世界可能已变）。
-  # 非流送会话世界固定，下一个模拟 tick 即换；流送会话先请求覆盖探针的新窗口，窗口安装时再找落脚点（`revive_spawn/3`），
-  # 与窗口同一 apply_tick 生效。找不到落脚点与复活同一处理（会话失败）。
-  defp relocate(state, probe), do: relocate(%{state | relocate_to: probe})
+  # 瞬移到探针柱：复活与传送回出生点回会话出生柱（`state.probe`），传送信标到落点；reason（:death | :beacon | :teleport）进瞬移事件。
+  # 柱上按入场同一规则重找落脚点（世界可能已变）。非流送会话世界固定，下一个模拟 tick 即换；流送会话先请求覆盖探针的新窗口，
+  # 窗口安装时再找落脚点（`revive_spawn/3`），与窗口同一 apply_tick 生效。找不到落脚点与复活同一处理（会话失败）。
+  defp relocate(state, probe, reason),
+    do: relocate(%{state | relocate_to: probe, relocate_reason: reason})
 
   defp relocate(%{stream: nil} = state),
     do: relocate_now(state, find_spawn(state, state.relocate_to))
@@ -1659,7 +1785,7 @@ defmodule SceneServer.Movement.Player do
 
   # 传送信标：落点在当前窗口里（且没有待装窗口）时同非流送会话下一个 tick 即换，不等新窗口；否则同复活先流送覆盖落点的窗口。
   defp travel(%{window_pending: false} = state, landing) when state.stream != nil do
-    state = %{state | relocate_to: landing}
+    state = %{state | relocate_to: landing, relocate_reason: :beacon}
 
     case find_spawn(state, landing) do
       :outside -> relocate(state)
@@ -1667,7 +1793,7 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
-  defp travel(state, landing), do: relocate(state, landing)
+  defp travel(state, landing), do: relocate(state, landing, :beacon)
 
   defp relocate_now(state, found) do
     case found do
@@ -1679,7 +1805,8 @@ defmodule SceneServer.Movement.Player do
 
         character_event(state, state, :revive_relocate, %{
           apply_tick: tick,
-          position: Tuple.to_list(spawned.position)
+          position: Tuple.to_list(spawned.position),
+          reason: state.relocate_reason
         })
 
         %{state | revive: {tick, spawned}}
@@ -1700,7 +1827,8 @@ defmodule SceneServer.Movement.Player do
 
         character_event(state, state, :revive_relocate, %{
           apply_tick: tick,
-          position: Tuple.to_list(spawned.position)
+          position: Tuple.to_list(spawned.position),
+          reason: state.relocate_reason
         })
 
         {%{state | revive: {tick, spawned}}, [{:relocate, tick, spawned}]}
@@ -1715,16 +1843,31 @@ defmodule SceneServer.Movement.Player do
 
   defp revive_spawn(state, _domain, _tick), do: {state, []}
 
-  # 模拟 tick 之前：apply_tick − 1 的状态换成出生点（与 Voxel.Relocate 同一语义）。
+  # 模拟 tick 之前：apply_tick − 1 的状态换成出生点（与 Voxel.Relocate 同一语义）。传送回出生点在这里回执（瞬移已生效）。
   defp relocated(%{revive: {tick, spawned}, simulation_tick: simulated} = state)
        when tick == simulated + 1 do
     character_event(state, state, :revive_relocated, %{
       apply_tick: tick,
       from: Tuple.to_list(state.state.position),
-      to: Tuple.to_list(spawned.position)
+      to: Tuple.to_list(spawned.position),
+      reason: state.relocate_reason
     })
 
-    %{state | state: spawned, revive: nil, relocate_to: nil}
+    if state.teleport_reply,
+      do:
+        GenServer.reply(
+          state.teleport_reply,
+          {:ok, %{from: state.state.position, to: spawned.position, apply_tick: tick}}
+        )
+
+    %{
+      state
+      | state: spawned,
+        revive: nil,
+        relocate_to: nil,
+        relocate_reason: nil,
+        teleport_reply: nil
+    }
   end
 
   defp relocated(state), do: state

@@ -11,8 +11,10 @@ defmodule NpcServer.Selector do
     participant L as Life
     participant J as Jev
     T->>R: choose_activity（带上一项活动怎样结束）
-    R->>R: ended/2 记账；结束的活动作为经历交给 Life
-    R->>W: 起 worker
+    R->>R: ended/2 记账；pause/2 定到期 tick
+    R->>W: 收到命令即起 worker
+    W->>L: Life.activity：先保存刚结束那项活动的经历（失败 → 立即 rejected，不等放行）
+    R->>W: 放行（到期，或活动失败的间隔里被直呼；成功路径同一事件里就放行）
     W->>L: question/4：Life.mind（情绪、近期经历、认识 + 按处境并行的多路召回）
     L-->>W: 视图（读不到 → 这次选择失败，不问 Jev）
     W-->>R: 这次问的是什么（state 全文、各路召回与耗时）
@@ -42,15 +44,22 @@ defmodule NpcServer.Selector do
   - **失败**：心智读不到（Life 还没加载完、认识还没有缓存、任何一路召回出错或超时，原因 `{:mind_unavailable, 细节}`，不发 Jev 请求）、
     说话候选读不到（`{:dialogue_unavailable, 细节}`，原样作为原因）、
     HTTP 出错、应答不成形、选项不在候选里都是显式失败（Outcome rejected + `npc_select_failed`），
-    不换别的选择器、不取缺省活动、不把读不到的记忆当成“没有记忆”；树等一会儿再问一次（`Trees.npc/1`）。
+    不换别的选择器、不取缺省活动、不把读不到的记忆当成“没有记忆”；树随即重发 `choose_activity`，真正的重问等退避到期。
     读库存（`World.production_options/2`）失败照常退出，走发问 worker 已有的失败路径（Runtime 的 `select_worker_failed`）。
+  - **重问节奏**（唯一 owner 是本模块，`pause/2`；召回隔离决策稿 D-3c 2026-11-20）：连续发问失败按 decorrelated jitter 退避
+    （10 s 起、上限 120 s，一次成功即复位，`failed/3`），活动以失败结束后至少隔 20 s 再问，成功路径不等；留着期间被直呼时
+    是否提前由 `ask_when_addressed?/1` 定（活动失败的间隔提前，发问失败的退避不提前）。Runtime 收到 `choose_activity` 后
+    把它留到这个间隔到期才发问；树不另等。这样失败期的发问率被压到成功节拍以下（e8b-01 的召回风暴就是 10 s 固定重问、
+    无退避维持的亚稳态坏态），活动立即失败也不再每几秒重问一次。退避状态不持久化，重启复位；抽到的随机值不可重放，
+    从 Runtime 的 `npc_select_wait` 行读回。
   - **过期应答**：命令与 Outcome 按 id 对应，由 `Brain.Tree` 与 Runtime 现有的编号机制丢弃。
   - **经历**：一项活动结束，`experience/1` 给出 Runtime 交给 Life 的那条经历（`Life.activity/2`）：一句英文、候选登记的地名、
     候选名，以及种类、对象与结构化结局（完成 / 失败的动作与原因 / 被打断，即下面 `result` 的原样）——后三者给 Life 记账
     （日计划“按活动结果计数”的唯一计数事件，只记完成的）。判据、地名、种类、对象取自选中时冻结的候选，结局取自本模块的历史。
 
   本模块的状态（`new/0`）由 Runtime 持有，是总纲心智快照里“我正在做什么”一栏的 owner：
-  `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, asked: 最近一次问 Jev 的内容 | nil}`，条目按选中次序排列
+  `%{activities: [条目], failure: 最近一次发问失败的原因 | nil, retry: %{failures: 连续失败次数, ticks: 这次的退避} | nil,
+  asked: 最近一次问 Jev 的内容 | nil}`（`failure` 与 `retry` 同由 `failed/3` 写、`chose/3` 清），条目按选中次序排列
   （旧在前），只留最近 5 条（`@recent`）：
   `%{activity:, candidate: 选中的候选, trigger:, confidence:, latency_ms:, recall_ms:, result: nil | :completed | {:failed, 动作名, 原因文字} | {:interrupted, 原因文字}}`
   （`candidate` 批 1 前叫 `topic`、只有说话项才有；observe 的字段名随之变）。
@@ -63,7 +72,8 @@ defmodule NpcServer.Selector do
   日志：每次选择一行 `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`
   （trigger：`start` 首次、`completed` / `failed` 上一项活动的结局、`retry` 上次发问失败后重问、`addressed` 对话回合
   决定停下后由预选应答的那次；`latency_ms` 是 Jev 请求，`recall_ms` 是各路记忆召回并行的墙钟）；失败一行
-  `npc_select_failed cid= reason=`。state 全文不进日志，从 `select.asked` 读。
+  `npc_select_failed cid= reason=`（行格式是长跑判定解析器读的契约，不加字段）。重问要等多久不在这两行里，
+  见 Runtime 的 `npc_select_wait` / `npc_select_wait_over`。state 全文不进日志，从 `select.asked` 读。
 
   对话回合（`turn_question/6`，Runtime 的 moduledoc）走同一条发问路径、同一个 `ask/4`（trigger `addressed`，用量 operation
   `dialogue_turn_selection`），问的内容同样记进 `asked`——停下去说话时 `speak` 写台词用的就是这份含来话的快照。
@@ -73,6 +83,14 @@ defmodule NpcServer.Selector do
 
   # 留多少条最近的活动（给 Jev 的“最近做过的事”与 observe 共用）。
   @recent 5
+
+  # 重问节奏（tick，60 Hz）。来源、适用条件与取舍见召回隔离决策稿 D-3c 的 2026-11-20 进度条目（原创决策）。
+  # 发问失败后的退避：decorrelated jitter `min(cap, U(base, 3 × 上一次))`，首次以 base 为“上一次”，一次成功即复位。
+  # base 10 s 是改前的固定重问间隔（下限不比改前更激进）；cap 120 s 让持续失败时的发问率低于成功节拍。
+  @retry_base 600
+  @retry_cap 7_200
+  # 活动以失败结束后，下一次发问前的最小间隔：20 s（e8b-01 成功活动周期的下四分位约 22 s）。
+  @failed_pause 1_200
 
   # 问法取自离线实验（tools/jev/persona.py 的 INSTRUCTIONS），栏名换成心智快照现有的栏。
   # 不点名反思新栏 `What I have come to think`：S1-X2 / S1-X3 都是在这句问法下测的（内容规范 §10.11），照测过的条件发。
@@ -110,8 +128,8 @@ defmodule NpcServer.Selector do
 
   def entries(_profile), do: []
 
-  @doc "初始状态：没有做过任何活动。"
-  def new, do: %{activities: [], failure: nil, asked: nil}
+  @doc "初始状态：没有做过任何活动，也没有失败过。"
+  def new, do: %{activities: [], failure: nil, retry: nil, asked: nil}
 
   @doc "正在做的活动名；没有（还没选过，或上一项已结束）为 nil。"
   def current(%{activities: activities}) do
@@ -126,7 +144,8 @@ defmodule NpcServer.Selector do
 
   @doc """
   树报告上一项活动怎样结束（`:completed` / `{:failed, 动作名, 原因文字}` / nil），返回 `{本次发问的 trigger, 状态}`。
-  结局只记在还没有结局的那一项上：发问失败后树重问时带的是同一份报告，不重复记账，trigger 为 `retry`；
+  结局只记在还没有结局的那一项上：发问失败后树重问时带的是同一份报告，不重复记账，trigger 为 `retry`
+  （由退避状态 `retry` 推出：`failed/3` 写、`chose/3` 清，与 `pause/2` 读的是同一份）；
   被对话回合打断的活动已由 `interrupted/2` 记了结局，树 halt 后从根重来报的旧结局同样不记。
   """
   def ended(%{activities: activities} = state, ended) do
@@ -138,7 +157,7 @@ defmodule NpcServer.Selector do
          %{state | activities: List.replace_at(activities, -1, %{current | result: ended})}}
 
       _ ->
-        {if(state.failure, do: "retry", else: "start"), state}
+        {if(state.retry, do: "retry", else: "start"), state}
     end
   end
 
@@ -342,12 +361,64 @@ defmodule NpcServer.Selector do
       |> Map.take([:activity, :trigger, :confidence, :latency_ms, :recall_ms, :candidate])
       |> Map.put(:result, nil)
 
-    %{state | activities: Enum.take(state.activities ++ [entry], -@recent), failure: nil}
+    # 一次成功即复位：失败原因与退避一起清掉。
+    %{
+      state
+      | activities: Enum.take(state.activities ++ [entry], -@recent),
+        failure: nil,
+        retry: nil
+    }
   end
 
-  @doc "记下一次发问失败并记一行 `npc_select_failed`；没有正在做的活动，等树重问。"
+  @doc """
+  记下一次发问失败、抽这一次的退避，并记一行 `npc_select_failed cid= reason=`（行格式是对外契约，长跑判定的解析器按它读，
+  不加字段；退避的数值记在 Runtime 留着重问时的 `npc_select_wait` 行）；没有正在做的活动，等树重问（重问在 `pause/2`
+  给出的 tick 数之后才真正发出）。
+
+  `retry` 是 `%{failures: 连续失败次数, ticks: 这次抽到的退避}`：decorrelated jitter，
+  `ticks = min(cap, U(base, 3 × 上一次的 ticks))`，第一次失败以 base 为“上一次”（整数 tick 上的均匀分布，取 `:rand`，
+  即调用进程的随机状态；不可重放，事后从 `npc_select_wait` 行的 `pause_ticks` 读回）。连续失败的计数与退避只在这里算，
+  `chose/3` 复位；它只在 Runtime 进程的内存里，不持久化，Body / Runtime 重启后从“没有失败过”开始。
+  """
   def failed(state, reason, cid) do
+    previous = state.retry || %{failures: 0, ticks: @retry_base}
+    # U(base, 3 × 上一次)：整数闭区间上的均匀抽样，再截到 cap。
+    ticks = min(@retry_cap, @retry_base - 1 + :rand.uniform(3 * previous.ticks - @retry_base + 1))
+    retry = %{failures: previous.failures + 1, ticks: ticks}
+
     Logger.warning("npc_select_failed cid=#{cid} reason=#{inspect(reason)}")
-    %{state | failure: reason}
+
+    %{state | failure: reason, retry: retry}
   end
+
+  @doc """
+  这次发问前要等多少 tick（60 Hz）：`trigger` 是 `ended/2` 给出的那一个。Runtime 收到 `choose_activity` 即起发问 worker，
+  worker 先用 `Life.activity/2` 保存刚结束那项活动的经历（保存失败立即以 rejected 结束，不等放行），再等放行；Runtime 从
+  收到命令的那一 tick 起算，到期（或活动失败的间隔里被直呼，`ask_when_addressed?/1`）才放行发问（`NpcServer.Runtime` 的
+  moduledoc）。这是重问节奏的唯一判定处，树不另等。
+
+  | trigger | 等多久 |
+  |---|---|
+  | `start` / `completed` | 0：成功路径照原节拍，不受影响 |
+  | `failed`（上一项活动以失败结束） | 1200（20 s）：活动立即失败时不立刻重问，免得在同一个失败上热循环 |
+  | `retry`（上一次发问失败） | `failed/3` 抽到的退避；`retry` 为 nil 时没有这个 trigger（`ended/2` 由它推出），给了就是调用方的错，不匹配、不当成 0 |
+
+  对话回合决定停下后的预选应答不经过这里（Runtime 直接应答，不发问）。留着的发问期间被直呼，提不提前由
+  `ask_when_addressed?/1` 定。任何非 0 的间隔都不小于 600 tick（失败退避的 base）。
+  """
+  def pause(_state, "failed"), do: @failed_pause
+  def pause(%{retry: %{ticks: ticks}}, "retry"), do: ticks
+  def pause(_state, trigger) when trigger in ["start", "completed"], do: 0
+
+  @doc """
+  留着的发问期间被玩家直呼时，是否立即发问（`trigger` 是留着的那次的）：
+
+  - `failed`（活动以失败结束后的最小间隔）→ 是。这个间隔只防同一个失败上的热循环（负载保护），被直呼是外部事件，
+    来话已在心智里，立即问一次不构成热循环；回合不会起（此刻没有正在做的活动），这次发问就是对来话的响应。
+  - `retry`（发问失败的退避）→ 否。退避期间心智多半仍读不到（过载或 Hindsight 不可用），提前发问只会加压；
+    直呼的响应因此最长约 120 s（cap）。
+  - 其余 trigger 间隔为 0，不会留着。
+  """
+  def ask_when_addressed?("failed"), do: true
+  def ask_when_addressed?(_trigger), do: false
 end

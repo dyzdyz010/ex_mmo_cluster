@@ -22,7 +22,8 @@
   各域只提供条目：`Actions`（移动、工具、建造、液体、背包，施法 `spells/1`；经 Abilities 构造的 move_to 都用 `tolerance/0` 的容差，
   Patrol / Builder 仍各写 0.5，改为引用它是设计稿 §12 的独立清理；附件 kind / axis 名字表 `attachment_names/1`）、
   `Perception`（look / survey / inspect / query_balances / read_catalog，另有范围校验、World 只读入口与模型投影；prefab 目录行只在
-  `prefab_row/3` 计算；步行判据 `walk_kind/1` 与列扫描 `floors/2` 也只在这里，Body 的寻路网格、survey、travel、expand 共用）、`Attention`（观察方向与敌／友目标组，Body 用的动词表由条目派生）、`Memory`（记忆）、
+  `prefab_row/3` 计算；步行判据 `walk_kind/1` 与列扫描 `floors/2` 也只在这里，Body 的寻路网格、survey、travel、expand 共用）、
+  `Route`（只读路线查询 find_route：只走 / 允许敲 / 允许敲和放三类各最省的一条，写成依次调用的原子与代价，见下文“走不通时”）、`Attention`（观察方向与敌／友目标组，Body 用的动词表由条目派生）、`Memory`（记忆）、
   `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）、`Genesis`（创世，只在 `profile.genesis` 为真时）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是全部出站 HTTP 的唯一出口（模型与 Hindsight，交互 / 后台两条 Finch 车道），
   也是模型 key（`Secret`，`Registry` 读环境时包成闭包）唯一的取出处。
@@ -55,8 +56,10 @@
   `Brain.Tree` 是最小行为树后端（纯函数，叶子 `act` 经 `Abilities.command/4` 构造命令，与 LLM 共用同一份能力定义）；
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
-  内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位与 expand 走向地块都用它。目标也可以是一个角色（`entity_id` +
+  内置 `build`（放已发布定义，`Skills.Build`：先原样 `prefab_place`，权威回 `out_of_reach` 时按 `World.prefab_cells/4` 的足迹（与放置同一几何的定义格，不含附件格；只有附件的定义直接以
+  `out_of_reach` 结束）求
+  `Blueprint.stands/2` 站位，由近到远经 `Travel.walk/2` 走过去再放；已在射程内不走路，站位都走不到以 `unreachable` 结束）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`dig_cell`（从此刻站的位置挖掉一格天然宏格，是 `Gather.mine/3` 的技能壳，`Skills.DigCell`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米，每段先 survey 段终点列、取离脚下最近的可站层，再带 `y` 一个 Body move_to，`Skills.Travel`；Settler 回工地站位、expand 走向地块与 build 够不着时走向足迹站位都用它。目标也可以是一个角色（`entity_id` +
   `entity_epoch`）：每段开头 `get_target_status` 重读他的位置，水平 2.0 米内算到，否则朝他这一侧 1.5 米的落脚点走一段；段数预算 =
   起步时段数 + 2，用完 `target_moved`，他离开观察 `stale_target`）、`expand`（在作者划定的区域里找地块、地表略有起伏先平整、缺料自己采、放下已发布定义，
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
@@ -175,6 +178,33 @@ flowchart LR
   地面层（该格能踩、其上身高格数都能穿过、都在扫描范围内），地表 `y` = 最高的一层，带这一格的材质与 `placed_by`，`refined` = 这一列
   有细化格；给 LLM 的投影是按行的高度图（`[y, material]` 或 null）加放置者 / 细化格两张稀疏表。look / survey 的内容随大脑最近
   8 条 Outcome 一起保留和淘汰，不另按查询类型提前清空；各条仍是带版本与范围的历史观察，不合成为当前原子快照。
+- **走不通时（U-31，决策稿 `docs/10-active/cross-cutting/2026-11-24-npc-route-and-teleport-decision.md`）**：三件产品能力，
+  判断用不用、用哪条交给大脑（三循环框架里是 Jev 与表思考），代码不替它选。
+
+  ```mermaid
+  flowchart LR
+    Q["find_route（只读，Route）"] -->|"routes[].calls"| C["move_to / dig_cell / place 逐步照做"]
+    C --> A["权威：Body / World"]
+    T["teleport_to_spawn（Body）"] -->|"先停稳，再交给"| P["Player.teleport_to_spawn/4<br/>读条 10 s · 冷却 1 游戏小时"]
+    P -->|"relocate：死亡复活的同一落点"| A
+  ```
+
+  - `find_route{x0, z0, x1, z1, tool_id}`（`:sense` 组，要工具带；区域同 survey 的护栏，超出回 `region_too_large` / `too_far`，
+    不访问 World）：一次 `World.material_snapshot/3` 取规划盒（起点列与区域外接盒外扩 `Body.path_margin/0`，竖直脚上下同样多，再加一圈判液体），
+    `World.protected_cells/3` 取保护区，按 `SceneServer.Movement.Path.find_with_edits/7` 求三类路线。代价按时间：走一步 `1 / speed` 秒，
+    敲一格 ⌈满血 / 每击伤害⌉ × 工具间隔（与 World 同一 `Damage.amount/3`），放一格一个工具间隔（材料另计）；保护区、伤害为 0、
+    别人放的、挨液体的格不敲。规划盒有界，搜索穷尽，`no_path` 是确定的“没有”。同一步要敲的几格按离站位眼睛由近到远发出
+    （`Route.dig_order/3`：`dig_cell` 从眼睛瞄格心，上台阶时先敲下格）。回答形状与已知限制见 `Route` moduledoc。
+    秒数与击数是估计（字段名 `estimated_*`），只作候选间比较与大脑的参考，不作能不能做的条件、不作执行时限（三循环稿 U-32）。
+    一行日志 `npc_find_route cid= start= region= routes= omitted= undiggable= goals= elapsed_ms=`。
+  - `dig_cell{x, y, z, tool_id}`（技能，要在 `profile.skills` 里配 `dig_cell`）：不移动，挖不成以 `blocked` / `foreign` 或权威原因结束。
+  - `teleport_to_spawn`（`:move` 组）：Body 先按 `stop` 停稳（顶替在途移动），再交给 Player 读条；Player 在瞬移生效那个 tick 回执，
+    Body 等 OwnerAck 到达 apply_tick（位置缓存已是落点）才报完成。冷却拒绝 `teleport_cooldown` 的 data 带游戏钟时刻 `ready_at`
+    与 `wait_game_minutes`。**已知限制**：冷却只在 Player 里，NPC 会话重建（重新 claim）后清零。日志 `npc_teleport_requested`，
+    Player 侧事件见 `scene_server/movement/README.md`。
+  - 统一形态（Offers）三者都 withheld（还没有生成器）；`:move` / `:sense` 组的 LLM 后端 profile 会看到 teleport_to_spawn 与 find_route。
+  - 验证：`apps/npc_server` 下 `mix test --no-start test/npc_server/npc_route_test.exs`（代价手算表；真实 World 上三类路线、照做走出去、
+    保护区 / 敲不动 / 别人放的计数、dig_cell 入账与保护区拒绝；Body 传送先停后读条、完成时已在落点、冷却时刻）。
 - **感知距离护栏**：`move_to` 的水平目标与给出的 `y`（相对脚所在格）都不超过 `Perception.reach()`，否则 `too_far`、
   不访问 World；`design_house` 的锚点宏格各轴离自身超过它时技能以 `too_far` 结束，不读 site、不发模型请求。
   两段 LLM 工具描述（`move_to`、`design_house`）都写了这条上限，数字由 `Perception.reach()` 插值。
@@ -407,7 +437,7 @@ brain: {NpcServer.Brain.Tree, %{
 所以每工地每轮最多两次尝试，每次最多 gather 一次、build 重试一次。
 每个放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`（材料单取不到时没有 context）；一轮巡完等 `revisit_ticks`。
 主循环零 LLM，进度不存档，以权威为准：Body 重启后从头巡，已建的工地表现为 occupied → 自家锚点 → 跳过。
-作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
+作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内（不在时 `build` 会自己再走到足迹站位；之后若缺料，`gather` 从足迹站位出发，那里不在“站位两两不超过 reach”的保证内，可能 `too_far`）；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
 采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
 探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
 
@@ -651,8 +681,27 @@ flowchart LR
   “我的建筑”现查 World 时路由或查询失败——不写“在”或“不在”；World 调用退出时发问 worker 随之退出，记 `select_worker_failed`）
   记为 `{:mind_unavailable, 细节}`，**不发 Jev 请求**，不把读不到的记忆当成“没有记忆”；新 NPC 的空 bank 召回为空是正常结果。
   HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
-  记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
-  新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）每 10 秒失败一次，属于这一条。
+  记 `npc_select_failed cid= reason=`（行格式是长跑判定解析器读的契约，不加字段），这一轮不执行任何活动，退避到期后照常再问；不换别的选择器、不取缺省活动。
+  新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）反复失败，属于这一条（间隔按下面的退避拉长）。
+- **重问节奏**（唯一 owner `Selector.pause/2`；召回隔离决策稿 D-3c 2026-11-20，原创决策）：树发问失败后下一个事件就重发
+  `choose_activity`。Runtime 收到它就起发问 worker，worker 先把刚结束那项活动的经历交给 Life（留着期间靠近的人不算进那项活动），
+  再等放行；Runtime 把放行留到间隔到期（到期前不读心智、不问 Jev），观察的 tick 比上一次看到的还小（钟回退）时按剩余等待重算
+  （新到期 = 当前 tick + max(原到期 − 回退前最后看到的 tick, 0)）。经历保存失败时立即以 rejected 结束，不等放行。
+
+  | 上一次 | 下一次发问前等多久（tick，60 Hz） |
+  |---|---|
+  | 活动成功结束 / 首次 | 0（成功节拍不变） |
+  | 活动以失败结束 | 1200（20 秒） |
+  | 发问失败（连续第 n 次） | decorrelated jitter：`min(7200, U(600, 3 × 上一次))`，首次以 600 为“上一次”，即 10–30 秒起、上限 120 秒；一次成功即复位 |
+
+  `Body.observe(pid).select.retry` 是退避状态：从一次发问失败起到下一次发问成功为止都是 `%{failures: 连续失败次数, ticks: 最近一次抽到的退避}`
+  （退避到期、重问在途时也还在），其余时候为 nil；此刻是否正留着一次发问看 `select_wait`（`nil` 或 `%{trigger:, pause_ticks:, due_tick:}`）。
+  退避状态不持久化，重启复位；抽到的随机值不可重放，从日志读回：留着时记 `npc_select_wait cid= trigger= failures= pause_ticks= due_tick=`，
+  钟回退重算时再记一行同格式、末尾加 ` rebased=true`；放行时记 `npc_select_wait_over cid= trigger= tick= cause=<due|addressed>`。
+  回合在途时再来的直呼只记 `dropped`、不放行；那个回合决定停下而活动已自己失败结束时，按同一条规则判是否放行。
+  交互：对话回合停下后的预选应答不经过这里，回合 halt 的响应不变。留着期间没有正在做的活动，来话不起回合；是否提前发问由
+  `Selector.ask_when_addressed?/1` 定——活动失败后的间隔里被直呼立即发问（这次发问就是响应），发问失败的退避期间不提前（防过载），
+  被直呼最长约 120 秒（cap）才有响应。
 - **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_queries`（各路召回的描述，按优先级）、`recall_ms`（并行墙钟）、
   `candidates`（本轮候选）；
   在 Jev 请求发出前记下，Jev 随后失败或 worker 崩溃也留着；心智读不到的那次没有发问，仍是上一次的。

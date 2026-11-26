@@ -3,7 +3,7 @@ Code.require_file("../../../voxel_region/test/support/world_fixtures.exs", __DIR
 
 defmodule NpcServer.NpcWorld do
   @moduledoc """
-  只测试：gather 与 Settler 的集成 / 浸泡用例共用的真实世界夹具（npc_gather_test、npc_settler_test、
+  只测试：build、gather 与 Settler 的集成 / 浸泡用例共用的真实世界夹具（npc_build_test、npc_gather_test、npc_settler_test、
   npc_settler_soak_test）。真实 `VoxelRegion.World`（文件世界 + 属性目录 + prefab 结构 LOD）、真实 Scene / Player /
   P1 NIF、真实 `Session.Claims`；NPC 的 Body 起在测试自己的 DynamicSupervisor 下（崩溃即按 transient 重启）。
 

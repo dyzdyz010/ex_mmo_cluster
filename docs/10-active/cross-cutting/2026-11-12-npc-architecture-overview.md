@@ -6,6 +6,8 @@
 [`2026-11-10-npc-utility-selector.md`](2026-11-10-npc-utility-selector.md)（选择器接缝、日计划）、
 `apps/npc_server/lib/npc_server/README.md`（Body / Runtime / Tree / Life / Hindsight 现状）。进度与交接见 [`2026-11-11-npc-coordination.md`](2026-11-11-npc-coordination.md)。
 
+（2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-1、F-4、F-5 改写：总框架见该稿；本页的规划 / 选择 / 执行 = 该稿的 L3 / L2 / L1，权威 = L0（其 §3.9）；“位置 × 判断者”表由其 F-5 判断点表取代；“慢层从不阻塞快层”自三循环稿 U-27 (1) 起已不成立，等待范围按其 F-4；本页按三循环稿 U-22 归档时一并处理。）
+
 ## 一句话
 
 一个 NPC 只有一种形态。**慢的层给快的层提供上下文，快的层把经历和例外交给慢的层**；任何一层在等更慢的层时都有“继续现在这样”可做，慢层从不阻塞快层。

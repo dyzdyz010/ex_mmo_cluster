@@ -29,5 +29,24 @@
     {"name": "a trusted start on top of a blocked cell starts there and drops", "rows": ["111"], "blocked": [[0, 1, 0]], "trusted_start": true, "start": [0, 2, 0], "goal": [2, 0],
      "path": [[1, 1, 0], [2, 1, 0]]},
     {"name": "a trusted start in mid-air still lands first", "rows": ["11"], "trusted_start": true, "start": [0, 5, 0], "goal": [1, 0], "path": [[1, 1, 0]]}
+  ],
+  "about_edit_cases": "Path.find_with_edits/7 的冻结样例（只给服务端的路线规划用）。网格写法同上；goals = 目标站立格；dig / place = 敲一格 / 放一格的代价（走一步 = 1），null = 不许；forbidden = 调用方不许改的格。期望 steps 是手算的唯一最省路线（不含起点），每步 to = 到达的站立格，dig 先列起步列头顶（自下而上）再列目标列身体格（自上而下），place 是放的格；cost = 总代价；steps 为 null = 无路。",
+  "edit_cases": [
+    {"name": "a two-cell rise: dig one cell to make a step", "rows": ["1133"], "start": [0, 1, 0], "goals": [[3, 3, 0]], "dig": 1, "place": null,
+     "steps": [{"to": [1, 1, 0], "dig": [], "place": []}, {"to": [2, 2, 0], "dig": [[2, 2, 0]], "place": []}, {"to": [3, 3, 0], "dig": [], "place": []}], "cost": 4},
+    {"name": "a pit two deep: place one step to climb out", "rows": ["3113"], "start": [1, 1, 0], "goals": [[3, 3, 0]], "dig": null, "place": 1,
+     "steps": [{"to": [2, 2, 0], "dig": [], "place": [[2, 1, 0]]}, {"to": [3, 3, 0], "dig": [], "place": []}], "cost": 3},
+    {"name": "the same pit with digging only has no way out along one row", "rows": ["3113"], "start": [1, 1, 0], "goals": [[3, 3, 0]], "dig": 1, "place": null,
+     "steps": null},
+    {"name": "a quick dig through the wall beats the walk round", "rows": ["141", "111"], "extra_solid": [[0, 3, 0]], "start": [0, 1, 0], "goals": [[2, 1, 0]], "dig": 0.5, "place": null,
+     "steps": [{"to": [1, 1, 0], "dig": [[1, 2, 0], [1, 1, 0]], "place": []}, {"to": [2, 1, 0], "dig": [], "place": []}], "cost": 3.0},
+    {"name": "a slow dig loses to the walk round", "rows": ["141", "111"], "extra_solid": [[0, 3, 0]], "start": [0, 1, 0], "goals": [[2, 1, 0]], "dig": 2, "place": null,
+     "steps": [{"to": [0, 1, 1], "dig": [], "place": []}, {"to": [1, 1, 1], "dig": [], "place": []}, {"to": [2, 1, 1], "dig": [], "place": []}, {"to": [2, 1, 0], "dig": [], "place": []}], "cost": 4},
+    {"name": "a cell the caller forbids is not dug: one level higher instead, with the headroom dug first", "rows": ["141", "111"], "extra_solid": [[0, 3, 0]], "start": [0, 1, 0], "goals": [[2, 1, 0]], "dig": 0.5, "place": null, "forbidden": [[1, 1, 0]],
+     "steps": [{"to": [1, 2, 0], "dig": [[0, 3, 0], [1, 3, 0], [1, 2, 0]], "place": []}, {"to": [2, 1, 0], "dig": [], "place": []}], "cost": 3.5},
+    {"name": "liquid can be neither dug out nor built on", "rows": ["1~1"], "start": [0, 1, 0], "goals": [[2, 1, 0]], "dig": 1, "place": 1,
+     "steps": null},
+    {"name": "a one-cell gap over the unknown is bridged with a placed floor", "rows": ["1_1"], "extra_solid": [[0, 3, 0]], "start": [0, 1, 0], "goals": [[2, 1, 0]], "dig": null, "place": 1,
+     "steps": [{"to": [1, 1, 0], "dig": [], "place": [[1, 0, 0]]}, {"to": [2, 1, 0], "dig": [], "place": []}], "cost": 3}
   ]
 }

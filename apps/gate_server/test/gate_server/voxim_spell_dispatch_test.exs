@@ -7,8 +7,11 @@ defmodule GateServer.VoximSpellDispatchTest do
   World 用 Test-only 魔法目录 19c513f9…（版本 4）与材料目录 b1aca503…；施法者能量 0（新角色），走火扣 0。
   夹具更新（能力库 I4）：原目录 ff15757b… 是版本 2，现行 `VoxelRegion.Magic.Catalog` 只收版本 4，World 启动即失败；
   换成同一组常数的 v4 目录 19c513f9…（release_lead_s 0、rest_pose 全 0），断言语义与期望数值不变，数值按新夹具重算见下。
-  施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才到（真实定时器，点火前摇 0.892 s），
+  施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才到（真实定时器，点火前摇约 0.89 s），
   Dispatch 立即返回；前摇中再施放立即回 0x68 rejected cast_too_soon。
+
+  报价与前摇的期望值取自权威 `VoxelRegion.Magic.Cost.quote/2`（同一目录、同一程序）：公式由 voxel_region
+  `magic_test` 按契约手算表证明；本文件只证明 Gate 把 World 的报价原样编进 0x83，不在胶合层重算物理。
   """
   use ExUnit.Case, async: false
   alias GateServer.Session.{Dispatch, Sink}
@@ -195,9 +198,10 @@ defmodule GateServer.VoximSpellDispatchTest do
 
   # 0x82：rid 7、seq 8、scene 1、目标 = 叶宏格 (0,2,3) 的角微格 {0,16,24}、incarnation 1（作者编辑后的纪元）、
   # 方向 (0,0,1)、目标拟态 id {0, 0}（Hello 25；加热不用）、程序 = 契约预设 ignite_near。
+  @program ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":50000}}]})
+
   defp spell(action, digest) do
-    program =
-      ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":50000}}]})
+    program = @program
 
     <<0x82, 7::64, 8::32, 1::64, action, digest::binary-size(32), 0.0::float-64, 0.0::float-64,
       1.0::float-64, 0::signed-64, 16::signed-64, 24::signed-64, 1::64, 0::64, 0::32, 28::16, 0,
@@ -209,23 +213,19 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert {:ok, ^state} = Dispatch.handle(message, state)
   end
 
-  test "报价回 0x83（报价 402 292.5446 J、S 1）；施放立即返回，前摇中再施放 cast_too_soon，走完前摇后先 0x83 再 0x68 accepted misfire_energy；目录过期 0x68 rejected",
+  test "报价回 0x83（World 报价原样、S 1）；施放立即返回，前摇中再施放 cast_too_soon，走完前摇后先 0x83 再 0x68 accepted misfire_energy；目录过期 0x68 rejected",
        c do
     digest = Base.decode16!(@magic, case: :lower)
+    expected = authority_quote()
     dispatch(c.state, spell(0, digest))
 
-    # 报价：0.4 MJ + E_loss 2292.5445548 J（前摇契约 §2 手算表“远程点火”）= 402 292.5445548 J；能量 0、容量 5 MJ、相干度 4、支出 0；
-    # Hello 28 末尾前摇 = 构型调整 0.49198349452 s + 注能 0.4 s = 0.89198349452 s。
-    # 按 v4 夹具 19c513f9… 重算（Voxim Docs/Magic.md §13.6 公式，不调 Magic.Cost）：rest_pose 全 0 → act.heat 姿态
-    # [45, −90, 90, −90, 0, 0]°，d = √26 325° = 2.8317933498 rad；b = b0·(S + H/E_ref)^α = 1000·(1 + 0.4)^1.5 = 1656.5023393 W；
-    # 调整 d·√(η/b) = 0.4919834945 s，注能 E/P_max = 400 000/10⁶ = 0.4 s（与程序的 power_w 无关），release_lead_s 0；
-    # E_loss = 2·d·√(η·b) + b·0.4 = 1629.9436191 + 662.6009357 = 2292.5445548 J。容量 5e6、相干度 4.0 取自同一 JSON 的 caster 段。
+    # 报价：能量 0、容量 5 MJ、相干度 4（同一目录 JSON 的 caster 段）、结构 1、支出 0；总支出与 Hello 28 末尾前摇取自权威 Cost。
     assert_receive {:mmo_voxel_bytes, :session,
                     <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
                       quote::float-64, 1.0::float-64, +0.0::float-64, windup::float-64>>}
 
-    assert_in_delta quote, 402_292.5445548, 1.0e-4
-    assert_in_delta windup, 0.89198349452, 1.0e-9
+    assert quote == expected.total_j
+    assert windup == expected.windup_s
     refute_receive {:mmo_voxel_bytes, :session, _}, 50
     assert World.seq(c.world) == 1
 
@@ -241,7 +241,7 @@ defmodule GateServer.VoximSpellDispatchTest do
                     <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 14::16, ":cast_too_soon">>},
                    500
 
-    # 余额 0 < 402 292.5 J：前摇 0.892 s 后结算走火，扣 min(总支出, 0) = 0；结算事务在开始事务之后
+    # 余额 0 < 报价：前摇走完后结算走火，扣 min(总支出, 0) = 0；结算事务在开始事务之后
     # （真实前摇期间 World 自身的 500 ms 热提交也可能占用 seq，故不断言具体值），0x83 与 0x68 引用同一 seq。
     # 结算后的状态不是报价：前摇字段为 0。
     assert_receive {:mmo_voxel_bytes, :session,
@@ -249,27 +249,39 @@ defmodule GateServer.VoximSpellDispatchTest do
                    5_000
 
     assert settled > 2
-    assert System.monotonic_time(:millisecond) - started >= 892
+    assert System.monotonic_time(:millisecond) - started >= trunc(expected.windup_s * 1000)
 
     assert_receive {:mmo_voxel_bytes, :session,
                     <<0x68, 7::64, 8::32, 1::64, 0, ^settled::64, 0::16, 14::16,
                       "misfire_energy">>}
 
-    seq = World.seq(c.world)
+    # 结算后该施法者没有待施放记录（live 0 的结算记录不留在快照里）。
+    assert casts(c.world) == %{}
 
     dispatch(c.state, spell(1, <<0::256>>))
 
     assert_receive {:mmo_voxel_bytes, :session,
                     <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 20::16, ":stale_magic_catalog">>}
 
-    assert World.seq(c.world) == seq
+    # 目录过期的拒绝不进入前摇：World 串行处理，拒绝回执之后读到的快照仍没有该施法者的待施放记录。
+    # 不比较全局 seq：走火把构型损耗作为脚下热源送进世界，此后 World 每 500 ms 的热提交也推进 seq
+    # （原断言 World.seq 不变因此在 CI 上偶发红：5 ≠ 4）。
+    assert casts(c.world) == %{}
+    refute_receive {:mmo_voxel_bytes, :session, _}, 50
   end
 
-  defp pending(world),
-    do:
-      Enum.find_value(1..2_000, fn _ ->
-        VoxelRegion.TestSupport.observe(world, [1001], {{-2, -2, -2}, {2, 2, 2}}).casts[1001]
-      end)
+  # 权威报价：与 World 同一魔法目录文件、同一程序字节，调用唯一实现 `Cost.quote/2`。
+  defp authority_quote do
+    alias VoxelRegion.Magic.{Catalog, Cost, Program}
+    catalog = Catalog.load(Path.join([@fixtures, "magic", @magic <> ".json"]))
+    {:ok, program} = Program.parse(@program, catalog)
+    Cost.quote(program, catalog)
+  end
+
+  defp casts(world),
+    do: VoxelRegion.TestSupport.observe(world, [1001], {{-2, -2, -2}, {2, 2, 2}}).casts
+
+  defp pending(world), do: Enum.find_value(1..2_000, fn _ -> casts(world)[1001] end)
 
   # 接纳即开户：该角色尚无施法者账，World 先提交一次性充能事务（seq 1 → 2），余额 497 084 850 mJ = 497 084.85 J
   # （50 发法杖光弹的整数扣款 9 941 697 mJ，推导见 World.Casting）；同一请求再发一次（重连）不再充。

@@ -14,10 +14,11 @@ import time
 from email.message import EmailMessage
 
 # 阈值按原始 memory.current 判断，不扣文件缓存；参考工作集另记。
-# 青岚专用主机（腾讯云 2 核 8G，2026-11-19 起）容器上限 5500m；沿用原 4600m 时的余量：
-# 告警 = 上限 - 1200 MiB，重启 = 上限 - 700 MiB。改容器上限时同步改这两个值。
-WARN_MIB = 4300
-RESTART_MIB = 4800
+# 青岚专用主机（腾讯云 2 核 8G，2026-11-19 起）的同机目标形态（用户 2026-11-20 定，E9 落地）：app 容器上限 4600m，
+# Hindsight 2048m 靠自身硬限额、不在本守护范围内。余量规则：告警 = 上限 - 1200 MiB，重启 = 上限 - 700 MiB。
+# 改 app 容器上限时同步改这两个值。
+WARN_MIB = 3400
+RESTART_MIB = 3900
 HIGH_SECONDS = 180
 MAX_SAMPLE_GAP = 90
 COOLDOWN_SECONDS = 3600

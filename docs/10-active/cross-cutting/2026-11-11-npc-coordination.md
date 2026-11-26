@@ -32,6 +32,79 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（指纹 `02bcc8f0`，含偏移）；烘焙缓存 `/home/dyz/npc-baked-cache/4ecf1f7864707144`。
 已按用户要求删除：旧 release `~/npc-t1live-20261119`、`~/npc-scale-20261118`、`~/npc-current-20261118`、`~/npc-final-20261118` 与全部 `~/npc-build-*` 构建目录；`~/npc-build`（OTP 工具链源码）未删。
 
+### 交接（2026-11-20，第二十四个统筹会话 → 第二十五个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-25-brief.md`
+
+**一句话**：E6 完成（PR #11 快进合入 master `1069899a`，master CI 重跑后全绿）；E7 仓内完成（`76c286db`）；E8 生产真实世界离线选点完成、建造定义与石料来源由统筹裁定（`0c1f45a9`）；新增 E8b 本机长跑。明细见扩人数稿 §7 2026-11-20 各条与下面“第二十四个统筹会话的进展”。
+
+**用户授权（2026-11-20，原话：“同意，之后都同意，不要问我了”）**：E8 起的后续步骤统筹自行推进、不逐步询问，每步先在对话里说明再做；写生产 / 部署 / 合 master 前仍先报用户。
+
+**下一步（按此顺序）**
+1. **E8 收尾 · 登记包 + 本机短排练**：
+   - 产品侧登记包（进仓，非 `.demo`）：3 张人格卡（能力相同、倾向不同——用户原话：“一个npc是具备上述两种人所有的能力的……只是活动倾向不同”）+ 同一份活动表（取自 `.demo/observe/npc-e8-20261120/site/site-alt-steps.json`：5 个去处、采集盒、石阶 `324e53ee` 建造），以 `Registry.put` 经 rpc 登记的脚本与 README 一节（建议 `deploy/` 下，写清生产登记前对新导出重跑 `e8_site.exs calc` 与发布一次所选定义）。
+   - Test-only 短排练（≤ 20 min、3 人、真实 DeepSeek、花费停止线设低）：在还原的生产页表世界上（复用 `site/deploy.sh`），Hindsight 用 E7 新镜像 `voxim-hindsight:e7-0.10.3-20261120`（顺带端到端验 E7 镜像），判：3 人登记成功、各自走到去处、至少一次采集 / 建造步骤有结构化结局、召回失败 0、release 与 Hindsight 内存峰值低于 4600m / 2048m。先离线干跑再实跑；UDP / 4266 守护照旧。
+   - 客户端对话 UI 在 `L_Qinglan` 上与真实 NPC 对话：E8 定义要求，尚无证据；可与 E9 打包客户端冒烟合并，或排练后单独一轮（先定）。
+2. **E8b 本机长跑**（生产限额 app 4600m + Hindsight 2048m、3 人、6–12 h、跨一次每日重启）：起跑前在对话里报时长、花费上限、资源预算。
+3. **E9 分发**：含 E7 的青岚落地待办（扩人数稿 §7 “E9 落地待办”）、RUNBOOK 属性目录身份更正为 `e6db8dee…`、生产核对 `VOXIM_PRODUCTION_MATERIALS` 含 11 / prefab 目录含 `324e53ee` / 所选定义发布一次 / 编辑盒。动生产前先报用户。
+
+**环境（交接时）**：没有在跑的 release、beam、私有库、私有 Hindsight（本线）；UDP 约 88–90，Tcpip 4266 记录号 128241 未变；常驻容器 `npc-s1g-hindsight-20261118`、`npc-dev-pg-20261117` 不动。
+现行 release `/home/dyz/npc-t1live-20261120/voxim_server`（`02bcc8f0`）；E7 镜像 `voxim-hindsight:e7-0.10.3-20261120`（Windows Docker，id `1b1ffd98…`）。生产导出（只读、不入库）`.demo/observe/npc-e8-20261120/`。
+生产主机：腾讯云 `dyz@192.144.200.208`，密钥 `C:/Users/DYZ/.ssh/voxim_qinglan_tencent_ed25519`（`../Voxim/Launcher/README.md:172`），compose `/data/voxim_qinglan/`，容器 `voxim_qinglan-app-1`（`voxim-server:20261112-qinglan`）/ `voxim_qinglan-db-1`。生产上不要用整世界盒调 `simulation_snapshot`（会阻塞 World 数分钟）。
+魔法侧未提交改动（`ci.yml`、两个 `*_test.exs`）仍在工作区，不碰。本分支在 master 之后多了 E7 / 文档提交，PR #11 已合，再合 master 时先报用户。
+
+### 第二十五个统筹会话的进展（2026-11-20 起）——上面第二十四 → 第二十五交接里“下一步”各项的状态以这里为准
+
+- 开工基线：Windows UDP 87，Tcpip 4266 记录号 128241 未变，本线无 beam；`02bcc8f0..HEAD` 无 `apps/` 改动，现行 release 可复用。
+- E8 收尾切三件（子会话）：A 登记包（进仓 `deploy/npc/qinglan/`：`residents.json` 三卡共用一份活动表 + `register.exs` 经 rpc 登记 + 发布一次建筑名 + `deploy/README.md` 一节；
+  只做产品 `Registry.brain/2` 离线校验，评审后提交）；B 本机短排练（Test-only，`.demo/observe/npc-e8-20261120/rehearsal/`，走登记包、E7 镜像、生产限额形态、15 min 窗口、总花费约 $3 以内；
+  判定 R1–R5 已在任务书写定：登记与发布成功 / 每人到过去处 / 采集或建造有结构化结局 / 召回失败 0 / 内存 < 4600 / 2048 MiB 且 oom 0，外加资源回收；先干跑、停下待统筹放行）；
+  C 只读核查 `L_Qinglan` 的正式组合根是否装配对话 UI。**客户端对话在 L_Qinglan 的验证定为并进 E9 打包客户端冒烟**（E9 本就要求含 NPC 说话主链路；Editor 通过不能替代打包运行），C 的静态核查用于提前发现装配缺口。
+- C 结果（只读，二进制资产按字符串检索，属强推断）：`L_Qinglan` → `BP_QinglanGameMode` → `BP_QinglanController`（父类 `AVoximPlayerController`），`DialogueClass` = `WBP_Dialogue_C`，与测试图 `L_GameplayDemo` 的 `BP_GameplayController` 同一资产、C++ 全共用、无地图开关
+  （`../Voxim/Source/Voxim/VoximPlayerController.cpp:114-122`；作者脚本 `../Voxim/Docs/NPC/author_dialogue.py:106`）。**E9 冒烟要补**：对话阅读区与 `WBP_QinglanHUD` 是否遮挡（截图看）、打包版输入链（`ReplayInputs` 只在 Editor 编译，打包客户端用真实键鼠或 `-ExecCmds` 调 `Voxim.Dialogue.Say` / `Status`）。
+  另：`../Voxim/Docs/NPC/targeting-integration.md:51`“Qinglan 分发控制器尚未组合”已过时（客户端仓，E9 时顺带更正）。
+- A 登记包：`9318cb16`（独立评审无阻塞、6 条应修已改）；短排练查出出生点 y 缺陷后 `2439fb12` 改为 518。
+- B 短排练（证据 `.demo/observe/npc-e8-20261120/rehearsal/`，plan.md 附录 B–D）：
+  - `e8r-01`（release `9318cb16`）：**R1 不通过，原判保留**——登记包出生点 y = 516 = 地面块 515 顶面，`find_spawn` 的探针是胶囊中心，胶囊底陷地，`:not_found`，会话以原因 10 反复结束，石砚 30 s 拿不到会话、未发布。窗口未开、花费 $0。选点判据 `e8_site.exs` 与驱动 P2 都按“地表 + 1”推算没查出来，已改为调产品入场路径读回落点（新增 `site/spawn_landing.exs`），反例 y = 516 必被拒。
+  - `e8r-02`（release `2439fb12`，`/home/dyz/npc-e8-20261120b/voxim_server`，14:05–14:26 UTC，窗口 900 s 未截断）：**R1–R4 过、R5 不过（原判保留）**。R1 发布 `stone steps` 由石砚会话完成、三人登记 3.0 s；R2 三人都到过去处；R3 采集完成 2 / `exhausted` 4、石阶建成 1 次、之后 `occupied` 6；R4 召回失败 0（召回 p90 5.6 s、最长 12.1 s）。
+    **R5**：Hindsight `memory.peak` = 2048 MiB = 限额（`memory.events max` 764、oom_kill 0、全程在跑）；统筹复读 `limits.jsonl`：匿名内存峰值 1183 MiB，其余约 800 MiB 是文件页缓存（多为 inactive），内核在限额处回收的是缓存——但匿名内存 15 min 内 641 → 1160 MiB 在涨，是预热还是持续增长由 E8b 判。release 峰值 2076 MiB（启动加载世界），未过 3400 告警线。
+    读数：选择 67 次（石砚 32 / 柳莺 17 / 林眺 18），Jev 中位 1310 ms；花费产品 $0.044 + Hindsight $0.195 = $0.239（209 万 token）；料堆天然石 24 → 6 格（15 min 内）；排空后 pending 0、一份 `refresh_mental_model` 仍在做。
+    **行为观察（功能冻结，不改，记作上线后改进）**：石砚 17 次选建造，15 次 `out_of_reach`（采完 / 走开后不在射程，`build` 不先走路，criterion 的提示不起作用），白耗选择；料堆首日即近采光（玩家共用的作者料堆，统筹裁定 ② 的代价比预估来得快）。
+  - 资源：两轮守护均未触发，4266 记录号 128241 未变，Windows UDP 88 → 92，release / scope / 私有 PG 容器 / Hindsight 容器与卷 / 看门狗全部回收，泄漏扫描 0 命中。
+- **更正上条“功能冻结，不改”**：用户问“建造前不会先走过去这个为什么不修？”，统筹定为冻结期内修的 happy path 缺陷（只此一项）。修复子会话让 `Skills.Build` 在权威回 `out_of_reach` 后按足迹站位自己走过去再放；新测试 `npc_build_test.exs` 改前红改后绿，独立评审无阻塞、应修在改；**提交推迟到 `e8b-01` 结束后**（避免长跑中途重启 / 收尾核版本时 HEAD 漂移）。之后在新 HEAD 重建 release、跑一轮短排练验证建造。
+  料堆：用户说明是“现在创世才有的特权”，按现阶段预期状态处理，不改。
+- **E8b `e8b-01`**：子会话在统筹的“暂缓”消息送达前已起跑（release 建于 `0c9a01c9`，约 14:45 UTC 起），统筹改为让它跑完（L1–L7 与建造修复正交），建造读数作修复前对照。
+- 建造修复提交 `99296b54`（独立评审应修 3 条已改，`npc_build_test.exs` 5 例，受影响 138 passed）。
+- **`e8b-01` 结果：L3、L4 不过（召回风暴），其余过**——明细见扩人数稿 §7 末条。E9 推迟；根因分析子会话在查（只读，笔记 `.demo/observe/npc-e8-20261120/longrun/storm/`）。下一步：据根因定修法（涉及 D-2 放置的先报用户）→ 先测后改 → 评审 → 提交 → 重建 release → 复测（短排练验建造 + 长跑验风暴）→ E9。
+- **风暴根因**（只读分析，`.demo/observe/npc-e8-20261120/longrun/storm/`，`timeline.tsv`）：亚稳态故障。触发 = 首轮巩固后库变大，单次召回 ≤0.8 → 3.5–4.5 核·秒（推断：重排候选变多），叠加石砚 build 快速失败的热循环（活动失败经 `{:succeed,…}` 立即重问，`trees.ex:194`）；
+  维持 = 每次选择 3–4 路召回、全有全无、10 s 超时后固定 `@retry` 10 s 重问（无退避 / 抖动 / 上限），失败期到达率约 0.45 次/s（成功节拍的 2.4–5 倍），2 核同机 ρ≈0.85、W≈11–12 s > 10 s，困在坏态；重启后库更大，落入在途约 42 的更坏稳态。
+  测试装置偏差：计数代理（`npc-slice4-20261118/real_models.py` `forward`）不传递客户端断开，Hindsight 的取消从不触发（比生产更严）。`pool_timeout` 是交互池 8 < 9 路的症状。`speak_to` 6 次是 Jev 选了候选外的项、被 Selector 显式拒绝，独立小缺陷，暂记不修。
+- **统筹裁定**：① 方案 1（产品）：唯一重问点加指数退避 + 抖动 + 上限、成功复位，活动立即失败后设最小重问间隔——冻结期 happy path 缺陷修复，取值为原创决策，记入召回隔离决策稿（D-3c）；修复子会话在做（先测后改 + 离线闭环仿真）。② 修测试代理的断开传递（Test-only，子会话在做），之后再评估方案 2（Hindsight 准入限流）。③ 容量（减重排候选 / 加核或拆机，触及 D-2）本轮不动；修复后长跑复测仍不过，带读数请用户定。
+- 测试代理断开传递已修（Test-only，`npc-slice4-20261118/real_models.py` + `test_real_models.py`，7 套驱动单测全过；被放弃的召回此后记 `hindsight_error`，与 e8b-01 比较时注意口径）。
+- **D-3c 用户再定**（2026-11-20，对话框）：“现在加退避”（原 11-16 定“多 NPC 实跑之前再定”）；已记入召回隔离决策稿“用户的决定”。退避修复两轮评审（第一轮 B1 日志契约阻塞 + 7 应修；聚焦复核无阻塞）后在做最后一轮，未提交。
+- **`e8b-02` 方案**（用户 2026-11-20 同意，原话：“可以，按你的建议来”）：窗口 8 h，登记后第 1 h 末做每日重启，**第 2 h 末检查点**按 L3 / L4 判 0–2 h，不过即停服（原判保留），过则跑满 8 h 判 L1–L7；原定的单独建造短排练取消、并入本轮读数。驱动改造子会话在做（`.demo/observe/npc-e8-20261120/longrun/`），等退避修复提交后在新 HEAD 重建 release 起跑。
+- **新 Tcpip 4266**：记录号 128574，2026-11-21 01:09:28Z（本机 17:09:28 PST），上一条 128241。发生时本线只在跑 mix test（只连 Postgres、不开 UDP）；WSL 里另有别的会话的开发 release `devsrv-20261120`（持有 WSL 32 个 UDP 套接字）与容器 `voxim-devenv-20261120-db`，未碰、**不归因**。处置：本线回归中止、测试库删净、长跑驱动子会话暂停起进程的步骤；快照 `.demo/observe/npc-e8-20261120/tcpip4266-20261121T0109Z/`（01:13Z Windows UDP 88，前几名 svchost 16 / chrome 10 / System 6）。只连 Postgres 的回归恢复；**`e8b-02` 起跑待用户确认**。用户随后确认（原话：“远程正常，可以起跑”）；4266 基线改为 128574。
+- 退避修复提交 `0cb563b5`（第三轮回归 138 passed，B / E / F 改前红已核）。
+- **`e8b-02` 不通过**（2 h 检查点停跑，原判保留），明细见扩人数稿 §7 末条：建造修复生效；退避把失败期发问率降到约 1/4，但召回仍超时、L3 / L4 / L5 False；Hindsight 只用 0.86 核（推断瓶颈在单次召回串行耗时）。
+- 用户问 Hindsight 为何吃资源 / 能否把重排打分交给 Jev：查实 Hindsight 0.10.3 自带 `typesafe` 重排器（Jev 整组排序）与 `rrf`（不重排）；待用户定可否用 typesafe.ai 与用哪把 key，之后在 e8b-02 库副本上离线对比四种做法。
+- **用户定**（2026-11-21，原话：“没事，就用jev做重排，试试看通畅度和花销”）：私有 Hindsight 改用 `HINDSIGHT_API_RERANKER_PROVIDER=typesafe`（Jev 整组重排），只在 Test-only 私有容器上用环境变量覆盖，不改 `deploy/`。e8b-02 的库已随收尾删除，离线对比改为第三轮长跑 `e8b-03`：契约同 e8b-02（2 h 检查点），只换重排器。重排经计数代理计量，重排单列硬上限 $5，整轮 $15。子会话在做（`.demo/observe/npc-e8-20261120/longrun/`）。
+- `e8b-03b`（Jev 重排）中途读数：前 1 h 召回超时 0、召回中位 0.4–0.54 s、Hindsight 约 0.1 核；第一次起跑 `e8b-03` 准备阶段失败（WSL 侧指纹门不认 release 复用，未建任何资源，原目录保留）。
+- **行为一致性问题 1 根因**（只读分析，用户要求查清）：林眺建成石阶后说话时而说“不知道被什么占了”。Life 归属与 Mind 处境句都正确（`window.jsonl` 全程有 `stone steps`）；源头是结局措辞 `mind.ex:286-292` 把 `occupied` 一律写成 “something else was already in the place…”——在自己的建筑上重建被拒时这句是代码写出的假事实，经经历 → 召回 → Hindsight 认识放大；`Offers`（`offers.ex:326-334`）对已立着的建造项照样提供，46 次 `occupied` 把它重复了多次；Speak 系统提示缺“处境优先于记忆”。修法候选：A 结局写明占位者（含“我自己的”），B Offers 按 World 实情过滤做不成的建造项，C Speak 提示补处境优先（及语言约束，待用户定）。推荐 A + B，待用户定。
+- **用户定方向（2026-11-21）**：用户提出“非枚举的动作（找时间、找空间）需要规划，系统应把角色该感知 / 能查询的内容注入提示词”，问是否需要 LLM 统筹的 harness。统筹建议并经用户同意（原话：“1为主2为辅没问题”）：**① 每种活动的候选生成器 + 发问前现查事实注入为主**（代码算可行集并描述，Jev / LLM 挑），**② 有边界的 LLM 规划活动为辅**（同 `design_house`：单次会话有轮数 / token 上限，结论写回 Life，不留对话状态）；不做常驻 harness。须先写决策稿、核原文再实施，不进本次上线。用户追问当前上线版本能否出效果，待答复。
+- **用户定方向（2026-11-21，晚些时候）：NPC 心智从平地重新设计**（原话：“我们从干净的平地重新设计一下吧”），**取代上一条同日方向**（“候选生成器为主、有边界的 LLM 规划活动为辅”）。用户定的八条（世界原子为唯一真值、能做什么是角色自己的经验、不预设怎么思考、输出格式固定这一约束不能省、记忆用 Hindsight 打分用 Jev、自身数据推进提示词、启动数据写通用的、思考“统一交给Jev叫醒判断”）、
+  离线与实测 M-0 / M-1 / M-2a / M-2b 的证据、外部依据、原创决策与待定项见新决策稿 [`2026-11-21-npc-generic-mind-decision.md`](2026-11-21-npc-generic-mind-decision.md)；未实施；§8 G-1 至 G-15 用户按建议全部采纳（含不进本次上线、进根方式为原地替换 `"npc"` 内部）。M-2b 的 `live-bare-2` 补跑 R1 已完成（满足 L1 单次条件，L1 原判定落空不改；仍没找到石灰石料堆、后半程空转）；下一轮 M-2c（probe）在新会话里做，接力说明见 `.demo/observe/npc-mind-ops-m2c-20261121/handoff-brief.md`。
+- **M-2c（2026-11-22，新统筹会话）**：plan 写定后实现桥投影、harness 格式 / 接纳 / 闭环；集成时预检遇严格模式第四条限制（已修）、C-3 (b) 固定树成立、两次小集成 quiescent。用户随后定 U-10（主观判断只由 Jev / LLM 做）、U-11（睡眠整合、醒着能改经验、发呆也算做事）、U-12（待办表空时系统直接开规划思考），plan 第 7 节修订 2；决策稿已同步。进度与判定见决策稿 §3、§11 与 `.demo/observe/npc-mind-ops-m2c-20261121/plan.md`。
+- **新 Tcpip 4266**：记录号 128910，2026-11-22T06:10:33Z（上一条 128574）。发生时本线没有活动（会话在等用户答复，只有空闲、不开 UDP 的隔离节点 npcm2b）；**不归因**。近 15 条自 11-06 起约每 1–1.3 天一条。处置：桥冒烟未跑，接触测试环境与模型的步骤暂停待用户确认远程正常；快照 `.demo/observe/npc-mind-ops-m2c-20261121/bridge/udp-4266-snapshot-20261122.txt`。4266 基线改为 128910。
+- **魔法 v2 对 npc_server 的改动**（魔法对接会话 2026-11-22 跨会话通知；分支 `magic-v2-p1` 提交 `5198a8f1`，未推送、未合入）：法术程序改为二进制 IR v2（`profile.spells` 存十六进制、登记时由 `NpcServer.Spells` 解码）、进入场景时逐个法术报价、被拒的法术就地拒绝；与本线分支的冲突预计只在 `lib/npc_server/README.md`。对方请本线接手“被拒的法术仍在 LLM 工具枚举里”（要改 runtime.ex / brain/llm.ex）——只读核对：`spells` 只经 `"llm"` / `"life"` 登记进入（`registry.ex:261-268`），青岚生产登记是 `"npc"`，`deploy/` 无 `spells`；`Brain.Llm` 按决策稿 §7 将退役。对方随后回复：不需要本线接手，已交用户决定；对方建议退役前不修（被拒的法术一调用，Body 当场回 `spell_rejected`，不进 World、不扣能，只浪费一次工具调用）；生产库不查。**用户定（2026-11-23）**：「那我们不应该给这种数据兜底，这属于程序错误，错误的法术就不应该进线上系统」。本线据此的理解（只读核对 `5198a8f1`：`npc_server/spells.ex` 判定段、`voxel_region/magic/cost.ex:551-605`、`world/casting.ex:724`）：入场报价的被拒有三类——① `:invalid_program`（作者写错或目录换版本后过时）、② 只看程序与目录的数值检查 T5 capacity / T13 first_tick，二者是程序错误，应在登记边界校验一次、不合格显式拒绝登记，目录换版本时连同已登记 NPC 的法术一起重验、有坏的就让目录改动失败；③ 看施放地点的 T6 domain / T14 ambient_floor（形成处气候区温度）/ T15 thermal_step 不是程序错误，由 World 施放时裁决、回显式 `rejects:<检查名>`。由此入场报价、Body 被拒集合与就地拒绝、`npc_spell_unverified` 都不需要，“被拒法术仍在 LLM 工具枚举里”的待办消失。落地归魔法对接会话；2026-11-23 转达时该会话已不在运行（跨会话地址失效），**待其重新上线后转达**。
+- **用户定三循环框架（2026-11-23）**：用户问能否把 NPC 收成“执行循环 / 决策循环 / 思考循环”三部分，两轮讨论定 U-14 至 U-24（一类工作一种模型；绑定规约成逐槽 Jev 决策；待办可嵌套、深度优先；表 / 里两个思考会话，里思考醒着也跑并做成队列；决策队列按档位排序、Jev 只取头部，档位由重要性评估这一系统功能写；情绪评价归系统功能；新思路验证后旧稿归档）。正文与待定项见新决策稿 [`2026-11-23-npc-three-loop-framework-decision.md`](2026-11-23-npc-three-loop-framework-decision.md)，它改写 / 取代通用心智稿的挑选、绑定调用、三条路与“整合只在入睡”（逐项见该稿 §4）。M-2c 修订 3 的正式运行不再按原计划跑；先做离线对照（plan `.demo/observe/npc-three-loop-bind-20261123/plan.md`，用户审过再跑）。未改 `apps/`、未调模型。
+- **三循环离线对照完成（2026-11-23）**：X 组全量 + 两位盲评（Claude 子任务、GPT-6.2-Astra），用户定 U-26：参数绑定改为逐槽 Jev（取代 DeepSeek 绑定调用），重要性评估看完整心智；另定 U-25（选址只限区域与点位，点位候选复用 `Skills.Expand.site/4`）。结果 `.demo/observe/npc-three-loop-bind-20261123/results.md`，模型花费合计约 $0.41（不含 GPT 盲评）。下一步 M-3 probe，计划起草中。
+
+### 第二十四个统筹会话的进展（2026-11-20 起）——上面第二十三 → 第二十四交接里“下一步”各项的状态以这里为准
+
+- **E6 完成合并**：PR #11 在 `1069899a` 上 CI 12 项全绿（run 44722377871）；用户同意（原话：“合吧，然后继续推进”）后改标题 / 说明、转 ready、快进推 master（`29531ea4..1069899a`），PR merged。
+  推 master 照例触发 Docker Publish（ACR `:master` / `:latest`），青岚生产用本机构建镜像，不受影响。近两天 CI 的三次失败都在魔法侧测试（`MagicSemblanceWorldTest` 冷重启 ×2、`VoximSpellDispatchTest` ×1，时好时坏），本线未动。
+- **E7 用户定（2026-11-20）**：app 4600m + Hindsight 2048m 同机（守护改 3400 / 3900）；deploy/ 新建生产 Hindsight 镜像（ORT 补丁与模型烘入）；范围 = 仓内配置 + 本机启动核对，动生产机在 E9 后另授权。实施中（子会话，产物 `.demo/observe/npc-e7-20261120/`）。
+  缺口盘点要点：compose 无 Hindsight 服务 / 卷 / 备份；M-3c 变量与补丁只在 Test-only 目录；README / `.env.example` 开关名笔误（应为 `HINDSIGHT_API_ENABLE_BANK_CONFIG_API`）；生产 runbook 在主检出 `.demo/observe/qinglan-deploy-20261029/RUNBOOK.md`。
+- **新增 E8b 本机长跑**（用户同意，原话：“可以”）：生产限额、3 人、6–12 h、跨一次每日重启，排在 E8 之后、E9 之前；起跑前报时长、花费上限与资源预算。起因：用户问线上 24 h NPC 能否“活”，现有真实模型实跑最长 37.4 min。
+
 ### 交接（2026-11-19，第二十二个统筹会话 → 第二十三个）——接手先读这一节；任务书 `.demo/observe/npc-slice1-20261112/handoff-23-brief.md`
 
 **一句话**：花费额度 T4 通过；用户定了**长程任务闭环（任务层）**的概念与细节，新稿 `2026-11-19-npc-long-task-loop-decision.md`（§6 全按建议）；稿 A 批 1（eat / craft，门槛由 World 一处定义）、

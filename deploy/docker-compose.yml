@@ -1,4 +1,4 @@
-# Voxim server — deployment stack (Postgres + one release container).
+# Voxim server — deployment stack (Postgres + one release container + Hindsight memory store).
 #
 #   cd <deploy dir>            # contains this file, .env and the data dir
 #   cp .env.example .env       # fill secrets, version and paths
@@ -9,6 +9,7 @@
 # and Scene peer nodes connect back over Erlang distribution on 127.0.0.1.
 # HTTP (auth / regions / prefabs) listens on 127.0.0.1:${AUTH_PORT}; host nginx
 # terminates TLS and proxies /playtest/ to it (deploy/nginx.conf.example).
+# Hindsight（NPC 记忆库）走桥接网络、只发布到 127.0.0.1:${HINDSIGHT_PORT}；app 经 NPC_LIFE_HINDSIGHT_URL 访问它。
 name: voxim
 
 services:
@@ -44,6 +45,32 @@ services:
       - ${VOXIM_DATA_DIR}:/srv/voxim
     mem_limit: ${VOXIM_MEM_LIMIT}
     stop_grace_period: 60s
+    # 不等 Hindsight：npc_server 启动时不同步依赖它（Life 的记忆任务失败按 30 s 起的指数退避再起，life.ex `job_backoff_ms`；
+    # 花费额度读不到用量时后台停着，spend_budget.ex），游戏主体也不该因记忆库没起来而起不来。
+
+  # NPC 记忆库（Hindsight 0.10.3 + 内嵌 pg0），镜像由 deploy/hindsight/build-image.sh 构建，说明见 README“Hindsight”。
+  hindsight:
+    image: voxim-hindsight:${HINDSIGHT_VERSION}
+    restart: unless-stopped
+    # 只给 Hindsight 自己的模型三项，不用 env_file（M-3c 与嵌入设置在镜像 ENV 里）。
+    environment:
+      HINDSIGHT_API_LLM_BASE_URL: ${HINDSIGHT_API_LLM_BASE_URL}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_API_LLM_MODEL}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY}
+      # 固定的 worker id：缺省取容器主机名，换镜像重建容器后旧 id 名下 processing 的任务永远没人接（0.10.3 启动告警原话）。
+      HINDSIGHT_API_WORKER_ID: hindsight
+    # 只发布 API（8888）到回环；控制台（9999）不发布。
+    ports:
+      - "127.0.0.1:${HINDSIGHT_PORT}:8888"
+    volumes:
+      - hindsight_data:/home/hindsight/.pg0
+    # 用户 2026-11-20 定：青岚同机 app 4600m + Hindsight 2048m（M-3c 实跑同一限额，3 人峰值 1838 MiB）；不许换出。
+    # 内存守护只看 app 容器，Hindsight 靠这条硬限额。
+    mem_limit: 2048m
+    memswap_limit: 2048m
+    # start-all.sh 收到 SIGTERM 后最多等 30 s 让 pg0 落盘（镜像 /app/start-all.sh 的 cleanup），这里留余量。
+    stop_grace_period: 45s
 
 volumes:
   pg_data:
+  hindsight_data:

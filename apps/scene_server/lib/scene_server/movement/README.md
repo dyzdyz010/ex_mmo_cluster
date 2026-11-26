@@ -387,6 +387,30 @@ Global system：工具冲击与投射物热经同一入口 `Player.receive_effec
 - 频率按“角色 × 工具”各一份（§6.2 技能独立冷却）；同一工具打人／挖地仍共用。
 验证：`apps/voxel_region` 下 `mix test --no-start test/area_tool_world_test.exs`，`apps/scene_server` 下 `test/scene_server/movement/tool_action_test.exs`；不替代 QUIC、双客户端输入、表现或性能验收。
 
+## 2026-11-24 传送回出生点（NPC 原子 `teleport_to_spawn`）
+
+Global system：`Player.teleport_to_spawn/4` 是“传送回会话出生柱”的角色 owner 入口，只给 NPC（Body 调用；没有玩家线协议）。
+与施法 / 信标 / 分选共用动作槽与防重放序号（`client_intent_seq`），但**不经 World**（不写世界、不花材料，非流送 Scene 也可用）：
+
+```mermaid
+sequenceDiagram
+  participant B as NPC Body
+  participant P as Player
+  B->>P: teleport_to_spawn（异步）
+  P-->>B: 立即拒绝：dead / cast_too_soon / invalid_state / {teleport_cooldown, 可再用 Unix ms}
+  Note over P: 读条 10 s（Process.send_after），离开起点 > 0.25 m 回 teleport_moved
+  P->>P: 放行：记冷却起点，relocate(state, probe, :teleport)（死亡复活同一落点与流程）
+  P-->>B: Relocate 生效的那个 tick：{:ok, %{from, to, apply_tick}}
+```
+
+- 条款只在 `Player.teleport_terms/0`（读条 10 s、冷却 1 游戏小时、打断 0.25 m），NPC 原子说明按它插值。冷却按游戏钟
+  （`MmoContracts.WorldTime`，两时刻的游戏时间差 = 墙钟差 × 倍率 24，即现实 150 s），从放行时刻起算。
+- **已知限制**：冷却起点 `teleported_at_us` 只在本 Player（随 Scene 移交带走，`@carried_fields`），会话重建（Body 重新 claim）后清零。
+- 瞬移事件 `revive_relocate` / `revive_relocated` 带 `reason`（`death` / `beacon` / `teleport`）；另有 `teleport_channel`、
+  `teleport_depart`、`teleport_rejected`（原因）。读条打断沿用 `cast_cancelled` 事件。
+- 决策稿：`docs/10-active/cross-cutting/2026-11-24-npc-route-and-teleport-decision.md` §5.5。验证：`apps/scene_server` 下
+  `mix test --no-start test/scene_server/movement/teleport_to_spawn_test.exs`（非流送 / 流送落点、冷却、打断、死亡、事件字段）。
+
 ## 2026-11-25 PlayerWire 纯协议与窗口几何投影
 
 `SceneServer.Movement.PlayerWire` 承接原 `Player` 中的无状态纯投影：`window_domain/1`、`property_box/1`、`property_batch/4`、`canonical_bootstrap/5`、`collision_window/6`、`collision_applied/5`、`relocate/3`、`body_state/2` 与 `body_contact/4`。不新增进程或可变状态，所有时序、发送顺序与状态所有权仍归唯一 owner `Player`。验证：`apps/scene_server` 下 `mix test --no-start test/scene_server/movement/player_wire_test.exs`（`:t0`）与 `voxim_player_test.exs`。
