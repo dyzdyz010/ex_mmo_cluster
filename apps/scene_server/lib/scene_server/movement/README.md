@@ -332,8 +332,10 @@ k ≥ 1 按第 k 步中断结账回 `{:ok, %{outcome: reason, fail_step: k, …}
 World 尚未接纳前摇（`:preparing`）时仍按原取消路径由本进程回复（k = 0）。系统撤销（下线、移交 seal、等待者退出、到期时已死亡或
 会话失败）不是玩家的打断，照旧回 `cast_cancelled`、k = 0 免费。
 
-注意：前摇期间输入限幅 0.35（`publish_movement_scale`），按住移动施法仍可能在前摇内走出 0.25 m 而被打断；法杖普攻前摇 0.3 s
-也受此规则约束（设计 §5.5 原文，未设例外）。验证：`cast_action_test`（k 的步界、主动取消与剂量通知）、`beacon_travel_test`
+**持物普攻不受移动打断**（用户 2026-11-26 以设计方身份裁定：已验收的法杖演示含跑动连射）：World 在前摇开始时按
+`match_basic_spell/2`（程序与已发布属性目录某持物的 `basic_spell` 字节相等，即前摇取作者值 `basic_windup_s` 的那次施放）判一次，
+随计划 `cast_prepared %{…, basic_attack: true}` 交给本进程；本进程只读这一位（不解析程序、不查持物表），`basic_attack` 为真时
+`interrupt_channel/1` 不判距离。受伤、驱散剂量与主动取消照样打断；其余施法（含同一程序但不是持物普攻）仍受移动打断。验证：`cast_action_test`（k 的步界、主动取消与剂量通知）、`beacon_travel_test`
 （真实 Player 的移动打断与伤口事件）、`cast_wait_lifecycle_test`（真实 World 的取消原因）。
 
 ## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）

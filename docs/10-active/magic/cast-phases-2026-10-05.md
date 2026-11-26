@@ -72,6 +72,9 @@ Global system。决策稿 [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-c
   且干预欠账占一半以上的结构以 **live 5（驱散）** 终止；施法者处剂量按“单位精度、零装载”累计（Q6-2：位置取前摇快照）。
 - **客户端须配合**：live 5 驱散光尘；四条打断原因的文案（accepted 与 rejected 两种形式各四条）；中断回执显示第 k 笔碎裂
   （施放记录 outcome 1 由取消产生时同样带 `fail_step`）；移动施法会被打断（前摇期间输入限幅 0.35，按住移动可能在前摇内走出 0.25 m）。
+- **持物普攻免除移动打断（用户 2026-11-26 以设计方身份裁定）**：只有命中持物 `basic_spell`、前摇取 `basic_windup_s` 的那条普攻程序免除；
+  由 World 在前摇开始时判一次（`Casting.match_basic_spell/2`，与固定前摇同一判定），随 `cast_prepared` 的 `basic_attack` 交给 Player。
+  受伤、驱散剂量、主动取消照样打断；其余施法仍受移动打断。理由：已验收的法杖演示含跑动连射（0.3 s 前摇 + 施法 35% 移速）。
 - 验证：`voxel_region` 的 `magic_structure_world_test.exs`（W6-1–W6-4：A.4 对拍、Harm、施法者处剂量）、`magic_world_test.exs`
   （W6-5、W6-6、验收第 3 条）、`magic_windup_world_test.exs`；`scene_server` 的 `cast_action_test.exs`、`beacon_travel_test.exs`
   （真实 Player 的移动与伤口打断）、`cast_wait_lifecycle_test.exs`；`gate_server` 的 `voxim_spell_dispatch_test.exs`（G6-1 原因串）；

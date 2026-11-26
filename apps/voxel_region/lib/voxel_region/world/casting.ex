@@ -385,10 +385,14 @@ defmodule VoxelRegion.World.Casting do
 
     # `steps` 是已广播的各步 {调整, 注能} 时长（与施放记录同一份）：Player 按前摇已流逝时间对照它求进行中的步 k，
     # 取消与打断据此结账（设计 §5.5 打断行、§14.0 Q6；决策稿 §6.1）。
+    # `basic_attack`：本次施放是否持物普攻（程序与已发布属性目录某持物的 `basic_spell` 字节相等，前摇取作者值，
+    # `match_basic_spell/2`，与 `basic_windup/3` 同一判定）。只在前摇开始时由 World 判一次交给 Player；Player 据此免除
+    # 移动打断（用户 2026-11-26 以设计方身份裁定：持物普攻不受移动打断，受伤、驱散剂量与主动取消照样打断）。
     plan = %{
       windup_s: quote.windup_s,
       checkpoint_s: checkpoint && elapsed_through(quote, checkpoint),
-      steps: Enum.map(quote.steps, &Map.take(&1, [:adjust_s, :inject_s]))
+      steps: Enum.map(quote.steps, &Map.take(&1, [:adjust_s, :inject_s])),
+      basic_attack: match_basic_spell(state, program) != nil
     }
 
     record = %{

@@ -79,7 +79,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:cancel_cast, ^key, :interrupted_cancelled, 0}
 
     assert {:noreply, s} =
-             Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
+             Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps, basic_attack: false}}, s)
 
     assert {:noreply, _} = Player.handle_info({:release_cast, key}, s)
     refute_receive {:authorize_cast, _, _, _}, 0
@@ -110,7 +110,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps, basic_attack: false}}, s)
 
     aim = %{c.request | action: 3, direction: {0.0, 1.0, 0.0}}
     {:reply, {:ok, :controlled}, s} = Player.handle_call({:spell, c.id, aim, %{}}, c.from, s)
@@ -135,7 +135,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 0.06, checkpoint_s: 0.02, steps: @steps}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 0.06, checkpoint_s: 0.02, steps: @steps, basic_attack: false}}, s)
 
     assert_receive {:cast_checkpoint, ^key}, 1_000
     refute_received {:release_cast, ^key}
@@ -162,7 +162,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: 5.0, steps: @steps}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: 5.0, steps: @steps, basic_attack: false}}, s)
 
     {:noreply, s} = Player.handle_info({:cast_checkpoint, key}, s)
     assert_receive {:check_cast, ^key, _, _}
@@ -213,7 +213,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps, basic_attack: false}}, s)
 
     old = %{c.id | session_epoch: 6}
 
@@ -290,7 +290,7 @@ defmodule SceneServer.Movement.CastActionTest do
     {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
     assert_receive {:player_spell_request, ref, _, {:prepare_cast, key, _, _, _}}
     # 第 1 步从 0 s 起注能 60 s：任何时刻取消都在第 1 步，k = 1（须结账）。
-    plan = %{windup_s: 60.3, checkpoint_s: nil, steps: [%{adjust_s: 0.0, inject_s: 60.0}]}
+    plan = %{windup_s: 60.3, checkpoint_s: nil, steps: [%{adjust_s: 0.0, inject_s: 60.0}], basic_attack: false}
     {:noreply, s} = Player.handle_info({:cast_prepared, key, plan}, s)
 
     assert {:reply, {:ok, :controlled}, s} =
@@ -315,7 +315,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
     # World 尚未接纳前摇：施法者不在 World 的待施放里，不会有剂量；到达的通知一律忽略。
     assert {:noreply, ^s} = Player.handle_info({:windup_disrupted, key, 0.44}, s)
-    {:noreply, s} = Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
+    {:noreply, s} = Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps, basic_attack: false}}, s)
     assert {:noreply, ^s} = Player.handle_info({:windup_disrupted, {c.id, 0}, 0.44}, s)
     refute_received {:cancel_cast, _, _, _}
 
@@ -323,5 +323,26 @@ defmodule SceneServer.Movement.CastActionTest do
     # 刚进入前摇：仍在第 1 步调整段（0.1434 s），k = 0，免费。
     assert_receive {:cancel_cast, ^key, :interrupted_disrupted, 0}
     assert s.action == nil
+  end
+
+  # 用户 2026-11-26 裁定：持物普攻（World 判定的 basic_attack）只免除移动打断，驱散剂量与主动取消照样打断。
+  test "持物普攻：驱散剂量与主动取消照样打断", c do
+    for {notice, reason} <- [{:dose, :interrupted_disrupted}, {:cancel, :interrupted_cancelled}] do
+      request = %{c.request | client_intent_seq: c.request.client_intent_seq + if(notice == :dose, do: 0, else: 1)}
+      {:noreply, s} = Player.handle_call({:spell, c.id, request, %{}}, c.from, c.state)
+      assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
+      plan = %{windup_s: 0.3, checkpoint_s: nil, steps: [%{adjust_s: 0.0, inject_s: 0.0}], basic_attack: true}
+      {:noreply, s} = Player.handle_info({:cast_prepared, key, plan}, s)
+      assert s.action.basic_attack
+
+      s =
+        case notice do
+          :dose -> elem(Player.handle_info({:windup_disrupted, key, 0.44}, s), 1)
+          :cancel -> elem(Player.handle_call({:spell, c.id, %{request | action: 2}, %{}}, c.from, s), 2)
+        end
+
+      assert_receive {:cancel_cast, ^key, ^reason, _k}
+      assert s.action == nil
+    end
   end
 end

@@ -792,8 +792,11 @@ defmodule SceneServer.Movement.Player do
   # 剩余前摇重设计时器，回 :ended 表示 World 已结算（或这次施放已不存在），动作槽清空。没有预判时计时器直接设在前摇终点。
   # 两段计时按整毫秒切分（ceil(t_k)、ceil(windup) − ceil(t_k)），总长与无检查时相同。
   # 计划里的 `steps`（各步 {调整, 注能} 秒）与此刻的单调时钟随动作槽保存，打断时据此求进行中的步 k（`interrupt_spell/2`）。
+  # `basic_attack` 是 World 在前摇开始时判定的“持物普攻”（本进程不解析程序、不查持物表）：为真时免除移动打断
+  # （用户 2026-11-26 裁定），受伤、驱散剂量与主动取消照样打断。
   def handle_info(
-        {:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: checkpoint_s, steps: steps}},
+        {:cast_prepared, key,
+         %{windup_s: windup_s, checkpoint_s: checkpoint_s, steps: steps, basic_attack: basic_attack}},
         %{action: %{key: key, phase: :preparing} = action} = state
       ) do
     {message, delay_ms} =
@@ -810,6 +813,7 @@ defmodule SceneServer.Movement.Player do
         windup_s: windup_s,
         checkpoint_s: checkpoint_s,
         steps: steps,
+        basic_attack: basic_attack,
         started_ms: System.monotonic_time(:millisecond)
       })
 
@@ -1822,9 +1826,10 @@ defmodule SceneServer.Movement.Player do
 
   # 传送信标、分选与传送回出生点读条中离开起点超过 @channel_interrupt_m 即打断（Voxim Docs/Gameplay/Beacon.md §3；
   # 分选 Docs/Items.md §3.2 回 cast_cancelled；原因按 @channel_moved）。
+  # 施法前摇同一距离（魔法 v2 切片 6），持物普攻（World 判定的 `basic_attack`）除外：它落到末尾的空操作子句。
   defp interrupt_channel(
          %{
-           action: %{kind: :spell, phase: phase, origin: {ox, oy, oz}},
+           action: %{kind: :spell, phase: phase, basic_attack: false, origin: {ox, oy, oz}},
            state: %{position: {x, y, z}}
          } = state
        )

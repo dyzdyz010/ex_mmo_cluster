@@ -371,6 +371,29 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert_in_delta energy(c.w), @grant_mj / 1000 - spent_j, 1.0e-6
   end
 
+  # 用户 2026-11-26 裁定：持物普攻不受移动打断。“是否普攻”只由 World 在前摇开始时判一次（与固定前摇同一 `match_basic_spell/2`），
+  # 随前摇计划 `basic_attack` 交给前摇 owner（Player）。测试进程充当 Player：收到计划后以 k = 0 取消收尾。
+  test "前摇计划带 World 判定的 basic_attack：持物普攻程序为真；差 1 字节的同形程序为假", c do
+    {:ok, _} = send_state(c.w, c.a)
+    other = String.replace(@bolt_hex, "001b06ce", "001b06cf") |> Base.decode16!(case: :lower)
+
+    for {bytes, basic, at} <- [{@bolt_bytes, true, 1_000_000}, {other, false, 3_000_000}] do
+      seq = next()
+
+      request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
+        direction: @forward, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0, program: bytes}
+
+      {:ok, current} = Actor.tool_context(c.a.player, c.a.identity)
+      actor = Map.merge(current, %{received_us: at, clock_node: node(), player: self()})
+      key = {actor.identity, seq}
+      ref = make_ref()
+      send(c.w, {:prepare_cast, key, actor, request, {self(), ref}})
+      assert_receive {:cast_prepared, ^key, %{basic_attack: ^basic}}, 5_000
+      send(c.w, {:cancel_cast, key, :interrupted_cancelled, 0})
+      assert_receive {^ref, {:error, :interrupted_cancelled}}, 5_000
+    end
+  end
+
   test "异步任务结果标签回归：Admission.kind/1 对 {ref, results} 返回 :task_result（可插进 info 日志）" do
     assert Admission.kind({make_ref(), []}) == :task_result
   end

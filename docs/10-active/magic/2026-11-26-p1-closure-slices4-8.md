@@ -645,3 +645,11 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
     5. 每个有场的发出者每拍记一行 `voxel_structure_field`。剂量按单位精度、零装载记，与施法者处同一口径；目标的实际欠账另由 `voxel_structure_state` 的相干给出。
   - 待设计确认（代码注释已标“待用户确认”）：① Q6-1 取消按进行中的步 k 扣第 1–k 步；② Q6-5 只有 Body 新增创伤算伤口事件；③ **移动打断对法杖普攻的影响**：前摇期间输入限幅 0.35，按住移动施法仍可能在 0.3 s 前摇内走出 0.25 m 而被打断。设计 §5.5 没有例外，本片按原文实现，建议实跑观察后由设计方决定是否对持物普攻放宽。
   - 客户端需要配合：① live 5 驱散光尘；② 四条打断原因的文案，accepted 与 rejected 两种形式（见上）；③ 中断回执显示第 k 笔碎裂，取消产生的 outcome 1 同样带 `fail_step`；④ 新 golden 样本：本片未改冻结字节（PropertyBatch、结构记录、0x82/0x83 不变），建议在 `wire-v2-samples.json` 增补一条由取消产生的施放记录 outcome 1（`fail_step` = 2），以及 G6-1 的 0x68 帧样本，由客户端确认后再加。
+- 2026-11-26：用户以设计方身份裁定：**持物普攻不受移动打断**。范围是命中持物 `basic_spell`、前摇取作者值 `basic_windup_s` 的那条普攻程序（World 按字节匹配，`Casting.match_basic_spell/2`）；受伤、驱散剂量与主动取消照样打断，其余施法照设计 §5.5 仍受移动打断。理由：上一轮已验收的法杖演示含跑动连射，0.3 s 前摇加施法 35% 移速，边走边打会被打断，属于已验收手感的退化。切片 6 待设计确认 ③ 随之关闭。
+  - 实现（切片 6-5，即记录本条的提交）：World 在 `begin_cast` 判一次 `basic_attack = match_basic_spell(state, program) != nil`（与固定前摇同一判定），随 `cast_prepared` 计划交给 Player。Player 只读这一位存进动作槽，不解析程序、不查持物表（信任边界校验一次）。移动打断子句 `interrupt_channel/1` 只匹配 `basic_attack: false`；伤口、剂量、主动取消的路径不读它。
+  - 测试（WSL）。先红：新用例对着改动前的 lib 跑，scene 28/32（持物普攻边走边打被打断；计划缺 `basic_attack`；真实 World + Player 两例没有交接这一位），voxel_region `magic_staff_bolt_test.exs` 10/11（计划不带 `basic_attack`）。再绿：
+    - `beacon_travel_test`（真实 Player）：持物普攻走出 0.4 m 不打断，到期照常授权，结算经 relay 转交一次；持物普攻受伤照样 `interrupted_wounded`；非普攻移动打断（P6-1）不变。
+    - `cast_action_test`：持物普攻的剂量与主动取消照样打断。
+    - `cast_wait_lifecycle_test`（真实 World + 真实 Player）：带持物表时光弹 `basic_attack: true`；同一程序、无持物表时为 `false`。
+    - `magic_staff_bolt_test`：持物普攻程序为真，差 1 字节的同形程序为假。
+  - 回归：scene_server 353（排除 1）；voxel_region 施法相关 8 个文件 107；gate_server 49（排除 68 个 `quic_transport`，未起 QUIC）；npc_server 828（排除 20）。`mix format --check-formatted` 通过，八个 app 的 `mix compile --force --warnings-as-errors --no-optional-deps` 通过。未建 UDP/QUIC；UDP 端点 Windows 88、WSL 36。

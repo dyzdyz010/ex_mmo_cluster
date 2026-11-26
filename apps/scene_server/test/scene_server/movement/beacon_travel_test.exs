@@ -414,14 +414,15 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     refute_receive {^ref, _}, 0
   end
 
-  # 施法前摇：经角色 owner 的公共入口发起，扮 World 接纳前摇并给出计划（各步 {调整, 注能} 秒）；返回 {等待标签, 动作键, relay}。
-  defp windup(p, steps) do
+  # 施法前摇：经角色 owner 的公共入口发起，扮 World 接纳前摇并给出计划（各步 {调整, 注能} 秒；`basic_attack` 是 World 判定的
+  # 持物普攻，这里由替身直接给出）；返回 {等待标签, 动作键, relay}。
+  defp windup(p, steps, basic_attack \\ false) do
     ref = make_ref()
     request = %{action: 1, client_intent_seq: 70, request_id: 5, logical_scene_id: 1, direction: {1.0, 0.0, 0.0}}
     Player.cast_spell(p, identity(), request, %{caster_recipient: {self(), make_ref()}}, {self(), ref})
     assert_receive {:authority, {:player_spell_request, _, relay, {:prepare_cast, key, actor, ^request, relay}}}, 2000
     assert actor.position == Player.observe(p).state.position
-    send(p, {:cast_prepared, key, %{windup_s: 60.3, checkpoint_s: nil, steps: steps}})
+    send(p, {:cast_prepared, key, %{windup_s: 60.3, checkpoint_s: nil, steps: steps, basic_attack: basic_attack}})
     wait(fn -> match?(%{phase: :windup}, :sys.get_state(p).action) end)
     {ref, key, relay}
   end
@@ -450,10 +451,37 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     refute_receive {^ref, _}, 50
   end
 
-  test "伤口事件打断前摇：工具冲击新增创伤 → interrupted_wounded；投射物热不改创伤、不打断（Q6-5）" do
+  # 用户 2026-11-26 裁定：持物普攻不受移动打断（上一轮已验收的法杖演示含跑动连射）。“是否普攻”由 World 在前摇开始时判定，
+  # 随计划给出；Player 只读这一位。期望：走出 0.25 m 以上不打断、不发取消，到期照常授权，World 的结算经原 relay 转交一次。
+  test "持物普攻边走边打：走出 0.25 m 以上不打断，到期照常授权并转交结算" do
+    {ctx, p, _} = enter()
+    {ref, key, relay} = windup(p, [%{adjust_s: 0.0, inject_s: 60.0}], true)
+    {x0, _, _} = Player.observe(p).state.position
+
+    Enum.reduce_while(5..120, nil, fn seq, _ ->
+      step(ctx, p, seq, 32767)
+      {x, _, _} = Player.observe(p).state.position
+      if x - x0 > 0.4, do: {:halt, seq}, else: {:cont, nil}
+    end)
+
+    {x1, _, _} = Player.observe(p).state.position
+    assert x1 - x0 > 0.4
+    refute_receive {:authority, {:cancel_cast, _, _, _}}, 50
+    assert %{phase: :windup, basic_attack: true} = :sys.get_state(p).action
+
+    # 到期（替代 60 s 计时器直接投递同一到期消息）：照常向 World 授权，带此刻姿态。
+    send(p, {:release_cast, key})
+    assert_receive {:authority, {:authorize_cast, ^key, actor, _}}, 2000
+    assert actor.position == Player.observe(p).state.position
+    settled = {:ok, %{seq: 9, outcome: nil, fail_step: 0, caster: %{}}}
+    GenServer.reply(relay, settled)
+    assert_receive {^ref, ^settled}, 2000
+  end
+
+  test "伤口事件打断前摇（持物普攻同样打断）：工具冲击新增创伤 → interrupted_wounded；投射物热不改创伤、不打断（Q6-5）" do
     {_ctx, p, _} = enter(7, %{"test_combat_bounds_m" => [[-48.0, 464.0, -48.0], [112.0, 624.0, 112.0]]})
-    # 第 1 步调整 60 s：仍在第一笔注能前，k = 0。
-    {_ref, key, _relay} = windup(p, [%{adjust_s: 60.0, inject_s: 1.0}])
+    # 第 1 步调整 60 s：仍在第一笔注能前，k = 0。持物普攻只免除移动打断，受伤照样打断（用户 2026-11-26 裁定）。
+    {_ref, key, _relay} = windup(p, [%{adjust_s: 60.0, inject_s: 1.0}], true)
     {:ok, target} = Player.hit_context(p)
     source = %{identity: identity(), position: target.position, cid: 999, life_generation: 1}
 
