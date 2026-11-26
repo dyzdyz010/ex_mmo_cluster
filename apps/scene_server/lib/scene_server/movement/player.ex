@@ -3,7 +3,7 @@ defmodule SceneServer.Movement.Player do
   use GenServer, restart: :temporary
   require Logger
   alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock, Harm}
+  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock, Harm, PlayerWire}
   alias VoxelRegion.CollisionStream
   alias SceneServer.Body
   alias SceneServer.Body.Snapshot
@@ -903,17 +903,17 @@ defmodule SceneServer.Movement.Player do
               profile: state.config.profile
             })
 
-            reliable(state, :voxel, %Voxel.CanonicalBootstrap{
-              identity: state.identity,
-              content_version: content_version,
-              collision_revision: updates.revision,
-              transaction_seq: snapshot.transaction_seq,
-              l0_min: snapshot.l0_min,
-              l0_max_exclusive: snapshot.l0_max_exclusive,
-              travel_min_m: elem(state.config.travel, 0),
-              travel_max_exclusive_m: elem(state.config.travel, 1),
-              regions: snapshot.regions
-            })
+            reliable(
+              state,
+              :voxel,
+              PlayerWire.canonical_bootstrap(
+                state.identity,
+                content_version,
+                updates.revision,
+                snapshot,
+                state.config.travel
+              )
+            )
 
             property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
             fence(state)
@@ -1412,21 +1412,7 @@ defmodule SceneServer.Movement.Player do
 
   # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
   defp publish_body(state, report) do
-    reliable(state, :control, %Session.BodyState{
-      identity: state.identity,
-      life: report.life,
-      recoverable: report.recoverable,
-      status: report.status,
-      core_k: report.core_k,
-      skin_k: report.skin_k,
-      protein_g: report.protein_g,
-      injuries:
-        for(
-          {tag, n, heal, left} <- report.injuries,
-          do: %Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left}
-        )
-    })
-
+    reliable(state, :control, PlayerWire.body_state(state.identity, report))
     %{state | body_sent: report.key}
   end
 
@@ -1689,11 +1675,7 @@ defmodule SceneServer.Movement.Player do
         tick = state.simulation_tick + 1
         spawned = from_pod(native, state.state.yaw)
 
-        reliable(state, :voxel, %Voxel.Relocate{
-          identity: state.identity,
-          apply_tick: tick,
-          state: spawned
-        })
+        reliable(state, :voxel, PlayerWire.relocate(state.identity, tick, spawned))
 
         character_event(state, state, :revive_relocate, %{
           apply_tick: tick,
@@ -1752,29 +1734,19 @@ defmodule SceneServer.Movement.Player do
 
   defp register_body_contact(state) do
     if authority = Map.get(state, :authority_ref) do
-      body = state.body
-      {x, y, z} = state.state.position
-      profile = state.config.profile
+      contact =
+        PlayerWire.body_contact(
+          state.state.position,
+          state.config.profile,
+          state.body,
+          state.body_heat
+        )
+
+      send(authority, {:body_contact, state.id, self(), contact})
 
       send(
         authority,
-        {:body_contact, state.id, self(),
-         %{
-           feet: {x, y - profile.half_height, z},
-           height: 2 * profile.half_height,
-           radius: profile.radius,
-           skin_k: body.skin_k,
-           capacity: Body.skin_capacity_j_per_k(),
-           area: Body.params().area_m2,
-           tissue_k: body.tissue_k + state.body_heat.tissue_j / Body.tissue_capacity_j_per_k(),
-           tissue_capacity: Body.tissue_capacity_j_per_k(),
-           tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)
-         }}
-      )
-
-      send(
-        authority,
-        {:body_coherence, state.id, Body.coherence_factor(body), state.gate, state.identity}
+        {:body_coherence, state.id, Body.coherence_factor(state.body), state.gate, state.identity}
       )
     end
 
@@ -1973,97 +1945,58 @@ defmodule SceneServer.Movement.Player do
     for event <- events do
       case event do
         {:relocate, apply_tick, spawned} ->
-          reliable(state, :voxel, %Voxel.Relocate{
-            identity: state.identity,
-            apply_tick: apply_tick,
-            state: spawned
-          })
+          reliable(state, :voxel, PlayerWire.relocate(state.identity, apply_tick, spawned))
 
         {:window, snapshot, revision} ->
           domain = window_domain(snapshot)
 
-          reliable(state, :voxel, %Voxel.CollisionWindow{
-            identity: state.identity,
-            apply_tick: tick,
-            content_version: state.content_version,
-            collision_revision: revision,
-            transaction_seq: snapshot.transaction_seq,
-            l0_min: snapshot.l0_min,
-            l0_max_exclusive: snapshot.l0_max_exclusive,
-            travel_min_m: elem(domain.travel, 0),
-            travel_max_exclusive_m: elem(domain.travel, 1),
-            regions: snapshot.regions
-          })
+          reliable(
+            state,
+            :voxel,
+            PlayerWire.collision_window(
+              state.identity,
+              state.content_version,
+              tick,
+              snapshot,
+              revision,
+              domain
+            )
+          )
 
           property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
 
         {payload, n, r, chunks, delta} ->
           reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
-          property_batch(state, delta.transaction, false, property_box(state, tick))
+
+          property_batch(
+            state,
+            delta.transaction,
+            false,
+            PlayerWire.property_box(domain_at(state, tick))
+          )
 
           if chunks != [],
             do:
-              reliable(state, :voxel, %Voxel.CollisionApplied{
-                identity: state.identity,
-                collision_revision: r,
-                transaction_seq: n,
-                apply_tick: tick,
-                changed_chunks: Enum.map(chunks, & &1.coord)
-              })
+              reliable(
+                state,
+                :voxel,
+                PlayerWire.collision_applied(state.identity, tick, n, r, chunks)
+              )
       end
     end
   end
 
   # 全局系统功能：同一 Player 顺序发送窗口和属性；属性不改变碰撞。
-  defp property_box(state, tick) do
-    domain = domain_at(state, tick)
-    extent = Voxel.Payload.extent() - 2
-    {low, high} = domain.bounds
-
-    {low |> Tuple.to_list() |> Enum.map(&floor(&1 / extent)) |> List.to_tuple(),
-     high |> Tuple.to_list() |> Enum.map(&floor(&1 / extent)) |> List.to_tuple()}
-  end
-
-  defp property_batch(state, value, complete, {low, high}) do
-    case Map.fetch(value, :property_context) do
-      :error ->
+  defp property_batch(state, value, complete, box) do
+    case PlayerWire.property_batch(state.identity, value, complete, box) do
+      :skip ->
         :ok
 
-      {:ok, context} ->
-        rows = Map.get(value, :property_states, [])
-
-        epochs =
-          for {{x, y, z}, epoch} <- Enum.sort(Map.get(value, :epochs, %{})),
-              into: <<>>,
-              do: <<x::signed-32, y::signed-32, z::signed-32, epoch::64>>
-
-        states =
-          Enum.map(rows, fn row ->
-            {:ok, bytes} = Voxel.Codec.encode({:voxel_property_state, row})
-            IO.iodata_to_binary(bytes)
-          end)
-
-        message = %Voxel.PropertyBatch{
-          identity: state.identity,
-          transaction_seq: Map.get(value, :transaction_seq, Map.get(value, :seq)),
-          l0_min: low,
-          l0_max_exclusive: high,
-          complete: if(complete, do: 1, else: 0),
-          hp_enabled: if(context.hp_enabled, do: 1, else: 0),
-          digest: context.digest,
-          thermal_enabled: if(context.thermal_enabled, do: 1, else: 0),
-          ambient_kelvin: context.ambient_kelvin,
-          epochs: epochs,
-          states: states,
-          protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{})),
-          semblances: Voxel.Codec.encode_semblances(Map.get(value, :semblances, %{})),
-          casts: Voxel.Codec.encode_casts(Map.get(value, :casts, %{}))
-        }
-
+      {:ok, message, stats} ->
         reliable(state, :voxel, message)
 
         Logger.info(
-          "voxel_property_batch seq=#{message.transaction_seq} complete=#{complete} states=#{length(rows)} epochs=#{div(byte_size(epochs), 20)} body_bytes=#{byte_size(epochs) + Enum.sum(Enum.map(states, &byte_size/1))} box=#{inspect({low, high})}"
+          "voxel_property_batch seq=#{message.transaction_seq} complete=#{complete} states=#{stats.states} epochs=#{stats.epochs} body_bytes=#{stats.body_bytes} box=#{inspect(box)}"
         )
     end
   end
@@ -2324,25 +2257,7 @@ defmodule SceneServer.Movement.Player do
   defp domain_at(state, tick),
     do: state.window_domains |> Enum.find(fn {t, _} -> t <= tick end) |> elem(1)
 
-  defp window_domain(snapshot) do
-    extent = Voxel.Payload.extent() - 2
-    min = snapshot.l0_min |> Tuple.to_list() |> Enum.map(&(&1 * extent / 1)) |> List.to_tuple()
-
-    max =
-      snapshot.l0_max_exclusive
-      |> Tuple.to_list()
-      |> Enum.map(&(&1 * extent / 1))
-      |> List.to_tuple()
-
-    %{
-      l0_box: {snapshot.l0_min, snapshot.l0_max_exclusive},
-      bounds: {min, max},
-      travel: {
-        min |> Tuple.to_list() |> Enum.map(&(&1 + extent / 4)) |> List.to_tuple(),
-        max |> Tuple.to_list() |> Enum.map(&(&1 - extent / 4)) |> List.to_tuple()
-      }
-    }
-  end
+  defp window_domain(snapshot), do: PlayerWire.window_domain(snapshot)
 
   defp stream_window(%{stream: nil} = state), do: state
 
