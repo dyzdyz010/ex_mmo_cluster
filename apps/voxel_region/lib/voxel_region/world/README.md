@@ -119,11 +119,13 @@ flowchart LR
   `voxel_structure_migrated`；`voxel_thermal_commit` 行尾追加上述科目与 `commit_tick`；观察快照的 `thermal_accounting`
   带同名科目与 `commit_tick`、`structures`、`structure_stored_mj`。
 
-## 飞行与〈遇〉（魔法 v2，切片 5）
+## 飞行与〈遇〉（魔法 v2，切片 5、5b）
 
-决策稿 §5 与 §14 的用户答复（以答复为准）：**无质量结构不设射程终点**，直线匀速飞行到接触（〈遇〉→〈散〉，live 2）或在飞行中
-衰竭（live 3），不在端点悬停；有质量结构按弹道飞到落地或接触。飞行沿用墙钟合同（设计 §5.8）：`Projectiles` 每 50 ms
-一拍（`projectile_tick`，经 `Clock`）推进飞行进度，维持照常在热提交拍里步进。
+决策稿 §5 与 §14 的用户答复（以答复为准）：**所有投掷结构都不设射程终点**（2026-11-26 批准，切片 5b 落地）：无质量者直线
+匀速、有质量者按弹道，飞到接触（〈遇〉→〈散〉，live 2）、落地（之后作为静止结构接入热内核）或在飞行中衰竭（live 3），
+不在端点悬停。射程与距离衰减都由能量账推导；目录 `limits.range_m` 只作**施法域**（准星射线、形成位置、〈附〉格面、
+射线落空回 `:no_target`）。飞行沿用墙钟合同（设计 §5.8）：`Projectiles` 每 50 ms 一拍（`projectile_tick`，经 `Clock`）
+推进飞行进度，维持照常在热提交拍里步进。
 
 ```mermaid
 flowchart LR
@@ -143,7 +145,11 @@ flowchart LR
   OUT --> TX["一笔事务 → PropertyBatch structures"]
 ```
 
-- 线上记录：飞行中的记录带 `flying` 状态位，`flight_s`/`rest` 是施放时在射程窗口内的预测（与 4a golden 同义）；客户端在
+- 预计飞行时长 T（`Structures.flight_horizon_s/4`，由报价推导）：T = (⌊life_s / 0.5 s⌋ + 1) × 0.5 s；有质量者再取
+  min(T, t_fall)，t_fall = (v_y + √(v_y² + 2gD))/g，D = 出发点高出施法者脚下支撑格底面的高度（至少 1 m）。T 只限定两件事：
+  施放时的弹道预测（`Semblance.trace/8`，读不出 canonical 的弦段处提前结束）与出手 / 第 k 步检查的读取闭包、前摇驻留里的
+  飞行走廊（`Structures.flight_plan/5` → `Projectiles.corridor_keys/1`）。T 之后的飞行由 `Projectiles` 的页闸按段装入。
+- 线上记录：飞行中的记录带 `flying` 状态位，`flight_s`/`rest` 是施放时到预计飞行时长为止的预测（与 4a golden 同义）；客户端在
   `flying` 位置位时按 t0、初速（有质量者加重力）外推，**不按 `flight_s` 截断**；飞行结束由下一条记录给出真实终点
   （停住的 live 1 不带 `flying`，或 live 2–6 终态快照，`flight_s` 为真实飞行时长、`rest` 为真实落点）。
 - 〈遇〉：命中地形时按 `last_tick + 1` 求值（含 mix64 读数丢失），触发即在投射物提交点 `respond/3`，读〈遇〉的规则记 live 2；

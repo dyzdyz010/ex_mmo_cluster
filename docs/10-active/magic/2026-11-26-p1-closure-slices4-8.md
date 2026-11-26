@@ -1,6 +1,6 @@
 # 符号组合魔法 v2：P1 收口（分支切片 4–8）实施决策稿
 
-> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 中 Q4-2、Q4-W3 已由用户代答（按推荐），其余待答；切片 4（4a、4b、4c）与切片 5 已完成，切片 6 待开工；切片 5 的待设计确认项见 §14 末条。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
+> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 中 Q4-2、Q4-W3 已由用户代答（按推荐），其余待答；切片 4（4a、4b、4c）、切片 5 与收尾 5b 已完成，切片 6 待开工；待设计确认项见 §14 切片 5、5b 两条。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
 > 上游（均已批准）：[`2026-11-19-slice3-protocol.md`](2026-11-19-slice3-protocol.md)（下称“切片 3 稿”，§2.2 切片划分、P1–P14、§14 日志）、
 > [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md)（下称“落地稿”，D1–D9）、[`2026-11-19-catalog-v5-schema.md`](2026-11-19-catalog-v5-schema.md)、[`cast-phases-2026-10-05.md`](cast-phases-2026-10-05.md)。
 > 设计：TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.11（下称“设计”），只引节号不复述。
@@ -211,13 +211,13 @@ World 观测快照（`observation.ex:79` 的 ledger）同步追加上述科目�
 
 灯、定时火种、灼点、炽热投掷可以建成、维持、衰竭并持久化；火球按旧弹道飞，命中时〈遇〉尚未接通（切片 5）。驱散仍不可用（P12）。`probe`。
 
-## 5. 切片 5：飞行终点由射程推导与〈遇〉
+## 5. 切片 5：飞行（投掷结构无射程终点）与〈遇〉
 
 ### 5.1 范围
 
 | 模块 | 改动 |
 |---|---|
-| `world/projectiles.ex` | 飞行终点改为命中或路程达 `limits.range_m`（30 m）中先到者，删除 `lifetime_s`（`:26,42`）；无质量结构按直线（`flags` 第 1 位）到端点后悬停，有质量结构按弹道落地；之后转为静止结构，下一拍接入热内核（设计 §5.1） |
+| `world/projectiles.ex` | 删除 `lifetime_s`（`:26,42`）。**所有投掷结构都没有射程终点**（用户 2026-11-26 批准，覆盖本行原写的“路程达 `limits.range_m`”与“到端点后悬停 / 继续落地”）：无质量结构（`flags` 第 1 位）直线匀速、有质量结构按弹道，飞到接触（live 2）、落地（之后作为静止结构，下一拍接入热内核，设计 §5.1）或飞行中衰竭（live 3）；飞出可读范围按 §14 切片 5 的显式规则（live 3）。射程与距离衰减由能量账推导；`limits.range_m` 只作施法域（形成位置、准星、〈附〉〈取〉的 T6 `domain`、射线落空 `:no_target`）。施放时的弹道预测与出手读取闭包的飞行走廊只到报价推导的预计飞行时长（§14 切片 5b） |
 | 〈遇〉接触 | 投射物拍命中时，对该结构按 tick = `last_tick + 1` 调用 `evaluate_rules/4`（含读数丢失 hash）；〈散〉在投射物提交点用 `respond/3` 结算，记录 live 2。丢失时接触保持待决，下一热拍重判（§5.4 R5）。静止结构在热拍里首次出现导热边时置接触 |
 | 人物命中 | 沿用 World 冻结 → Player 接纳 → kind14 回执链路（`cast-phases-2026-10-05.md:31-37`）；`q_j` 按 Q5-2。人物采样只对 `ends_on_contact` 结构做（Q5-4，与 v1 只采样触散球一致） |
 | 动能出口 | 命中或落地时调 `Structure.settle_kinetic/1`，在命中格沉积为热（R7③，动量接触将替换的唯一出口） |
@@ -245,7 +245,7 @@ World 观测快照（`observation.ex:79` 的 ledger）同步追加上述科目�
 
 - 物理量：S = 4（〈形〉〈辉〉〈投〉〈遇〉）；V = 5.24e-4 m³；E_cap = 8.38 kJ；x0 = 0.239；E_min = 1 kJ。
 - 出账：P_run ≈ 402 W，修复约 99 W，发光 100 W，合计约 0.6 kW；可用 1 kJ，逐拍计约 4 拍（2.0 s）。
-- 飞行：30 m / 30 m/s = 1.0 s。未命中时在 30 m 处悬停约 1 s 后以 live 3 熄灭；动能由 4.5 J 变为 0。
+- 飞行：30 m / 30 m/s = 1.0 s。未命中时在 30 m 处悬停约 1 s 后以 live 3 熄灭；动能由 4.5 J 变为 0。（已作废：用户改为不悬停、无射程终点，〈蓄〉最终取 1742 J，见 §14 切片 5、5b。）
 
 另外两项要知会用户：
 
@@ -347,7 +347,7 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
 | 片 | 客户端工作（设计 §12.2 Voxim 行） | 可并行（按冻结 golden） | 需要服务端提供的 golden / 样本 |
 |---|---|---|---|
 | 4 | 解码结构记录 v2（160 B）、live 2–6 与状态增量；表现原子：断供黯淡、过载爆裂、主动终止、越线辉光与闪烁（`status` 位 0、`load`、`coherence`）；温度与发光改由记录给出，删除按符号 id 写的分支（R9 冲突） | 是：§3 字节冻结后 | `wire-v2-samples.json` 新增 `structure_record_v2`（灯 live 1、飞行火球、无质量光弹、live 0 删除、live 2–6 各一）、`structure_state_delta`、带两字段的 PropertyBatch；反例：live 7、shape 3、flags 保留位、`temperature < 0`、完整批带增量、增量与完整记录同 id、id 未排序 |
-| 5 | 飞行插值按“射程终点 + 无质量直线悬停”规则；法杖 `basic_spell` 改为无质量程序并重新发布 | 是 | `ir-v2-samples.json` 新增 `staff_bolt_massless`；`quote-v2-samples.json` 新增同一程序的报价 |
+| 5 | 飞行插值按“无射程终点”规则：`flying` 位置位时按 t0、初速（有质量加重力）外推、不按 `flight_s` 截断，收到不带 `flying` 的 live 1 或 live 2–6 时取其 `rest`；报价面板“预计有效距离”由 0x83 `life_s` 与程序自己的〈投〉速度推导（§14 切片 5b）；法杖 `basic_spell` 改为无质量程序（〈蓄〉1742 J）并重新发布 | 是 | `ir-v2-samples.json` 的 `staff_bolt_massless`；`quote-v2-samples.json` 同一程序的报价 |
 | 6 | 驱散光尘（live 5）；前摇打断原因文案（4 条）；中断回执显示第 k 笔碎裂 | 文案可先做 | 施放记录 outcome 1 由取消产生的样本；0x68 原因串清单 |
 | 7 | `":structure_quota"`、`":flight_quota"`、`":region_budget"`（“分区魔法拥挤”）的提示 | 是 | 原因串清单 |
 | 8 | U1 编辑器替换现有编辑器；“我的法术”本地转写与迁移对话框（设计 §2.4）；双客户端验收；与服务端同版本打包 | U1 与迁移对话框现在就可做（只依赖目录 v5 与 IR 样本） | 全部 golden 的最终 commit 与目录 digest |
@@ -483,10 +483,10 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
 | W4-5 | World | 同上 | 用 master 构建经正常施放产生、按出处记账的 overlay 夹具恢复：`semblances` 键消失，有一笔迁移事务，`semblance_released_j` 增加的量等于存量能量 | Q4-6；产品可产生的数据 |
 | W4-6 | World | 同上 | 积压达 mid：热拍暂停，`last_tick` 不变，结构仍计入配额 | 冻结语义 |
 | W4-7 | World | 同上 | 在 500 K 格边施放火球：`status` 位 0（越线）置位，x* ≈ 0.25（附录 A.3、验收第 2 条） | env 输入接线 |
-| Q5-1 | 纯值 | `magic_semblance_test.exs` | 射程端点为路程 30 m；无质量结构 y 不变并悬停；有质量结构到端点后继续落地 | P2-13、Q17 |
+| Q5-1 | 纯值 | `magic_semblance_test.exs` | 无质量直线 y 不变；有质量弹道飞过 30 m 路程照常求交到落地；预测只到预计飞行时长或不可读处（切片 5b） | Q17、无射程终点 |
 | W5-1 | World | `magic_structure_world_test.exs` | 火球撞墙：在投射物提交点以 live 2 终止，`rest` 为命中点，释放入账 | 〈遇〉→〈散〉 |
 | W5-2 | World | 同上 | 过热保险火球由〈满〉在命中前触发 → live 6 | 规则求值与 live 6 |
-| W5-3 | World | 同上 | 无质量光弹：直线；未命中时悬停后以 live 3 熄灭（约 4 拍）；命中人物时 `q_j` 按 Q5-2（采样后端替身） | Q5-1、Q5-2 |
+| W5-3 | World | 同上 | 无质量光弹：直线；未命中时在第 3 拍于飞行中以 live 3 熄灭（发射相位 0.05 s / 0.5 s → 31.5 m / 45 m）；命中人物时 `q_j` 按 Q5-2（采样后端替身）；A1 有质量投掷飞过 30 m 不停、A3 闭包走廊、A5 近/远命中（切片 5b） | Q5-1、Q5-2、无射程终点 |
 | W5-4 | World | 同上 | 带欠账的结构：接触在 mix64 冻结向量给出的丢失拍不触发，下一拍触发 | R5 |
 | W5-5 | World | 同上 | 冷重启恢复飞行中的结构 → live 3 散解，不采样 | `settle_restored` 改写 |
 | W6-1 | World | 同上 | 驱散脉冲：d = 0 的灯第 1 拍以 live 5 终止；1 m 欠账 0.601 ± 0.005；2 m 为 0.131 ± 0.005（附录 A.4） | 剂量接线 |
@@ -605,3 +605,20 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
     8. 测试环境不配置采样后端（`config/runtime.exs` 在 test 下不设 `:projectile_backend`）：各 app 单独测试时 world_server 未必编译；需要后端的 World 用例显式注入替身。
   - 待设计确认：① Q5-3（命中时不补记不足一拍的维持费）；② 离开可读范围的终止规则；③ 人物命中读数丢失时停住还是穿过；④ 飞行墙钟与热拍相位使法杖实际路程为 15–30 m；⑤ 静止结构的首次导热边接触。
   - 客户端需要配合：① 改 `author_holdable.py` 的 `basic_spell` 为新 hex 并重新发布物品目录，服务端随后替换夹具 `08bb766b…`；② 飞行插值：`flying` 位置位时按 t0、初速（有质量加重力）外推、不按 `flight_s` 截断，收到不带 `flying` 的 live 1 或 live 2–6 时取其 `rest`；③ golden 新样本 `ir-v2-samples.json` 的 `staff_bolt_massless` 与 `quote-v2-samples.json` 对应报价；④ ProjectileHit（kind14）布局不变，`q_j` 口径按 Q5-2。线字节（PropertyBatch、结构记录）不变。
+- 2026-11-26：用户批准（切片 5 执行期间提出，切片 5b 落地）：**所有投掷结构取消飞行射程终点**。有质量与无质量的投掷结构都没有射程终点：无质量者直线匀速、有质量者按弹道，直到接触（live 2）、落地（之后作为静止结构接入热内核）或飞行中衰竭（live 3）。射程与距离衰减都由能量账推导，不加任何距离衰减规则；`limits.range_m`（30 m）只作施法域。法杖光弹〈蓄〉按“保证够到 30 m”重选（第 3 拍衰竭区间中点）。§5.1 范围表、§9 第 5 行、§13 Q5-1 与 W5-3 已改成新规则；§3（字节冻结）未改，其中 §3.1 `flight_s` 一行的“命中或射程端点”现在的含义见下文取舍 1。
+- 2026-11-26：切片 5b（切片 5 收尾）完成。提交：`48c015a2`（5b-1 无射程终点、预测与闭包按报价推导）、`3e00f622`（5b-2 法杖〈蓄〉1742 J、golden、近/远命中）、5b-3（文档，即记录本条的提交）。
+  - 现状核对：切片 5 的飞行驱动（`World.Projectiles`）已不以 `range_m` 结束飞行，`projectiles.ex` 没有射程逻辑。仍按 `range_m` 截断的只有两处：施放时的弹道预测（`structures.ex` 原 `:132`、`:142` 把 `range_m` 作为路程上界传给 `Semblance.trace/8`，`semblance.ex` 原 `:78` 的 `path >= max_path`），以及出手的读取闭包（`closure.ex:184` 只装眼睛 ±`range_m` 的立方）。〈附〉沿眼睛射线找格面（原 `:136`）属于施法域，保留。
+  - **预计飞行时长 T（原创决策，`Structures.flight_horizon_s/4`）**：T_life = (⌊life_s / Δ⌋ + 1)·Δ，Δ = 热拍 0.5 s，life_s 是报价的能量切片求积寿命；有质量者 T = min(T_life, t_fall)，t_fall = (v_y + √(v_y² + 2·g·D))/g，D = 出发点高出施法者脚下支撑格（同 `Canonical.foot_target/2`）底面的高度，至少 1 m。依据：维持按整拍在拍首储能上扣，drain 随储能单调增，离散扣费不晚于连续积分耗尽，衰竭拍号 k ≤ ⌊life_s/Δ⌋ + 1；第一个热拍在出生后墙钟 (0, Δ] 内，第 k 拍不晚于 k·Δ。t_fall 是抛体落到出发点下方 D 处水平面的标准解（运动学教材公式），平地上弹道在此之前落地。核对：法杖光弹一族（〈蓄〉1296–4095 J 每 1 J、4.1–41 kJ 每 70 J，共 2862 个取值）用真实 `Cost.quote_structure/3` + `Structure.new/4` + 逐拍 `step/4` 实算，k 都没有超过该界（life_s/Δ − k ∈ [−0.994, 3.11]）；带〈热〉者的 life_s 是寿命下界，T_life 对它们不保证上界，由 t_fall 截住。无质量者路程 = |v|·T，有质量者路程 = ∫₀ᵀ|v(t)|dt。法杖光弹 T = 1.5 s（45 m），4000 J 光弹 T = 5.0 s（150 m）。
+  - T 只限定两件事，不截断飞行：① 施放时的弹道预测（`Semblance.trace/8` 第 5 个参数由路程上界改为 T；新增回调结果 `:unreadable`，读不出 canonical 的弦段处预测提前结束，与飞行驱动同一判定 `Projectiles.readable/3`。不加这条，预测越过缺失 region 时 `target_at` 会匹配失败使 World 崩溃）；② 读取闭包（见下）。线上记录的 `flight_s`/`rest` 因此是“到 T 为止的预测”。
+  - **闭包推导（完整做了，未动非魔法装页契约）**：出手与第 k 步检查（`Closure` 的 `authorize_cast`/`check_cast`）与前摇驻留（`Casting.residency_dependencies/1`）在施法域立方之外加飞行走廊 `Casting.flight_keys/4`：按此刻 actor 与方向重报价（life_s 只取决于程序与施法者所在格的气候温度，与结算报价同值），`Structures.flight_plan/5` 给出出发点、初速与 T，`Projectiles.corridor_keys/1` 沿 0…T 的 0.05 s 弦段取 region 包围范围（带祖页，再按闭包惯例扩 26 邻页）。〈附〉〈投〉的出发点在施法域线段 [眼, 眼 + d·range_m] 上，闭包时尚未求交，取两端弹道的包围盒（弹道对出发点是平移）、D 取两端较高者。报价与前摇开始（`spell_intent`、`prepare_cast`、`quote_cast`）不建结构、不预测，只装施法域。T 之后的飞行由 `Projectiles` 既有的页闸按段装入（另有 1 s 驻留预取），读不出 canonical 时按切片 5 的显式规则（`voxel_structure_out_of_domain`，live 3）散解。三者合起来覆盖整个飞行。残余：走廊与页闸里第一次读到的 L0 mixed region 由 `GeneratedStore.read` 在 World 进程内在线生成（`World.spell_intent/3` 的调用方预生成只覆盖施法域），只影响性能，不影响正确性；切片 8 负载里观测。
+  - **`range_m` 现在的全部用途**：① 施法者眼睛射线射程（`Casting.spell_target/3` → `Tools.tool_target`，射程内没命中回 `:no_target`，〈取〉的能源目标与〈附〉的准星格面都由它找）；② 〈附〉形成时沿眼睛射线找格面（`Structures.launch/7` 的 `far`）；③ 读取闭包与前摇驻留的施法域立方（`Closure.magic/2`）、`World.spell_intent/3` 调用方预生成区域（`:magic_range`）；④ 〈附〉〈投〉闭包走廊的出发点线段端点（`flight_plan/5`）；⑤ 目录加载校验 `local_domain_m ≤ range_m`。T6 `domain` 比较的是形成距离与 `limits.local_domain_m`（≤ `range_m`），不直接读 `range_m`。飞行、预测长度、闭包走廊长度都不再读它。
+  - **报价面板“预计有效距离”（0x82/0x83 字节不变）**：0x83 v2 有 `life_s`（偏移 105）；初速与有无质量在客户端自己的程序里（〈投〉`speed_mmps`、〈形〉`mass_g` 是否为 0）；热拍 Δ = 0.5 s 是设计 §5.8 的常数，不在线上。客户端推导：v = speed_mmps / 1000，T = (⌊life_s / 0.5⌋ + 1) × 0.5；无质量：名义距离 v·life_s，上界 v·T（法杖：37.7 m / 45 m，实际 30–45 m）；有质量：t* = min(T, t_fall)，t_fall = (v_y + √(v_y² + 2·9.81·D))/9.81（v_y = v·瞄准方向 y 分量，D = 手边高出脚下支撑格底面的高度、至少 1 m），水平距离 = v_h·t*。缺的：① 实际衰竭拍号 k（实际距离在 (v·(k−1)·Δ, v·k·Δ]），0x83 没有，所以给不出下界，只能给名义值与上界；② 带〈热〉结构的 life_s 是下界；③ Δ 不在线上。若要给出区间下界，需要在后续版本给 0x83 增加字段（本片不改冻结字节）。
+  - **法杖光弹〈蓄〉（B，用户选“保证够到 30 m”）**：用真实 `Cost.quote_structure/3` + `Structure.new/4` + 逐拍 `Structure.step/4` 重算（飞行中读数：293.15 K 空气、无接触格、无净热、无邻居），区间与切片 5 报告一致：〈蓄〉≤ 1295 J 报价被拒（T13，`first_tick_min_mj` 1 295 960），1296–1592 J 第 2 拍，**1593–1891 J 第 3 拍**，1892–2193 J 第 4 拍。取第 3 拍区间中点 **1742 J**（`06ce`，指数 0，即量化值本身），逐拍 E_op 1742 → 1443.838 → 1147.879 J → 第 3 拍跌破 E_min 1 kJ，live 3。实际飞行 = 发射相位 + 1.0 s，相位 ∈ (0, 0.5]，所以飞行 (1.0, 1.5] s、路程 **(30, 45] m**，任何相位都 ≥ 30 m。新 hex `020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00`；报价总价 **10 235 708 mJ**（原 9 936 275），物理 1742 J，life_s 1.255 s，x₀ 0.208，成本模型前摇 1.1843 s（持物普攻仍 0.3 s），rejects 为空。`ir-v2-samples.json` 只改 `staff_bolt_massless` 的字节与说明；`quote-v2-samples.json` 由生成器（`WRITE_MAGIC_QUOTE_SAMPLES=1`）重写，只有这一组报价变化，其余 9 组逐字不变；物品目录夹具 `08bb766b…` 是客户端真实发布物，未改。切片 5 待设计确认 ④（法杖实际路程 15–30 m）随之消解。
+  - **近/远命中（A5，采样后端替身）**：同一光弹 2 m 处命中（t = 1/15 s，第一个热拍前，E_op = 1742 J）进入组织 **871 J**，组织块（209.4 J/K）升温约 **4.16 K**；40 m 处命中（t = 4/3 s，飞行中已走两个热拍，E_op = 1147.879 J，接近衰竭）进入组织 **573.94 J**（½ × 1 147 879 mJ 按整数 mJ 四舍五入），升温约 **2.74 K**。近大远小完全来自飞行中的维持出账，没有距离衰减规则。W5-3 的单发命中同步为 871 J。
+  - 测试（WSL）。先红：5b-1 的新用例对着改动前的 lib 跑 `magic_semblance_test.exs` + `magic_structure_world_test.exs`，17/22（纯值 3 项因预测长度语义改变、A1 预测在 30 m 截断、A3 `flight_horizon_s/4` 未定义）；5b-2 的〈蓄〉选取用例把 `@bolt_hex` 换回旧字节时 7/10（选取、报价、前摇 3 项红）。再绿：上述文件与 `magic_structure_wire_samples_test.exs`（4a golden 逐字段不变）、`magic_quote_samples_test.exs`、`magic_staff_bolt_test.exs`、`activity_residency_dependencies_test.exs`、`magic_windup_world_test.exs` 全绿。全量：voxel_region `1034 passed, 53 excluded`（切片 5 为 1029，新增 5）；mmo_contracts 215；scene_server 346（排除 1）；gate_server 48（排除 68 个 `quic_transport`，未起 QUIC）；npc_server 827（排除 20）；world_server 13（排除 1，`--sname`）；voxim_thermal `cargo test` 25。`mix format --check-formatted` 通过；mmo_contracts、gate_server、npc_server、world_server、auth_server、data_service、scene_server、voxel_region 的 `mix compile --force --warnings-as-errors --no-optional-deps` 全部通过。未启动任何服务或网络连接，未建 UDP/QUIC；主机 UDP 端点开始与结束都是 86（Windows）、38（WSL）。
+  - 与本稿不一致或本片定下的取舍：
+    1. §3.1（冻结）写 `flight_s` 为“飞行终点时刻：命中或射程端点”。字节与含义位置不变；飞行中（`flying` 位）它是到预计飞行时长 T 为止的预测（命中时刻，或未命中时的 T / 不可读处），飞行结束后的记录里是真实飞行时长。`mmo_contracts` codec 的 moduledoc 已按此改写（只改文档，不改字节）。
+    2. 预计飞行时长 T 的公式、D 取“脚下支撑格底面、至少 1 m”、〈附〉〈投〉走廊取施法域线段两端，均为原创决策（依据与核对见上）。
+    3. 闭包里为求 T 以形成距离 0 报价：life_s 不读形成距离，与结算时报价同值；没有为此在待施放里另存报价。
+  - 待设计确认：① T 的公式与 D 的取法；② 0x83 缺衰竭拍号（报价面板只能给名义距离与上界）；③ 切片 5 的 ①②③⑤ 仍待答（Q5-3、离开可读范围、人物命中读数丢失停住或穿过、静止结构首次导热边接触）。
+  - 客户端需要配合：① `author_holdable.py` 的 `basic_spell` 改为新 hex（〈蓄〉1742 J）并重新发布物品目录，服务端随后替换夹具 `08bb766b…`（`catalog_holdables_test` 届时改读新文件）；② golden：`ir-v2-samples.json` 的 `staff_bolt_massless` 与 `quote-v2-samples.json` 对应报价已更新（切片 5 的 1444 J 版本作废）；③ 飞行插值按 §9 第 5 行（`flying` 位不截断）；④ 报价面板“预计有效距离”按上式由 `life_s` 与程序推导。线字节（PropertyBatch、结构记录、0x82/0x83）不变。

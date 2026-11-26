@@ -48,7 +48,7 @@ defmodule VoxelRegion.World.Casting do
     该格不是未细分热节点或施法者不可写（他人保护区）时全部计入辐射账（W7）。
   - 〈取〉建成（outcome 0）：石储能减少、施法者得 η·ΔE、构型损耗作为有限热源留在脚下（`cast_waste_j`，W7 末句）。
   - 结构建成（outcome 0，切片 4c，决策稿 `2026-11-26-p1-closure-slices4-8.md` §4.1）：扣报价 `total_mj`；按形成锚与〈投〉
-    求物理体（`World.Structures.launch/6`、`body/5`），`Structure.new({seq, 0}, 组, 报价, commit_tick)` 放进
+    求物理体（`World.Structures.launch/7`，弹道预测到报价推导的预计飞行时长为止、`body/5`），`Structure.new({seq, 0}, 组, 报价, commit_tick)` 放进
     `thermal.structures`；物理能量（E_op + E_th0 + 动能）记 `structure_created_mj`，构型损耗（总价 − 物理能量）作为有限热源
     留在脚下（`cast_waste_j`）。施放记录 live 0 与结构记录 live 1 在**同一笔**事务里。
   - 每人上限（Q4-5）：施法者名下已有 `quotas.structures_per_caster` 个结构时，前摇开始、第 k 步检查与出手都以

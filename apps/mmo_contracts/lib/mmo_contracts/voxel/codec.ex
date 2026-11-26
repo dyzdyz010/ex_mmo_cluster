@@ -1395,8 +1395,9 @@ defmodule MmoContracts.Voxel.Codec do
   - `nil` 是无事件删除：id + `live = 0` + 147 B 全 0。
   - `live` 1 存在；2–6 是终止事件（`structure_end_live/1`），一律带终态完整快照，客户端无需先有存在记录。
     live 2 要求 `ends_on_contact`。完整快照批只能含 live 1（`decode_m1/1` 拒绝）。
-  - 位置 p(τ) = origin + velocity·τ − ½·g·τ²·ŷ，`massless` 时 g = 0；τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)，
-    之后停在 rest。t0_us 是服务器时间线 `MmoContracts.ServerTime`。
+  - 位置 p(τ) = origin + velocity·τ − ½·g·τ²·ŷ，`massless` 时 g = 0；τ = (服务端时钟 µs − t0_us)/1e6，t0_us 是服务器
+    时间线 `MmoContracts.ServerTime`。`status` 含 `flying` 时 `flight_s`/`rest` 只是施放时的预测（投掷结构没有射程终点），
+    不按它截断，飞行结束由下一条记录给出；不含 `flying` 时 τ 截到 `flight_s`，之后停在 rest。
   - 球的 size2_mm、size3_mm 为 0；块与板二者为正。
 
   不满足上述约束的记录编码时显式失败（`ArgumentError`），不产生客户端会拒收的字节。
