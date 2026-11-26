@@ -42,11 +42,13 @@ defmodule VoxelRegion.Magic.Semblance do
   @doc "重力加速度（m/s²，Y-up 向下）；弹道与客户端插值共用。"
   def gravity, do: @gravity
 
-  @doc "弹道位置 p(t) = origin + v·t − ½·g·t²·ŷ。"
-  def position({x, y, z}, {vx, vy, vz}, t), do: {x + vx * t, y + vy * t - @gravity * t * t / 2, z + vz * t}
+  @doc "弹道位置 p(t) = origin + v·t − ½·g·t²·ŷ；`no_gravity` 为 true 时 g = 0（直线飞行）。"
+  def position(origin, velocity, t, no_gravity \\ false)
+  def position({x, y, z}, {vx, vy, vz}, t, true), do: {x + vx * t, y + vy * t, z + vz * t}
+  def position({x, y, z}, {vx, vy, vz}, t, false), do: {x + vx * t, y + vy * t - @gravity * t * t / 2, z + vz * t}
 
   @doc "当前中心位置：飞行中按已存在时长求弹道，落地后为落点。"
-  def current(s), do: if(landed?(s), do: s.rest, else: position(s.origin, s.velocity, s.age_s))
+  def current(s), do: if(landed?(s), do: s.rest, else: position(s.origin, s.velocity, s.age_s, Map.get(s, :no_gravity, false)))
 
   @doc "拟态占据观察窗口的宏格（出发点与落点）。"
   def cells(s), do: Enum.uniq([macro(s.origin), macro(s.rest)])
@@ -58,8 +60,9 @@ defmodule VoxelRegion.Magic.Semblance do
   自眼睛经手边求首个实占用命中。`cast.(起点, 单位方向, 长度, state)` 返回 `{nil | {目标, 进入微格}, state}`。
   返回 `{{:hit, 落点时刻 s, 落点中心, 目标}, state}`；速度为零且眼 → 手无遮挡时 `{{:free, 手边}, state}`；
   抛出后在 `max_path` 路程内无命中 `{{:miss, 射程端点时刻 s}, state}`：已求交的弦段覆盖到该时刻为止。
+  `no_gravity` 为 true 时自手边以 g = 0 直线求交。
   """
-  def trace(eye, hand, velocity, radius, max_path, state, cast) do
+  def trace(eye, hand, velocity, radius, max_path, state, cast, no_gravity \\ false) do
     length = distance(eye, hand)
 
     {hit, state} =
@@ -77,28 +80,28 @@ defmodule VoxelRegion.Magic.Semblance do
         {{:free, hand}, state}
 
       true ->
-        arc(hand, velocity, radius, 0, length, max_path, state, cast)
+        arc(hand, velocity, radius, 0, length, max_path, state, cast, no_gravity)
     end
   end
 
-  defp arc(_hand, _v, _radius, i, path, max_path, state, _cast) when path >= max_path, do: {{:miss, i * @step_s}, state}
+  defp arc(_hand, _v, _radius, i, path, max_path, state, _cast, _no_gravity) when path >= max_path, do: {{:miss, i * @step_s}, state}
 
-  defp arc(hand, v, radius, i, path, max_path, state, cast) do
+  defp arc(hand, v, radius, i, path, max_path, state, cast, no_gravity) do
     t0 = i * @step_s
-    a = position(hand, v, t0)
-    b = position(hand, v, t0 + @step_s)
+    a = position(hand, v, t0, no_gravity)
+    b = position(hand, v, t0 + @step_s, no_gravity)
     length = distance(a, b)
     d = direction(a, b, length)
 
     case cast.(a, d, length, state) do
       {nil, state} ->
-        arc(hand, v, radius, i + 1, path + length, max_path, state, cast)
+        arc(hand, v, radius, i + 1, path + length, max_path, state, cast, no_gravity)
 
       {{target, micro}, state} ->
         {axis, sign, s} = entry(a, d, micro)
         plane = plane(micro, axis, sign)
-        t = crossing(hand, v, axis, plane, t0 + s / length * @step_s)
-        point = hand |> position(v, t) |> put_elem(axis, plane)
+        t = crossing(hand, v, axis, plane, t0 + s / length * @step_s, no_gravity)
+        point = hand |> position(v, t, no_gravity) |> put_elem(axis, plane)
         {{:hit, t, rest(point, axis, sign, radius), target}, state}
     end
   end
@@ -119,10 +122,13 @@ defmodule VoxelRegion.Magic.Semblance do
 
   defp plane(micro, axis, sign), do: (elem(micro, axis) + if(sign > 0, do: 0, else: 1)) / 8
 
-  # 抛物线穿越命中面的精确时刻：水平轴线性；竖直轴取二次方程中最接近弦段估计的根。
-  defp crossing(hand, v, axis, plane, _estimate) when axis != 1, do: (plane - elem(hand, axis)) / elem(v, axis)
+  # 弹道穿越命中面的精确时刻：水平轴或无重力时线性（速度分量为 0 则退回弦段估计）；有重力的竖直轴取二次方程中最接近弦段估计的根。
+  defp crossing(hand, v, axis, plane, estimate, no_gravity) when axis != 1 or no_gravity do
+    va = elem(v, axis)
+    if va == 0.0, do: estimate, else: (plane - elem(hand, axis)) / va
+  end
 
-  defp crossing({_, y, _}, {_, vy, _}, 1, plane, estimate) do
+  defp crossing({_, y, _}, {_, vy, _}, 1, plane, estimate, false) do
     disc = vy * vy + 2 * @gravity * (y - plane)
 
     if disc < 0,
@@ -151,14 +157,16 @@ defmodule VoxelRegion.Magic.Semblance do
     end
   end
 
-  @doc "按已过墙钟区间切成最多 50ms 的重力弦段；不截掉 owner/RPC 处理所经过的时间。"
+  @doc "按已过墙钟区间切成最多 50ms 的弹道弦段；不截掉 owner/RPC 处理所经过的时间。"
   def flight_segments(s, ending) do
+    no_gravity = Map.get(s, :no_gravity, false)
+
     Stream.unfold(s.age_s, fn t ->
       if t >= ending - @epsilon do
         nil
       else
         next = min(t + @step_s, ending)
-        {{t, next, position(s.origin, s.velocity, t), position(s.origin, s.velocity, next)}, next}
+        {{t, next, position(s.origin, s.velocity, t, no_gravity), position(s.origin, s.velocity, next, no_gravity)}, next}
       end
     end) |> Enum.to_list()
   end

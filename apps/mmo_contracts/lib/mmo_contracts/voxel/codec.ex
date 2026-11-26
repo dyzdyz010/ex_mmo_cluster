@@ -79,6 +79,7 @@ defmodule MmoContracts.Voxel.Codec do
   @msg_voxel_batch_edit_intent 0x78
   @msg_voxel_log_transaction 0x79
 
+  import Bitwise, only: [band: 2]
   import MmoContracts.Voxel.Fields
 
   @doc "当前上行 opcode 的归属，用于 Gate 纯路由选择。"
@@ -1271,17 +1272,18 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_protection(_, _, _), do: {:error, :invalid_protection}
 
   @doc """
-  拟态增量（协议 36）：`%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
+  拟态增量（协议 45）：`%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
   每条 135 B、大端、按 id 升序且唯一；坐标为 canonical 米（Y-up），客户端不逐 tick 接收位置而自行插值：
 
       id_seq:u64, id_n:u32, live:u8 (0 普通删除 / 1 存在 / 2 碰撞结束快照), caster:u64, shape:u8 (0 球 / 1 立方),
-      break_on_hit:u8 (0 驻留 / 1 命中散解), radius_m:f64, temperature_k:f64, glow_w:f64,
+      flags:u8 (位 0 = break_on_hit 命中散解 / 位 1 = no_gravity 无重力直线飞行；0..3), radius_m:f64, temperature_k:f64, glow_w:f64,
       origin_x/y/z:f64, velocity_x/y/z:f64, t0_us:u64, flight_s:f64, rest_x/y/z:f64
 
-  位置 p(τ) = origin + velocity·τ − ½·9.81·τ²·ŷ，τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
+  位置 p(τ) = origin + velocity·τ − ½·g·τ²·ŷ（no_gravity 为 true 时 g = 0，否则 g = 9.81 m/s²），
+  τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
   静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务器时间线 `MmoContracts.ServerTime`（与 SessionStart.server_time_us 同源）。
-  碰撞结束（live = 2）携带最终完整记录且 break_on_hit 必须为 1，只能用于增量；客户端以此事件结束飞行并播放碰撞，
-  不由本地时钟或普通删除推测碰撞。热模拟按固定步推进，确认可早于墙钟轨迹终点。旧存档无 break_on_hit 时编码为 0。
+  碰撞结束（live = 2）携带最终完整记录且 break_on_hit（flags 位 0）必须为 1，只能用于增量；客户端以此事件结束飞行并播放碰撞，
+  不由本地时钟或普通删除推测碰撞。热模拟按固定步推进，确认可早于墙钟轨迹终点。旧存档无 break_on_hit / no_gravity 时对应位编码为 0。
   普通删除（live = 0）除 id 外全为 0；过期与驱散不冒充碰撞。
   """
   def encode_semblances(delta) do
@@ -1296,11 +1298,13 @@ defmodule MmoContracts.Voxel.Codec do
           {rx, ry, rz} = s.rest
 
           break_on_hit = if Map.get(s, :break_on_hit, false), do: 1, else: 0
+          no_gravity = if Map.get(s, :no_gravity, false), do: 2, else: 0
+          flags = break_on_hit + no_gravity
           live = Map.get(s, :live, 1)
 
-          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, break_on_hit::8,
-            s.radius_m::float-64, s.temperature_k::float-64, s.glow_w::float-64, ox::float-64,
-            oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
+          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, flags::8, s.radius_m::float-64,
+            s.temperature_k::float-64, s.glow_w::float-64, ox::float-64, oy::float-64,
+            oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
             s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
       end
     end
@@ -1323,7 +1327,7 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_semblances(
-         <<seq::64, n::32, live::8, caster::64, shape::8, break_on_hit::8, radius::float-64,
+         <<seq::64, n::32, live::8, caster::64, shape::8, flags::8, radius::float-64,
            temperature::float-64, glow::float-64, ox::float-64, oy::float-64, oz::float-64,
            vx::float-64, vy::float-64, vz::float-64, t0::64, flight::float-64, rx::float-64,
            ry::float-64, rz::float-64, rest::binary>>,
@@ -1331,14 +1335,15 @@ defmodule MmoContracts.Voxel.Codec do
          acc
        )
        when (previous == nil or {seq, n} > previous) and shape in [0, 1] and
-              break_on_hit in [0, 1] and
-              (live == 1 or (live == 2 and break_on_hit == 1)) and radius > 0 and
+              flags in 0..3 and
+              (live == 1 or (live == 2 and band(flags, 1) == 1)) and radius > 0 and
               temperature > 0 and
               glow >= 0 and flight >= 0 do
     s = %{
       caster: caster,
       shape: shape,
-      break_on_hit: break_on_hit == 1,
+      break_on_hit: band(flags, 1) == 1,
+      no_gravity: band(flags, 2) != 0,
       radius_m: radius,
       temperature_k: temperature,
       glow_w: glow,

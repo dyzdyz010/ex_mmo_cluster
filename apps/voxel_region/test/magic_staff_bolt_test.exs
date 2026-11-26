@@ -390,10 +390,9 @@ defmodule VoxelRegion.MagicStaffBoltTest do
   end
 
   # 射程内无落点（用户 2026-11-20 定；rclick-01 对空地瞄准被拒 out_of_domain）：照常接纳、扣款，弹道飞到射程端点或寿命
-  # 散解。竖直向上：手边 (0.5, 3.0, 0.5)，眼→手 0.5 m 计入路程；上升段弦长之和 = 升高 30t − ½·9.81·t²，
-  # 0.5 + 升高 ≥ 30 m 首次于 t = 1.25 s（升高 29.8359375 m；t = 1.20 s 时 28.9368 m 不足）→ 射程端点 y = 32.8359375。
-  # 光弹寿命 1 s < 1.25 s：飞行中寿命到期散入空气。账（拟态温度 = 环境，显热 0）：发光 100 W × 1 s = 100 J，
-  # 释放 = 飞行动能 ½·0.01·30² = 4.5 J，合计 = 物理 104.5 J。
+  # 散解。法杖普攻光弹无重力（g = 0，Hello 45）：竖直向上手边 (0.5, 3.0, 0.5)，眼→手 0.5 m 计入路程；
+  # 0.5 + 30t ≥ 30 m 按 0.05 s 弦段首次于 t = 1.0 s（0.5 + 30 = 30.5 m；t = 0.95 s 时 29.0 m 不足）→ 射程端点 y = 33.0。
+  # 光弹寿命 1 s：发光 100 W × 1 s = 100 J，释放 = 飞行动能 ½·0.01·30² = 4.5 J，合计 = 物理 104.5 J。
   @up {0.0, 1.0, 0.0}
 
   defp commit(w), do: (send(w, :thermal_commit); observe(w))
@@ -410,22 +409,22 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert_in_delta delta.(:semblance_light_j) + delta.(:semblance_released_j) + delta.(:semblance_exchanged_j), 104.5, 1.0e-6
   end
 
-  test "射程内无落点的光弹（运动学拟态）：接纳并扣恰好 cost_mj，飞到寿命散入空气，账闭合", c do
+  test "射程内无落点的光弹（运动学拟态）：接纳并扣恰好 cost_mj，无重力直线飞到射程/寿命散入空气，账闭合", c do
     {:ok, _} = send_state(c.w, c.a)
     before = observe(c.w)
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = bolt(c, c.a, 1_000_000, @up)
     assert caster.spent_j == 9941.697
     assert energy(c.w) == 487_143.153
     s = observe(c.w).semblances[{seq, 0}]
-    assert s.contact == nil and s.origin == {0.5, 3.0, 0.5}
-    assert_in_delta s.flight_s, 1.25, 1.0e-12
-    assert_in_delta elem(s.rest, 1), 32.8359375, 1.0e-9
+    assert s.contact == nil and s.origin == {0.5, 3.0, 0.5} and s.no_gravity == true
+    assert_in_delta s.flight_s, 1.0, 1.0e-12
+    assert_in_delta elem(s.rest, 1), 33.0, 1.0e-9
     assert gone = await_gone(c.w, {seq, 0})
     assert_bolt_dissipated(before, gone)
     assert ledger(gone, :projectile_body_j) == 0
   end
 
-  test "射程内无落点的光弹（投射物实时采样）：接纳、按寿命 1 s 飞行后散入空气，账闭合", c do
+  test "射程内无落点的光弹（投射物实时采样）：接纳、无重力按寿命 1 s 飞行后散入空气，账闭合", c do
     :ok = stop_supervised(:world)
     w = start(c.root, projectile_backend: MissBackend)
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
@@ -438,9 +437,37 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = bolt(c, shooter, 1_000_000, @up)
     assert caster.spent_j == 9941.697
     s = observe(w).semblances[{seq, 0}]
-    assert Map.has_key?(s, :projectile_source) and s.contact == nil and s.flight_s == 1.0
+    assert Map.has_key?(s, :projectile_source) and s.contact == nil and s.flight_s == 1.0 and s.no_gravity == true
+    assert s.rest == {0.5, 33.0, 0.5}
     assert gone = await_gone(w, {seq, 0})
     assert_bolt_dissipated(before, gone)
+  end
+
+  test "法杖普攻光弹无重力直线命中 20 m 外眼高靶格；差一字节的非普攻投掷仍受 9.81 重力下坠落空", c do
+    {:ok, _} = send_state(c.w, c.a)
+    # 移除近靶 (0,2,3)，铺地面并立远靶 (0,2,21)：手边 (0.5, 2.5, 1.0) 沿 +z 20 m 处，t = 20/30 = 2/3 s。
+    far_ground = for z <- 5..22, do: {{0, 0, z}, @stone}
+    {:ok, _} = World.apply_edits(c.w, [{{0, 2, 3}, 0}, {{0, 2, 21}, @stone} | far_ground])
+
+    # 法杖 basic_spell：no_gravity = true，直线飞到 z = 21 面，y 保持精确眼高 2.5，停在 z = 20.95。
+    assert {:ok, %{outcome: nil, seq: seq_basic}} = bolt(c, c.a, 1_000_000, @forward)
+    basic = observe(c.w).semblances[{seq_basic, 0}]
+    assert basic.no_gravity == true
+    assert basic.contact.cell == {0, 2, 21}
+    assert_in_delta basic.flight_s, 20.0 / 30.0, 1.0e-12
+    assert {0.5, 2.5, rz} = basic.rest
+    assert_in_delta rz, 20.95, 1.0e-12
+
+    # 差一字节（lifetime_s 1 → 2）的非普攻程序：no_gravity = false，2/3 s 需下坠 ½·9.81·(2/3)² = 2.18 m，
+    # 实则于 t = √(2·1.5/9.81) ≈ 0.5530 s 坠入 y = 1.0 地面 (0,0,17)，打不到 (0,2,21)。
+    non_basic = put_in(@bolt, ["steps", Access.at(0), "args", "lifetime_s"], 2)
+    assert {:ok, %{outcome: nil, seq: seq_drop}} = aimed(c, c.a, non_basic, @forward, 2_000_000)
+    dropped = observe(c.w).semblances[{seq_drop, 0}]
+    assert dropped.no_gravity == false
+    assert dropped.contact.cell == {0, 0, 17}
+    assert_in_delta dropped.flight_s, :math.sqrt(2 * 1.5 / 9.81), 1.0e-6
+    assert {0.5, ry, _} = dropped.rest
+    assert_in_delta ry, 1.05, 1.0e-12
   end
 
   test "作用于目标格的法术不放宽：加热瞄空仍 out_of_domain，取能指向普通石仍 invalid_target，均不扣能", c do

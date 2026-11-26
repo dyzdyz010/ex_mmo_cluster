@@ -167,10 +167,8 @@ defmodule VoxelRegion.World.Casting do
   成本（总支出、扣款、走火）不变。广播的各步 `{调整 s, 注能 s}` 按同一比例缩放，使 Σ(调整 + 注能) + release_lead_s
   等于该前摇：客户端由施放记录推算施法进度与姿态，必须与服务端计时一致。作者前摇须 ≥ 魔法目录 release_lead_s。
   """
-  def basic_windup(quote, %{properties: nil}, _program), do: quote
-
   def basic_windup(quote, state, program) do
-    case Enum.find(state.properties.basic_windups, fn {spell, _} -> Magic.Program.validate(spell, state.magic) == {:ok, program} end) do
+    case match_basic_spell(state, program) do
       nil ->
         quote
 
@@ -178,6 +176,15 @@ defmodule VoxelRegion.World.Casting do
         k = (windup_s - state.magic.release_lead_s) / Enum.sum(for {a, i} <- quote.steps, do: a + i)
         %{quote | windup_s: windup_s, steps: for({a, i} <- quote.steps, do: {a * k, i * k})}
     end
+  end
+
+  # 持物普攻法术查找：`basic_windup/3` 与 `spell_effect/4`（无重力直线弹道）共用同一判定。
+  defp match_basic_spell(%{properties: nil}, _program), do: nil
+
+  defp match_basic_spell(state, program) do
+    Enum.find(state.properties.basic_windups, fn {spell, _} ->
+      Magic.Program.validate(spell, state.magic) == {:ok, program}
+    end)
   end
 
   def cast_spell(state, from, actor, request, program, quote) do
@@ -313,11 +320,12 @@ defmodule VoxelRegion.World.Casting do
     end
   end
 
-  def spell_effect(state, actor, request, %{steps: [%{sym: "form.semblance", args: form} | throw]}) do
+  def spell_effect(state, actor, request, %{steps: [%{sym: "form.semblance", args: form} | throw]} = program) do
     owned = Enum.count(Thermal.semblances(state), fn {_, s} -> s.caster == actor.cid end)
     {dx, dy, dz} = request.direction
     {ex, ey, ez} = actor.eye
     hand = {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}
+    no_gravity = match_basic_spell(state, program) != nil
 
     velocity =
       case throw do
@@ -328,21 +336,22 @@ defmodule VoxelRegion.World.Casting do
     if owned >= state.magic.max_semblances do
       {:error, :semblance_limit, state}
     else
-      case Magic.Semblance.trace(actor.eye, hand, velocity, form["radius_m"], state.magic.range_m, state, &semblance_cast/4) do
+      case Magic.Semblance.trace(actor.eye, hand, velocity, form["radius_m"], state.magic.range_m, state, &semblance_cast/4, no_gravity) do
         # 射程内无命中（用户 2026-11-20 定）：照常接纳，沿已求交弹道飞到射程端点、无接触散解（散入空气）；
         # 有投射物后端的〈触散〉光弹在结算时照既有规则改为按寿命实时采样飞行。
         {{:miss, t}, state} ->
-          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: Magic.Semblance.position(hand, velocity, t), contact: nil}, throw)
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t,
+            rest: Magic.Semblance.position(hand, velocity, t, no_gravity), contact: nil, no_gravity: no_gravity}, throw)
           {:ok, %{sym: "form.semblance", args: form, launch: launch, cells: [Magic.Semblance.macro(hand)]}, state}
 
         {{:free, point}, state} ->
-          launch = %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: nil}
+          launch = %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: nil, no_gravity: no_gravity}
           {:ok, %{sym: "form.semblance", args: form, launch: launch, cells: [Magic.Semblance.macro(point)]}, state}
 
         {{:hit, t, rest, target}, state} ->
           node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
           contact = %{target: target, key: VoxelRegion.ThermalGeometry.key(node), cell: Damage.macro(target)}
-          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}, throw)
+          launch = break_flag(%{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact, no_gravity: no_gravity}, throw)
           {:ok, %{sym: "form.semblance", args: form, launch: launch,
                   cells: Enum.uniq([Magic.Semblance.macro(rest), contact.cell])}, state}
       end
@@ -463,8 +472,9 @@ defmodule VoxelRegion.World.Casting do
           launch =
             if Map.get(launch, :break_on_hit, false) and Map.has_key?(actor, :life_generation) and before.projectile_backend do
               origin = if launch.flight_s == 0.0, do: launch.rest, else: launch.origin
+              no_gravity = Map.get(launch, :no_gravity, false)
               %{launch | origin: origin, flight_s: form["lifetime_s"], contact: nil,
-                rest: Magic.Semblance.position(origin, launch.velocity, form["lifetime_s"])}
+                rest: Magic.Semblance.position(origin, launch.velocity, form["lifetime_s"], no_gravity)}
               |> Map.put(:projectile_source, Map.take(actor, [:cid, :identity, :life_generation, :position]))
             else
               launch

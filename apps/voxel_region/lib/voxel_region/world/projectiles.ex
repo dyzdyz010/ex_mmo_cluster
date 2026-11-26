@@ -127,7 +127,7 @@ defmodule VoxelRegion.World.Projectiles do
         HeatCommit.thermal_commit(state, [], %{semblances: %{id => nil}})
       target ->
         {_, target} = target
-        point = Semblance.position(s.origin, s.velocity, s.age_s)
+        point = Semblance.position(s.origin, s.velocity, s.age_s, Map.get(s, :no_gravity, false))
         s = %{s | age_s: s.age_s, flight_s: s.age_s, rest: point, contact: nil}
         hit = %{key: {state.cv, elem(id, 0), elem(id, 1)}, actor: actor,
           target: Map.take(target, [:id, :identity, :life_generation, :position, :velocity]),
