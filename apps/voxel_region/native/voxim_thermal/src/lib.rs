@@ -87,6 +87,13 @@ fn dynamic(n: &Node) -> NodeDynamic {
 
 fn finite(values: &[f64]) -> bool { values.iter().all(|v| v.is_finite()) }
 
+fn lock_domain(domain: &DomainResource) -> NifResult<std::sync::MutexGuard<'_, Resident>> {
+    domain
+        .0
+        .lock()
+        .map_err(|_| Error::Term(Box::new("thermal_domain_poisoned")))
+}
+
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
 fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: f64,
          tolerance: f64, dt: f64, steps: u32) -> NifResult<(u32, Vec<Output>, f64, f64)> {
@@ -147,7 +154,7 @@ fn domain_put(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, Vec<Contact>
         || sights.iter().flat_map(|(_, s)| s).any(|&(_, a)| !a.is_finite() || a < 0.0) {
         return Err(Error::BadArg);
     }
-    let mut r = domain.0.lock().unwrap();
+    let mut r = lock_domain(&domain)?;
     r.sim.remove(&removed);
     r.domain.put(nodes, removed);
     if reset_sights { r.domain.clear_sights(); }
@@ -162,7 +169,7 @@ fn domain_load(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, NodeStatic,
         || s.0 <= 0.0 || s.2 <= 0.0 || s.3 < 0.0 || s.5.is_some_and(|t| !t.is_finite() || t <= 0.0)) {
         return Err(Error::BadArg);
     }
-    domain.0.lock().unwrap().sim.load(nodes.into_iter().map(|(slot, s, d)| (slot, node(s, d))).collect());
+    lock_domain(&domain)?.sim.load(nodes.into_iter().map(|(slot, s, d)| (slot, node(s, d))).collect());
     Ok(rustler::types::atom::ok())
 }
 
@@ -171,16 +178,16 @@ fn domain_load(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, NodeStatic,
 fn domain_reload(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, NodeDynamic)>, only_clean: bool)
                  -> NifResult<rustler::Atom> {
     if nodes.iter().any(|(_, d)| !finite(&[d.0, d.1, d.2, d.4])) { return Err(Error::BadArg); }
-    let mut r = domain.0.lock().unwrap();
+    let mut r = lock_domain(&domain)?;
     for (slot, d) in nodes { r.sim.reload(slot, only_clean, |n| apply(n, d)); }
     Ok(rustler::types::atom::ok())
 }
 
 // 热格集合（World 的 ThermalWork.hot，宏格编号）。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
-fn domain_hot(domain: ResourceArc<DomainResource>, cells: Vec<u32>) -> rustler::Atom {
-    domain.0.lock().unwrap().sim.set_hot(cells);
-    rustler::types::atom::ok()
+fn domain_hot(domain: ResourceArc<DomainResource>, cells: Vec<u32>) -> NifResult<rustler::Atom> {
+    lock_domain(&domain)?.sim.set_hot(cells);
+    Ok(rustler::types::atom::ok())
 }
 
 // 本轮节点次序（槽位列表，World 按节点键序给出；决定内核下标与发边次序）；返回 {边数, 互见半对数, 对天空面数}。
@@ -190,7 +197,7 @@ fn domain_index(domain: ResourceArc<DomainResource>, order: Vec<u32>, emissivity
     if !emissivity.is_finite() || !(0.0..2.0).contains(&emissivity) {
         return Err(Error::BadArg);
     }
-    let mut r = domain.0.lock().unwrap();
+    let mut r = lock_domain(&domain)?;
     if order.iter().any(|&slot| r.sim.node(slot).is_none()) { return Err(Error::BadArg); }
     r.domain.index(&order, emissivity);
     Ok((r.domain.edges.len(), r.domain.pairs.len(), r.domain.sky.len()))
@@ -207,7 +214,7 @@ fn domain_step(domain: ResourceArc<DomainResource>, duration: f64, exchange: f64
     if sources.iter().any(|&(_, p, r)| !finite(&[p, r]) || p <= 0.0) || powers.iter().any(|&(_, p)| !p.is_finite()) {
         return Err(Error::BadArg);
     }
-    let mut guard = domain.0.lock().unwrap();
+    let mut guard = lock_domain(&domain)?;
     let Resident { domain, sim } = &mut *guard;
     if requested.iter().any(|&i| i >= domain.nodes) { return Err(Error::BadArg); }
     let contacts = domain.edges.iter().copied().chain(extra_contacts).collect();
@@ -223,29 +230,29 @@ fn domain_step(domain: ResourceArc<DomainResource>, duration: f64, exchange: f64
 
 // 取回自上次取回以来变化的节点当前值 {槽位, 动态量}，交 World 写回属性记录。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
-fn domain_flush(domain: ResourceArc<DomainResource>) -> Vec<(u32, NodeDynamic)> {
-    domain.0.lock().unwrap().sim.take_dirty().iter().map(|(slot, n)| (*slot, dynamic(n))).collect()
+fn domain_flush(domain: ResourceArc<DomainResource>) -> NifResult<Vec<(u32, NodeDynamic)>> {
+    Ok(lock_domain(&domain)?.sim.take_dirty().iter().map(|(slot, n)| (*slot, dynamic(n))).collect())
 }
 
 // 节点当前值（不改变待写回标记）；不在热域内为 nil。
 #[cfg_attr(not(test), rustler::nif)]
-fn domain_values(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> Vec<Option<NodeDynamic>> {
-    let r = domain.0.lock().unwrap();
-    slots.into_iter().map(|slot| r.sim.node(slot).map(dynamic)).collect()
+fn domain_values(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> NifResult<Vec<Option<NodeDynamic>>> {
+    let r = lock_domain(&domain)?;
+    Ok(slots.into_iter().map(|slot| r.sim.node(slot).map(dynamic)).collect())
 }
 
 // 槽位在本轮节点次序中的内核下标；不在节点集内为 nil。
 #[cfg_attr(not(test), rustler::nif)]
-fn domain_positions(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> Vec<Option<usize>> {
-    let r = domain.0.lock().unwrap();
-    slots.into_iter().map(|slot| r.domain.at(slot)).collect()
+fn domain_positions(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> NifResult<Vec<Option<usize>>> {
+    let r = lock_domain(&domain)?;
+    Ok(slots.into_iter().map(|slot| r.domain.at(slot)).collect())
 }
 
 // 上次 `domain_index` 生成的 {内核边, 互见半对, 对天空}，供核对与 World 端参考规则逐项相同。
 #[cfg_attr(not(test), rustler::nif)]
-fn domain_terms(domain: ResourceArc<DomainResource>) -> (Vec<(usize,usize,f64)>, Radiation) {
-    let r = domain.0.lock().unwrap();
-    (r.domain.edges.clone(), (r.domain.pairs.clone(), r.domain.sky.clone()))
+fn domain_terms(domain: ResourceArc<DomainResource>) -> NifResult<(Vec<(usize,usize,f64)>, Radiation)> {
+    let r = lock_domain(&domain)?;
+    Ok((r.domain.edges.clone(), (r.domain.pairs.clone(), r.domain.sky.clone())))
 }
 
 #[cfg(not(test))]
@@ -331,5 +338,18 @@ mod tests {
         assert_eq!(out[0].2, 0.0);
         assert!((supplied - 0.3).abs() < 1.0e-12);
         assert_eq!(environment, 0.0);
+    }
+
+    // 互斥锁中毒时返回显式错误，避免在 NIF 边界再次 panic。
+    #[test]
+    fn poisoned_domain_mutex_returns_error_instead_of_panicking() {
+        let domain = std::sync::Arc::new(DomainResource(Mutex::new(Resident::default())));
+        let poisoner = std::sync::Arc::clone(&domain);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.0.lock().unwrap();
+            panic!("模拟持锁期间 panic 导致锁中毒");
+        })
+        .join();
+        assert!(lock_domain(&domain).is_err());
     }
 }

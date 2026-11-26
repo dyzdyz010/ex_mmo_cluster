@@ -146,7 +146,7 @@ defmodule MmoContracts.Session.Wire do
     read_array(count - 1, type, rest, [value | acc])
   end
 
-  @doc "?????????/????????????????"
+  @doc "校验序列严格递增（无重复、无乱序）；供线协议解码边界断言，不满足时抛出 MatchError。"
   def ordered!(values),
     do: true = Enum.chunk_every(values, 2, 1, :discard) |> Enum.all?(fn [a, b] -> a < b end)
 end

@@ -15,7 +15,7 @@ defmodule VoxelRegion.World.Tools do
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
-  # ??????????????? B1 ????????
+  # 粒度 3（附件槽位）：按 slot 校验附件身份与材质，经 AttachmentOps.attachment_reach 判定射程（B1 附件目标）。
   def tool_target(state, actor, %{granularity: 3, owner: {id, address}} = r, tool)
        when address in 0..5 do
     slot = {div(address, 3), rem(address, 3), r.micro}

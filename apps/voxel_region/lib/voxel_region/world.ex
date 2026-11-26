@@ -234,8 +234,41 @@ defmodule VoxelRegion.World do
     do: VoxelRegion.World.PageLoad.call(server, {:publish_parameters, Damage.load(path), expected_digest}, 300_000)
 
   @doc "只测试作者入口：从资产导出的实验参数启动有限供能热源；不开放给 Gate 玩家意图。"
-  def thermal_experiment(server, path),
-    do: VoxelRegion.World.PageLoad.call(server, {:thermal_experiment, Jason.decode!(File.read!(path))}, 300_000)
+  def thermal_experiment(server, path) do
+    with {:ok, raw} <- File.read(path),
+         {:ok, experiment} <- Jason.decode(raw),
+         :ok <- validate_thermal_experiment(experiment) do
+      VoxelRegion.World.PageLoad.call(server, {:thermal_experiment, experiment}, 300_000)
+    end
+  end
+
+  defp validate_thermal_experiment(%{
+         "classification" => "Test-only",
+         "power_w" => power_w,
+         "energy_j" => energy_j,
+         "source_macro" => [x, y, z]
+       })
+       when is_number(power_w) and power_w > 0 and is_number(energy_j) and energy_j > 0 and
+              is_integer(x) and is_integer(y) and is_integer(z),
+       do: :ok
+
+  defp validate_thermal_experiment(_), do: {:error, :invalid_thermal_experiment}
+
+  defp valid_thermal_config?(config) do
+    is_number(config["ambient_kelvin"]) and config["ambient_kelvin"] > 0 and
+      is_number(config["environment_w_per_m2_k"]) and config["environment_w_per_m2_k"] > 0 and
+      is_number(config["tolerance_kelvin"]) and config["tolerance_kelvin"] > 0 and
+      radiation_config?(config) and VoxelRegion.Climate.valid?(config)
+  end
+
+  defp valid_thermal_target?(state, %{granularity: 0, material: material}) do
+    case Map.get(state.properties.materials, material) do
+      %{"heat_capacity_per_macro" => c} when is_number(c) and c > 0 -> true
+      _ -> false
+    end
+  end
+
+  defp valid_thermal_target?(_state, _target), do: false
 
   @doc "Test-only: install an MCP-authored finite basin once, before player actions; never a refill source."
   def liquid_experiment(server, path) do
@@ -1132,36 +1165,44 @@ defmodule VoxelRegion.World do
   # 新热源与同格未放完的热源合并（余量、功率相加），和其他有限热源一样只在放出时记入供热账。
   # 没有热环境时从空热账开始。电路零功率阈值随原环境配置继承（D1），实验文件不必再写。
   defp call({:thermal_experiment, experiment}, _, state) do
-    true = experiment["classification"] == "Test-only"
     base = state.thermal || empty_thermal(experiment)
     config = Map.merge(base.config, experiment)
 
-    true =
-      config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and
-        config["tolerance_kelvin"] > 0 and radiation_config?(config) and
-        VoxelRegion.Climate.valid?(config)
+    if valid_thermal_config?(config) do
+      micro = experiment["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
+      {target, state} = target_at(micro, state)
 
-    true = experiment["power_w"] > 0 and experiment["energy_j"] > 0
-    micro = experiment["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
-    {%{granularity: 0} = target, state} = target_at(micro, state)
-    true = Map.fetch!(state.properties.materials, target.material)["heat_capacity_per_macro"] > 0
-    source = %{target: target, power_w: experiment["power_w"], remaining_j: experiment["energy_j"]}
+      if valid_thermal_target?(state, target) do
+        source = %{target: target, power_w: experiment["power_w"], remaining_j: experiment["energy_j"]}
 
-    sources = Map.update(base.sources, Damage.macro(target), source, fn old ->
-      %{source | power_w: old.power_w + source.power_w, remaining_j: old.remaining_j + source.remaining_j}
-    end)
+        sources =
+          Map.update(base.sources, Damage.macro(target), source, fn old ->
+            %{source | power_w: old.power_w + source.power_w, remaining_j: old.remaining_j + source.remaining_j}
+          end)
 
-    reference = ~w(ambient_kelvin climate_zones)
+        reference = ~w(ambient_kelvin climate_zones)
 
-    base =
-      if Map.take(config, reference) == Map.take(base.config, reference),
-        do: base,
-        else: VoxelRegion.ParameterEvolution.ambient_reference(base, config, state.damage, state.properties,
-          &finite_volume(state, &1))
+        base =
+          if Map.take(config, reference) == Map.take(base.config, reference),
+            do: base,
+            else:
+              VoxelRegion.ParameterEvolution.ambient_reference(
+                base,
+                config,
+                state.damage,
+                state.properties,
+                &finite_volume(state, &1)
+              )
 
-    thermal = %{base | config: config, sources: sources, active: true}
-    state = thermal_commit(Thermal.rebuild_work(%{state | thermal: thermal}), [])
-    {:reply, :ok, state}
+        thermal = %{base | config: config, sources: sources, active: true}
+        state = thermal_commit(Thermal.rebuild_work(%{state | thermal: thermal}), [])
+        {:reply, :ok, state}
+      else
+        {:reply, {:error, :invalid_thermal_target}, state}
+      end
+    else
+      {:reply, {:error, :invalid_thermal_config}, state}
+    end
   end
 
   # NPC 观察射线：一次 owner 调用读同一 seq，不写事务。
