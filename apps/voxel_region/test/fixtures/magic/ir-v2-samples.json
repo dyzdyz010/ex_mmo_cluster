@@ -1,5 +1,5 @@
 {
-  "source": "TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.6 §11.4.4（逐字抽取，未改字节）",
+  "source": "TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.6 §11.4.4（逐字抽取，未改字节）；staff_bolt_massless 由 ex_mmo_cluster 魔法 v2 切片 5 增补（见其 design）",
   "catalog_digest": "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264",
   "note": "IR v2 冻结样本：服务端持有的唯一判据；客户端测试读同一份字节。下标按目录 v5 夹具（= 设计 §2.3 表序，K3 冻结）。",
   "samples": [
@@ -47,6 +47,11 @@
       "id": "guarded_fireball",
       "design": "过热保险火球：火球 + 规则 1：当〈满 相干 低于 0.5〉则〈散〉（规则 0：〈遇〉→〈散〉）",
       "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0020001002201002c00010100240101138801002c00"
+    },
+    {
+      "id": "staff_bolt_massless",
+      "design": "法杖光弹（ex_mmo_cluster 魔法 v2 切片 5，Q5-1，非设计 §11.4.4 抽取）：〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1444 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉；〈蓄〉取 30 m/s 发射后第 2 个热拍（路程 30 m）在飞行中衰竭的区间 1296–1592 J 的中点",
+      "program_hex": "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00"
     }
   ]
 }

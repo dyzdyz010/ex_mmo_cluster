@@ -5,7 +5,8 @@ defmodule VoxelRegion.MagicQuoteSamplesTest do
 
   - 契约：样本文件里每个字段都等于用同一目录、同一组施放处读数调用 `Cost.quote_structure/3` 的结果。浮点量按
     `@decimals` 位小数四舍五入后写入、比较；整数（能量 mJ、计数）逐位比较。
-  - 夹具：程序字节取冻结样本 `fixtures/magic/ir-v2-samples.json`（9 个预设，含 2 个施法者动作〈取〉）；拒绝反例由
+  - 夹具：程序字节取冻结样本 `fixtures/magic/ir-v2-samples.json`（9 个设计预设，含 2 个施法者动作〈取〉，另加切片 5 的
+    无质量法杖光弹 `staff_bolt_massless`）；拒绝反例由
     样本改写槽字节得到（偏移按设计 §11.4.4 逐字节注释手数），经真实 `Program.decode_ir/2` 接纳，都是玩家能写出的程序。
   - 生成：本文件的 `document/2` 是样本文件的唯一生成器，只调用产品函数，不另写计价逻辑。实现或目录有意改变时，
     设置 `WRITE_MAGIC_QUOTE_SAMPLES=1` 运行本测试重写文件，再核对 diff；默认只比较、不写。
@@ -172,7 +173,7 @@ defmodule VoxelRegion.MagicQuoteSamplesTest do
 
     file = Jason.decode!(File.read!(@path))
     assert file["catalog_digest"] == @digest and c.ir["catalog_digest"] == @digest
-    assert length(file["presets"]) == 9 and length(file["rejected"]) == 3
+    assert length(file["presets"]) == 10 and length(file["rejected"]) == 3
 
     for key <- (Map.keys(expected) ++ Map.keys(file)) |> Enum.uniq(),
         do: assert(file[key] == expected[key], "字段 #{key} 与实现不一致；如属有意改变，按 generator 重新生成")

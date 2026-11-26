@@ -10,12 +10,14 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     成本（`total_mj`、`steps[].spent_mj`）不变；差 1 字节的非普攻程序照常按成本模型前摇。
   - 施法者账 `caster_energy` 为整数 mJ；`send_caster_state` 对无键角色一次性充能 `497_084_850 mJ`
     （热账源项 `caster_granted_j`），已有键（含 0 与旧浮点）不充；旧浮点 J 余额读作 `trunc(J × 1000) mJ`。
-  - 切片 4c 起结构建成（扣报价 `total_mj`）；法杖光弹的无重力直飞（程序不写质量，Q5-1）、〈遇〉与人物命中在切片 5
-    （`MagicSemblanceTest` 覆盖无质量直线弹道几何，`magic_structure_world_test.exs` 覆盖结构运行时）。
+  - 切片 4c 起结构建成（扣报价 `total_mj`）。切片 5（Q5-1 与用户答复）：程序不写质量（无质量，直线匀速、无射程终点），
+    〈蓄〉1444 J 使它以 30 m/s 发射后在第 2 个热拍（路程 30 m）于飞行中衰竭；飞行、〈遇〉与人物命中由
+    `magic_structure_world_test.exs` 的 W5-3 覆盖。
 
   IR v2 法杖光弹（复用 v5 目录 `e337873b…` 既有 14 符号，42 B）：
-  `〈握〉〈形 球 0.05 m，0.01 kg〉〈辉 100 W〉〈蓄 2 kJ〉〈投 30 m/s〉｜当〈遇〉则〈散〉`
-  hex = `02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00`
+  `〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1444 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉`
+  hex = `020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00`
+  （物品目录夹具 `fixtures/items/08bb766b…` 是客户端真实发布物，在客户端重新发布前仍是旧程序；本文件用测试内持物表。）
   """
   use ExUnit.Case, async: false
   require Logger
@@ -43,12 +45,12 @@ defmodule VoxelRegion.MagicStaffBoltTest do
   @forward {0.0, 0.0, 1.0}
   @up {0.0, 1.0, 0.0}
 
-  # 法杖光弹 IR v2（42 B）：环境 293.15 K 下 total_mj = 10_499_481、physical_mj = 2_004_500、
-  # 成本模型前摇 1.1845519135182587 s、life_s = 1.6862274690928498 s、rejects = []。
-  @bolt_hex "02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00"
+  # 法杖光弹 IR v2（42 B）：环境 293.15 K 下 total_mj = 9_936_275、physical_mj = 1_444_000（〈蓄〉，无质量无动能）、
+  # 成本模型前摇 1.1840480235867354 s、life_s = 0.7535121488946855 s（报价的能量切片求积）、rejects = []。
+  @bolt_hex "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00"
   @bolt_bytes Base.decode16!(@bolt_hex, case: :lower)
-  @bolt_total_mj 10_499_481
-  @bolt_windup_s 1.1845519135182587
+  @bolt_total_mj 9_936_275
+  @bolt_windup_s 1.1840480235867354
   @grant_mj 497_084_850
   @basic_windup_s 0.3
 
@@ -263,7 +265,7 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     caster
   end
 
-  test "光弹 IR v2 报价：合法程序、0 rejects、物理 2004.5 J、寿命 1.69 s；开户充能维持常量", c do
+  test "光弹 IR v2 报价：合法程序、0 rejects、物理 1444 J（无质量、无动能）、报价寿命 0.75 s；开户充能维持常量", c do
     catalog = Catalog.load(Path.join(c.root, "magic.json"))
     assert {:ok, program} = Program.diagnose_ir(@bolt_bytes, catalog)
 
@@ -277,10 +279,10 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     q = Cost.quote_structure(program, catalog, site)
     assert q.rejects == []
     assert q.units == 4 and q.precision == 1
-    assert q.physical_mj == 2_004_500
+    assert q.physical_mj == 1_444_000 and q.kinetic_mj == 0
     assert q.total_mj == @bolt_total_mj
     assert_in_delta q.windup_s, @bolt_windup_s, 1.0e-12
-    assert q.life_s > 1.0 and q.life_s < 2.0
+    assert q.life_s > 0.5 and q.life_s < 1.0
     assert Casting.initial_charge_mj() == @grant_mj
   end
 
@@ -307,9 +309,9 @@ defmodule VoxelRegion.MagicStaffBoltTest do
 
     assert_in_delta q_draw.quote_windup_s, 0.430375043716573, 1.0e-9
 
-    # 与光弹只差 1 字节（energy.load 2000 J 0x07d0 → 2001 J 0x07d1）：不是持物普攻，照常按成本模型前摇。
+    # 与光弹只差 1 字节（energy.load 1444 J 0x05a4 → 1445 J 0x05a5）：不是持物普攻，照常按成本模型前摇。
     other =
-      String.replace(@bolt_hex, "001b07d0", "001b07d1") |> Base.decode16!(case: :lower)
+      String.replace(@bolt_hex, "001b05a4", "001b05a5") |> Base.decode16!(case: :lower)
 
     assert byte_size(other) == byte_size(@bolt_bytes)
 
