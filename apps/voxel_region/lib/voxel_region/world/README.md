@@ -46,7 +46,7 @@ sequenceDiagram
 | 读取 | `Canonical`、`Observation`、`Canopy` | 权威格读取与材料判定；订阅者视图与增量；树冠派生 |
 | 玩法意图 | `Tools`、`Production`、`Prefabs`、`Definitions`、`AttachmentOps`、`Casting`、`Beacons`、`Claims`、`Phases`、`Edits` | 工具、建造与合成、预制件、附件、施法、信标、领地认领、相态操作、逐格编辑批次 |
 | 运维与作者 | `Catalogs`、`Parcel`、`Gm` | 目录发布、地块导出与安装、只测试的 GM 施工 |
-| 模拟 | `Thermal`、`HeatCommit`、`Liquids`、`Structures`、`CircuitGraph`、`CircuitAdmission` | 热步与热提交的世界后果、液体流动、魔法结构的运行时（物理体、逐拍步进、记录与持久化）、电路图与新增连接的接纳 |
+| 模拟 | `Thermal`、`HeatCommit`、`Liquids`、`Structures`、`Projectiles`、`CircuitGraph`、`CircuitAdmission` | 热步与热提交的世界后果、液体流动、魔法结构的运行时（物理体、逐拍步进、记录与持久化）、飞行中结构的墙钟飞行驱动（地形求交、人物采样、接触结算）、电路图与新增连接的接纳 |
 | 迁移 | `SemblanceMigration` | 旧存档拟态的一次性散解（恢复时，魔法 v2 Q4-6；退出条件见模块头注） |
 
 想改某类玩法时，从“玩法意图”一行找到模块；想知道某条消息读哪些页，看 `Closure`；想知道它能否被某个主体发起，看 `../access.ex`。
@@ -118,7 +118,44 @@ flowchart LR
 - 可观测：`voxel_structure_tick`、`voxel_structure_end`、`voxel_thermal_throttle`、`voxel_structure_restored`、
   `voxel_structure_migrated`；`voxel_thermal_commit` 行尾追加上述科目与 `commit_tick`；观察快照的 `thermal_accounting`
   带同名科目与 `commit_tick`、`structures`、`structure_stored_mj`。
-- 世界侧投射物实时采样驱动（v1〈触散〉拟态专用）已删除；人物采样、〈遇〉与飞行终点由射程推导在切片 5 接回。
+
+## 飞行与〈遇〉（魔法 v2，切片 5）
+
+决策稿 §5 与 §14 的用户答复（以答复为准）：**无质量结构不设射程终点**，直线匀速飞行到接触（〈遇〉→〈散〉，live 2）或在飞行中
+衰竭（live 3），不在端点悬停；有质量结构按弹道飞到落地或接触。飞行沿用墙钟合同（设计 §5.8）：`Projectiles` 每 50 ms
+一拍（`projectile_tick`，经 `Clock`）推进飞行进度，维持照常在热提交拍里步进。
+
+```mermaid
+flowchart LR
+  C[Casting 结算] -->|"flight = %{age_s: 0, source}"| S[(thermal.structures)]
+  PT["projectile_tick 50 ms"] --> P["Projectiles.poll<br/>异步任务"]
+  P -->|ends_on_contact 且施法者是 Player| B["采样后端<br/>WorldServer.Movement.Projectile<br/>Harm 判定点 1"]
+  P -->|其余飞行体| L[只求墙钟时长]
+  B --> R["{任务引用, 结果} 过页闸"]
+  L --> R
+  R --> A["Projectiles.accept<br/>逐弦段：可读范围 → 地形 → 与人物比先后"]
+  A -->|地形| LAND["Structures.land<br/>settle_kinetic → evaluate_rules(last_tick+1) → respond"]
+  A -->|人物| HIT["Structures.hit_body<br/>冻结交付 → Player 接纳（判定点 2）→ deliver"]
+  A -->|读不出 canonical| OUT["Structures.dissipate live 3<br/>voxel_structure_out_of_domain"]
+  A -->|无接触| ADV[只推进内存里的飞行进度]
+  LAND --> TX
+  HIT --> TX
+  OUT --> TX["一笔事务 → PropertyBatch structures"]
+```
+
+- 线上记录：飞行中的记录带 `flying` 状态位，`flight_s`/`rest` 是施放时在射程窗口内的预测（与 4a golden 同义）；客户端在
+  `flying` 位置位时按 t0、初速（有质量者加重力）外推，**不按 `flight_s` 截断**；飞行结束由下一条记录给出真实终点
+  （停住的 live 1 不带 `flying`，或 live 2–6 终态快照，`flight_s` 为真实飞行时长、`rest` 为真实落点）。
+- 〈遇〉：命中地形时按 `last_tick + 1` 求值（含 mix64 读数丢失），触发即在投射物提交点 `respond/3`，读〈遇〉的规则记 live 2；
+  丢失时结构作为静止结构留下、接触待决，之后的热拍重判。动能经 `settle_kinetic/1` 在命中格沉积。
+- 人物命中（只对 `ends_on_contact`，Q5-4）：进入组织 `q = E_op 热半 + 热份额（至多到 T_port）+ 动能`（Q5-2），辐射半只记账；
+  冻结交付随 `thermal` 持久化，Player 接纳后终止并记 `structure_body_mj`（分项 `projectile_body_j`、`body_exchange_j`），
+  未接纳散入空气记 `projectile_rejected_j`。kind14 回执照旧由后端在终止事务之后下发。
+- 恢复：冷重启时仍在飞行的结构以 live 3 散解（`voxel_projectile_restored_dissipated`），冻结交付照常重投。
+- 积压 mid/hard 或模拟装页失败时不开始新的投射物拍（与热、液体同一冻结语义）。
+- 账目闭合式加一项：`… + structure_released_mj + structure_body_mj + Δstored`。
+- 可观测：`voxel_structure_flight phase=launch|contact|landed|out_of_domain|restored`、`voxel_structure_end … hit=terrain|body`、
+  `voxel_structure_state`（随状态增量记 load、x*、env、相干、温度）、`World.stats/1` 的 `simulation_progress.projectiles`。
 
 ## 必须守住的不变量
 

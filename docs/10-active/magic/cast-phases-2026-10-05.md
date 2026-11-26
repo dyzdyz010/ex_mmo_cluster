@@ -40,6 +40,19 @@ Replica 物化边界：kind2 和 nil 都从副本存活表删除；原始 kind2 
 
 正式镜像 `voxim-server:20261005-combat-projectile`，image id `sha256:5e23de6321af5edcc8fa18e6eb5ef5a566fc036a1b94e7827f60299cdb57e30a`，构建 exit0，日志 `combat-server-build.log`；Hello37，UE 目录 `71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7`。没有修改魔法 Cost 或目录参数。实际正式 Cost 对比由 `combat_speed_quote.exs` 执行：fireball 前摇 2.9759839847→2.0762897908 s，报价 445361.3299→438968.3333 J，日志 `combat-speed-quote.log`。镜像已交 Voxim 主任务开始真实双客户端闭环；本记录不把构建/模块绿灯写成双端或分发验收。
 
+## 飞行合同改为结构飞行（魔法 v2 切片 5，2026-11-26，服务端已实现；双端未跑）
+
+Global system。决策稿 [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-closure-slices4-8.md) §5、§14（用户答复为准）。上文“飞行期间命中人物”的 v1 合同（拟态、寿命端点、`lifetime_s`）由下面替换；World 冻结 → Player 接纳 → kind14 回执的链路、108 B ProjectileHit 布局、两个 Harm 判定点不变。
+
+- **谁飞**：带〈投〉的结构一律由 World 的 `World.Projectiles` 按墙钟 50 ms 拍逐段飞行（不再只限 v1〈触散〉）；施放时对当时世界的求交只作预测。
+- **终点**：没有寿命也没有射程终点。无质量结构（flags 第 1 位，Q17(a)）直线匀速飞到接触（〈遇〉→〈散〉，live 2）或在飞行中于热拍衰竭（live 3）；有质量结构按弹道飞到落地或接触。不在端点悬停。
+- **线上记录（客户端须改插值）**：飞行中的结构记录带 `flying` 状态位，`flight_s`/`rest` 是施放时在 30 m 窗口内的预测；客户端在 `flying` 位置位时按 `p(τ) = origin + v·τ（有质量者 − ½gτ²ŷ）`、`τ = (服务端时钟 − t0_us)/1e6` 外推，**不再按 `flight_s` 截断**。飞行结束一定有一条新记录：停住的 live 1（无 `flying`）或 live 2–6 终态快照，其 `flight_s` 是真实飞行时长、`rest` 是真实落点。
+- **人物采样**：只对 `ends_on_contact` 结构（Q5-4），且施法者是 Player（带生命代次，沿 v1）。命中时按 `last_tick + 1` 求值〈遇〉：触发则冻结交付（先广播停在命中点的 live 1），Player 接纳后发 live 2 与 kind14；`q_j` 改为 Q5-2 口径——E_op 热半 + 热份额（至多把组织块加热到 T_port）+ 动能，辐射半只记账（`Player.hit_context` 新增组织块温度与热容供 World 求上限）。
+- **账目**：接纳的 q 记 `structure_body_mj`（并沿 v1 记分项 `projectile_body_j` 与 `body_exchange_j`），未接纳散入空气记 `projectile_rejected_j`。
+- **恢复与越界**：冷重启时仍在飞行的结构以 live 3 散解，不采样；冻结交付照常重投。飞进 World 读不出 canonical 的 region（`Canonical.decoded/3` 失败）时在该弦段起点以 live 3 散解，日志 `voxel_structure_out_of_domain`（显式终止规则，待设计确认）。
+- **法杖光弹**：程序改为无质量（`mass_g` 0000）、〈蓄〉1444 J，hex `020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00`；以 30 m/s 射出，在第 2 个热拍（模拟 1.0 s、路程 30 m）于飞行中衰竭；报价 9 936.275 J。客户端须改 `author_holdable.py` 的 `basic_spell` 并重新发布物品目录。
+- 验证：`apps/voxel_region/test/magic_structure_world_test.exs`（W5-1–W5-5、越界、W4-6、W4-7）；`apps/world_server/test/world_server/movement/p0_body_world_test.exs`（后端按 v2 飞行体形状采样）。
+
 ## 法杖光弹：整数 mJ 施法者账与开户充能（2026-11-20，服务端已实现；单客户端已实跑，待用户验收；双端未跑）
 
 Global system。法杖的能量就是既有的每角色施法者账 `World.caster_energy`，只有这一本账，不另设法杖账。
