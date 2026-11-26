@@ -55,6 +55,7 @@ defmodule VoxelRegion.World.Log do
     do: Map.merge(journal(state, txn), %{attachment_owners: state.attachment_owners, prefab_instances: state.instances})
 
   # 附件 ID 分配水位与活动液体集随同一日志持久化；网络槽副本仍只需要全局ID。
+  # 运行中结构以显式字段 map 落盘（魔法 v2 切片 4c，决策稿 Q4-7；恢复时 `World.Structures.restore/1` 一次校验）。
   defp journal(state, txn),
     do:
       Map.merge(txn, %{
@@ -62,6 +63,12 @@ defmodule VoxelRegion.World.Log do
         material_units_per_micro: state.material_units_per_micro,
         liquid_active: Enum.to_list(state.liquid_active)
       })
+      |> persist_thermal()
+
+  defp persist_thermal(%{thermal: thermal} = journal) when thermal != nil,
+    do: %{journal | thermal: VoxelRegion.World.Structures.persisted_thermal(thermal)}
+
+  defp persist_thermal(journal), do: journal
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   def remember_entry(state, full) do

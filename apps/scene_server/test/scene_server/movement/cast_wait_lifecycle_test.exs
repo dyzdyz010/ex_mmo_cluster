@@ -458,7 +458,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   # 法杖光弹不受战斗范围限制：本夹具的 Scene 配置没有 test_combat_bounds_m，`Scene.load_config!` 给出
   # combat_scope = nil，即战斗处处关闭（工具 22/23 的候选在 Scene.tool_candidates 被拒、人物受击在
   # Player.receive_effect 被拒）。施法链路 Player.cast_spell → World 没有战斗范围判定，所以同一个 Player
-  # 照常前摇并交 World 结算（切片 3 下结构建成回 :structure_runtime_pending，取能回 :ok 并按整数 mJ 入账）。
+  # 照常前摇并交 World 结算（切片 4c 起结构建成回 {:ok, outcome nil}，取能回 :ok 并按整数 mJ 入账）。
   @bolt_hex "02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00"
   test "战斗范围关闭（combat_scope nil）时法杖光弹与取能照常前摇：真实 Player 按成本模型前摇并交 World 结算", c do
     assert c.config.combat_scope == nil
@@ -486,8 +486,8 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
 
-    # 本夹具没有持物表：前摇按 v2 成本模型 1.1846 s 由 Player 真实定时器推进；切片 3 结构建成显式回 :structure_runtime_pending。
-    assert_receive {^tag, {:error, :structure_runtime_pending}}, 10_000
+    # 本夹具没有持物表：前摇按 v2 成本模型 1.1846 s 由 Player 真实定时器推进；切片 4c 起结构建成。
+    assert_receive {^tag, {:ok, %{outcome: nil}}}, 10_000
     assert System.monotonic_time(:millisecond) - started >= 1_180
   end
 
@@ -525,7 +525,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     tag = make_ref()
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
-    assert_receive {^tag, {:error, :structure_runtime_pending}}, 10_000
+    assert_receive {^tag, {:ok, %{outcome: nil}}}, 10_000
     elapsed = System.monotonic_time(:millisecond) - started
     assert elapsed >= 300 and elapsed < 1_000
   end

@@ -762,7 +762,8 @@ defmodule VoxelRegion.World.Pages do
   @doc "冻结状态的全局账行。"
   def globals(state) do
     encode(state |> Map.take(@globals) |> Map.put(:protection, state.protection.regions)
-      |> Map.put(:thermal, state.thermal && Map.delete(state.thermal, :sources)) |> Map.put(:page_format, @page_format))
+      |> Map.put(:thermal, state.thermal && VoxelRegion.World.Structures.persisted_thermal(Map.delete(state.thermal, :sources)))
+      |> Map.put(:page_format, @page_format))
   end
 
   defp encode(value), do: :erlang.term_to_binary(%{format: 1, value: value}, compressed: 6)

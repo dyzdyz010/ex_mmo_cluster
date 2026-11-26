@@ -85,7 +85,20 @@ defmodule VoxelRegion.World.Observation do
       :projectile_body_j, :projectile_rejected_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
-    Map.put(ledger, :sources, sources)
+    ledger = Map.put(ledger, :sources, sources)
+
+    # 结构账（魔法 v2 切片 4c，决策稿 §4.2 按去向记的整数 mJ 科目）与存量快照：闭合式
+    # created + heat_in = light + anima_radiated + leak_heat + released + stored（+ 内核舍入残差另列 rounding_mj）。
+    # 只在出现过结构的世界里有（科目与拍号同 thermal 里的键，`structures` 为个数，`structure_stored_mj` 为存量快照）。
+    ledger = Map.merge(ledger, Map.take(thermal, VoxelRegion.World.Structures.accounts() ++ [:structure_rounding_mj, :commit_tick]))
+
+    case thermal do
+      %{structures: structures} ->
+        Map.merge(ledger, %{structures: map_size(structures), structure_stored_mj: VoxelRegion.World.Structures.stored_mj(structures)})
+
+      _ ->
+        ledger
+    end
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
@@ -205,6 +218,7 @@ defmodule VoxelRegion.World.Observation do
       property_context: property_context(state),
       epochs: VoxelRegion.EpochChunk.flat(state.epochs, box),
       protection: state.protection.regions,
+      structures: VoxelRegion.World.Structures.records(state),
       casts: Map.new(state.pending_casts, fn {cid, pending} -> {cid, pending.record} end)
     }
     |> public_properties()

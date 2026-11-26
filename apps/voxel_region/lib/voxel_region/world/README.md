@@ -46,7 +46,8 @@ sequenceDiagram
 | 读取 | `Canonical`、`Observation`、`Canopy` | 权威格读取与材料判定；订阅者视图与增量；树冠派生 |
 | 玩法意图 | `Tools`、`Production`、`Prefabs`、`Definitions`、`AttachmentOps`、`Casting`、`Beacons`、`Claims`、`Phases`、`Edits` | 工具、建造与合成、预制件、附件、施法、信标、领地认领、相态操作、逐格编辑批次 |
 | 运维与作者 | `Catalogs`、`Parcel`、`Gm` | 目录发布、地块导出与安装、只测试的 GM 施工 |
-| 模拟 | `Thermal`、`HeatCommit`、`Liquids`、`Projectiles`、`CircuitGraph`、`CircuitAdmission` | 热步与热提交的世界后果、液体流动、飞行体、电路图与新增连接的接纳 |
+| 模拟 | `Thermal`、`HeatCommit`、`Liquids`、`Structures`、`CircuitGraph`、`CircuitAdmission` | 热步与热提交的世界后果、液体流动、魔法结构的运行时（物理体、逐拍步进、记录与持久化）、电路图与新增连接的接纳 |
+| 迁移 | `SemblanceMigration` | 旧存档拟态的一次性散解（恢复时，魔法 v2 Q4-6；退出条件见模块头注） |
 
 想改某类玩法时，从“玩法意图”一行找到模块；想知道某条消息读哪些页，看 `Closure`；想知道它能否被某个主体发起，看 `../access.ex`。
 
@@ -55,7 +56,7 @@ sequenceDiagram
 不装页、不改世界）共用同一组判定。调用方（如 NPC 的背包候选 `NpcServer.Offers`）读这个查询，不自己镜像条件；
 执行时 World 仍按提交那一刻的状态重新裁决。
 
-## 施法（魔法 v2，切片 3）
+## 施法（魔法 v2，切片 3–4）
 
 `Casting` 只吃 IR v2 程序与目录 v5（v1 JSON 与 v4 目录已删，决策稿
 [`2026-11-19-slice3-protocol.md`](../../../../../docs/10-active/magic/2026-11-19-slice3-protocol.md)）。前摇计时器只归
@@ -79,9 +80,45 @@ sequenceDiagram
 - 施法域距离只由报价的 T6 判；射线落空 `:no_target`，数值检查违规 `{:rejects, [检查名]}`。
 - 中断支出落在形成位置（〈握〉〈取〉手边格、〈附〉目标格），`release_heat_fraction` 一份作为有限热源、其余记
   `cast_interrupt_radiation_j`；格子不是未细分热节点时全部计入辐射账。成功施法的构型损耗仍记 `cast_waste_j`（脚下）。
-- 切片 3 内结构不会建成：全部步骤通过时回 `:structure_runtime_pending`（不扣能）。
+- 结构建成（切片 4c）：扣报价 `total_mj`，按形成锚与〈投〉求物理体，`Magic.Structure.new/4` 放进 `thermal.structures`；
+  施放记录 live 0 与结构记录 live 1 在同一笔事务。施法者名下已有 `quotas.structures_per_caster`（6）个结构时，前摇开始、
+  第 k 步检查与出手都回 `:structure_quota`（决策稿 Q4-5，其余准入在切片 7）。
 - 可观测：`voxel_spell_quote`（phase=quote|prepare|checkpoint|release）、`voxel_cast_begin`、`voxel_spell`、
-  `voxel_cast_rejected`、`voxel_magic_program_rejected`；热账 `cast_interrupt_heat_j` / `cast_interrupt_radiation_j`。
+  `voxel_structure_built`、`voxel_cast_rejected`、`voxel_magic_program_rejected`；热账 `cast_interrupt_heat_j` /
+  `cast_interrupt_radiation_j`、`structure_created_mj`。
+
+## 结构运行时（魔法 v2，切片 4c）
+
+决策稿 [`2026-11-26-p1-closure-slices4-8.md`](../../../../../docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md) §4。
+结构的储能、欠账与规则状态是纯值 `Magic.Structure` 的整数真值；`Structures` 只编排，`Thermal` 只把落地的热结构接进内核。
+
+```mermaid
+flowchart LR
+  C[Casting 结算] -->|new/4 + 物理体| S[(thermal.structures)]
+  S -->|落地且带〈热〉| K[Thermal 内核调用<br/>受限外部节点 Φ_cap / t_lo / t_hi]
+  K -->|净热累计 run.structure_heat| T[Thermal.settle_run]
+  T -->|tick = commit_tick + 1| ST[Structures.tick/3<br/>按 id 升序 step → respond]
+  ST -->|沉积请求 → 有限热源 / 辐射账| S
+  ST -->|structures（live 0、2–6）+ structure_states| TX[同一笔热事务 → PropertyBatch]
+  TX -->|persisted_thermal：显式字段 map| LOG[(日志 / 分页全局行)]
+  LOG -->|restore/1 一次校验| S
+```
+
+- 时钟：`thermal.commit_tick` 每完成一次热提交 +1（Q4-9），拍长唯一定义在 `Magic.Structure.tick_ms/0`；积压冻结时热提交
+  不开始，结构随之冻结；冷重启从持久化的拍号继续，不补算。
+- 热节点：带〈热〉且本拍开始时已落地的结构；节点温度 T_port = T_ref + (E_th + 本拍已累计净热)/C_th，限流参数取自结构；
+  多次内核调用的计数汇总成 `voxel_thermal_throttle`。飞行中的结构不进内核。
+- 沉积：请求里的热只落进接触格（执行时复核施法者对它可写，设计 §12.1 更正 3），否则计入灵炁辐射账。
+- 线上：出生记录随施放事务；每拍终止的结构发 live 2–6 终态快照并移出；运行中的结构按固定分箱（Q4-4）比较步进前后，
+  变了才发状态增量（随事务运输完整记录，编码时投影成 20 B）。`Replica` 与 `PropertyObservation` 按位置投影、按 §3.2 物化。
+- 持久化：条目随每笔带 `thermal` 的事务写出，写出前 `Structures.persisted_thermal/1` 换成显式字段 map（`Log` 的事务元数据与
+  `Pages.globals/1` 两处），恢复后 `Structures.restore/1` 一次校验（含 `last_tick = commit_tick`）。
+- 账目（整数 mJ，按去向）：`structure_created_mj + structure_heat_in_mj = structure_light_mj + anima_radiated_mj +
+  structure_leak_heat_mj + structure_released_mj + Δstored`；内核 f64 → mJ 的残差列在 `structure_rounding_mj`。
+- 可观测：`voxel_structure_tick`、`voxel_structure_end`、`voxel_thermal_throttle`、`voxel_structure_restored`、
+  `voxel_structure_migrated`；`voxel_thermal_commit` 行尾追加上述科目与 `commit_tick`；观察快照的 `thermal_accounting`
+  带同名科目与 `commit_tick`、`structures`、`structure_stored_mj`。
+- 世界侧投射物实时采样驱动（v1〈触散〉拟态专用）已删除；人物采样、〈遇〉与飞行终点由射程推导在切片 5 接回。
 
 ## 必须守住的不变量
 

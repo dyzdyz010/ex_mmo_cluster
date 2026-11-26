@@ -1,6 +1,6 @@
 defmodule VoxelRegion.World.Casting do
   @moduledoc """
-  全局系统功能：施法（符号组合魔法 v2，切片 3）——报价、前摇、第 k 步检查与施放结算。
+  全局系统功能：施法（符号组合魔法 v2，切片 3–4）——报价、前摇、第 k 步检查与施放结算（含结构建成）。
 
   由 `VoxelRegion.World` 拆出的状态函数：输入与返回都是 World 状态，真值归属与调用时机仍由 World 决定。
   决策稿：`docs/10-active/magic/2026-11-19-slice3-protocol.md`（§3 线上表示、§3.5 施法域、§8 可观测面、§14 v2.11 W1/W3/W7/W9）；
@@ -47,7 +47,12 @@ defmodule VoxelRegion.World.Casting do
     形成位置（〈握〉〈取〉为手边点所在格，〈附〉为目标格），按 `release_heat_fraction` 一份作为有限热源、其余计入辐射账；
     该格不是未细分热节点或施法者不可写（他人保护区）时全部计入辐射账（W7）。
   - 〈取〉建成（outcome 0）：石储能减少、施法者得 η·ΔE、构型损耗作为有限热源留在脚下（`cast_waste_j`，W7 末句）。
-  - 结构建成：切片 3 显式拒绝 `:structure_runtime_pending`（outcome 2，不扣能，决策稿 P2；切片 4 删除）。
+  - 结构建成（outcome 0，切片 4c，决策稿 `2026-11-26-p1-closure-slices4-8.md` §4.1）：扣报价 `total_mj`；按形成锚与〈投〉
+    求物理体（`World.Structures.launch/6`、`body/5`），`Structure.new({seq, 0}, 组, 报价, commit_tick)` 放进
+    `thermal.structures`；物理能量（E_op + E_th0 + 动能）记 `structure_created_mj`，构型损耗（总价 − 物理能量）作为有限热源
+    留在脚下（`cast_waste_j`）。施放记录 live 0 与结构记录 live 1 在**同一笔**事务里。
+  - 每人上限（Q4-5）：施法者名下已有 `quotas.structures_per_caster` 个结构时，前摇开始、第 k 步检查与出手都以
+    `:structure_quota` 拒绝（其余准入在切片 7）。
   - 结算时拒绝（目标失效、数值检查违规等）：outcome 2，不扣能、不改世界。
   - 施放记录只带 outcome 与 `fail_step`；实际扣除量只经 0x83 `spent_j` 发给施法者本人（W3）。
 
@@ -58,7 +63,7 @@ defmodule VoxelRegion.World.Casting do
   require Logger
   alias VoxelRegion.{Access, Damage}
   alias VoxelRegion.Magic.{Cost, Program, Structure}
-  alias VoxelRegion.World.{Clock, Log, Observation, Thermal, Tools}
+  alias VoxelRegion.World.{Clock, Log, Observation, Structures, Thermal, Tools}
   import VoxelRegion.World.Canonical
 
   @hand_reach 0.5
@@ -491,7 +496,7 @@ defmodule VoxelRegion.World.Casting do
             settle_draw(next, pending, checked, quote, funding)
 
           program.kind == :structure ->
-            settle_rejected(next, pending, phase, :structure_runtime_pending)
+            settle_structure(next, pending, checked, quote, funding)
         end
     end
   end
@@ -535,6 +540,51 @@ defmodule VoxelRegion.World.Casting do
         "outcome=built taken_mj=#{draw.taken_mj} gained_mj=#{draw.gained_mj} " <>
           "draw_loss_mj=#{draw.loss_mj}"
     })
+  end
+
+  # 结构建成（决策稿 §4.1）：扣报价总价；物理体按出手时的眼睛射线与当时世界求出；结构 id = {本事务 seq, 0}（设计 B6），
+  # 出生拍号 = 最近一次完成的热提交拍号，第一次步进在下一拍（Q4-9）。
+  defp settle_structure(state, pending, checked, quote, funding) do
+    %{actor: actor, request: request, program: %Program{groups: [group]} = program} = pending
+    seq = state.seq + 1
+
+    case Structures.launch(state, actor, request, group, checked.effect.target, state.magic) do
+      {:ok, launch, state} ->
+        s = Structure.new({seq, 0}, group, quote, Structures.commit_tick(state))
+        body = Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock))
+        entry = Structures.entry(s, body, quote)
+        created_mj = Structures.stored_mj(%{s.id => entry})
+        waste_mj = quote.total_mj - quote.physical_mj
+
+        thermal =
+          %{state.thermal | active: true}
+          |> Map.update(:structures, %{s.id => entry}, &Map.put(&1, s.id, entry))
+          |> Map.update(:structure_created_mj, created_mj, &(&1 + created_mj))
+          |> cast_waste(checked.foot, waste_mj / 1000)
+
+        Logger.info(
+          "voxel_structure_built seq=#{seq} sid=#{inspect(s.id)} cid=#{actor.cid} program_sha=#{sha(program.bytes)} " <>
+            "shape=#{body.shape} mass=#{inspect(body.mass_g)} flags=#{inspect(Enum.filter([:ends_on_contact, :massless], &Map.fetch!(body, &1)))} " <>
+            "e_op_mj=#{s.e_op_mj} e_th_mj=#{s.e_th_mj} kinetic_mj=#{s.kinetic_mj} e_cap_mj=#{s.e_cap_mj} e_min_mj=#{s.e_min_mj} " <>
+            "x0=#{quote.x0} x_star=#{quote.x_star} born_tick=#{s.born_tick} flight_s=#{body.flight_s} rest=#{inspect(body.rest)} " <>
+            "contact=#{inspect(body.contact && body.contact.cell)}"
+        )
+
+        commit_settlement(state, pending, checked, quote, %{
+          thermal: thermal,
+          rows: [],
+          balance_mj: funding.balance_mj,
+          left_mj: funding.balance_mj - quote.total_mj,
+          spent_mj: quote.total_mj,
+          outcome: nil,
+          record: %{live: 0, outcome: 0, fail_step: 0},
+          extra: %{structures: %{s.id => Structures.record(body, entry.wire, 1)}},
+          log: "outcome=built sid=#{inspect(s.id)} created_mj=#{created_mj} waste_mj=#{waste_mj}"
+        })
+
+      {:error, reason, state} ->
+        settle_rejected(state, pending, :release, reason, checked.effect)
+    end
   end
 
   # 建构在第 k 步中断（设计 §5.5、v2.11 W7）：扣第 1..k 步累计支出，付到耗尽为止；〈取〉的取能不发生，扣费以余额为限
@@ -606,6 +656,7 @@ defmodule VoxelRegion.World.Casting do
       caster_energy: %{cid => settlement.left_mj},
       casts: %{cid => settlement.record}
     }
+    |> Map.merge(Map.get(settlement, :extra, %{}))
 
     case Log.append_log(before, next, txn, {:character, cid}) do
       :ok ->
@@ -658,6 +709,7 @@ defmodule VoxelRegion.World.Casting do
     previous = Map.get(state.spell_sessions, actor.player)
 
     with {:ok, session} <- admit_cast(previous, request, actor, state.magic),
+         :ok <- structure_quota(state, actor, program),
          {:ok, effect, state} <- spell_effect(state, actor, request, program),
          {:ok, foot, state} <- foot_target(state, actor),
          :ok <- spell_subject(state, effect),
@@ -675,6 +727,15 @@ defmodule VoxelRegion.World.Casting do
       {:error, reason, _} -> {:error, reason}
     end
   end
+
+  # 每人结构上限（决策稿 Q4-5，目录 `quotas.structures_per_caster`）：只数本 World 里该施法者名下运行中的结构。
+  defp structure_quota(state, actor, %Program{kind: :structure}) do
+    if Structures.count(state, actor.cid) < state.magic.quotas.structures_per_caster,
+      do: :ok,
+      else: {:error, :structure_quota}
+  end
+
+  defp structure_quota(_state, _actor, %Program{}), do: :ok
 
   # 施法间隔与工具同一 GCRA（Gate 入口时钟、一个权威 tick 的相位借用）；过快即 cast_too_soon。
   defp admit_cast(previous, request, actor, magic) do
@@ -827,7 +888,7 @@ defmodule VoxelRegion.World.Casting do
   end
 
   @doc """
-  持物普攻法术查找：`basic_windup/3` 与切片 4 结构构造（无重力直线弹道 `no_gravity`）共用同一判定。
+  持物普攻法术查找（`basic_windup/3`）。无重力直飞由程序本身决定（〈形〉不写质量即无质量，Q5-1），不按持物判定。
   `program` 已通过当前魔法目录的 `Program.diagnose_ir/2`（规范字节唯一），故与目录中已解码的 `basic_spell` 字节相等即等价。
   """
   def match_basic_spell(%{properties: nil}, _program), do: nil

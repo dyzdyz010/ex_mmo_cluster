@@ -83,10 +83,19 @@ defmodule VoxelRegion.World.HeatCommit do
     broadcast = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} persist_us=#{persisted - start} broadcast_us=#{broadcast - persisted} remember_us=#{remembered - persisted} fanout_us=#{fanned - remembered} canonical_us=#{broadcast - fanned} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}"
+      "voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} persist_us=#{persisted - start} broadcast_us=#{broadcast - persisted} remember_us=#{remembered - persisted} fanout_us=#{fanned - remembered} canonical_us=#{broadcast - fanned} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}" <>
+        structure_accounts(state.thermal)
     )
 
     state
+  end
+
+  # 结构账（魔法 v2 切片 4c，决策稿 §4.2）：有过结构的世界才追加，键名即科目名（整数 mJ）。
+  defp structure_accounts(thermal) do
+    for key <- VoxelRegion.World.Structures.accounts() ++ [:commit_tick, :structure_rounding_mj],
+        Map.has_key?(thermal, key),
+        into: "",
+        do: " #{key}=#{Map.fetch!(thermal, key)}"
   end
 
   # R8 单向转化：热提交落盘后，达到转化温度（规则要求还原剂时还须面接触足量还原剂）的节点在一笔几何事务里换成产物。

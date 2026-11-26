@@ -513,10 +513,11 @@ defmodule VoxelRegion.World do
   end
 
   @doc """
-  全局系统功能（魔法 v2，切片 3）：施法意图（0x82，程序为 IR v2）。action 0 = 报价（不改世界，回 0x83 v2 全字段）；
+  全局系统功能（魔法 v2，切片 3–4）：施法意图（0x82，程序为 IR v2）。action 0 = 报价（不改世界，回 0x83 v2 全字段）；
   1 = 施放。返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 建成 / `:interrupted_omega` / `:interrupted_energy`，
   第 k 步中断也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界；数值检查违规为 `{:rejects, [检查名]}`，
-  射线落空为 `:no_target`，报价超频为 `:quote_rate`，切片 3 内结构建成为 `:structure_runtime_pending`）。
+  射线落空为 `:no_target`，报价超频为 `:quote_rate`，施法者名下结构已达上限为 `:structure_quota`）。结构建成后由热提交逐拍
+  步进（`VoxelRegion.World.Structures`）。
   施放通过立即校验后先进入前摇，本调用在结算完成后才返回；前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
   流程与结算口径见 `VoxelRegion.World.Casting`。
   """
@@ -924,6 +925,8 @@ defmodule VoxelRegion.World do
         state = Catalogs.environment_tolerance(state, Catalogs.load_thermal_environment(opts))
         # 施法的热只经有限热源进世界：有魔法目录的世界必须有热环境。
         true = state.magic == nil or state.thermal != nil
+        # 持久化的结构记录一次校验换回运行值（魔法 v2 切片 4c，Q4-7）；须先于本回合任何写日志的事务。
+        state = VoxelRegion.World.Structures.restore(state)
 
         state =
           if state.seq == 0,

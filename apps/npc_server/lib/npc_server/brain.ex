@@ -171,7 +171,7 @@ defmodule NpcServer.Brain do
   `outcome` 为 nil 是正常施放，`:interrupted_energy` / `:interrupted_omega` 是建构在第 k 步中断（扣第 1..k 步累计支出，
   同样是已提交事务；k 只在施放记录里，回复不带）；`caster` 是结算后的 0x83 v2 状态
   `%{seq:, energy_j:, capacity_j:, resolution_eff:, quote_j:, quote_s:, spent_j:, quote_windup_s:, …}`（报价扩展段为零）。
-  拒绝原样来自权威（`cast_too_soon`、`dead`、`no_target`、`{:rejects, [检查名]}`、`structure_runtime_pending`、
+  拒绝原样来自权威（`cast_too_soon`、`dead`、`no_target`、`{:rejects, [检查名]}`、`structure_quota`、
   `stale_target`…）；进入场景时报价就被拒的法术由 Body 就地回 `{:spell_rejected, 原因}`（`NpcServer.Spells`）；前摇中被 `cancel_cast` 或 `Player.stop/1` 撤销回
   `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
   `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回

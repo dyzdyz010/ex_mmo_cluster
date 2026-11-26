@@ -74,7 +74,8 @@ defmodule VoxelRegion.ClosureEntriesTest do
   test "GM 操作和引用采样结果保留闭包语义" do
     assert Closure.needs(%{}, {:gm, :key, :liquid_fill, %{seed: {0, 0, 0}}}) != :none
     assert Closure.needs(%{}, {:gm, :key, :unknown, %{}}) == :none
-    assert Closure.needs(%{thermal: nil}, {make_ref(), []}) == {[], [], []}
+    # 引用开头的任务回复（原投射物采样结果，魔法 v2 切片 4c 删除实时采样）不再读页。
+    assert Closure.needs(%{thermal: nil}, {make_ref(), []}) == :none
     assert Closure.needs(%{}, :content_version) == :none
     assert Closure.needs(%{}, {:publish_parameters, :catalog, :digest}) == :all
     assert Closure.needs(%{instances: %{}}, {:remove_prefab, :missing}) == {[], [], [:missing]}

@@ -446,18 +446,6 @@ defmodule VoxelRegion.MagicWorldTest do
     assert ledger(s, :cast_interrupt_heat_j) == 0.0
   end
 
-  # P2：切片 3 结构不会建成。若漏掉这条分支，灯会被当成〈取〉之外的“建成”扣费或崩溃。
-  test "P2 结构全部步骤通过、将要建成：显式拒绝 :structure_runtime_pending，outcome 2，不扣能", c do
-    balance = fund(c, 1_000_000, 1_000_000)
-    subscribe(c)
-
-    assert {:error, :structure_runtime_pending} =
-             spell(c, @leaf_micro, program("lamp"), at: 2_000_000)
-
-    assert_settled(%{live: 0, outcome: 2, fail_step: 0})
-    assert energy(c) == balance
-  end
-
   test "P7 报价限频：同一施法者 1 s 内第 5 次报价回 :quote_rate，不改世界", c do
     replies = for _ <- 1..5, do: spell(c, @stone_micro, program("draw_1mj"), action: 0)
     assert [{:ok, _}, {:ok, _}, {:ok, _}, {:ok, _}, {:error, :quote_rate}] = replies

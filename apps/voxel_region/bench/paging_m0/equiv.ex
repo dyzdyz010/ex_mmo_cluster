@@ -259,13 +259,13 @@ defmodule VoxelRegion.Bench.PagingEquiv do
       thermal_running: state.thermal_run != nil, native_pending: state.thermal_work.domain.pending,
       projectile_scheduled: state.projectile_timer != nil, projectile_pending: state.projectile_task != nil,
       casts: map_size(state.pending_casts), bodies: map_size(state.bodies),
-      semblances: map_size(if(state.thermal, do: Map.get(state.thermal, :semblances, %{}), else: %{})),
+      structures: map_size(if(state.thermal, do: Map.get(state.thermal, :structures, %{}), else: %{})),
       io_failed: match?(%{status: :failed}, io), io_waiting: io != nil}
     complete = facts.liquid_active_cells == 0 and not facts.liquid_scheduled and
       facts.liquid_due_ms in [nil, :legacy_timer_only] and not facts.thermal_active and
       facts.thermal_due_ms == nil and not facts.thermal_scheduled and not facts.thermal_running and
       not facts.native_pending and not facts.projectile_scheduled and not facts.projectile_pending and
-      facts.casts == 0 and facts.bodies == 0 and facts.semblances == 0 and not facts.io_waiting
+      facts.casts == 0 and facts.bodies == 0 and facts.structures == 0 and not facts.io_waiting
     Map.put(facts, :complete, complete)
   end
   defp projection(state, :fence, seq) when seq == state.seq do

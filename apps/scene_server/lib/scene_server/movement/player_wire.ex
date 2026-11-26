@@ -167,10 +167,16 @@ defmodule SceneServer.Movement.PlayerWire do
           epochs: epochs,
           states: states,
           protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{})),
-          # 结构记录 v2 与状态增量暂为空（字段默认 <<>>）：World 现在只有存档拟态（v1 运行时，施法入口已不再创建），
-          # 其 135 B 记录已随 Hello 46 删除。切片 4c 接结构运行时：由 World 的结构增量经
-          # `Voxel.Codec.encode_structures/1`、`encode_structure_states/1` 填入，存档拟态在恢复时一次散解（Q4-6）。
-          casts: Voxel.Codec.encode_casts(Map.get(value, :casts, %{}))
+          # 结构记录 v2（160 B）与状态增量（20 B）：World 的结构增量（`VoxelRegion.World.Structures`，魔法 v2 切片 4c）。
+          # 状态增量随完整记录运输（窗口投影按位置筛选），在这里投影成 20 B（`Codec.structure_state/1` 唯一定义量化）。
+          structures: Voxel.Codec.encode_structures(Map.get(value, :structures, %{})),
+          casts: Voxel.Codec.encode_casts(Map.get(value, :casts, %{})),
+          structure_states:
+            Voxel.Codec.encode_structure_states(
+              Map.new(Map.get(value, :structure_states, %{}), fn {id, record} ->
+                {id, Voxel.Codec.structure_state(record)}
+              end)
+            )
         }
 
         stats = %{

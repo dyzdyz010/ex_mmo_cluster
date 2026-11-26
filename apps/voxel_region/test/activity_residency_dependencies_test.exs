@@ -51,6 +51,16 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
     end
   end
 
+  test "运行中的结构（含尚在飞行的）保有落点包围盒与接触格，不能因当前无热格而退休" do
+    state = thermal_state()
+    contact = %{target: %{granularity: 0, micro: {1040, -528, 1536}, owner: {0, 0}}, key: nil, cell: {130, -66, 192}}
+    body = %{origin: {0.5, 0.5, 0.5}, velocity: {1.0, 0.0, 0.0}, flight_s: 3.0, rest: {130.5, -65.5, 192.5},
+      half: {0.1, 0.1, 0.1}, shape: 0, contact: contact}
+    state = put_in(state.thermal[:structures], %{{12, 0} => %{body: body}})
+    assert {:ok, {keys, [], _ids}} = Thermal.residency_dependencies(state)
+    assert {0, {2, -2, 3}} in keys
+  end
+
   test "天然活动尚未发布不能伪装成空依赖" do
     assert {:error, {:natural_activity_unregistered, VoxelRegion.GeneratedStore}} =
       Thermal.residency_dependencies(%{thermal_state() | source: VoxelRegion.GeneratedStore})

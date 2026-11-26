@@ -6,10 +6,10 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   - 契约：样本里每条记录的动态字段（装载、相干、状态、失效段、温度、发光）都等于对同一结构调用 `Structure.wire/1`
     的结果；结构由冻结程序 `fixtures/magic/ir-v2-samples.json` 经真实 `Program.decode_ir/2`、`Cost.quote_structure/3`、
     `Structure.new/4`（终止样本再经 `Structure.step/4`、`Structure.respond/3`）产生，都是玩家施放能产生的结构。
-  - 静态字段（形状、尺寸、质量、耦合、锚、ends_on_contact）按决策稿 §3.1 从解码后的结构组读出；运动字段由
-    `Semblance.trace/8` 在一个测试世界（y < 1 m 的宏格为实占用地面）里求出；`:flying` 状态位与 live 编号
-    （`MmoContracts.Voxel.Codec.structure_end_live/1`）按 World 的职责在这里补上。切片 4c 的 World 结构记录生产者
-    落地后，本文件的 `program_fields/2`、`motion/3` 改为调用它（退出条件）。
+  - 静态与运动字段由 World 的真实结构记录生产者给出（切片 4c）：`World.Structures.body/5` 从解码后的结构组与发射求物理体，
+    `World.Structures.launch/4` 把 `Semblance.trace/8` 在一个测试世界（y < 1 m 的宏格为实占用地面）里的求交结果换成运动字段，
+    `World.Structures.record/3` 拼出完整记录；`:flying` 状态位与 live 编号（`Codec.structure_end_live/1`）按样本场景给出。
+    样本字节在 4a 冻结：生产者换成 World 的实现后逐字段不变，证明生产者与 golden 一致。
   - 生成：本文件的 `document/1` 是样本文件的唯一生成器；实现或目录有意改变时设置 `WRITE_STRUCTURE_WIRE_SAMPLES=1`
     运行本测试重写文件，再核对 diff，然后重跑 `apps/mmo_contracts/test/fixtures/gen_wire_v2_samples.py` 生成线字节。
     默认只比较、不写。浮点照原值写入（JSON 最短往返表示），线字节因此可逐位复现。
@@ -20,6 +20,7 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   @moduletag :t0
   alias MmoContracts.Voxel.Codec
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Semblance, Structure}
+  alias VoxelRegion.World.Structures
 
   @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
   @catalog_path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
@@ -86,91 +87,35 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
 
   defp glyph(glyphs, id), do: Enum.find(glyphs, &(&1.id == id))
 
-  # 程序给出的静态字段（决策稿 §3.1）。切片 4c 由 World 的结构记录生产者给出。
-  defp program_fields(group, catalog) do
-    %{params: p} = glyph(group.shape, "form.semblance")
-    {_, form} = Enum.find(catalog.symbols, fn {_, s} -> s.id == "form.semblance" end)
-    %{enum: shapes} = Enum.find(form.params, &(&1.name == "shape"))
-    {shape, _} = Enum.find(shapes, fn {_, name} -> name == p["shape"] end)
-
-    %{
-      shape: shape,
-      size1_m: p["size1_mm"] / 1000,
-      size2_mm: p["size2_mm"],
-      size3_mm: p["size3_mm"],
-      # 〈形〉mass_g 未写（zero_means_absent）即无质量、不受重力（用户 Q4-2，设计 Q17(a)）。
-      massless: p["mass_g"] == nil,
-      # 有一条读〈遇〉且响应〈散〉的规则（设计 §11.1 v2.11 W5）。
-      ends_on_contact:
-        Enum.any?(group.rules, fn rule ->
-          Enum.any?(rule.readings, &(&1.id == "cond.contact")) and
-            Enum.any?(rule.responses, &(&1.id == "resp.release"))
-        end),
-      coupling:
-        for(
-          {name, id} <- [
-            thermal: "cpl.thermal",
-            glow: "cpl.glow",
-            capacity: "cpl.capacity",
-            disrupt: "int.disrupt"
-          ],
-          glyph(group.quality, id),
-          do: name
-        ),
-      anchor_type: Map.fetch!(%{"anchor.hand" => 0, "anchor.surface" => 1}, group.form_anchor.id),
-      proto_id: 0,
-      anchor_ref: <<0::96>>
-    }
-  end
-
   # 运动字段：静止结构停在形成位置；带〈投〉的结构自手边沿 +Z 抛出，在测试世界里求落点（弹道与 World 同一函数）。
-  defp motion(_group, _massless, {:at, point}),
-    do: %{origin: point, velocity: {0.0, 0.0, 0.0}, t0_us: @t0_us, flight_s: 0.0, rest: point}
+  defp launch(_group, _half, _massless, {:at, point}, _catalog),
+    do: Structures.launch({:free, point}, point, {0.0, 0.0, 0.0}, true)
 
-  defp motion(group, massless, {:thrown, radius_m, catalog}) do
+  defp launch(group, half, massless, :thrown, catalog) do
     velocity = {0.0, 0.0, glyph(group.motion, "act.throw").params["speed_mmps"] / 1000}
-
-    {{:hit, flight_s, rest, :ground}, nil} =
-      Semblance.trace(
-        @hand,
-        @hand,
-        velocity,
-        radius_m,
-        catalog.limits.range_m,
-        nil,
-        &ground_cast/4,
-        massless
-      )
-
-    %{origin: @hand, velocity: velocity, t0_us: @t0_us, flight_s: flight_s, rest: rest}
+    {trace, nil} = Semblance.trace(@hand, @hand, velocity, half, catalog.limits.range_m, nil, &ground_cast/4, massless)
+    assert {:hit, _, _, %{granularity: 0}} = trace
+    Structures.launch(trace, @hand, velocity, massless)
   end
 
   # 测试世界：y < 1 m 的宏格都是实占用地面，其余是空气。返回弦段首个进入的实占用微格（1/8 m）。
   defp ground_cast({ax, ay, az}, {dx, dy, dz}, length, state) do
     if ay >= @floor_y and dy < 0 and ay + dy * length < @floor_y do
       s = (ay - @floor_y) / -dy
-      {{:ground, {floor((ax + dx * s) * 8), 7, floor((az + dz * s) * 8)}}, state}
+      micro = {floor((ax + dx * s) * 8), 7, floor((az + dz * s) * 8)}
+      {{%{micro: micro, granularity: 0, owner: {0, 0}, incarnation: 0, material: 11}, micro}, state}
     else
       {nil, state}
     end
   end
 
-  # 一条完整记录：live、施法者、程序静态字段、运动字段、`Structure.wire/1` 的动态字段（加 World 判定的状态位）。
+  # 一条完整记录：World 的生产者（物理体 + `Structure.wire/1` 的动态字段 + 样本场景给出的状态位与 live）。
   defp record(c, group, live, place, wire, world_status \\ []) do
-    fields = program_fields(group, c.catalog)
-
-    place =
-      case place do
-        :thrown -> {:thrown, fields.size1_m, c.catalog}
-        point -> {:at, point}
-      end
-
-    status = Enum.filter(Codec.structure_status_bits(), &(&1 in (wire.status ++ world_status)))
-
-    fields
-    |> Map.merge(motion(group, fields.massless, place))
-    |> Map.merge(%{wire | status: status})
-    |> Map.merge(%{live: live, caster: @caster})
+    # 物理体的半尺寸与无质量位只取决于程序；先以静止发射求一次，再按样本场景的发射求真实物理体。
+    probe = Structures.body(group, c.catalog, @caster, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us)
+    place = if place == :thrown, do: :thrown, else: {:at, place}
+    body = Structures.body(group, c.catalog, @caster, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us)
+    Structures.record(body, %{wire | status: wire.status ++ world_status}, live)
   end
 
   # 样本：{名字, 结构 id, 预设, 说明, 拍号, 事件, 记录}。

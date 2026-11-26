@@ -10,8 +10,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     成本（`total_mj`、`steps[].spent_mj`）不变；差 1 字节的非普攻程序照常按成本模型前摇。
   - 施法者账 `caster_energy` 为整数 mJ；`send_caster_state` 对无键角色一次性充能 `497_084_850 mJ`
     （热账源项 `caster_granted_j`），已有键（含 0 与旧浮点）不充；旧浮点 J 余额读作 `trunc(J × 1000) mJ`。
-  - 切片 3 内结构建成分支显式回 `:structure_runtime_pending`（P2，不扣能）；结构构造、无重力直飞与拟态/投射物
-    物理体集成留到切片 4–5（`MagicSemblanceTest` 与 `world_server` `p0_body_world_test` 仍覆盖无重力直线弹道）。
+  - 切片 4c 起结构建成（扣报价 `total_mj`）；法杖光弹的无重力直飞（程序不写质量，Q5-1）、〈遇〉与人物命中在切片 5
+    （`MagicSemblanceTest` 覆盖无质量直线弹道几何，`magic_structure_world_test.exs` 覆盖结构运行时）。
 
   IR v2 法杖光弹（复用 v5 目录 `e337873b…` 既有 14 符号，42 B）：
   `〈握〉〈形 球 0.05 m，0.01 kg〉〈辉 100 W〉〈蓄 2 kJ〉〈投 30 m/s〉｜当〈遇〉则〈散〉`
@@ -320,10 +320,12 @@ defmodule VoxelRegion.MagicStaffBoltTest do
 
     assert_in_delta quote_reply(c, other).quote_windup_s, @bolt_windup_s, 1.0e-3
 
-    # 施放：前摇计时 = 0.3 s，广播 7 步时长全部缩放为 0（Σ + release_lead_s 0.3 = 0.3）；切片 3 结构建成回 :structure_runtime_pending。
+    # 施放：前摇计时 = 0.3 s，广播 7 步时长全部缩放为 0（Σ + release_lead_s 0.3 = 0.3）；切片 4c 起结构建成，扣报价总价。
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, :structure_runtime_pending} = bolt(c, c.a, 1_000_000)
+        assert {:ok, %{outcome: nil, caster: caster}} = bolt(c, c.a, 1_000_000)
+        assert caster.spent_j == caster.quote_j
+        send(self(), {:spent_j, caster.spent_j})
       end)
 
     assert log =~ "windup_s=0.3 "
@@ -331,7 +333,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert log =~
              "steps=[{0, 0.0, 0.0}, {1, 0.0, 0.0}, {2, 0.0, 0.0}, {3, 0.0, 0.0}, {4, 0.0, 0.0}, {5, 0.0, 0.0}, {6, 0.0, 0.0}]"
 
-    assert energy(c.w) == @grant_mj / 1000
+    assert_received {:spent_j, spent_j}
+    assert_in_delta energy(c.w), @grant_mj / 1000 - spent_j, 1.0e-6
   end
 
   test "异步任务结果标签回归：Admission.kind/1 对 {ref, results} 返回 :task_result（可插进 info 日志）" do
@@ -358,7 +361,7 @@ defmodule VoxelRegion.MagicStaffBoltTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, :structure_runtime_pending} = bolt(c, c.a, 1_000_000, @up)
+        assert {:ok, %{outcome: nil}} = bolt(c, c.a, 1_000_000, @up)
       end)
 
     later = scene_now.()
