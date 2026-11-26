@@ -3,7 +3,8 @@ defmodule SceneServer.Movement.ToolAction do
   Global system：角色工具编排，只由 `SceneServer.Movement.Intent` 调用（玩家 Gate 编辑 worker 与 NPC Body 共用）。
   Player 授权身份，World 判遮挡和频率，目标 Player 唯一提交 Body。
   """
-  alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
+  alias MmoContracts.Harm
+  alias SceneServer.Movement.{Player, Scene, ToolHit}
   alias VoxelRegion.World
   require Logger
 

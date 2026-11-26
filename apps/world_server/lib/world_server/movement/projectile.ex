@@ -5,7 +5,8 @@ defmodule WorldServer.Movement.Projectile do
   设计 §12.1 的两个 Harm 判定点：World 异步采样任务调 `poll/2`（本模块按 `Harm.permitted?/3` 只取施法者可伤的人物），
   Player 接纳交付时 `receive_effect` 再复核一次；不另设第三处。
   """
-  alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
+  alias MmoContracts.Harm
+  alias SceneServer.Movement.{Player, Scene, ToolHit}
   alias VoxelRegion.Magic.Semblance
 
   @doc """

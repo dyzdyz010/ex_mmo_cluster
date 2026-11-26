@@ -3,7 +3,8 @@ defmodule SceneServer.Movement.Player do
   use GenServer, restart: :temporary
   require Logger
   alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock, Harm, PlayerWire}
+  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock, PlayerWire}
+  alias MmoContracts.Harm
   alias VoxelRegion.CollisionStream
   alias SceneServer.Body
   alias SceneServer.Body.Snapshot

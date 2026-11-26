@@ -31,6 +31,7 @@ Test-only 回归：本 app 的 `voxel_material_catalog_test.exs`，voxel_region 
 | `MmoContracts.VoxelSpatialContract` | 完整 XYZ tile/near window 与 full32km pack 边界的共享纯空间契约 | AUTH-2、VOXEL baseline gate |
 | `MmoContracts.WorldPackIndex` | 32km full-authority baseline pack/index 覆盖校验、payload shard grid / 线性全 shard 摘要 / 单 shard 计划与 radius 滑动窗口数学 | AUTH-2、PERS-5、VOXEL baseline gate |
 | `MmoContracts.WorldPackShard` | `.vxpack` payload shard footer-table 编码、按 local coord 读取、footer entry 覆盖摘要 | AUTH-2、VOXEL baseline payload |
+| `MmoContracts.Harm` | 角色来源作用的唯一许可判断（显式战斗范围 `{下界, 上界)`，`nil` = 本场禁伤）。纯值校验，无运行时状态。魔法 v2 切片 6 由 `SceneServer.Movement.Harm` 迁入：Scene 的工具候选、投射物采样与 Player 接纳，以及 World 的驱散脉冲（作用于他人结构与他人前摇）共用这一份规则，World 不调用 scene_server（铁律 6） | 落地稿 D6、决策稿 Q6-3、设计 §14.0 Q7 |
 
 ## 纪律
 

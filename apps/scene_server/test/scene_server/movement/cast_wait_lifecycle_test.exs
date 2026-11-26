@@ -462,7 +462,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   @bolt_hex "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00"
   test "战斗范围关闭（combat_scope nil）时法杖光弹与取能照常前摇：真实 Player 按成本模型前摇并交 World 结算", c do
     assert c.config.combat_scope == nil
-    refute SceneServer.Movement.Harm.open?(c.config.combat_scope)
+    refute MmoContracts.Harm.open?(c.config.combat_scope)
     # 开户（玩家接纳同一出口）：497 084 850 mJ。
     assert {:ok, %{energy_j: 497_084.85}} =
              World.send_caster_state(c.world, 1001, 0, {self(), c.identity})

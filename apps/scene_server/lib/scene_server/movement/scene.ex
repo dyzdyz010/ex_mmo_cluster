@@ -205,7 +205,7 @@ defmodule SceneServer.Movement.Scene do
   def handle_call(:neighbour_endpoint, _, state), do: {:reply, {:error, :scene_not_ready}, state}
 
   def handle_call(:tool_candidates, _, state) do
-    if not SceneServer.Movement.Harm.open?(state.config.combat_scope),
+    if not MmoContracts.Harm.open?(state.config.combat_scope),
       do: {:reply, {:error, :combat_not_permitted}, state},
       # 候选次序决定受击回执与“首个拒绝原因”；人物表无加入次序，按人物 id 定义，不用 map 遍历次序。
       else:
