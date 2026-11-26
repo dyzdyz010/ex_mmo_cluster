@@ -150,6 +150,25 @@ defmodule VoxelRegion.Magic.Semblance do
     end
   end
 
+  @doc """
+  按已过时间把飞行切成最多 0.05 s 的弹道弦段 `[{t0, t1, a, b}]`（自 `age_s` 到 `ending`）。人物采样后端
+  `WorldServer.Movement.Projectile` 用它沿弦段扫掠人物；该后端的飞行体 map 仍是 v1 形状（`no_gravity` 键），
+  切片 5 把人物采样接回结构时改为物理体的 `massless`（决策稿 §5.1）。
+  """
+  def flight_segments(s, ending) do
+    no_gravity = Map.get(s, :no_gravity, false)
+
+    Stream.unfold(s.age_s, fn t ->
+      if t >= ending - 1.0e-9 do
+        nil
+      else
+        next = min(t + @step_s, ending)
+        {{t, next, position(s.origin, s.velocity, t, no_gravity), position(s.origin, s.velocity, next, no_gravity)}, next}
+      end
+    end)
+    |> Enum.to_list()
+  end
+
   defp direction({ax, ay, az}, {bx, by, bz}, l), do: {(bx - ax) / l, (by - ay) / l, (bz - az) / l}
   defp advance({x, y, z}, {dx, dy, dz}, s), do: {x + dx * s, y + dy * s, z + dz * s}
 

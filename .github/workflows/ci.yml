@@ -394,9 +394,13 @@ jobs:
         with:
           workspaces: |
             apps/voxel_region/native/voxim_worldgen
+            apps/voxel_region/native/voxim_thermal
 
       - name: Run native crate unit tests
-        run: (cd apps/voxel_region/native/voxim_worldgen && cargo test)
+        run: |
+          (cd apps/voxel_region/native/voxim_worldgen && cargo test)
+          # 热内核（含切片 4b 的外部节点限流与逐位回归）。
+          (cd apps/voxel_region/native/voxim_thermal && cargo test)
 
   test-standalone:
     name: Test standalone apps
