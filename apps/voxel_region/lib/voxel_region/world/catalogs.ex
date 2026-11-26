@@ -115,6 +115,53 @@ defmodule VoxelRegion.World.Catalogs do
   def loose_thresholds(catalog),
     do: for({id, m} <- catalog.materials, Map.has_key?(m, "loose_threshold_units"), into: %{}, do: {id, m["loose_threshold_units"]})
 
+  @phase_inventory_fields ~w(
+    phase_peer_material_id
+    phase_transition_kelvin
+    latent_heat_per_macro_j
+    heat_capacity_per_macro
+    max_hp_per_macro
+  )
+  @thermal_fields ~w(heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin)
+  @combustion_fields ~w(ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w)
+  @phase_fields ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j)
+
+  @doc "判定新属性目录能否在保留存量实例与相变库存的前提下直接发布。"
+  def publish_compatible?(state, catalog) do
+    Damage.material_units(catalog) == state.material_units_per_micro and
+      (map_size(state.attachments) == 0 or
+         Map.get(state.properties, :attachments) == Map.get(catalog, :attachments)) and
+      Enum.all?(state.phase_inventory, fn {{cid, material}, _} ->
+        Map.get(state.material_balances, {cid, material}, 0) == 0 or
+          Map.take(state.properties.materials[material], @phase_inventory_fields) ==
+            Map.take(catalog.materials[material], @phase_inventory_fields)
+      end) and
+      Enum.all?(state.damage, fn {_, row} ->
+        damage_row_compatible?(state.properties.materials, catalog.materials, row)
+      end)
+  end
+
+  defp damage_row_compatible?(old_materials, new_materials, row) do
+    old = Map.fetch!(old_materials, row.material)
+    new = Map.fetch!(new_materials, row.material)
+
+    ignored =
+      if(Map.has_key?(row, :temperature_kelvin), do: [], else: @thermal_fields) ++
+        # 燃烧与相变字段在旧存档行尚未携带对应状态时允许增量补齐；
+        # 一旦实例行已持有燃料或相变焓，再改动其材料语义仍按热属性语义拒绝。
+        Enum.filter(@combustion_fields, fn key ->
+          not Map.has_key?(old, key) and not Map.has_key?(row, :remaining_fuel_j)
+        end) ++
+        Enum.filter(@phase_fields, fn key ->
+          not Map.has_key?(old, key) and not Map.has_key?(row, :phase_energy_j)
+        end)
+
+    Map.drop(old, ["electrical_conductivity" | ignored]) ==
+      Map.drop(new, ["electrical_conductivity" | ignored]) and
+      (not Map.has_key?(old, "electrical_conductivity") or
+         old["electrical_conductivity"] == new["electrical_conductivity"])
+  end
+
   def validate_damage_catalog(state) do
     if map_size(state.damage) > 0 do
       true =
