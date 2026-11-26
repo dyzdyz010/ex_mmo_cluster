@@ -76,7 +76,7 @@ defmodule VoxelRegion.World.Structures do
   alias VoxelRegion.{Access, Damage}
   alias VoxelRegion.Magic.{Catalog, Semblance, Structure}
   alias VoxelRegion.Magic.Program.Group
-  alias VoxelRegion.World.Thermal
+  alias VoxelRegion.World.{MagicAdmission, Thermal}
   import VoxelRegion.World.Canonical
 
   # 空间网格边长（m）：每拍开始建一次，邻居查找只看相邻 27 格（设计 §5.3 第 1 步“8 m 空间网格”）。
@@ -102,9 +102,6 @@ defmodule VoxelRegion.World.Structures do
 
   @doc "热提交拍号（Q4-9）：最近一次完成的热提交；没有提交过为 0。"
   def commit_tick(%{thermal: thermal}), do: Map.get(thermal, :commit_tick, 0)
-
-  @doc "某施法者名下运行中的结构数（Q4-5：切片 4–6 只判每人上限，由 `World.Casting` 在施放检查里调用）。"
-  def count(state, cid), do: Enum.count(all(state), fn {_, e} -> e.body.caster == cid end)
 
   @doc "全部结构的存量（mJ）：账目闭合式的 Δstored 项。"
   def stored_mj(structures),
@@ -287,17 +284,20 @@ defmodule VoxelRegion.World.Structures do
   `ends_on_contact`（有一条读〈遇〉且响应〈散〉的规则，设计 §11.1 v2.11 W5）、耦合位名、锚类型，以及运动字段与 `t0_us`。
   `combat_scope` 是施放时施法者所在场的战斗范围快照（Player 施法快照给出，缺省 nil = 禁伤；决策稿 §6.1、Q6-3）：本结构
   若带〈乱〉，作用于他人结构与他人前摇前按它判 `MmoContracts.Harm`。
+  施法者 `%{cid, controller}`：`controller`（`:player | :npc`，切片 7）随物理体持久化，分区准入按它数 NPC 合计
+  （`World.MagicAdmission`）。
 
   飞行（切片 5）：带初速且 `flight_s > 0` 的发射出生即在飞行，`flight = %{age_s: 0.0, source: nil}`（`age_s` 是飞行驱动
   已推进到的墙钟飞行时长；`source` 是人物采样的施法者身份，由 `sampled/2` 填入）。飞行中没有接触格（接触在飞行驱动命中时
   才确定），其余为 `flight = nil`。
   """
-  def body(%Group{} = group, %Catalog{} = catalog, caster, launch, t0_us, combat_scope) do
+  def body(%Group{} = group, %Catalog{} = catalog, %{cid: caster, controller: controller}, launch, t0_us, combat_scope) do
     shape = shape_params(group)
     flying = launch.velocity != {0.0, 0.0, 0.0} and launch.flight_s > 0
 
     %{
       caster: caster,
+      controller: controller,
       combat_scope: combat_scope,
       shape: shape_index(catalog, shape["shape"]),
       half: half(shape),
@@ -473,12 +473,12 @@ defmodule VoxelRegion.World.Structures do
 
   defp from_record(_id, _record, _magic, _tick), do: {:error, :record}
 
-  @body_keys ~w(caster combat_scope shape half size1_m size2_mm size3_mm mass_g massless ends_on_contact coupling anchor_type
+  @body_keys ~w(caster controller combat_scope shape half size1_m size2_mm size3_mm mass_g massless ends_on_contact coupling anchor_type
                origin velocity t0_us flight_s rest contact flight)a
 
   defp body?(%{shape: shape, half: {a, b, c}, flight_s: flight, caster: caster} = body) do
     Enum.sort(Map.keys(body)) == Enum.sort(@body_keys) and shape in 0..2 and Enum.all?([a, b, c], &(is_number(&1) and &1 > 0)) and
-      is_number(flight) and flight >= 0 and is_integer(caster) and Enum.all?([body.origin, body.rest, body.velocity], &vector?/1) and
+      is_number(flight) and flight >= 0 and is_integer(caster) and body.controller in MagicAdmission.controllers() and Enum.all?([body.origin, body.rest, body.velocity], &vector?/1) and
       (body.contact == nil or match?(%{target: %{granularity: _}, key: _, cell: {_, _, _}}, body.contact)) and
       flight?(body.flight) and scope?(body.combat_scope)
   end

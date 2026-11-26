@@ -120,7 +120,8 @@ defmodule VoxelRegion.MagicWorldTest do
       refresh: &Actor.tool_context/2,
       eye: eye,
       feet: feet,
-      tick_us: 16_667
+      tick_us: 16_667,
+      controller: :player
     }
 
     Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))

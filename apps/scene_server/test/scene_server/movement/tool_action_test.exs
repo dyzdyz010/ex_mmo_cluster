@@ -63,6 +63,8 @@ defmodule SceneServer.Movement.ToolActionTest do
       food_cursors: %{},
       body_sent: nil,
       life_generation: 99,
+      # Scene.join 恒给角色 kind（0 玩家、1 NPC）；actor_context 据此给出施法快照的 controller（魔法 v2 切片 7）。
+      kind: 0,
       effect_receipts: %{},
       tool_action: nil,
       action: nil,

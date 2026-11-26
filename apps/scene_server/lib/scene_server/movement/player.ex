@@ -596,6 +596,8 @@ defmodule SceneServer.Movement.Player do
       |> register_body_contact()
       |> advance()
       |> publish()
+      # 移交后的新 owner 在激活时接替在场（旧 owner seal 时已推 :absent；World 按 pid 登记，先后无关）。
+      |> push_presence(:present)
 
     fence(state)
     {:reply, :ok, state}
@@ -719,7 +721,7 @@ defmodule SceneServer.Movement.Player do
 
   def handle_cast({:ready, identity, seq, revision}, %{identity: identity} = state) do
     if state.baseline == {seq, revision},
-      do: {:noreply, %{state | ready: true}},
+      do: {:noreply, push_presence(%{state | ready: true}, :present)},
       else: finish(fail(state, 8))
   end
 
@@ -1319,9 +1321,11 @@ defmodule SceneServer.Movement.Player do
 
   defp begin_body_detach(%{transfer: transfer} = state, :stop, from)
        when transfer in [:prepared, :sealed],
-       do: complete_body_detach(state, :stop, [{:stop, from}])
+       do: complete_body_detach(push_presence(state, :absent), :stop, [{:stop, from}])
 
   defp begin_body_detach(state, action, from) do
+    state = push_presence(state, :absent)
+
     state =
       Enum.reduce(
         Map.keys(state.spell_requests),
@@ -1648,9 +1652,24 @@ defmodule SceneServer.Movement.Player do
       life_generation: state.life_generation,
       # 本场战斗范围（`MmoContracts.Harm`）：施法快照带进 World，结构存下施放时的值，驱散脉冲作用于他人结构与他人前摇前据此判
       # （魔法 v2 切片 6，决策稿 §6.1、Q6-3）。
-      combat_scope: Map.get(state.config, :combat_scope)
+      combat_scope: Map.get(state.config, :combat_scope),
+      # 施法者身份（魔法 v2 切片 7，决策稿 Q7-2）：入场时由入口声明的角色 kind（`Scene.join` 一处映射，客户端不能自报），
+      # World 的分区准入按它区分玩家与 NPC 配额（`VoxelRegion.World.MagicAdmission`）。
+      controller: controller(state)
     }
   end
+
+  defp controller(%{kind: 1}), do: :npc
+  defp controller(%{kind: 0}), do: :player
+
+  # 施法者在场（魔法 v2 切片 7，决策稿 Q7-1、设计 §5.6“Scene 推送，World 不拉取”）：玩家 Player 在会话就绪时推 :present、
+  # 会话解除时推 :absent；NPC 不计入在场、不推送。World 监视本进程，进程退出时自行移出，所以这里不需要兜底重试。
+  defp push_presence(%{authority_ref: world, kind: 0} = state, status) when world != nil do
+    VoxelRegion.World.caster_presence(world, state.id, status)
+    state
+  end
+
+  defp push_presence(state, _status), do: state
 
   defp handle_spell(
          identity,

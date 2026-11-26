@@ -84,6 +84,11 @@ defmodule VoxelRegion.TestSupport do
     # 角色移动（眼与脚一起变）：之后的授权 / 检查快照按新姿态求射线、脚下与施法域。
     def handle_call({:pose,eye,feet},_,state),do: {:reply,:ok,%{state | eye: eye, feet: feet}}
     def handle_call(:seal,_,state),do: {:reply,:ok,%{state | identity: :sealed}}
+    # 魔法 v2 切片 7：以本进程（会话 owner 替身）经公共 API 推送施法者在场，World 监视的就是它。
+    def handle_call({:presence,world,status},_,state) do
+      VoxelRegion.World.caster_presence(world, state.cid, status)
+      {:reply,:ok,state}
+    end
     # World 单元测试显式提供授权；不模拟角色前摇 owner。
     def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
     # 干预剂量通知（魔法 v2 切片 6）：只转给初始状态里登记的 `observer`（测试进程），不模拟 Player 的打断。

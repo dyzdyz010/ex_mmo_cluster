@@ -136,7 +136,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
       refresh: &Actor.tool_context/2,
       eye: {0.5, 2.5, 0.5},
       feet: {0.5, 1.0, 0.5},
-      tick_us: 16_667
+      tick_us: 16_667,
+      controller: :player
     }
 
     Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))

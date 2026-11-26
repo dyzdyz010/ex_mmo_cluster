@@ -51,8 +51,9 @@ defmodule VoxelRegion.World.Casting do
     求物理体（`World.Structures.launch/7`，弹道预测到报价推导的预计飞行时长为止、`body/5`），`Structure.new({seq, 0}, 组, 报价, commit_tick)` 放进
     `thermal.structures`；物理能量（E_op + E_th0 + 动能）记 `structure_created_mj`，构型损耗（总价 − 物理能量）作为有限热源
     留在脚下（`cast_waste_j`）。施放记录 live 0 与结构记录 live 1 在**同一笔**事务里。
-  - 每人上限（Q4-5）：施法者名下已有 `quotas.structures_per_caster` 个结构时，前摇开始、第 k 步检查与出手都以
-    `:structure_quota` 拒绝（其余准入在切片 7）。
+  - 准入（切片 7，决策稿 §7）：前摇开始、第 k 步检查与出手各经 `World.MagicAdmission.admit/3` 判一次（每施法者结构与飞行
+    上限、醒着的热节点上限、分区飞行名额、分区预算与 NPC 配额），拒绝为 `:structure_quota`、`:flight_quota`、
+    `:region_budget`，不扣能。施法快照必须带 `controller`（`:player | :npc`，由 Player 按入场时声明的角色 kind 给出）。
   - 结算时拒绝（目标失效、数值检查违规等）：outcome 2，不扣能、不改世界。
   - 前摇取消与打断（切片 6，决策稿 §6.1、Q6-1、Q6-4；`cancel_pending_cast/4`）：Player 给出原因与进行中的步号 k。k = 0
     （第一笔注能前）免费、outcome 2；k ≥ 1 按“在第 k 步中断”结账，与分阶段失败同一口径（`Cost.charge_through/3`），outcome 1、
@@ -67,7 +68,7 @@ defmodule VoxelRegion.World.Casting do
   require Logger
   alias VoxelRegion.{Access, Damage}
   alias VoxelRegion.Magic.{Cost, Program, Structure}
-  alias VoxelRegion.World.{Clock, Log, Observation, Structures, Thermal, Tools}
+  alias VoxelRegion.World.{Clock, Log, MagicAdmission, Observation, Structures, Thermal, Tools}
   import VoxelRegion.World.Canonical
 
   @hand_reach 0.5
@@ -620,8 +621,8 @@ defmodule VoxelRegion.World.Casting do
       {:ok, launch, state} ->
         s = Structure.new({seq, 0}, group, quote, Structures.commit_tick(state))
         body =
-          Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock),
-            Map.get(actor, :combat_scope))
+          Structures.body(group, state.magic, Map.take(actor, [:cid, :controller]), launch,
+            MmoContracts.ServerTime.server_us(state.server_clock), Map.get(actor, :combat_scope))
           |> Structures.sampled(actor)
 
         entry = Structures.entry(s, body, quote)
@@ -798,7 +799,7 @@ defmodule VoxelRegion.World.Casting do
     previous = Map.get(state.spell_sessions, actor.player)
 
     with {:ok, session} <- admit_cast(previous, request, actor, state.magic),
-         :ok <- structure_quota(state, actor, program),
+         :ok <- MagicAdmission.admit(state, actor, program),
          {:ok, effect, state} <- spell_effect(state, actor, request, program),
          {:ok, foot, state} <- foot_target(state, actor),
          :ok <- spell_subject(state, effect),
@@ -816,15 +817,6 @@ defmodule VoxelRegion.World.Casting do
       {:error, reason, _} -> {:error, reason}
     end
   end
-
-  # 每人结构上限（决策稿 Q4-5，目录 `quotas.structures_per_caster`）：只数本 World 里该施法者名下运行中的结构。
-  defp structure_quota(state, actor, %Program{kind: :structure}) do
-    if Structures.count(state, actor.cid) < state.magic.quotas.structures_per_caster,
-      do: :ok,
-      else: {:error, :structure_quota}
-  end
-
-  defp structure_quota(_state, _actor, %Program{}), do: :ok
 
   # 施法间隔与工具同一 GCRA（Gate 入口时钟、一个权威 tick 的相位借用）；过快即 cast_too_soon。
   defp admit_cast(previous, request, actor, magic) do

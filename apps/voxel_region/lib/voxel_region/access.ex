@@ -66,6 +66,8 @@ defmodule VoxelRegion.Access do
     body_death: :character_intent,
     body_detach: :character_intent,
     body_coherence: :character_intent,
+    # 魔法 v2 切片 7：Player 推送的施法者在场（只改派生的在场集合）
+    caster_presence: :character_intent,
     retry_death_drop: :character_intent,
 
     # 原始格编辑：不经玩法裁决，只给运维与创世 NPC

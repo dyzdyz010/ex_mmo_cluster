@@ -39,7 +39,7 @@ defmodule VoxelRegion.World.Closure do
       {:publish_prefab, 4}, {:stats, 0}, {:residency_status, 0}, {:maintain_residency, 0}, {:subscribe, 5},
       {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3}, {:serve_result, 6},
       {:compact, 0}, {:timeout, 3}, {:projectile_tick, 0}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
-      {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5},
+      {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5}, {:caster_presence, 4},
       {:cancel_cast, 4}, {:thermal_step, 2}, {:DOWN, 5}, {:prepare_sort, 4}, {:commit_sort, 4},
       {:simulation_windows, 4}
     ]

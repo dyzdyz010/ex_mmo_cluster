@@ -115,9 +115,9 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   # 一条完整记录：World 的生产者（物理体 + `Structure.wire/1` 的动态字段 + 样本场景给出的状态位与 live）。
   defp record(c, group, live, place, wire, world_status \\ []) do
     # 物理体的半尺寸与无质量位只取决于程序；先以静止发射求一次，再按样本场景的发射求真实物理体。
-    probe = Structures.body(group, c.catalog, @caster, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us, nil)
+    probe = Structures.body(group, c.catalog, %{cid: @caster, controller: :player}, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us, nil)
     place = if match?({:thrown, _}, place), do: place, else: {:at, place}
-    body = Structures.body(group, c.catalog, @caster, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us, nil)
+    body = Structures.body(group, c.catalog, %{cid: @caster, controller: :player}, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us, nil)
     Structures.record(body, %{wire | status: wire.status ++ world_status}, live)
   end
 

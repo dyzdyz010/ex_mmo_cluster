@@ -227,7 +227,8 @@ defmodule GateServer.VoximSpellDispatchTest do
       coherence_factor: 1.0,
       eye: {0.5, 2.5, 0.5},
       feet: {0.5, 1.0, 0.5},
-      tick_us: 16_667
+      tick_us: 16_667,
+      controller: :player
     }
 
     player = start_supervised!({CastingPlayer, %{actor: actor, world: world}})
@@ -494,7 +495,8 @@ defmodule GateServer.VoximSpellDispatchTest do
 
   # G6-1（魔法 v2 切片 6，决策稿 §3.4、Q6-4）：四条前摇打断原因。进行到第 k ≥ 1 步的打断是已提交事务（扣第 1..k 步），
   # 0x68 accepted、result_ref = seq、原因串为 outcome 文本；第一笔注能前（k = 0）免费，0x68 rejected、原因串为 inspect 形式。
-  # 准入原因 :structure_quota（切片 4c）同 rejected 形式；:flight_quota / :region_budget 属切片 7。
+  # 准入原因（切片 7，`VoxelRegion.World.MagicAdmission`）同 rejected 形式：:structure_quota、:flight_quota、:region_budget
+  # （客户端文案：结构数已满、飞行中的法术已满、分区魔法拥挤）。
   test "G6-1 前摇打断的 0x68 原因串：k ≥ 1 accepted \"interrupted_*\"，k = 0 rejected \":interrupted_*\"" do
     alias GateServer.Session.QuicConnection
     {:ok, conn} = QuicConnection.init(conn: :test, listener: self(), hello: nil)
@@ -517,7 +519,10 @@ defmodule GateServer.VoximSpellDispatchTest do
       assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> = IO.iodata_to_binary(frame)
     end
 
-    {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, :structure_quota) |> Codec.encode()
-    assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 16::16, ":structure_quota">> = IO.iodata_to_binary(frame)
+    for {reason, text} <- [structure_quota: ":structure_quota", flight_quota: ":flight_quota", region_budget: ":region_budget"] do
+      {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, reason) |> Codec.encode()
+      size = byte_size(text)
+      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> = IO.iodata_to_binary(frame)
+    end
   end
 end

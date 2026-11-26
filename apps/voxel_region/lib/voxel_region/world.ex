@@ -518,7 +518,8 @@ defmodule VoxelRegion.World do
   第 k 步中断也是一笔已提交事务，`fail_step` = k、建成为 0；切片 6 起前摇进行到第 k ≥ 1 步时被取消或打断，outcome 为
   `:interrupted_cancelled | :interrupted_moved | :interrupted_disrupted | :interrupted_wounded`，第一笔注能前取消或打断回
   `{:error, 同一原因}`）或 `{:error, reason}`（不扣能量、不改世界；数值检查违规为 `{:rejects, [检查名]}`，
-  射线落空为 `:no_target`，报价超频为 `:quote_rate`，施法者名下结构已达上限为 `:structure_quota`）。结构建成后由热提交逐拍
+  射线落空为 `:no_target`，报价超频为 `:quote_rate`；切片 7 的准入拒绝为 `:structure_quota`、`:flight_quota`、`:region_budget`，
+  见 `VoxelRegion.World.MagicAdmission`）。结构建成后由热提交逐拍
   步进（`VoxelRegion.World.Structures`）。
   施放通过立即校验后先进入前摇，本调用在结算完成后才返回；前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
   流程与结算口径见 `VoxelRegion.World.Casting`。
@@ -531,6 +532,14 @@ defmodule VoxelRegion.World do
     end
     prepare(server, keys, fn -> VoxelRegion.World.PageLoad.call(server, {:spell_intent, actor, request}, 300_000) end)
   end
+
+  @doc """
+  全局系统功能（魔法 v2 切片 7，决策稿 Q7-1）：玩家施法者在场变化，由角色 owner（Player）在会话就绪时推 `:present`、
+  会话解除时推 `:absent`；调用进程即登记的会话 owner（World 监视它，退出即移出）。异步、无回复：在场只影响分区拥挤时的
+  准入份额（`VoxelRegion.World.MagicAdmission`），World 不向 Scene 拉取（设计 §5.6）。NPC 不推送、不计入在场。
+  """
+  def caster_presence(server, cid, status) when status in [:present, :absent],
+    do: send(server, {:caster_presence, cid, self(), status})
 
   @doc "全局系统功能（魔法增量 1）：施法者状态（登录时下发一次）；世界未配置魔法目录时 `{:error, :magic_unavailable}`。"
   def caster_state(server, cid), do: VoxelRegion.World.PageLoad.call(server, {:caster_state, cid}, 300_000)
@@ -836,6 +845,9 @@ defmodule VoxelRegion.World do
           pending_casts: %{},
           # 报价限频（决策稿 P7）：cid => 最近 1 s 内已接纳报价的 World 单调时刻（ms），每施法者至多目录限额个；不持久化。
           quote_admissions: %{},
+          # 魔法 v2 切片 7：在场的玩家施法者（cid => %{pid, monitor}），只由 Scene 推送（`caster_presence/3`），World 监视推送者，
+          # 进程退出即移出；派生、不持久化（`World.MagicAdmission`）。
+          magic_presence: %{},
           # 魔法增量 4：Scene 每秒报来的身体接触（cid => 几何、皮肤温度与本次接触边），派生、不持久化；
           # 过期（2.5 s 未续报）即丢。身体真值在 Scene（SceneServer.Body）。
           bodies: %{},
@@ -993,7 +1005,7 @@ defmodule VoxelRegion.World do
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
-  @unflushed [:serve_item, :serve_result, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since,
+  @unflushed [:serve_item, :serve_result, :tool_definition, :content_version, :seq, :body_coherence, :caster_presence, :body_contact, :interactions_since,
     :window_input, :window_geometry, :window_finished, :simulation_windows]
 
   # 装页任务与 World 的往来（M2b `World.PageLoad`）：不过闸、不写回热域。
@@ -1677,6 +1689,7 @@ defmodule VoxelRegion.World do
         residency: Residency.observe(state),
         simulation_progress: %{thermal: Thermal.progress(state), liquid: VoxelRegion.World.Liquids.progress(state),
           projectiles: VoxelRegion.World.Projectiles.progress(state)},
+        magic_admission: VoxelRegion.World.MagicAdmission.observe(state),
         entries: Cache.stats(state.cache).namespaces.payload.entries,
         shared_cache: Cache.stats(state.cache),
         prefab_residency: %{definitions: map_size(state.prefabs), preparing: map_size(state.prefab_requests),
@@ -2126,6 +2139,10 @@ defmodule VoxelRegion.World do
     {:noreply, state}
   end
 
+  # 魔法 v2 切片 7：在场集合只读写派生状态，不读写属性记录（所以在 @unflushed 里）。
+  defp info({:caster_presence, cid, pid, status}, state),
+    do: {:noreply, VoxelRegion.World.MagicAdmission.presence(state, cid, pid, status)}
+
   # 身体闭环 H2：角色死亡（Scene 送来脚位），按 `death_drop/3` 裁决掉落并记账。
   defp info({:body_death, cid, feet}, state) do
     {result, state} = Production.death_drop(state, cid, feet)
@@ -2281,6 +2298,7 @@ defmodule VoxelRegion.World do
 
   defp info({:DOWN, _ref, :process, pid, _reason}, state) do
     state = state |> VoxelRegion.World.PageLoad.release_preparations(pid) |> Residency.request()
+    state = VoxelRegion.World.MagicAdmission.down(state, pid)
     {windows, changed} = VoxelRegion.World.SimulationWindows.remove(state.simulation_windows, pid)
     if changed, do: Logger.info("voxel_simulation_windows source=#{inspect(pid)} reason=down sources=#{map_size(windows)} windows=0")
     state = if changed,

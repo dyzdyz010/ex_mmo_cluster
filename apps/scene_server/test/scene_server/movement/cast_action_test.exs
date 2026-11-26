@@ -43,6 +43,8 @@ defmodule SceneServer.Movement.CastActionTest do
       spell_requests: %{},
       # Player.init 恒设生命代次（player.ex init），actor_context 读它；夹具补上同一字段。
       life_generation: 1,
+      # Scene.join 恒给角色 kind（0 玩家、1 NPC）；actor_context 据此给出施法快照的 controller（魔法 v2 切片 7）。
+      kind: 0,
       scene_id: 1,
       scene_epoch: 2,
       clock: {SceneServer.Movement.Clock, nil},

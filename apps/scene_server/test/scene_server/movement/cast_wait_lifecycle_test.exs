@@ -541,4 +541,13 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     elapsed = System.monotonic_time(:millisecond) - started
     assert elapsed >= 300 and elapsed < 1_000
   end
+
+  # S7-1（魔法 v2 切片 7，决策稿 Q7-1）：在场只由 Scene 推送。真实 Player 在会话就绪（setup 里的 `Player.ready/4`）时经公共 API
+  # `World.caster_presence/3` 推 :present，会话解除（`Player.stop/1` → 身体解除）时推 :absent；World 只读自己的在场集合。
+  test "S7-1 Player 会话就绪 → World 在场集合含该角色；会话解除 → 在场集合缩小", c do
+    present = fn -> World.stats(c.world).magic_admission.present end
+    await(fn -> present.() == [1001] end)
+    assert :ok = Player.stop(c.player)
+    await(fn -> present.() == [] end)
+  end
 end
