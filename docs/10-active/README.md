@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **53** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。下方按子系统分组索引。
 
 ## 索引
 
@@ -67,6 +67,8 @@
 - [`2026-04-20-移动同步-路线C-实施计划.md`](movement-sync/2026-04-20-移动同步-路线C-实施计划.md)
 - [`2026-04-20-移动同步扩展设计.md`](movement-sync/2026-04-20-移动同步扩展设计.md)
 - [`2026-05-24-server-authoritative-voxel-collision-plan.md`](movement-sync/2026-05-24-server-authoritative-voxel-collision-plan.md)
+- [`2026-11-04-momentum-contact-design.md`](movement-sync/2026-11-04-momentum-contact-design.md) — 动量、接触与角色操作的唯一当前设计入口；有限驱动力方向已由用户确认，未实施
+- [`2026-11-04-momentum-contact-research.md`](movement-sync/2026-11-04-momentum-contact-research.md) — 研究证据与候选方案保留稿；方向已确认，当前设计与待定边界转由正式设计维护，未实施
 
 ### voxel-authority
 
