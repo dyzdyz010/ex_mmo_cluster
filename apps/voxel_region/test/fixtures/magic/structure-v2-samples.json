@@ -1,0 +1,415 @@
+{
+  "catalog_digest": "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264",
+  "generator": "apps/voxel_region/test/magic_structure_wire_samples_test.exs；重新生成（仅 Linux）：cd apps/voxel_region && WRITE_STRUCTURE_WIRE_SAMPLES=1 mix test --no-start test/magic_structure_wire_samples_test.exs；之后重跑 apps/mmo_contracts/test/fixtures/gen_wire_v2_samples.py 生成线字节",
+  "ir_samples": "ir-v2-samples.json（程序字节的唯一来源）",
+  "note": "fields 是结构记录 v2 的字段值（MmoContracts.Voxel.Codec.encode_structures/1 的输入形状）：coupling、status 为位名列表（按线上位序），anchor_ref 为 12 B 的十六进制，坐标与速度为 [x, y, z]；浮点为原值。state 是状态增量对应结构在该拍的动态字段（温度、发光未量化；量化在线字节生成器与 codec 各自实现）。",
+  "records": [
+    {
+      "design": "无事件删除（live 0）：id 之外全 0",
+      "event": null,
+      "fields": null,
+      "id": "deleted",
+      "preset": null,
+      "sid": [
+        100,
+        0
+      ],
+      "tick": 0
+    },
+    {
+      "design": "灯刚出生（未步进）：无质量、静止在手边，发光取〈辉〉标称 100 W",
+      "event": null,
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 255,
+        "coupling": [
+          "glow"
+        ],
+        "ends_on_contact": false,
+        "failed_segments": 0,
+        "flight_s": 0.0,
+        "glow_w": 100.0,
+        "live": 1,
+        "load": 56,
+        "massless": true,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "shape": 0,
+        "size1_m": 0.15,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [],
+        "t0_us": 1700000000000000,
+        "temperature_k": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "lamp_born",
+      "preset": "lamp",
+      "sid": [
+        101,
+        0
+      ],
+      "tick": 0
+    },
+    {
+      "design": "火球刚出生、飞行中（World 补 flying 位）：有质量弹道，落点为测试地面命中点",
+      "event": null,
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 255,
+        "coupling": [
+          "thermal"
+        ],
+        "ends_on_contact": true,
+        "failed_segments": 0,
+        "flight_s": 0.553001263609331,
+        "glow_w": 0.0,
+        "live": 1,
+        "load": 109,
+        "massless": false,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          1.25,
+          7.636015163311972
+        ],
+        "shape": 0,
+        "size1_m": 0.25,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [
+          "flying"
+        ],
+        "t0_us": 1700000000000000,
+        "temperature_k": 2.0e3,
+        "velocity": [
+          0.0,
+          0.0,
+          12.0
+        ]
+      },
+      "id": "fireball_flight",
+      "preset": "fireball",
+      "sid": [
+        102,
+        0
+      ],
+      "tick": 0
+    },
+    {
+      "design": "火球第 1 拍接触：〈遇〉→〈散〉触发，live 2 终态快照（同拍步进结果）",
+      "event": "contact",
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 255,
+        "coupling": [
+          "thermal"
+        ],
+        "ends_on_contact": true,
+        "failed_segments": 0,
+        "flight_s": 0.553001263609331,
+        "glow_w": 0.0,
+        "live": 2,
+        "load": 109,
+        "massless": false,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          1.25,
+          7.636015163311972
+        ],
+        "shape": 0,
+        "size1_m": 0.25,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [],
+        "t0_us": 1700000000000000,
+        "temperature_k": 2.0e3,
+        "velocity": [
+          0.0,
+          0.0,
+          12.0
+        ]
+      },
+      "id": "fireball_contact",
+      "preset": "fireball",
+      "sid": [
+        103,
+        0
+      ],
+      "tick": 1
+    },
+    {
+      "design": "灯无供能逐拍出账至 E_op < E_min：断供衰竭 live 3",
+      "event": "exhausted",
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 255,
+        "coupling": [
+          "glow"
+        ],
+        "ends_on_contact": false,
+        "failed_segments": 0,
+        "flight_s": 0.0,
+        "glow_w": 100.0,
+        "live": 3,
+        "load": 0,
+        "massless": true,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "shape": 0,
+        "size1_m": 0.15,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [],
+        "t0_us": 1700000000000000,
+        "temperature_k": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "lamp_exhausted",
+      "preset": "lamp",
+      "sid": [
+        104,
+        0
+      ],
+      "tick": 264
+    },
+    {
+      "design": "灯举在 800 K 火场格：相干跌破 0.3 且 x ≥ 0.8·x*，过载崩解 live 4",
+      "event": "collapsed",
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 76,
+        "coupling": [
+          "glow"
+        ],
+        "ends_on_contact": false,
+        "failed_segments": 0,
+        "flight_s": 0.0,
+        "glow_w": 100.0,
+        "live": 4,
+        "load": 35,
+        "massless": true,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "shape": 0,
+        "size1_m": 0.15,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [
+          "overline"
+        ],
+        "t0_us": 1700000000000000,
+        "temperature_k": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "lamp_collapsed",
+      "preset": "lamp",
+      "sid": [
+        105,
+        0
+      ],
+      "tick": 48
+    },
+    {
+      "design": "灯在驱散脉冲中心（d = 0）：第 1 拍驱散 live 5",
+      "event": "dispelled",
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 0,
+        "caster": 1001,
+        "coherence": 0,
+        "coupling": [
+          "glow"
+        ],
+        "ends_on_contact": false,
+        "failed_segments": 0,
+        "flight_s": 0.0,
+        "glow_w": 100.0,
+        "live": 5,
+        "load": 43,
+        "massless": true,
+        "origin": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "proto_id": 0,
+        "rest": [
+          0.5,
+          2.5,
+          1.0
+        ],
+        "shape": 0,
+        "size1_m": 0.15,
+        "size2_mm": 0,
+        "size3_mm": 0,
+        "status": [
+          "overline"
+        ],
+        "t0_us": 1700000000000000,
+        "temperature_k": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "lamp_dispelled",
+      "preset": "lamp",
+      "sid": [
+        106,
+        0
+      ],
+      "tick": 1
+    },
+    {
+      "design": "定时火种（〈附〉块）：〈时〉30 s 到期 → 〈散〉，live 6",
+      "event": "released",
+      "fields": {
+        "anchor_ref": "000000000000000000000000",
+        "anchor_type": 1,
+        "caster": 1001,
+        "coherence": 255,
+        "coupling": [],
+        "ends_on_contact": false,
+        "failed_segments": 0,
+        "flight_s": 0.0,
+        "glow_w": 0.0,
+        "live": 6,
+        "load": 111,
+        "massless": true,
+        "origin": [
+          2.5,
+          1.15,
+          4.5
+        ],
+        "proto_id": 0,
+        "rest": [
+          2.5,
+          1.15,
+          4.5
+        ],
+        "shape": 1,
+        "size1_m": 0.15,
+        "size2_mm": 150,
+        "size3_mm": 150,
+        "status": [],
+        "t0_us": 1700000000000000,
+        "temperature_k": 0.0,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "timed_ember_released",
+      "preset": "timed_ember",
+      "sid": [
+        107,
+        0
+      ],
+      "tick": 60
+    }
+  ],
+  "site": {
+    "ambient_k": 293.15,
+    "emissivity": 0.9,
+    "exchange_w_per_m2_k": 10.0,
+    "formation_distance_m": 3.0
+  },
+  "source": "ex_mmo_cluster docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md §3；由 Program.decode_ir/2、Cost.quote_structure/3、Structure.new/4、step/4、respond/3、wire/1 算出",
+  "states": [
+    {
+      "preset": "lamp",
+      "sid": [
+        101,
+        0
+      ],
+      "state": {
+        "coherence": 255,
+        "failed_segments": 0,
+        "glow_w": 100.0,
+        "load": 56,
+        "status": [],
+        "temperature_k": 0.0
+      },
+      "tick": 3
+    },
+    {
+      "preset": "timed_ember",
+      "sid": [
+        107,
+        0
+      ],
+      "state": {
+        "coherence": 255,
+        "failed_segments": 0,
+        "glow_w": 0.0,
+        "load": 111,
+        "status": [],
+        "temperature_k": 0.0
+      },
+      "tick": 53
+    }
+  ]
+}

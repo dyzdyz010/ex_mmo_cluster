@@ -167,7 +167,9 @@ defmodule SceneServer.Movement.PlayerWire do
           epochs: epochs,
           states: states,
           protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{})),
-          semblances: Voxel.Codec.encode_semblances(Map.get(value, :semblances, %{})),
+          # 结构记录 v2 与状态增量暂为空（字段默认 <<>>）：World 现在只有存档拟态（v1 运行时，施法入口已不再创建），
+          # 其 135 B 记录已随 Hello 46 删除。切片 4c 接结构运行时：由 World 的结构增量经
+          # `Voxel.Codec.encode_structures/1`、`encode_structure_states/1` 填入，存档拟态在恢复时一次散解（Q4-6）。
           casts: Voxel.Codec.encode_casts(Map.get(value, :casts, %{}))
         }
 

@@ -56,8 +56,9 @@ defmodule MmoContracts.Voxel.Codec do
          epochs: :bytes,
          states: {:array, :u32, :bytes},
          protection: :bytes,
-         semblances: :bytes,
-         casts: :bytes
+         structures: :bytes,
+         casts: :bytes,
+         structure_states: :bytes
        ]},
     # 身体闭环 H2（Hello 31）：复活瞬移。本人在 apply_tick − 1 的移动状态换成 state（会话出生点），apply_tick 起从它推进。
     # 与 CollisionWindow、TimelineFence 同一可靠流：流送时紧接在覆盖出生点的新窗口之前发出（同一 apply_tick）。
@@ -79,7 +80,6 @@ defmodule MmoContracts.Voxel.Codec do
   @msg_voxel_batch_edit_intent 0x78
   @msg_voxel_log_transaction 0x79
 
-  import Bitwise, only: [band: 2]
   import MmoContracts.Voxel.Fields
 
   @doc "当前上行 opcode 的归属，用于 Gate 纯路由选择。"
@@ -1266,19 +1266,28 @@ defmodule MmoContracts.Voxel.Codec do
 
   defp accept_m1(%Voxel.PropertyBatch{
          protection: bytes,
-         semblances: semblances,
+         structures: structures,
          casts: casts,
+         structure_states: states,
          complete: complete
        }) do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
-    {:ok, delta} = decode_semblances(semblances)
 
-    true =
-      complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil and Map.get(s, :live, 1) == 1 end)
+    # 完整快照只列存在中的结构（live 1）；删除（0）与终止事件（2–6）只在增量批里出现。
+    {:ok, records} = decode_structures(structures)
+    true = complete == 0 or Enum.all?(records, fn {_, s} -> s != nil and s.live == 1 end)
 
     {:ok, delta} = decode_casts(casts)
     true = complete == 0 or Enum.all?(delta, fn {_, c} -> c.live == 1 end)
+
+    # 状态增量只在增量批里出现；同一批已有结构记录（含删除与终止快照）的 id 不再发增量——
+    # 完整记录本身带同样的状态字段，重复出现时两者的先后没有定义。
+    {:ok, states} = decode_structure_states(states)
+
+    true =
+      states == %{} or
+        (complete == 0 and not Enum.any?(Map.keys(states), &Map.has_key?(records, &1)))
   end
 
   defp accept_m1(_), do: :ok
@@ -1340,98 +1349,275 @@ defmodule MmoContracts.Voxel.Codec do
 
   defp decode_protection(_, _, _), do: {:error, :invalid_protection}
 
+  # ── 结构记录 v2 与状态增量（Hello 46，魔法 v2 切片 4a；决策稿 `2026-11-26-p1-closure-slices4-8.md` §3）──
+  #
+  # 位表与事件编号只在这里定义（SSOT）；World 用名字（原子）构造记录，编码端换算成位，解码端换回名字。
+
+  # 记录 `flags` 字节：第 0 位 ends_on_contact（程序有〈遇〉→〈散〉规则），第 1 位 massless（无质量即不受重力，
+  # 用户 Q4-2）；其余位必须为 0。
+  @structure_flags [:ends_on_contact, :massless]
+  # `coupling_mask` u16：第 0–3 位依次为〈热〉〈辉〉〈容〉〈乱〉；其余位保留为 0。
+  @structure_couplings [:thermal, :glow, :capacity, :disrupt]
+  # `status` u8：第 0–5 位；第 6–7 位保留为 0。
+  @structure_status [:overline, :folded, :feeding, :vent_damaged, :flying, :asleep]
+  # 终止事件（live 2–6，用户 Q4-W3）：接触触发的〈散〉为 2；非接触读数（〈时〉〈满〉）触发的〈散〉为 6；
+  # 3–5 对应 `VoxelRegion.Magic.Structure` 的终止类型。live 0 只表示无事件删除，live 1 表示存在。
+  @structure_ends [contact: 2, exhausted: 3, collapsed: 4, dispelled: 5, released: 6]
+
+  @doc "结构记录 `coupling_mask` 的位序：第 i 位 = 第 i 个名字（〈热〉〈辉〉〈容〉〈乱〉）。"
+  def structure_couplings, do: @structure_couplings
+
+  @doc "结构 `status` 字节的位序：第 i 位 = 第 i 个名字（越线、折叠、供能中、泄放口已损、飞行、热节点休眠）。"
+  def structure_status_bits, do: @structure_status
+
   @doc """
-  拟态增量（协议 45）：`%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
-  每条 135 B、大端、按 id 升序且唯一；坐标为 canonical 米（Y-up），客户端不逐 tick 接收位置而自行插值：
-
-      id_seq:u64, id_n:u32, live:u8 (0 普通删除 / 1 存在 / 2 碰撞结束快照), caster:u64, shape:u8 (0 球 / 1 立方),
-      flags:u8 (位 0 = break_on_hit 命中散解 / 位 1 = no_gravity 无重力直线飞行；0..3), radius_m:f64, temperature_k:f64, glow_w:f64,
-      origin_x/y/z:f64, velocity_x/y/z:f64, t0_us:u64, flight_s:f64, rest_x/y/z:f64
-
-  位置 p(τ) = origin + velocity·τ − ½·g·τ²·ŷ（no_gravity 为 true 时 g = 0，否则 g = 9.81 m/s²），
-  τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
-  静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务器时间线 `MmoContracts.ServerTime`（与 SessionStart.server_time_us 同源）。
-  碰撞结束（live = 2）携带最终完整记录且 break_on_hit（flags 位 0）必须为 1，只能用于增量；客户端以此事件结束飞行并播放碰撞，
-  不由本地时钟或普通删除推测碰撞。热模拟按固定步推进，确认可早于墙钟轨迹终点。旧存档无 break_on_hit / no_gravity 时对应位编码为 0。
-  普通删除（live = 0）除 id 外全为 0；过期与驱散不冒充碰撞。
+  终止事件 → 记录 `live`（2–6）：`:contact` 接触触发的〈散〉（含〈遇〉→〈散〉）、`:exhausted` 断供衰竭、
+  `:collapsed` 过载崩解、`:dispelled` 驱散、`:released` 非接触读数触发的〈散〉。表外名字显式失败。
   """
-  def encode_semblances(delta) do
-    for {{seq, n}, s} <- Enum.sort(delta), into: <<>> do
-      case s do
+  def structure_end_live(event), do: Keyword.fetch!(@structure_ends, event)
+
+  @doc """
+  结构增量 `%{{seq, n} => 记录 | nil}` 的线字节（PropertyBatch `structures` 字段）。每条 160 B、大端、按 id 升序且唯一；
+  坐标为 canonical 米（Y-up）：
+
+      偏移  0 id_seq:u64 | 8 id_n:u32 | 12 live:u8 | 13 caster:u64 | 21 shape:u8 (0 球 / 1 块 / 2 板)
+          22 flags:u8 (位 0 ends_on_contact / 位 1 massless) | 23 size1_m:f64 | 31 temperature_k:f64 (T_port，无〈热〉为 0)
+          39 glow_w:f64 (本拍实际光功率) | 47 origin:f64×3 | 71 velocity:f64×3 | 95 t0_us:u64 | 103 flight_s:f64
+          111 rest:f64×3 | 135 size2_mm:u16 | 137 size3_mm:u16 | 139 proto_id:u16 | 141 coupling_mask:u16
+          143 load:u8 | 144 coherence:u8 | 145 status:u8 | 146 failed_segments:u8 | 147 anchor_type:u8 (0 手边 / 1 格面)
+          148 anchor_ref:12 B
+
+  记录（`live` 1–6）的键：`live caster shape ends_on_contact massless size1_m temperature_k glow_w origin velocity t0_us
+  flight_s rest size2_mm size3_mm proto_id coupling load coherence status failed_segments anchor_type anchor_ref`。
+  `coupling`、`status` 是名字列表（`structure_couplings/0`、`structure_status_bits/0`），`load`、`coherence` 是已量化的
+  u8（round(x·255)、round(clamp(C, 0, 1)·255)），`anchor_ref` 是 12 B 二进制（P1 全 0）。
+
+  - `nil` 是无事件删除：id + `live = 0` + 147 B 全 0。
+  - `live` 1 存在；2–6 是终止事件（`structure_end_live/1`），一律带终态完整快照，客户端无需先有存在记录。
+    live 2 要求 `ends_on_contact`。完整快照批只能含 live 1（`decode_m1/1` 拒绝）。
+  - 位置 p(τ) = origin + velocity·τ − ½·g·τ²·ŷ，`massless` 时 g = 0；τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)，
+    之后停在 rest。t0_us 是服务器时间线 `MmoContracts.ServerTime`。
+  - 球的 size2_mm、size3_mm 为 0；块与板二者为正。
+
+  不满足上述约束的记录编码时显式失败（`ArgumentError`），不产生客户端会拒收的字节。
+  """
+  def encode_structures(delta) do
+    for {{seq, n} = id, record} <- Enum.sort(delta), into: <<>> do
+      case record do
         nil ->
-          <<seq::64, n::32, 0::8, 0::size(122)-unit(8)>>
+          <<seq::64, n::32, 0::8, 0::size(147)-unit(8)>>
 
-        s ->
-          {ox, oy, oz} = s.origin
-          {vx, vy, vz} = s.velocity
-          {rx, ry, rz} = s.rest
+        record ->
+          f = structure_wire_fields(record)
 
-          break_on_hit = if Map.get(s, :break_on_hit, false), do: 1, else: 0
-          no_gravity = if Map.get(s, :no_gravity, false), do: 2, else: 0
-          flags = break_on_hit + no_gravity
-          live = Map.get(s, :live, 1)
+          structure_fields_valid?(f) ||
+            raise ArgumentError, "结构记录 #{inspect(id)} 不满足 Hello 46 约束：#{inspect(record)}"
 
-          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, flags::8, s.radius_m::float-64,
-            s.temperature_k::float-64, s.glow_w::float-64, ox::float-64, oy::float-64,
-            oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
-            s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
+          {ox, oy, oz} = f.origin
+          {vx, vy, vz} = f.velocity
+          {rx, ry, rz} = f.rest
+
+          <<seq::64, n::32, f.live::8, f.caster::64, f.shape::8, f.flags::8,
+            f.size1_m::float-64, f.temperature_k::float-64, f.glow_w::float-64, ox::float-64,
+            oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, f.t0_us::64,
+            f.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64, f.size2_mm::16,
+            f.size3_mm::16, f.proto_id::16, f.coupling_mask::16, f.load::8, f.coherence::8,
+            f.status::8, f.failed_segments::8, f.anchor_type::8, f.anchor_ref::binary-size(12)>>
       end
     end
   end
 
-  @doc "`encode_semblances/1` 的逆；拟态只含线上字段。"
-  def decode_semblances(bytes), do: decode_semblances(bytes, nil, %{})
+  @doc "`encode_structures/1` 的逆，返回 `{:ok, %{{seq, n} => 记录 | nil}}` 或 `{:error, :invalid_structure}`。"
+  def decode_structures(bytes), do: decode_structures(bytes, nil, %{})
 
-  defp decode_semblances(<<>>, _, acc), do: {:ok, acc}
+  defp decode_structures(<<>>, _, acc), do: {:ok, acc}
 
-  defp decode_semblances(
-         <<seq::64, n::32, 0::8, zero::binary-size(122), rest::binary>>,
+  defp decode_structures(
+         <<seq::64, n::32, 0::8, zero::binary-size(147), rest::binary>>,
          previous,
          acc
        )
        when previous == nil or {seq, n} > previous do
-    if zero == <<0::size(122)-unit(8)>>,
-      do: decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, nil)),
-      else: {:error, :invalid_semblance}
+    if zero == <<0::size(147)-unit(8)>>,
+      do: decode_structures(rest, {seq, n}, Map.put(acc, {seq, n}, nil)),
+      else: {:error, :invalid_structure}
   end
 
-  defp decode_semblances(
-         <<seq::64, n::32, live::8, caster::64, shape::8, flags::8, radius::float-64,
+  defp decode_structures(
+         <<seq::64, n::32, live::8, caster::64, shape::8, flags::8, size1::float-64,
            temperature::float-64, glow::float-64, ox::float-64, oy::float-64, oz::float-64,
            vx::float-64, vy::float-64, vz::float-64, t0::64, flight::float-64, rx::float-64,
-           ry::float-64, rz::float-64, rest::binary>>,
+           ry::float-64, rz::float-64, size2::16, size3::16, proto::16, coupling::16, load::8,
+           coherence::8, status::8, failed::8, anchor_type::8, anchor_ref::binary-size(12),
+           rest::binary>>,
          previous,
          acc
        )
-       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and
-              flags in 0..3 and
-              (live == 1 or (live == 2 and band(flags, 1) == 1)) and radius > 0 and
-              temperature > 0 and
-              glow >= 0 and flight >= 0 do
-    s = %{
+       when previous == nil or {seq, n} > previous do
+    f = %{
+      live: live,
       caster: caster,
       shape: shape,
-      break_on_hit: band(flags, 1) == 1,
-      no_gravity: band(flags, 2) != 0,
-      radius_m: radius,
+      flags: flags,
+      size1_m: size1,
       temperature_k: temperature,
       glow_w: glow,
       origin: {ox, oy, oz},
       velocity: {vx, vy, vz},
       t0_us: t0,
       flight_s: flight,
-      rest: {rx, ry, rz}
+      rest: {rx, ry, rz},
+      size2_mm: size2,
+      size3_mm: size3,
+      proto_id: proto,
+      coupling_mask: coupling,
+      load: load,
+      coherence: coherence,
+      status: status,
+      failed_segments: failed,
+      anchor_type: anchor_type,
+      anchor_ref: anchor_ref
     }
 
-    s = if live == 2, do: Map.put(s, :live, 2), else: s
-    decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, s))
+    if structure_fields_valid?(f),
+      do: decode_structures(rest, {seq, n}, Map.put(acc, {seq, n}, structure_record(f))),
+      else: {:error, :invalid_structure}
   end
 
-  defp decode_semblances(_, _, _), do: {:error, :invalid_semblance}
+  defp decode_structures(_, _, _), do: {:error, :invalid_structure}
+
+  # 记录（名字与布尔）→ 线上字段（位掩码）；缺键即显式失败（KeyError）。
+  defp structure_wire_fields(record) do
+    flags = for {name, true} <- [ends_on_contact: record.ends_on_contact, massless: record.massless], do: name
+
+    record
+    |> Map.take(~w(live caster shape size1_m temperature_k glow_w origin velocity t0_us flight_s rest
+         size2_mm size3_mm proto_id load coherence failed_segments anchor_type anchor_ref)a)
+    |> Map.merge(%{
+      flags: names_mask(@structure_flags, flags),
+      coupling_mask: names_mask(@structure_couplings, record.coupling),
+      status: names_mask(@structure_status, record.status)
+    })
+  end
+
+  # 线上字段 → 记录：位掩码换回名字（按位序）。
+  defp structure_record(f) do
+    f
+    |> Map.drop([:flags, :coupling_mask])
+    |> Map.merge(%{
+      ends_on_contact: Bitwise.band(f.flags, 1) == 1,
+      massless: Bitwise.band(f.flags, 2) == 2,
+      coupling: mask_names(@structure_couplings, f.coupling_mask),
+      status: mask_names(@structure_status, f.status)
+    })
+  end
+
+  # 编码与解码共用的唯一约束（Hello 46）：live 1–6（live 2 须 ends_on_contact）；shape 0–2 且球的尺寸 2、3 为 0、
+  # 块与板为正；flags、coupling_mask、status 的保留位为 0；size1 > 0；温度、发光、飞行时长非负；anchor_type 0–1；
+  # 整数字段在各自宽度内（编码端防截断）。
+  defp structure_fields_valid?(f) do
+    f.live in 1..6 and (f.live != 2 or Bitwise.band(f.flags, 1) == 1) and
+      f.flags in 0..3 and f.coupling_mask in 0..15 and f.status in 0..63 and
+      f.shape in 0..2 and
+      if(f.shape == 0,
+        do: f.size2_mm == 0 and f.size3_mm == 0,
+        else: f.size2_mm in 1..0xFFFF and f.size3_mm in 1..0xFFFF
+      ) and
+      f.size1_m > 0 and f.temperature_k >= 0 and f.glow_w >= 0 and f.flight_s >= 0 and
+      f.proto_id in 0..0xFFFF and f.load in 0..255 and f.coherence in 0..255 and
+      f.failed_segments in 0..255 and f.anchor_type in 0..1 and
+      f.caster in 0..0xFFFF_FFFF_FFFF_FFFF and f.t0_us in 0..0xFFFF_FFFF_FFFF_FFFF and
+      byte_size(f.anchor_ref) == 12
+  end
+
+  @doc """
+  结构状态增量 `%{{seq, n} => 状态}` 的线字节（PropertyBatch `structure_states` 字段）。每条 20 B、大端、按 id 升序且唯一：
+
+      偏移 0 id_seq:u64 | 8 id_n:u32 | 12 load:u8 | 13 coherence:u8 | 14 status:u8 | 15 failed_segments:u8
+          16 temperature_dk:u16 (0.1 K，饱和到 65535) | 18 glow_w:u16 (W，饱和到 65535)
+
+  状态的键：`load coherence status failed_segments temperature_dk glow_w`，含义与结构记录同名字段相同；由完整记录
+  投影得到（`structure_state/1`）。完整快照批不带增量；同一批已有结构记录的 id 不再出现在增量里（`decode_m1/1` 拒绝）。
+  发送条件（固定分箱，决策稿 §3.3）属于 World，编码端不判。超出字段宽度的值编码时显式失败（`ArgumentError`）。
+  """
+  def encode_structure_states(delta) do
+    for {{seq, n} = id, state} <- Enum.sort(delta), into: <<>> do
+      %{
+        load: load,
+        coherence: coherence,
+        status: status,
+        failed_segments: failed,
+        temperature_dk: temperature,
+        glow_w: glow
+      } = state
+
+      status = names_mask(@structure_status, status)
+
+      (load in 0..255 and coherence in 0..255 and failed in 0..255 and temperature in 0..0xFFFF and
+         glow in 0..0xFFFF) ||
+        raise ArgumentError, "结构状态增量 #{inspect(id)} 超出字段宽度：#{inspect(state)}"
+
+      <<seq::64, n::32, load::8, coherence::8, status::8, failed::8, temperature::16, glow::16>>
+    end
+  end
+
+  @doc "`encode_structure_states/1` 的逆，返回 `{:ok, %{{seq, n} => 状态}}` 或 `{:error, :invalid_structure_state}`。"
+  def decode_structure_states(bytes), do: decode_structure_states(bytes, nil, %{})
+
+  defp decode_structure_states(<<>>, _, acc), do: {:ok, acc}
+
+  defp decode_structure_states(
+         <<seq::64, n::32, load::8, coherence::8, status::8, failed::8, temperature::16,
+           glow::16, rest::binary>>,
+         previous,
+         acc
+       )
+       when (previous == nil or {seq, n} > previous) and status in 0..63 do
+    state = %{
+      load: load,
+      coherence: coherence,
+      status: mask_names(@structure_status, status),
+      failed_segments: failed,
+      temperature_dk: temperature,
+      glow_w: glow
+    }
+
+    decode_structure_states(rest, {seq, n}, Map.put(acc, {seq, n}, state))
+  end
+
+  defp decode_structure_states(_, _, _), do: {:error, :invalid_structure_state}
+
+  @doc """
+  完整结构记录 → 状态增量：装载、相干、状态、失效段原样；温度换成 0.1 K、发光换成 W，四舍五入（半数远离零）后
+  饱和到 65535。状态增量的量化只在这里定义。
+  """
+  def structure_state(record) do
+    %{
+      load: record.load,
+      coherence: record.coherence,
+      status: record.status,
+      failed_segments: record.failed_segments,
+      temperature_dk: min(0xFFFF, round(record.temperature_k * 10)),
+      glow_w: min(0xFFFF, round(record.glow_w))
+    }
+  end
+
+  # 名字列表 ↔ 位掩码（位号 = 名字在表中的下标）。表外名字显式失败（`ArgumentError`）。
+  defp names_mask(table, names) do
+    Enum.reduce(names, 0, fn name, mask ->
+      case Enum.find_index(table, &(&1 == name)) do
+        nil -> raise ArgumentError, "未知的位名 #{inspect(name)}（位表 #{inspect(table)}）"
+        bit -> Bitwise.bor(mask, Bitwise.bsl(1, bit))
+      end
+    end)
+  end
+
+  defp mask_names(table, mask),
+    do: for({name, bit} <- Enum.with_index(table), Bitwise.band(mask, Bitwise.bsl(1, bit)) != 0, do: name)
 
   @doc """
   施放记录 v2（Hello 46，设计 §11.4.6，决策稿 slice3-protocol §3.3）：待施放增量 `%{caster => 记录}` 的线字节，
-  放在 PropertyBatch 末尾（拟态之后）。大端、按 caster 升序且唯一，变长（定长部分 46 B，每步 17 B）：
+  放在 PropertyBatch 末尾（结构记录之后、结构状态增量之前）。大端、按 caster 升序且唯一，变长（定长部分 46 B，每步 17 B）：
 
       caster:u64, live:u8 (1 前摇中 / 0 已结算),
       outcome:u8 (0 建成 / 1 建构在第 k 步中断 / 2 结算时拒绝、不扣能；live = 1 时为 0),
@@ -1449,7 +1635,7 @@ defmodule MmoContracts.Voxel.Codec do
   - 已结算 `%{live: 0, outcome:, fail_step:}`：其余字段全为 0（n = 0、program_len = 0）。
 
   实际扣除量不进本记录（记录随批次广播，扣除量会泄露余额）；它只经 0x83 `spent_j` 发给施法者本人（v2.11 W3）。
-  t0_us 是服务器时间线 `MmoContracts.ServerTime`（与拟态 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
+  t0_us 是服务器时间线 `MmoContracts.ServerTime`（与结构记录 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
   origin 是施法者手边位置（canonical 米，Y-up）；program 为施放意图里的规范程序字节原样。
 
   违反上述约束的记录（`part_index` 不是排列、步数不在 1..255、`fail_step` 与 `outcome` 不符）编码时显式失败

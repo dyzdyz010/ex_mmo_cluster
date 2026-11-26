@@ -94,7 +94,10 @@ defmodule MmoContracts.Voxel.PropertyBatch do
     :states
   ]
   # 协议 19：受保护区域记录（`Voxel.Codec.encode_protection/1`）；完整批次为窗口内全部区域，增量批次为本事务的变化。
-  # 魔法增量 2（协议 25）：拟态记录（`Voxel.Codec.encode_semblances/1`），完整批次为窗口内全部拟态，增量批次为本事务的变化。
+  # 魔法 v2（Hello 46）：结构记录 v2（`Voxel.Codec.encode_structures/1`，每条 160 B），完整批次为窗口内全部存在中的结构，
+  # 增量批次为本事务的变化（含删除与终止事件 live 2–6）。
   # 施放前摇（协议 27）：待施放记录（`Voxel.Codec.encode_casts/1`），完整批次为窗口内全部待施放，增量批次为本事务的变化。
-  defstruct @enforce_keys ++ [protection: <<>>, semblances: <<>>, casts: <<>>]
+  # 结构状态增量（Hello 46，`Voxel.Codec.encode_structure_states/1`，每条 20 B）：只在增量批次出现。
+  defstruct @enforce_keys ++
+              [protection: <<>>, structures: <<>>, casts: <<>>, structure_states: <<>>]
 end

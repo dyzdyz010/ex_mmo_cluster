@@ -9,7 +9,10 @@ defmodule MmoContracts.MagicWireTest do
   - 程序字节与目录 digest 取自 `voxel_region` 的 `ir-v2-samples.json`（唯一来源），这里只断言两处相同；
     0x83 报价字段与施放记录各步取自 `quote-v2-samples.json` 的 fireball。
   - v1（Hello 44）布局直接替换、不保留兼容分支（设计 §14.0 Q2）；v1 的 0x82 冻结样本作为反例留在 JSON 里。
-  - 拟态记录（135 B）属结构记录 v2 的范围（切片 4），本片不改，样本仍是逐字段手写。
+  - 结构记录 v2（160 B）、结构状态增量（20 B）与带二者的 PropertyBatch（切片 4a，决策稿
+    `docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md` §3）：字段值取自 `voxel_region` 的
+    `structure-v2-samples.json`（服务端产品函数产出），字节由同一独立生成器排出；反例覆盖 §13 C4-2、C4-3。
+    旧 135 B 拟态记录不保留兼容解码。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -69,152 +72,209 @@ defmodule MmoContracts.MagicWireTest do
     assert Enum.map(Codec.spell_reject_checks(), &Atom.to_string/1) == @wire["rejects_bits"]
   end
 
-  # 拟态记录（每条 135 B，大端，按 id 升序）：删除 {5, 2}；存在 {9, 0}——施法者 1001、球、半径 0.4 m、2000 K、
-  # 无发光、出发点 (0.5, 2.5, 1.0)、速度 (0, 0, 12)、t0 = 1.7e15 µs、飞行 1/6 s、落点 (0.5, 2.36375, 2.6)。
-  @semblances Base.decode16!(
-                "0000000000000005" <>
-                  "00000002" <>
-                  "00" <>
-                  String.duplicate("00", 122) <>
-                  "0000000000000009" <>
-                  "00000000" <>
-                  "01" <>
-                  "00000000000003E9" <>
-                  "00" <>
-                  "01" <>
-                  "3FD999999999999A" <>
-                  "409F400000000000" <>
-                  "0000000000000000" <>
-                  "3FE0000000000000" <>
-                  "4004000000000000" <>
-                  "3FF0000000000000" <>
-                  "0000000000000000" <>
-                  "0000000000000000" <>
-                  "4028000000000000" <>
-                  "00060A24181E4000" <>
-                  "3FC5555555555555" <>
-                  "3FE0000000000000" <> "4002E8F5C28F5C29" <> "4004CCCCCCCCCCCD"
-              )
+  # ── 结构记录 v2、结构状态增量（切片 4a，决策稿 2026-11-26-p1-closure-slices4-8.md §3）──
 
-  @delta %{
-    {5, 2} => nil,
-    {9, 0} => %{
-      caster: 1001,
-      shape: 0,
-      break_on_hit: true,
-      no_gravity: false,
-      radius_m: 0.4,
-      temperature_k: 2000.0,
-      glow_w: 0.0,
-      origin: {0.5, 2.5, 1.0},
-      velocity: {0.0, 0.0, 12.0},
-      t0_us: 1_700_000_000_000_000,
-      flight_s: 1 / 6,
-      rest: {0.5, 2.36375, 2.6}
-    }
-  }
+  @structure_path Path.expand(
+                    "../../../voxel_region/test/fixtures/magic/structure-v2-samples.json",
+                    __DIR__
+                  )
+  @external_resource @structure_path
+  @structures Jason.decode!(File.read!(@structure_path))
 
-  test "拟态记录逐字节等于手写样本；World 内部字段不上线；属性批次末尾携带，完整批次不能含删除" do
-    assert byte_size(@semblances) == 2 * 135
+  defp structure_samples,
+    do: Enum.filter(@wire["samples"], &String.starts_with?(&1["id"], "structure_record_v2_"))
 
-    internal =
-      Map.new(@delta, fn {id, s} ->
-        {id, s && Map.merge(s, %{mass_kg: 2.0, age_s: 0.3, contact: nil})}
+  defp sid(key) do
+    [seq, n] = key |> String.split(":") |> Enum.map(&String.to_integer/1)
+    {seq, n}
+  end
+
+  # JSON 字段 → `encode_structures/1` 的记录形状。
+  defp structure_fields(nil), do: nil
+
+  defp structure_fields(f) do
+    f
+    |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
+    |> Map.update!(:origin, &List.to_tuple/1)
+    |> Map.update!(:velocity, &List.to_tuple/1)
+    |> Map.update!(:rest, &List.to_tuple/1)
+    |> Map.update!(:coupling, fn names -> Enum.map(names, &String.to_existing_atom/1) end)
+    |> Map.update!(:status, fn names -> Enum.map(names, &String.to_existing_atom/1) end)
+    |> Map.update!(:anchor_ref, &Base.decode16!(&1, case: :lower))
+  end
+
+  defp state_fields(f) do
+    f
+    |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
+    |> Map.update!(:status, fn names -> Enum.map(names, &String.to_existing_atom/1) end)
+  end
+
+  defp delta(sample, convert),
+    do: Map.new(sample["fields"], fn {key, f} -> {sid(key), convert.(f)} end)
+
+  test "结构记录 v2 golden：8 条（live 0–6）各 160 B，字段取自产品产出的 structure-v2-samples，编解码与 hex 逐字节一致" do
+    samples = structure_samples()
+    assert length(samples) == 8
+
+    assert Enum.map(@structures["records"], &"structure_record_v2_#{&1["id"]}") ==
+             Enum.map(samples, & &1["id"])
+
+    for {s, source} <- Enum.zip(samples, @structures["records"]) do
+      record = bytes(s)
+      assert byte_size(record) == 160, s["id"]
+      # 字段值就是服务端产品函数的产出（独立生成器只负责排字节）。
+      assert s["fields"] == %{Enum.join(source["sid"], ":") => source["fields"]}, s["id"]
+
+      delta = delta(s, &structure_fields/1)
+      assert Codec.encode_structures(delta) == record, s["id"]
+      assert Codec.decode_structures(record) == {:ok, delta}, s["id"]
+    end
+
+    lives =
+      Enum.map(samples, fn s ->
+        f = s["fields"] |> Map.values() |> hd()
+        f && f["live"]
       end)
 
-    assert Codec.encode_semblances(internal) == @semblances
-    assert Codec.decode_semblances(@semblances) == {:ok, @delta}
-    assert Codec.encode_semblances(%{}) == <<>>
+    assert lives == [nil, 1, 1, 2, 3, 4, 5, 6]
+    assert Codec.encode_structures(%{}) == <<>>
 
-    # Persisted pre-flag records (missing break_on_hit / no_gravity) encode flags = 0 at offset 22.
-    old = @delta[{9, 0}] |> Map.delete(:break_on_hit) |> Map.delete(:no_gravity)
-    expected_old = @semblances |> binary_part(135, 135) |> put(22, 0)
-    assert Codec.encode_semblances(%{{9, 0} => old}) == expected_old
+    # 位表与 golden 同一张（客户端按 golden 的位表解码）。
+    assert Enum.map(Codec.structure_couplings(), &Atom.to_string/1) ==
+             @wire["structure_coupling_bits"]
 
-    assert {:ok, %{{9, 0} => %{break_on_hit: false, no_gravity: false}}} =
-             Codec.decode_semblances(expected_old)
+    assert Enum.map(Codec.structure_status_bits(), &Atom.to_string/1) ==
+             @wire["structure_status_bits"]
+  end
 
-    # Hello 45: byte 22 is bitflags (bit 0 = break_on_hit, bit 1 = no_gravity), valid values 0..3.
-    live = binary_part(@semblances, 135, 135)
+  test "结构记录 v2：灯为无质量静止（flags 0x02）、火球有质量飞行（flags 0x01、status 位 4），无〈热〉温度为 0" do
+    lamp = bytes(sample("structure_record_v2_lamp_born"))
+    flight = bytes(sample("structure_record_v2_fireball_flight"))
 
-    for {flags, break_on_hit, no_gravity} <- [
-          {0, false, false},
-          {1, true, false},
-          {2, false, true},
-          {3, true, true}
-        ] do
-      record = %{@delta[{9, 0}] | break_on_hit: break_on_hit, no_gravity: no_gravity}
-      expected = put(live, 22, flags)
-      assert Codec.encode_semblances(%{{9, 0} => record}) == expected
-      assert Codec.decode_semblances(expected) == {:ok, %{{9, 0} => record}}
-    end
+    # 偏移 21 shape、22 flags、23 size1、31 temperature、39 glow；135 起 size2/size3/proto/coupling（u16），
+    # 143 load、144 coherence、145 status、146 failed_segments、147 anchor_type、148 anchor_ref。
+    assert <<_::binary-size(21), 0, 0x02, _::binary-size(8), lamp_t::float-64, 100.0::float-64,
+             _::binary-size(88), 0::16, 0::16, 0::16, 0x0002::16, 56, 255, 0, 0, 0,
+             0::96>> = lamp
 
-    batch = fn complete, semblances ->
-      %MmoContracts.Voxel.PropertyBatch{
-        identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
-        transaction_seq: 7,
-        l0_min: {0, 0, 0},
-        l0_max_exclusive: {1, 1, 1},
-        complete: complete,
-        hp_enabled: 1,
-        digest: :binary.copy(<<0xA5>>, 32),
-        thermal_enabled: 1,
-        ambient_kelvin: 293.15,
-        epochs: <<>>,
-        states: [],
-        semblances: semblances
-      }
-    end
+    assert lamp_t == 0.0
 
-    {:ok, frame} = Codec.encode_m1(batch.(0, @semblances))
+    assert <<_::binary-size(21), 0, 0x01, 0.25::float-64, temperature::float-64,
+             _::binary-size(96), 0::16, 0::16, 0::16, 0x0001::16, _load, 255, 0x10, 0, 0,
+             0::96>> = flight
 
-    # 帧尾：区域段 0 长度，随后拟态段 u32 长度 270 与样本，最后是空施放段（协议 27）。
-    assert binary_part(frame, byte_size(frame) - 282, 282) ==
-             <<0::32, 270::32>> <> @semblances <> <<0::32>>
+    assert_in_delta temperature, 2000.0, 1.0e-9
+  end
 
-    assert {:ok, %{semblances: @semblances}} = Codec.decode_m1(frame)
+  test "终止事件编号：接触 2、断供 3、过载 4、驱散 5、非接触读数触发的〈散〉6；表外名字显式失败" do
+    assert Enum.map(
+             [:contact, :exhausted, :collapsed, :dispelled, :released],
+             &Codec.structure_end_live/1
+           ) == [2, 3, 4, 5, 6]
 
-    assert {:ok, %{semblances: ^live}} =
-             Codec.decode_m1(elem(Codec.encode_m1(batch.(1, live)), 1))
+    assert_raise KeyError, fn -> Codec.structure_end_live(:expired) end
+  end
 
-    assert {:error, :invalid_m1_message} =
-             Codec.decode_m1(elem(Codec.encode_m1(batch.(1, @semblances)), 1))
-
-    # A collision end is a full independently frozen record with kind=2 at byte12;
-    # it survives coalescing over create and needs no preceding live record.
-    impact = Map.put(@delta[{9, 0}], :live, 2)
-    ended = put(live, 12, 2)
-    assert Codec.encode_semblances(%{{9, 0} => impact}) == ended
-    assert Codec.decode_semblances(ended) == {:ok, %{{9, 0} => impact}}
-
-    # Hello 45: live=2 with flags=3 (break_on_hit + no_gravity) is valid; live=2 with flags=2 (no break_on_hit) is rejected.
-    straight_impact = %{impact | no_gravity: true}
-    straight_ended = put(ended, 22, 3)
-    assert Codec.encode_semblances(%{{9, 0} => straight_impact}) == straight_ended
-    assert Codec.decode_semblances(straight_ended) == {:ok, %{{9, 0} => straight_impact}}
-
-    assert {:ok, %{semblances: ^ended}} =
-             Codec.decode_m1(elem(Codec.encode_m1(batch.(0, ended)), 1))
-
-    assert {:error, :invalid_m1_message} =
-             Codec.decode_m1(elem(Codec.encode_m1(batch.(1, ended)), 1))
-
-    assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 0))
-    assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 2))
-
-    # 反例：乱序、重复、未知形状、未定义 flags 位（>= 4）、删除记录带非零字段、截断。
-    <<gone::binary-size(135), kept::binary-size(135)>> = @semblances
+  test "结构记录 v2 编码端显式失败：live 7、live 2 无 ends_on_contact、shape 3、负温度、load 越界、表外状态位名" do
+    [{id, lamp}] =
+      Map.to_list(delta(sample("structure_record_v2_lamp_born"), &structure_fields/1))
 
     for bad <- [
-          kept <> gone,
-          kept <> kept,
-          put(kept, 21, 2),
-          put(kept, 22, 4),
-          put(kept, 22, 255),
-          put(gone, 40, 1),
-          binary_part(@semblances, 0, 200)
-        ],
-        do: assert({:error, :invalid_semblance} == Codec.decode_semblances(bad), inspect(bad))
+          %{lamp | live: 7},
+          %{lamp | live: 2},
+          %{lamp | shape: 3},
+          %{lamp | temperature_k: -1.0},
+          %{lamp | load: 256},
+          %{lamp | status: [:massless]}
+        ] do
+      assert_raise ArgumentError, fn -> Codec.encode_structures(%{id => bad}) end
+    end
+  end
+
+  test "结构状态增量 golden：2 × 20 B；温度 0.1 K、发光 W 的量化与独立生成器一致，编解码逐字节一致" do
+    s = sample("structure_states_v2")
+    states = bytes(s)
+    assert byte_size(states) == 40
+    delta = delta(s, &state_fields/1)
+    assert Codec.encode_structure_states(delta) == states
+    assert Codec.decode_structure_states(states) == {:ok, delta}
+    assert Codec.encode_structure_states(%{}) == <<>>
+
+    # 状态增量由完整记录投影（codec 的量化）；源字段是产品在该拍的 wire/1 产出。
+    for src <- s["source_states"] do
+      assert Codec.structure_state(state_fields(src["state"])) ==
+               delta[List.to_tuple(src["sid"])]
+    end
+
+    # 饱和：超过 6553.5 K 与 65535 W 的值截到 65535。
+    hot = %{
+      load: 0,
+      coherence: 0,
+      status: [],
+      failed_segments: 0,
+      temperature_k: 9000.0,
+      glow_w: 1.0e6
+    }
+
+    assert %{temperature_dk: 65_535, glow_w: 65_535} = Codec.structure_state(hot)
+  end
+
+  test "PropertyBatch golden：structures 与 structure_states 同批（增量批），帧逐字节一致；完整批只收 live 1" do
+    s = sample("property_batch_structures_v2")
+    frame = bytes(s)
+
+    structures =
+      s["structure_samples"]
+      |> Enum.map(&bytes(sample("structure_record_v2_" <> &1)))
+      |> Enum.join()
+
+    states = bytes(sample(s["states_sample"]))
+    [e, scene, epoch] = s["identity"]
+
+    batch = %MmoContracts.Voxel.PropertyBatch{
+      identity: %Session.Identity{session_epoch: e, scene_id: scene, scene_epoch: epoch},
+      transaction_seq: s["transaction_seq"],
+      l0_min: List.to_tuple(s["l0_min"]),
+      l0_max_exclusive: List.to_tuple(s["l0_max_exclusive"]),
+      complete: s["complete"],
+      hp_enabled: s["hp_enabled"],
+      digest: Base.decode16!(s["digest_hex"], case: :lower),
+      thermal_enabled: s["thermal_enabled"],
+      ambient_kelvin: s["ambient_kelvin"],
+      epochs: <<>>,
+      states: [],
+      structures: structures,
+      structure_states: states
+    }
+
+    assert {:ok, ^frame} = Codec.encode_m1(batch)
+    assert {:ok, ^batch} = Codec.decode_m1(frame)
+
+    # 完整批：只含 live 1 的结构、不带状态增量时接纳。
+    live = bytes(sample("structure_record_v2_fireball_flight"))
+    complete = %{batch | complete: 1, structures: live, structure_states: <<>>}
+    assert {:ok, ^complete} = Codec.decode_m1(elem(Codec.encode_m1(complete), 1))
+  end
+
+  test "结构记录 / 状态增量 / PropertyBatch 反例（golden negatives）：各在对应边界显式拒绝" do
+    negatives =
+      Enum.filter(
+        @wire["negatives"],
+        &String.starts_with?(&1["id"], ["structure", "property_batch"])
+      )
+
+    assert length(negatives) == 19
+
+    for n <- negatives do
+      result =
+        case n["expect"] do
+          "invalid_structure" -> Codec.decode_structures(bytes(n))
+          "invalid_structure_state" -> Codec.decode_structure_states(bytes(n))
+          "invalid_m1_message" -> Codec.decode_m1(bytes(n))
+        end
+
+      assert result == {:error, String.to_existing_atom(n["expect"])}, n["id"]
+    end
   end
 
   # ── 0x82 v2 ──
@@ -413,9 +473,9 @@ defmodule MmoContracts.MagicWireTest do
 
     {:ok, frame} = Codec.encode_m1(batch.(0, casts))
     size = byte_size(casts)
-    # 帧尾：区域段、拟态段各 0 长度，随后施放段 u32 长度与样本。
-    assert binary_part(frame, byte_size(frame) - size - 12, size + 12) ==
-             <<0::32, 0::32, size::32>> <> casts
+    # 帧尾：区域段、结构段各 0 长度，随后施放段 u32 长度与样本，最后是 0 长度的结构状态增量段。
+    assert binary_part(frame, byte_size(frame) - size - 16, size + 16) ==
+             <<0::32, 0::32, size::32>> <> casts <> <<0::32>>
 
     assert {:ok, %{casts: ^casts}} = Codec.decode_m1(frame)
 

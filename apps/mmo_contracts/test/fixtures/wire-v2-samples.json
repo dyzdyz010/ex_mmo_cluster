@@ -1,10 +1,40 @@
 {
-  "source": "ex_mmo_cluster docs/10-active/magic/2026-11-19-slice3-protocol.md §3.1–3.3；TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.11 §11.4.6",
+  "source": "ex_mmo_cluster docs/10-active/magic/2026-11-19-slice3-protocol.md §3.1–3.3、2026-11-26-p1-closure-slices4-8.md §3；TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.11 §11.1–11.3、§11.4.6",
   "note": "Hello 46 魔法线协议 v2 冻结样本：服务端 mmo_contracts 与 Voxim 测试读同一份字节，不另存副本。每个样本的 segments 逐字段列出偏移（从本帧/本段第 0 字节起）、类型与字节，hex 是 segments 的拼接；全部大端，f64 为 IEEE 754 binary64 位型。fields 是解码后的字段值（0x83 是编码输入）。改样本前先通知客户端，提交后附 commit。",
   "protocol_version": 46,
   "catalog_digest": "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264",
   "ir_samples": "apps/voxel_region/test/fixtures/magic/ir-v2-samples.json（program_hex 的唯一来源；本文件的程序字节须与之相同，catalog_digest 亦同）",
   "quote_samples": "apps/voxel_region/test/fixtures/magic/quote-v2-samples.json（0x83 报价字段与施放记录 steps 的来源）",
+  "structure_samples": "apps/voxel_region/test/fixtures/magic/structure-v2-samples.json（结构记录与状态增量字段值的来源：服务端 Program.decode_ir/2、Cost.quote_structure/3、Structure.new/4、step/4、respond/3、wire/1 的产出）",
+  "structure_flag_bits": [
+    "ends_on_contact",
+    "massless"
+  ],
+  "structure_coupling_bits": [
+    "thermal",
+    "glow",
+    "capacity",
+    "disrupt"
+  ],
+  "structure_status_bits": [
+    "overline",
+    "folded",
+    "feeding",
+    "vent_damaged",
+    "flying",
+    "asleep"
+  ],
+  "structure_live": {
+    "0": "无事件删除（id 之外 147 B 全 0）",
+    "1": "存在",
+    "2": "接触触发的〈散〉（含〈遇〉→〈散〉；要求 ends_on_contact）",
+    "3": "断供衰竭",
+    "4": "过载崩解",
+    "5": "驱散",
+    "6": "非接触读数（〈时〉〈满〉）触发的〈散〉",
+    "≥7": "Hello 46 拒绝"
+  },
+  "structure_note": "结构记录 v2 每条 160 B（前 135 B 沿用原拟态记录偏移，135 起为新增字段），按 id 升序且唯一；live 2–6 一律带终态完整快照，完整快照批（complete 1）只含 live 1 且不带 structure_states。状态增量每条 20 B，按 id 升序且唯一，temperature_dk = round(T·10)、glow_w = round(W)（半数远离零），饱和到 65535；同批已有结构记录的 id 不得再出现在增量里。flags 第 1 位 massless 为 1 时客户端插值不加重力项。",
   "rejects_bits": [
     "capacity",
     "domain",
@@ -642,6 +672,2046 @@
         }
       ],
       "hex": "00000000000003e9000102000000000000000000000000000000000000000000000000000000000000000000000000000000000003ea01000000060a24181e40003fe000000000000040040000000000003ff000000000000007003fc25ab3aabcd78c0000000000000000013fc08d4bad7d7c2d0000000000000000023fb064ba94bbe4473fdb4f0d844d013b033fb51bc5586445243f947ae147ae147b043fa14317acc4ef893f02dfd694ccab3f053fa50870110a137f0000000000000000063fbf821af7d30ad40000000000000000002b0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0010001002201002c00"
+    },
+    {
+      "id": "structure_record_v2_deleted",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "无事件删除（live 0）：id 之外全 0",
+      "structure_sample": "deleted",
+      "event": null,
+      "total_bytes": 160,
+      "fields": {
+        "100:0": null
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "100:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000064"
+        },
+        {
+          "offset": 8,
+          "field": "100:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "100:0.live",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 13,
+          "field": "100:0.zero",
+          "type": "147B",
+          "hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "hex": "00000000000000640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_lamp_born",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "灯刚出生（未步进）：无质量、静止在手边，发光取〈辉〉标称 100 W；预设 lamp，第 0 拍",
+      "structure_sample": "lamp_born",
+      "event": null,
+      "total_bytes": 160,
+      "fields": {
+        "101:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 255,
+          "coupling": [
+            "glow"
+          ],
+          "ends_on_contact": false,
+          "failed_segments": 0,
+          "flight_s": 0.0,
+          "glow_w": 100.0,
+          "live": 1,
+          "load": 56,
+          "massless": true,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "shape": 0,
+          "size1_m": 0.15,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [],
+          "t0_us": 1700000000000000,
+          "temperature_k": 0.0,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "101:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000065"
+        },
+        {
+          "offset": 8,
+          "field": "101:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "101:0.live",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 13,
+          "field": "101:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "101:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "101:0.flags",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 23,
+          "field": "101:0.size1_m",
+          "type": "f64",
+          "hex": "3fc3333333333333"
+        },
+        {
+          "offset": 31,
+          "field": "101:0.temperature_k",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 39,
+          "field": "101:0.glow_w",
+          "type": "f64",
+          "hex": "4059000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "101:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "101:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "101:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "101:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "101:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "101:0.velocity.z",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "101:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "101:0.flight_s",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 111,
+          "field": "101:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "101:0.rest.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "101:0.rest.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 135,
+          "field": "101:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "101:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "101:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "101:0.coupling_mask",
+          "type": "u16",
+          "hex": "0002"
+        },
+        {
+          "offset": 143,
+          "field": "101:0.load",
+          "type": "u8",
+          "hex": "38"
+        },
+        {
+          "offset": 144,
+          "field": "101:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 145,
+          "field": "101:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 146,
+          "field": "101:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "101:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "101:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_fireball_flight",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "火球刚出生、飞行中（World 补 flying 位）：有质量弹道，落点为测试地面命中点；预设 fireball，第 0 拍",
+      "structure_sample": "fireball_flight",
+      "event": null,
+      "total_bytes": 160,
+      "fields": {
+        "102:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 255,
+          "coupling": [
+            "thermal"
+          ],
+          "ends_on_contact": true,
+          "failed_segments": 0,
+          "flight_s": 0.553001263609331,
+          "glow_w": 0.0,
+          "live": 1,
+          "load": 109,
+          "massless": false,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            1.25,
+            7.636015163311972
+          ],
+          "shape": 0,
+          "size1_m": 0.25,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [
+            "flying"
+          ],
+          "t0_us": 1700000000000000,
+          "temperature_k": 2000.0,
+          "velocity": [
+            0.0,
+            0.0,
+            12.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "102:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000066"
+        },
+        {
+          "offset": 8,
+          "field": "102:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "102:0.live",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 13,
+          "field": "102:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "102:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "102:0.flags",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 23,
+          "field": "102:0.size1_m",
+          "type": "f64",
+          "hex": "3fd0000000000000"
+        },
+        {
+          "offset": 31,
+          "field": "102:0.temperature_k",
+          "type": "f64",
+          "hex": "409f400000000000"
+        },
+        {
+          "offset": 39,
+          "field": "102:0.glow_w",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "102:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "102:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "102:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "102:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "102:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "102:0.velocity.z",
+          "type": "f64",
+          "hex": "4028000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "102:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "102:0.flight_s",
+          "type": "f64",
+          "hex": "3fe1b22fb4bb28f9"
+        },
+        {
+          "offset": 111,
+          "field": "102:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "102:0.rest.y",
+          "type": "f64",
+          "hex": "3ff4000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "102:0.rest.z",
+          "type": "f64",
+          "hex": "401e8b478f18bd76"
+        },
+        {
+          "offset": 135,
+          "field": "102:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "102:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "102:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "102:0.coupling_mask",
+          "type": "u16",
+          "hex": "0001"
+        },
+        {
+          "offset": 143,
+          "field": "102:0.load",
+          "type": "u8",
+          "hex": "6d"
+        },
+        {
+          "offset": 144,
+          "field": "102:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 145,
+          "field": "102:0.status",
+          "type": "u8",
+          "hex": "10"
+        },
+        {
+          "offset": 146,
+          "field": "102:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "102:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "102:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "0000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff100000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_fireball_contact",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "火球第 1 拍接触：〈遇〉→〈散〉触发，live 2 终态快照（同拍步进结果）；预设 fireball，第 1 拍",
+      "structure_sample": "fireball_contact",
+      "event": "contact",
+      "total_bytes": 160,
+      "fields": {
+        "103:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 255,
+          "coupling": [
+            "thermal"
+          ],
+          "ends_on_contact": true,
+          "failed_segments": 0,
+          "flight_s": 0.553001263609331,
+          "glow_w": 0.0,
+          "live": 2,
+          "load": 109,
+          "massless": false,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            1.25,
+            7.636015163311972
+          ],
+          "shape": 0,
+          "size1_m": 0.25,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [],
+          "t0_us": 1700000000000000,
+          "temperature_k": 2000.0,
+          "velocity": [
+            0.0,
+            0.0,
+            12.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "103:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000067"
+        },
+        {
+          "offset": 8,
+          "field": "103:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "103:0.live",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 13,
+          "field": "103:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "103:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "103:0.flags",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 23,
+          "field": "103:0.size1_m",
+          "type": "f64",
+          "hex": "3fd0000000000000"
+        },
+        {
+          "offset": 31,
+          "field": "103:0.temperature_k",
+          "type": "f64",
+          "hex": "409f400000000000"
+        },
+        {
+          "offset": 39,
+          "field": "103:0.glow_w",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "103:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "103:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "103:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "103:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "103:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "103:0.velocity.z",
+          "type": "f64",
+          "hex": "4028000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "103:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "103:0.flight_s",
+          "type": "f64",
+          "hex": "3fe1b22fb4bb28f9"
+        },
+        {
+          "offset": 111,
+          "field": "103:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "103:0.rest.y",
+          "type": "f64",
+          "hex": "3ff4000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "103:0.rest.z",
+          "type": "f64",
+          "hex": "401e8b478f18bd76"
+        },
+        {
+          "offset": 135,
+          "field": "103:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "103:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "103:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "103:0.coupling_mask",
+          "type": "u16",
+          "hex": "0001"
+        },
+        {
+          "offset": 143,
+          "field": "103:0.load",
+          "type": "u8",
+          "hex": "6d"
+        },
+        {
+          "offset": 144,
+          "field": "103:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 145,
+          "field": "103:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 146,
+          "field": "103:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "103:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "103:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "0000000000000067000000000200000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_lamp_exhausted",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "灯无供能逐拍出账至 E_op < E_min：断供衰竭 live 3；预设 lamp，第 264 拍",
+      "structure_sample": "lamp_exhausted",
+      "event": "exhausted",
+      "total_bytes": 160,
+      "fields": {
+        "104:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 255,
+          "coupling": [
+            "glow"
+          ],
+          "ends_on_contact": false,
+          "failed_segments": 0,
+          "flight_s": 0.0,
+          "glow_w": 100.0,
+          "live": 3,
+          "load": 0,
+          "massless": true,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "shape": 0,
+          "size1_m": 0.15,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [],
+          "t0_us": 1700000000000000,
+          "temperature_k": 0.0,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "104:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000068"
+        },
+        {
+          "offset": 8,
+          "field": "104:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "104:0.live",
+          "type": "u8",
+          "hex": "03"
+        },
+        {
+          "offset": 13,
+          "field": "104:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "104:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "104:0.flags",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 23,
+          "field": "104:0.size1_m",
+          "type": "f64",
+          "hex": "3fc3333333333333"
+        },
+        {
+          "offset": 31,
+          "field": "104:0.temperature_k",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 39,
+          "field": "104:0.glow_w",
+          "type": "f64",
+          "hex": "4059000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "104:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "104:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "104:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "104:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "104:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "104:0.velocity.z",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "104:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "104:0.flight_s",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 111,
+          "field": "104:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "104:0.rest.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "104:0.rest.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 135,
+          "field": "104:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "104:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "104:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "104:0.coupling_mask",
+          "type": "u16",
+          "hex": "0002"
+        },
+        {
+          "offset": 143,
+          "field": "104:0.load",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 144,
+          "field": "104:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 145,
+          "field": "104:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 146,
+          "field": "104:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "104:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "104:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "0000000000000068000000000300000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000200ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_lamp_collapsed",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "灯举在 800 K 火场格：相干跌破 0.3 且 x ≥ 0.8·x*，过载崩解 live 4；预设 lamp，第 48 拍",
+      "structure_sample": "lamp_collapsed",
+      "event": "collapsed",
+      "total_bytes": 160,
+      "fields": {
+        "105:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 76,
+          "coupling": [
+            "glow"
+          ],
+          "ends_on_contact": false,
+          "failed_segments": 0,
+          "flight_s": 0.0,
+          "glow_w": 100.0,
+          "live": 4,
+          "load": 35,
+          "massless": true,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "shape": 0,
+          "size1_m": 0.15,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [
+            "overline"
+          ],
+          "t0_us": 1700000000000000,
+          "temperature_k": 0.0,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "105:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000069"
+        },
+        {
+          "offset": 8,
+          "field": "105:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "105:0.live",
+          "type": "u8",
+          "hex": "04"
+        },
+        {
+          "offset": 13,
+          "field": "105:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "105:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "105:0.flags",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 23,
+          "field": "105:0.size1_m",
+          "type": "f64",
+          "hex": "3fc3333333333333"
+        },
+        {
+          "offset": 31,
+          "field": "105:0.temperature_k",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 39,
+          "field": "105:0.glow_w",
+          "type": "f64",
+          "hex": "4059000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "105:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "105:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "105:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "105:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "105:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "105:0.velocity.z",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "105:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "105:0.flight_s",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 111,
+          "field": "105:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "105:0.rest.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "105:0.rest.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 135,
+          "field": "105:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "105:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "105:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "105:0.coupling_mask",
+          "type": "u16",
+          "hex": "0002"
+        },
+        {
+          "offset": 143,
+          "field": "105:0.load",
+          "type": "u8",
+          "hex": "23"
+        },
+        {
+          "offset": 144,
+          "field": "105:0.coherence",
+          "type": "u8",
+          "hex": "4c"
+        },
+        {
+          "offset": 145,
+          "field": "105:0.status",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 146,
+          "field": "105:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "105:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "105:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "0000000000000069000000000400000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff00000000000000000000000000002234c010000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_lamp_dispelled",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "灯在驱散脉冲中心（d = 0）：第 1 拍驱散 live 5；预设 lamp，第 1 拍",
+      "structure_sample": "lamp_dispelled",
+      "event": "dispelled",
+      "total_bytes": 160,
+      "fields": {
+        "106:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 0,
+          "caster": 1001,
+          "coherence": 0,
+          "coupling": [
+            "glow"
+          ],
+          "ends_on_contact": false,
+          "failed_segments": 0,
+          "flight_s": 0.0,
+          "glow_w": 100.0,
+          "live": 5,
+          "load": 43,
+          "massless": true,
+          "origin": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "proto_id": 0,
+          "rest": [
+            0.5,
+            2.5,
+            1.0
+          ],
+          "shape": 0,
+          "size1_m": 0.15,
+          "size2_mm": 0,
+          "size3_mm": 0,
+          "status": [
+            "overline"
+          ],
+          "t0_us": 1700000000000000,
+          "temperature_k": 0.0,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "106:0.id_seq",
+          "type": "u64",
+          "hex": "000000000000006a"
+        },
+        {
+          "offset": 8,
+          "field": "106:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "106:0.live",
+          "type": "u8",
+          "hex": "05"
+        },
+        {
+          "offset": 13,
+          "field": "106:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "106:0.shape",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 22,
+          "field": "106:0.flags",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 23,
+          "field": "106:0.size1_m",
+          "type": "f64",
+          "hex": "3fc3333333333333"
+        },
+        {
+          "offset": 31,
+          "field": "106:0.temperature_k",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 39,
+          "field": "106:0.glow_w",
+          "type": "f64",
+          "hex": "4059000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "106:0.origin.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "106:0.origin.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 63,
+          "field": "106:0.origin.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "106:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "106:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "106:0.velocity.z",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "106:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "106:0.flight_s",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 111,
+          "field": "106:0.rest.x",
+          "type": "f64",
+          "hex": "3fe0000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "106:0.rest.y",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 127,
+          "field": "106:0.rest.z",
+          "type": "f64",
+          "hex": "3ff0000000000000"
+        },
+        {
+          "offset": 135,
+          "field": "106:0.size2_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 137,
+          "field": "106:0.size3_mm",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 139,
+          "field": "106:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "106:0.coupling_mask",
+          "type": "u16",
+          "hex": "0002"
+        },
+        {
+          "offset": 143,
+          "field": "106:0.load",
+          "type": "u8",
+          "hex": "2b"
+        },
+        {
+          "offset": 144,
+          "field": "106:0.coherence",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 145,
+          "field": "106:0.status",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 146,
+          "field": "106:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "106:0.anchor_type",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 148,
+          "field": "106:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "000000000000006a000000000500000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff000000000000000000000000000022b00010000000000000000000000000000"
+    },
+    {
+      "id": "structure_record_v2_timed_ember_released",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "direction": "下行（广播）",
+      "design": "定时火种（〈附〉块）：〈时〉30 s 到期 → 〈散〉，live 6；预设 timed_ember，第 60 拍",
+      "structure_sample": "timed_ember_released",
+      "event": "released",
+      "total_bytes": 160,
+      "fields": {
+        "107:0": {
+          "anchor_ref": "000000000000000000000000",
+          "anchor_type": 1,
+          "caster": 1001,
+          "coherence": 255,
+          "coupling": [],
+          "ends_on_contact": false,
+          "failed_segments": 0,
+          "flight_s": 0.0,
+          "glow_w": 0.0,
+          "live": 6,
+          "load": 111,
+          "massless": true,
+          "origin": [
+            2.5,
+            1.15,
+            4.5
+          ],
+          "proto_id": 0,
+          "rest": [
+            2.5,
+            1.15,
+            4.5
+          ],
+          "shape": 1,
+          "size1_m": 0.15,
+          "size2_mm": 150,
+          "size3_mm": 150,
+          "status": [],
+          "t0_us": 1700000000000000,
+          "temperature_k": 0.0,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "107:0.id_seq",
+          "type": "u64",
+          "hex": "000000000000006b"
+        },
+        {
+          "offset": 8,
+          "field": "107:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "107:0.live",
+          "type": "u8",
+          "hex": "06"
+        },
+        {
+          "offset": 13,
+          "field": "107:0.caster",
+          "type": "u64",
+          "hex": "00000000000003e9"
+        },
+        {
+          "offset": 21,
+          "field": "107:0.shape",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 22,
+          "field": "107:0.flags",
+          "type": "u8",
+          "hex": "02"
+        },
+        {
+          "offset": 23,
+          "field": "107:0.size1_m",
+          "type": "f64",
+          "hex": "3fc3333333333333"
+        },
+        {
+          "offset": 31,
+          "field": "107:0.temperature_k",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 39,
+          "field": "107:0.glow_w",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 47,
+          "field": "107:0.origin.x",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 55,
+          "field": "107:0.origin.y",
+          "type": "f64",
+          "hex": "3ff2666666666666"
+        },
+        {
+          "offset": 63,
+          "field": "107:0.origin.z",
+          "type": "f64",
+          "hex": "4012000000000000"
+        },
+        {
+          "offset": 71,
+          "field": "107:0.velocity.x",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 79,
+          "field": "107:0.velocity.y",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 87,
+          "field": "107:0.velocity.z",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 95,
+          "field": "107:0.t0_us",
+          "type": "u64",
+          "hex": "00060a24181e4000"
+        },
+        {
+          "offset": 103,
+          "field": "107:0.flight_s",
+          "type": "f64",
+          "hex": "0000000000000000"
+        },
+        {
+          "offset": 111,
+          "field": "107:0.rest.x",
+          "type": "f64",
+          "hex": "4004000000000000"
+        },
+        {
+          "offset": 119,
+          "field": "107:0.rest.y",
+          "type": "f64",
+          "hex": "3ff2666666666666"
+        },
+        {
+          "offset": 127,
+          "field": "107:0.rest.z",
+          "type": "f64",
+          "hex": "4012000000000000"
+        },
+        {
+          "offset": 135,
+          "field": "107:0.size2_mm",
+          "type": "u16",
+          "hex": "0096"
+        },
+        {
+          "offset": 137,
+          "field": "107:0.size3_mm",
+          "type": "u16",
+          "hex": "0096"
+        },
+        {
+          "offset": 139,
+          "field": "107:0.proto_id",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 141,
+          "field": "107:0.coupling_mask",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 143,
+          "field": "107:0.load",
+          "type": "u8",
+          "hex": "6f"
+        },
+        {
+          "offset": 144,
+          "field": "107:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 145,
+          "field": "107:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 146,
+          "field": "107:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 147,
+          "field": "107:0.anchor_type",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 148,
+          "field": "107:0.anchor_ref",
+          "type": "12B",
+          "hex": "000000000000000000000000"
+        }
+      ],
+      "hex": "000000000000006b000000000600000000000003e901023fc33333333333330000000000000000000000000000000040040000000000003ff2666666666666401200000000000000000000000000000000000000000000000000000000000000060a24181e4000000000000000000040040000000000003ff2666666666666401200000000000000960096000000006fff000001000000000000000000000000"
+    },
+    {
+      "id": "structure_states_v2",
+      "frame": "PropertyBatch structure_states（结构状态增量）",
+      "direction": "下行（广播）",
+      "design": "[101, 0]：预设 lamp 第 3 拍（装载分箱 ⌊x·32⌋ 相对上一拍改变）；[107, 0]：预设 timed_ember 第 53 拍（装载分箱 ⌊x·32⌋ 相对上一拍改变）",
+      "source_states": [
+        {
+          "sid": [
+            101,
+            0
+          ],
+          "preset": "lamp",
+          "tick": 3,
+          "state": {
+            "coherence": 255,
+            "failed_segments": 0,
+            "glow_w": 100.0,
+            "load": 56,
+            "status": [],
+            "temperature_k": 0.0
+          }
+        },
+        {
+          "sid": [
+            107,
+            0
+          ],
+          "preset": "timed_ember",
+          "tick": 53,
+          "state": {
+            "coherence": 255,
+            "failed_segments": 0,
+            "glow_w": 0.0,
+            "load": 111,
+            "status": [],
+            "temperature_k": 0.0
+          }
+        }
+      ],
+      "total_bytes": 40,
+      "fields": {
+        "101:0": {
+          "load": 56,
+          "coherence": 255,
+          "status": [],
+          "failed_segments": 0,
+          "temperature_dk": 0,
+          "glow_w": 100
+        },
+        "107:0": {
+          "load": 111,
+          "coherence": 255,
+          "status": [],
+          "failed_segments": 0,
+          "temperature_dk": 0,
+          "glow_w": 0
+        }
+      },
+      "segments": [
+        {
+          "offset": 0,
+          "field": "101:0.id_seq",
+          "type": "u64",
+          "hex": "0000000000000065"
+        },
+        {
+          "offset": 8,
+          "field": "101:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 12,
+          "field": "101:0.load",
+          "type": "u8",
+          "hex": "38"
+        },
+        {
+          "offset": 13,
+          "field": "101:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 14,
+          "field": "101:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 15,
+          "field": "101:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 16,
+          "field": "101:0.temperature_dk",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 18,
+          "field": "101:0.glow_w",
+          "type": "u16",
+          "hex": "0064"
+        },
+        {
+          "offset": 20,
+          "field": "107:0.id_seq",
+          "type": "u64",
+          "hex": "000000000000006b"
+        },
+        {
+          "offset": 28,
+          "field": "107:0.id_n",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 32,
+          "field": "107:0.load",
+          "type": "u8",
+          "hex": "6f"
+        },
+        {
+          "offset": 33,
+          "field": "107:0.coherence",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 34,
+          "field": "107:0.status",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 35,
+          "field": "107:0.failed_segments",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 36,
+          "field": "107:0.temperature_dk",
+          "type": "u16",
+          "hex": "0000"
+        },
+        {
+          "offset": 38,
+          "field": "107:0.glow_w",
+          "type": "u16",
+          "hex": "0000"
+        }
+      ],
+      "hex": "00000000000000650000000038ff000000000064000000000000006b000000006fff000000000000"
+    },
+    {
+      "id": "property_batch_structures_v2",
+      "frame": "M1 Voxel PropertyBatch（domain 3，kind 5）",
+      "direction": "下行",
+      "design": "增量批（complete 0）：structures 依次为 structure_record_v2_deleted、structure_record_v2_fireball_flight、structure_record_v2_fireball_contact、structure_record_v2_lamp_exhausted、structure_record_v2_lamp_collapsed、structure_record_v2_lamp_dispelled（id 升序）；casts 为空；structure_states 同 structure_states_v2（id 与 structures 不重）。字段顺序：…protection、structures、casts、structure_states（Hello 46 末尾新增 structure_states）",
+      "structure_samples": [
+        "deleted",
+        "fireball_flight",
+        "fireball_contact",
+        "lamp_exhausted",
+        "lamp_collapsed",
+        "lamp_dispelled"
+      ],
+      "states_sample": "structure_states_v2",
+      "identity": [
+        1,
+        2,
+        3
+      ],
+      "transaction_seq": 7,
+      "l0_min": [
+        0,
+        0,
+        0
+      ],
+      "l0_max_exclusive": [
+        1,
+        1,
+        1
+      ],
+      "complete": 0,
+      "hp_enabled": 1,
+      "digest_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "thermal_enabled": 1,
+      "ambient_kelvin": 293.15,
+      "total_bytes": 1132,
+      "segments": [
+        {
+          "offset": 0,
+          "field": "envelope.marker",
+          "type": "u8",
+          "hex": "ff"
+        },
+        {
+          "offset": 1,
+          "field": "envelope.version",
+          "type": "u16",
+          "hex": "0001"
+        },
+        {
+          "offset": 3,
+          "field": "envelope.domain",
+          "type": "u8",
+          "hex": "03"
+        },
+        {
+          "offset": 4,
+          "field": "envelope.kind",
+          "type": "u8",
+          "hex": "05"
+        },
+        {
+          "offset": 5,
+          "field": "envelope.body_len",
+          "type": "u32",
+          "hex": "00000463"
+        },
+        {
+          "offset": 9,
+          "field": "identity.session_epoch",
+          "type": "u64",
+          "hex": "0000000000000001"
+        },
+        {
+          "offset": 17,
+          "field": "identity.scene_id",
+          "type": "u64",
+          "hex": "0000000000000002"
+        },
+        {
+          "offset": 25,
+          "field": "identity.scene_epoch",
+          "type": "u64",
+          "hex": "0000000000000003"
+        },
+        {
+          "offset": 33,
+          "field": "transaction_seq",
+          "type": "u64",
+          "hex": "0000000000000007"
+        },
+        {
+          "offset": 41,
+          "field": "l0_min.x",
+          "type": "i32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 45,
+          "field": "l0_min.y",
+          "type": "i32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 49,
+          "field": "l0_min.z",
+          "type": "i32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 53,
+          "field": "l0_max_exclusive.x",
+          "type": "i32",
+          "hex": "00000001"
+        },
+        {
+          "offset": 57,
+          "field": "l0_max_exclusive.y",
+          "type": "i32",
+          "hex": "00000001"
+        },
+        {
+          "offset": 61,
+          "field": "l0_max_exclusive.z",
+          "type": "i32",
+          "hex": "00000001"
+        },
+        {
+          "offset": 65,
+          "field": "complete",
+          "type": "u8",
+          "hex": "00"
+        },
+        {
+          "offset": 66,
+          "field": "hp_enabled",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 67,
+          "field": "digest",
+          "type": "32B",
+          "hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        },
+        {
+          "offset": 99,
+          "field": "thermal_enabled",
+          "type": "u8",
+          "hex": "01"
+        },
+        {
+          "offset": 100,
+          "field": "ambient_kelvin",
+          "type": "f64",
+          "hex": "4072526666666666"
+        },
+        {
+          "offset": 108,
+          "field": "epochs.len",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 112,
+          "field": "states.count",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 116,
+          "field": "protection.len",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 120,
+          "field": "structures.len",
+          "type": "u32",
+          "hex": "000003c0"
+        },
+        {
+          "offset": 124,
+          "field": "structures",
+          "type": "960B",
+          "hex": "000000000000006400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff1000000000000000000000000000000000000000000067000000000200000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff0000000000000000000000000000000000000000000068000000000300000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000200ff0000000000000000000000000000000000000000000069000000000400000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff00000000000000000000000000002234c010000000000000000000000000000000000000000006a000000000500000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff000000000000000000000000000022b00010000000000000000000000000000"
+        },
+        {
+          "offset": 1084,
+          "field": "casts.len",
+          "type": "u32",
+          "hex": "00000000"
+        },
+        {
+          "offset": 1088,
+          "field": "structure_states.len",
+          "type": "u32",
+          "hex": "00000028"
+        },
+        {
+          "offset": 1092,
+          "field": "structure_states",
+          "type": "40B",
+          "hex": "00000000000000650000000038ff000000000064000000000000006b000000006fff000000000000"
+        }
+      ],
+      "hex": "ff000103050000046300000000000000010000000000000002000000000000000300000000000000070000000000000000000000000000000100000001000000010001a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5014072526666666666000000000000000000000000000003c0000000000000006400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff1000000000000000000000000000000000000000000067000000000200000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff0000000000000000000000000000000000000000000068000000000300000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000200ff0000000000000000000000000000000000000000000069000000000400000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff00000000000000000000000000002234c010000000000000000000000000000000000000000006a000000000500000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff000000000000000000000000000022b00010000000000000000000000000000000000000000002800000000000000650000000038ff000000000064000000000000006b000000006fff000000000000"
     }
   ],
   "negatives": [
@@ -721,6 +2791,143 @@
           "program_hex": "0201010007000100020000fa0000000001f401000f4e200101001b17d001001e2ee0010001002201002c00"
         }
       }
+    },
+    {
+      "id": "structure_live_7",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 12 的 live 改为 7（Hello 46 只定义 0–6）",
+      "hex": "0000000000000065000000000700000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_shape_3",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 21 的 shape 改为 3（只收 0 球 / 1 块 / 2 板）",
+      "hex": "0000000000000065000000000100000000000003e903023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_flags_reserved",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 22 的 flags 由 0x02 改为 0x06（第 2 位是保留位）",
+      "hex": "0000000000000065000000000100000000000003e900063fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_temperature_negative",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "fireball_flight 偏移 31 的 temperature_k 改为 −1.0",
+      "hex": "0000000000000066000000000100000000000003e900013fd0000000000000bff000000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff100000000000000000000000000000"
+    },
+    {
+      "id": "structure_live2_without_contact",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "fireball_contact（live 2）偏移 22 的 flags 由 0x01 改为 0x00：接触终止要求 ends_on_contact",
+      "hex": "0000000000000067000000000200000000000003e900003fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_coupling_reserved",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 141 的 coupling_mask 由 0x0002 改为 0x0012（第 4 位是保留位）",
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000001238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_status_reserved",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 145 的 status 改为 0x40（第 6 位是保留位）",
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff400000000000000000000000000000"
+    },
+    {
+      "id": "structure_sphere_size2",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born（球）偏移 135 的 size2_mm 改为 1（球的尺寸 2、3 必须为 0）",
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000100000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_anchor_type_2",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 偏移 147 的 anchor_type 改为 2（只收 0 手边 / 1 格面）",
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000002000000000000000000000000"
+    },
+    {
+      "id": "structure_deleted_nonzero",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "deleted（live 0）偏移 40 改为 1：删除记录除 id 外必须全 0",
+      "hex": "00000000000000640000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "structure_unsorted",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "fireball_flight {102, 0} 在前、lamp_born {101, 0} 在后：id 必须升序且唯一",
+      "hex": "0000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff1000000000000000000000000000000000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000"
+    },
+    {
+      "id": "structure_truncated",
+      "frame": "PropertyBatch structures（结构记录 v2）",
+      "expect": "invalid_structure",
+      "mutation": "lamp_born 去掉最后 1 B（159 B）",
+      "hex": "0000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff0000000000000000000000000000"
+    },
+    {
+      "id": "structure_states_unsorted",
+      "frame": "PropertyBatch structure_states（结构状态增量）",
+      "expect": "invalid_structure_state",
+      "mutation": "structure_states_v2 的两条倒序（{107, 0} 在 {101, 0} 之前）",
+      "hex": "000000000000006b000000006fff00000000000000000000000000650000000038ff000000000064"
+    },
+    {
+      "id": "structure_states_duplicate",
+      "frame": "PropertyBatch structure_states（结构状态增量）",
+      "expect": "invalid_structure_state",
+      "mutation": "structure_states_v2 的第一条重复两次",
+      "hex": "00000000000000650000000038ff00000000006400000000000000650000000038ff000000000064"
+    },
+    {
+      "id": "structure_states_status_reserved",
+      "frame": "PropertyBatch structure_states（结构状态增量）",
+      "expect": "invalid_structure_state",
+      "mutation": "structure_states_v2 第一条偏移 14 的 status 改为 0x80（第 7 位是保留位）",
+      "hex": "00000000000000650000000038ff800000000064000000000000006b000000006fff000000000000"
+    },
+    {
+      "id": "property_batch_complete_with_terminal",
+      "frame": "M1 Voxel PropertyBatch（domain 3，kind 5）",
+      "expect": "invalid_m1_message",
+      "mutation": "完整批（complete 1）含 lamp_born（live 1）与 lamp_exhausted（live 3）：完整快照只能含存在中的结构",
+      "complete": 1,
+      "hex": "ff00010305000001bb00000000000000010000000000000002000000000000000300000000000000070000000000000000000000000000000100000001000000010101a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5014072526666666666000000000000000000000000000001400000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff0000000000000000000000000000000000000000000068000000000300000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000200ff0000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "property_batch_complete_with_deleted",
+      "frame": "M1 Voxel PropertyBatch（domain 3，kind 5）",
+      "expect": "invalid_m1_message",
+      "mutation": "完整批含 deleted（live 0）与 fireball_flight（live 1）：完整快照不含删除",
+      "complete": 1,
+      "hex": "ff00010305000001bb00000000000000010000000000000002000000000000000300000000000000070000000000000000000000000000000100000001000000010101a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a501407252666666666600000000000000000000000000000140000000000000006400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff1000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "property_batch_complete_with_states",
+      "frame": "M1 Voxel PropertyBatch（domain 3，kind 5）",
+      "expect": "invalid_m1_message",
+      "mutation": "完整批只含 fireball_flight（live 1），却带 structure_states_v2：完整批不带状态增量",
+      "complete": 1,
+      "hex": "ff000103050000014300000000000000010000000000000002000000000000000300000000000000070000000000000000000000000000000100000001000000010101a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5014072526666666666000000000000000000000000000000a00000000000000066000000000100000000000003e900013fd0000000000000409f40000000000000000000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000402800000000000000060a24181e40003fe1b22fb4bb28f93fe00000000000003ff4000000000000401e8b478f18bd7600000000000000016dff100000000000000000000000000000000000000000002800000000000000650000000038ff000000000064000000000000006b000000006fff000000000000"
+    },
+    {
+      "id": "property_batch_state_overlaps_record",
+      "frame": "M1 Voxel PropertyBatch（domain 3，kind 5）",
+      "expect": "invalid_m1_message",
+      "mutation": "增量批含 lamp_born {101, 0}，structure_states_v2 也有 {101, 0}：同批已有结构记录的 id 不得再出现在增量里",
+      "complete": 0,
+      "hex": "ff000103050000014300000000000000010000000000000002000000000000000300000000000000070000000000000000000000000000000100000001000000010001a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5014072526666666666000000000000000000000000000000a00000000000000065000000000100000000000003e900023fc3333333333333000000000000000040590000000000003fe000000000000040040000000000003ff000000000000000000000000000000000000000000000000000000000000000060a24181e400000000000000000003fe000000000000040040000000000003ff0000000000000000000000000000238ff000000000000000000000000000000000000000000002800000000000000650000000038ff000000000064000000000000006b000000006fff000000000000"
     }
   ]
 }

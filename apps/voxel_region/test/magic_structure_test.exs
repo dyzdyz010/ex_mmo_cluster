@@ -11,6 +11,10 @@ defmodule VoxelRegion.MagicStructureTest do
   - 判定：期望值取设计附录 A.2–A.4 的数（灯寿命 132 s、x* 0.61 / 0.25、A.4 v2.9 逐拍净欠账与 t_eff），容差按文档
     给出的位数，写在各用例里；账目闭合与逐位一致是不变量。读数丢失的用例按 hash(id, tick) 逐个 id 搜索丢失的实例，
     不复制 hash 算法。干预场一律由发出者的拍首状态取（`disruption_field/4` 的契约）。
+  - 线上状态量 `wire/1`（切片 4a，决策稿 `2026-11-26-p1-closure-slices4-8.md` §3.1、§3.3）：量化口径
+    load = round(x·255)、coherence = round(clamp(C, 0, 1)·255)；期望取附录 A.3 的灯 x₀ = 0.221（56）、火球 2000 K、
+    500 K 处 x* ≈ 0.25，以及“终止拍取终止判定那一刻的值”的契约。`respond/3` 的 outputs（metrics 为空）交给
+    `wire/1` 显式失败（运行期断言，经 `apply/3` 调用以免编译期类型检查先行拒绝）。
   - 不覆盖：热内核限流与真实净热（切片 1/5，这里净热是显式输入）、World 提交、多段与 P2 符号；前摇打断剂量
     （施法者处，A.4 末行）的消费方在切片 1（Player，D7），这里只验证它所依赖的 t_eff 合计 0.593 s。
   """
@@ -51,6 +55,7 @@ defmodule VoxelRegion.MagicStructureTest do
 
     %{
       catalog: catalog,
+      programs: programs,
       groups: Map.new(programs, fn {id, %Program{groups: [group]}} -> {id, group} end),
       quotes:
         Map.new(programs, fn {id, program} ->
@@ -458,5 +463,67 @@ defmodule VoxelRegion.MagicStructureTest do
     assert {_tick, guarded, out} = until_triggered(guarded, 4..30, c, fields)
     assert guarded.status == :running
     assert [%{priority: 1, outcome: :met, responses: [%{id: "resp.release"}]}] = out.triggered
+  end
+
+  # ---- 线上状态量（切片 4a，决策稿 2026-11-26-p1-closure-slices4-8.md §3.1、§3.3） ----
+
+  test "wire：灯出生记录 load = round(0.221 × 255) = 56、相干 255、温度 0（无〈热〉）、发光取标称 100 W、无状态位", c do
+    lamp = lamp(c)
+
+    assert Structure.wire({lamp, c.quotes["lamp"]}) == %{
+             load: 56,
+             coherence: 255,
+             status: [],
+             failed_segments: 0,
+             temperature_k: 0.0,
+             glow_w: 100.0
+           }
+  end
+
+  test "wire：出生越线按报价 x₀ > x*——500 K 处施放的火球（x* ≈ 0.25，附录 A.3）置越线位，293 K 处不置", c do
+    group = c.groups["fireball"]
+    hot_quote = Cost.quote_structure(c.programs["fireball"], c.catalog, %{@site | ambient_k: 500.0})
+    assert_in_delta hot_quote.x_star, 0.25, 0.01
+    hot = Structure.new({2, 0}, group, hot_quote, 0)
+
+    assert %{status: [:overline]} = Structure.wire({hot, hot_quote})
+    assert %{status: [], temperature_k: t} = Structure.wire({fireball(c), c.quotes["fireball"]})
+    # 〈热〉2000 K：T_port = T_ref + E_th0 / C_th（T_ref 按 0.1 K 量化）。
+    assert_in_delta t, 2000.0, 1.0e-9
+  end
+
+  test "wire：步进后发光 = 本拍 light_mj ÷ 拍长，有供能时置供能中位，相干与装载取本拍 metrics", c do
+    {s, out} = Structure.step(lamp(c), inputs(feed_w: 300), 1, c.catalog)
+    wire = Structure.wire({s, out})
+
+    assert wire.glow_w == out.ledger.out.light_mj / 500
+    assert wire.glow_w == 100.0
+    assert wire.status == [:feeding]
+    assert wire.load == round(out.metrics.load * 255)
+    assert wire.coherence == 255
+  end
+
+  test "wire：终止拍取终止判定那一刻的装载与端口温度，而不是清空后的 0 与 T_ref（2000 K 格中火球过载崩解）", c do
+    {tick, s, outs} = run(fireball(c), 20, c, fn _ -> inputs(temperature_k: 2000.0) end)
+    out = List.last(outs)
+    assert s.status == {:terminated, :collapsed} and tick < 20
+    assert s.e_op_mj == 0 and s.e_th_mj == 0
+    assert_in_delta Structure.port_temperature(s), s.t_ref_k, 1.0e-9
+
+    wire = Structure.wire({s, out})
+    assert wire.load == round(out.metrics.load * 255) and wire.load > 0
+    # 无净热输入，E_th 不变：终止前一刻的端口温度仍是出生时的 2000 K。
+    assert_in_delta wire.temperature_k, 2000.0, 1.0e-9
+    assert wire.coherence < round(0.3 * 255)
+    assert :overline in wire.status
+  end
+
+  test "wire：respond/3 的 outputs 的 metrics 为空、没有本拍装载与相干，不匹配任何子句（记录取同拍 step/4 的结果）", c do
+    {s, out} = Structure.step(fireball(c), inputs(contact: true), 1, c.catalog)
+    [%{responses: [release]}] = out.triggered
+    responded = Structure.respond(s, release, c.catalog)
+    assert elem(responded, 1).metrics == %{}
+    # 经 apply/3 调用：编译期类型检查已能静态看出这次调用不匹配（会产生编译警告），这里要证明的是运行期同样显式失败。
+    assert_raise FunctionClauseError, fn -> apply(Structure, :wire, [responded]) end
   end
 end

@@ -947,6 +947,95 @@ defmodule VoxelRegion.Magic.Structure do
   def port_temperature(%__MODULE__{c_th_j_per_k: nil}), do: nil
   def port_temperature(%__MODULE__{} = s), do: s.t_ref_k + s.e_th_mj / 1000 / s.c_th_j_per_k
 
+  # ---------------------------------------------------------------------------
+  # 线上状态量（切片 4a；决策稿 `2026-11-26-p1-closure-slices4-8.md` §3.1、§3.3）
+  # ---------------------------------------------------------------------------
+
+  @typedoc """
+  结构记录 v2 与状态增量中由本模块拥有的动态字段（编码见 `MmoContracts.Voxel.Codec.encode_structures/1`）：
+
+  - `load` = round(x·255)、`coherence` = round(clamp(C, 0, 1)·255)，u8；
+  - `status`：本模块能判定的状态位名字（`:overline` 越线 x > x*、`:feeding` 本拍有供能），按线上位序；
+    `:flying`、`:asleep` 由 World 判定后追加，`:folded`、`:vent_damaged` 属 P2；
+  - `failed_segments`：P1 恒为 0；
+  - `temperature_k`：端口温度 T_port（无〈热〉为 0.0）；`glow_w`：本拍实际发出的光功率（W）。
+
+  形状、尺寸、质量、耦合、锚、`ends_on_contact` 与运动字段由程序与 World 的物理体给出，不在这里。
+  """
+  @type wire_fields :: %{
+          load: 0..255,
+          coherence: 0..255,
+          status: [:overline | :feeding],
+          failed_segments: 0,
+          temperature_k: float(),
+          glow_w: float()
+        }
+
+  @doc """
+  把结构量化为线上动态字段（`t:wire_fields/0`）。参数是结构与产生它的那次计算的伴随值：
+
+  - `{结构, 报价}`：刚由 `new/4` 出生、尚未步进。装载取出生储能，相干为 1（无欠账），越线按报价的 x₀ > x*，
+    发光取〈辉〉标称功率，无供能。
+  - `{结构, outputs}`：`step/4` 的返回值。装载、x*、相干取本拍 `metrics`（终止拍也是终止判定那一刻的值，
+    不是清空后的 0）；发光 = 本拍 `light_mj` ÷ 拍长；供能中 = 本拍链上有功率；温度取步后 T_port，终止拍取终止
+    释放请求里的端口温度。
+
+  `respond/3`、`settle_kinetic/1` 的 outputs 没有 `metrics`，不匹配任何子句（显式失败）：它们与同拍的步进一起由
+  World 结算，记录取同拍 `step/4` 的结果。
+  """
+  @spec wire({t(), map()}) :: wire_fields()
+  def wire(
+        {%__MODULE__{status: :running, born_tick: tick, last_tick: tick} = s,
+         %{x0: x0, x_star: x_star}}
+      ) do
+    %{
+      load: unit_byte(load_ratio(s)),
+      coherence: unit_byte(coherence_without_debt(s)),
+      status: if(x0 > x_star, do: [:overline], else: []),
+      failed_segments: 0,
+      temperature_k: wire_temperature(s, port_temperature(s)),
+      glow_w: s.glow_w / 1
+    }
+  end
+
+  def wire(
+        {%__MODULE__{} = s,
+         %{
+           metrics: %{load: x, steady_load: x_star, coherence: coherence},
+           ledger: %{in: %{feed_mj: feed_mj}, out: %{light_mj: light_mj}},
+           requests: requests
+         }}
+      ) do
+    # 终止拍的储能池已清空，端口温度取终止释放请求里记下的值（终止前一刻）。
+    port =
+      Enum.find_value(requests, port_temperature(s), fn
+        {:release_thermal, _mj, port} -> port
+        _ -> nil
+      end)
+
+    %{
+      load: unit_byte(x),
+      coherence: unit_byte(coherence),
+      status:
+        Enum.filter([overline: x > x_star, feeding: feed_mj > 0], &elem(&1, 1))
+        |> Enum.map(&elem(&1, 0)),
+      failed_segments: 0,
+      temperature_k: wire_temperature(s, port),
+      glow_w: light_mj / @tick_ms
+    }
+  end
+
+  # 出生时没有欠账：C = 1 − c_d·0 = 1，与目录 c_d 无关。
+  defp coherence_without_debt(%__MODULE__{debt_micro: 0}), do: 1.0
+
+  # [0, 1] 上的量 → u8：round(max(v, 0)·255)。相干 C ≤ 1 由定义保证、可因欠账为负，故只截下沿；装载 x ≤ 1 是结构
+  # 不变量（热内核限流，决策稿 Q4-1），这里不截上沿，越界时由编码端按字段宽度显式失败。
+  defp unit_byte(v), do: round(max(v, 0.0) * 255)
+
+  # 无〈热〉（C_th 为 nil）的结构线上温度为 0。
+  defp wire_temperature(%__MODULE__{c_th_j_per_k: nil}, _port), do: 0.0
+  defp wire_temperature(_s, port), do: port / 1
+
   # 总装载 E = E_op + |E_th|（mJ）与装载比 x = E / E_cap（§4.3、§5.2）。
   defp load_mj(s), do: s.e_op_mj + abs(s.e_th_mj)
   defp load_ratio(s), do: load_mj(s) / s.e_cap_mj
