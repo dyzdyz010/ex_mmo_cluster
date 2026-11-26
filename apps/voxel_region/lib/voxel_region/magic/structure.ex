@@ -68,8 +68,8 @@ defmodule VoxelRegion.Magic.Structure do
   alias VoxelRegion.Magic.Catalog
   alias VoxelRegion.Magic.Program.{Glyph, Group, Rule}
 
-  # 热提交拍长（D4：结构时钟 = 热提交拍号，每拍 0.5 模拟秒）。与 `world/thermal.ex` 的 500 ms 自然步同值，
-  # 那里目前写的是字面量；切片 5 接线时应让二者引用同一定义。
+  # 热提交拍长（D4：结构时钟 = 热提交拍号，每拍 0.5 模拟秒）。这是全仓唯一的拍长定义（设计 v2.7 R9、决策稿 Q4-9）：
+  # `world/thermal.ex` 的定时提交间隔与每次提交的模拟时长都引用 `tick_ms/0`。
   @tick_ms 500
   @tick_s @tick_ms / 1000
 
@@ -245,8 +245,170 @@ defmodule VoxelRegion.Magic.Structure do
     :kinetic_mj
   ]
 
-  @doc "热提交拍长（毫秒）。结构的一切计时都按拍号乘以它（D4）。"
+  @doc "热提交拍长（毫秒）。结构的一切计时都按拍号乘以它（D4）；World 的热提交节拍也取这个值（R9）。"
   def tick_ms, do: @tick_ms
+
+  # ---------------------------------------------------------------------------
+  # 持久化记录（切片 4c；决策稿 `2026-11-26-p1-closure-slices4-8.md` Q4-7）
+  # ---------------------------------------------------------------------------
+
+  # 记录的键与结构字段一一对应（规则、读数、响应符号都展开为普通 map），不含结构体标签：持久化格式由本表定义，
+  # 不随 defstruct 的内部布局漂移。
+  @record_keys [
+    :id,
+    :born_tick,
+    :last_tick,
+    :units,
+    :precision,
+    :volume_m3,
+    :e_cap_mj,
+    :e_min_mj,
+    :phi_cap_w,
+    :r_base_per_s,
+    :t_ref_k,
+    :c_th_j_per_k,
+    :e_op_mj,
+    :e_th_mj,
+    :kinetic_mj,
+    :pending_leak_mj,
+    :glow_w,
+    :activity,
+    :debt_micro,
+    :debt_int_micro,
+    :rules,
+    :status
+  ]
+
+  @doc """
+  运行中结构 → 显式字段 map（持久化形态，Q4-7）。规则里的响应符号写成 `%{index, id, params}`；只有运行中的结构会被
+  持久化（已终止的结构在同一拍就从 World 移除），所以记录的 `status` 恒为 `:running`。
+  """
+  @spec to_record(t()) :: map()
+  def to_record(%__MODULE__{status: :running} = s) do
+    s
+    |> Map.take(@record_keys)
+    |> Map.update!(:rules, fn rules -> Enum.map(rules, &rule_record/1) end)
+  end
+
+  defp rule_record(rule) do
+    %{
+      rule
+      | responses: Enum.map(rule.responses, &glyph_record/1),
+        backup_response: rule.backup_response && glyph_record(rule.backup_response)
+    }
+  end
+
+  defp glyph_record(%Glyph{index: index, id: id, params: params}),
+    do: %{index: index, id: id, params: params}
+
+  @doc """
+  持久化记录 → 运行中结构：持久化加载是信任边界（AGENTS §2.2-6），这里一次校验全部字段，返回 `{:ok, 结构}` 或
+  `{:error, {:invalid_structure_record, 字段}}`。校验：键集合与 `to_record/1` 完全相同；拍号 `0 ≤ born ≤ last`；
+  计价与容量量为正（Φ_cap、修复基值非负）；储能池为整数且运转储能、动能、待沉积泄漏非负（热份额可为负）；
+  欠账非负且 `debt_int ≤ debt`；读数是三种已知形态之一；响应符号的下标与 id 在目录 `catalog` 中一致。
+  通过后的结构由内部链路直接消费，不再复核。
+  """
+  @spec from_record(term(), Catalog.t()) :: {:ok, t()} | {:error, {:invalid_structure_record, atom()}}
+  def from_record(%{} = record, %Catalog{} = catalog) do
+    with :ok <- check(Map.keys(record) |> Enum.sort() == Enum.sort(@record_keys), :keys),
+         %{id: {seq, n}} when is_integer(seq) and seq >= 0 and is_integer(n) and n >= 0 <- record,
+         :ok <- check(tick_pair?(record.born_tick, record.last_tick), :ticks),
+         :ok <- check(Enum.all?([record.units, record.precision, record.volume_m3, record.t_ref_k], &positive?/1), :quote),
+         :ok <- check(Enum.all?([record.e_cap_mj, record.e_min_mj], &(is_integer(&1) and &1 > 0)), :capacity),
+         :ok <- check(Enum.all?([record.phi_cap_w, record.r_base_per_s], &non_negative?/1), :capacity),
+         :ok <- check(record.c_th_j_per_k == nil or positive?(record.c_th_j_per_k), :c_th_j_per_k),
+         :ok <- check(Enum.all?([record.e_op_mj, record.kinetic_mj, record.pending_leak_mj, record.glow_w],
+                  &(is_integer(&1) and &1 >= 0)), :energy),
+         :ok <- check(is_integer(record.e_th_mj), :e_th_mj),
+         :ok <- check(activity?(record.activity), :activity),
+         :ok <- check(is_integer(record.debt_micro) and record.debt_micro >= 0 and is_integer(record.debt_int_micro) and
+                  record.debt_int_micro >= 0 and record.debt_int_micro <= record.debt_micro, :debt),
+         :ok <- check(record.status == :running, :status),
+         {:ok, rules} <- rules_from_record(record.rules, catalog) do
+      {:ok, struct!(__MODULE__, %{record | rules: rules})}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, {:invalid_structure_record, :id}}
+    end
+  end
+
+  def from_record(_record, %Catalog{}), do: {:error, {:invalid_structure_record, :record}}
+
+  defp check(true, _field), do: :ok
+  defp check(_false, field), do: {:error, {:invalid_structure_record, field}}
+
+  defp positive?(v), do: is_number(v) and v > 0
+  defp non_negative?(v), do: is_number(v) and v >= 0
+
+  defp tick_pair?(born, last),
+    do: is_integer(born) and is_integer(last) and born >= 0 and last >= born
+
+  defp activity?(nil), do: true
+
+  defp activity?(%{power_w: p, radius_m: r, duration_s: d} = a) when map_size(a) == 3,
+    do: positive?(p) and positive?(r) and non_negative?(d)
+
+  defp activity?(_), do: false
+
+  defp rules_from_record(rules, catalog) when is_list(rules) do
+    Enum.reduce_while(rules, {:ok, []}, fn rule, {:ok, acc} ->
+      case rule_from_record(rule, catalog) do
+        {:ok, rule} -> {:cont, {:ok, [rule | acc]}}
+        :error -> {:halt, {:error, {:invalid_structure_record, :rules}}}
+      end
+    end)
+    |> case do
+      {:ok, rules} -> {:ok, Enum.reverse(rules)}
+      error -> error
+    end
+  end
+
+  defp rules_from_record(_rules, _catalog), do: {:error, {:invalid_structure_record, :rules}}
+
+  defp rule_from_record(
+         %{
+           priority: priority,
+           readings: readings,
+           responses: responses,
+           backup: backup,
+           backup_response: backup_response,
+           fired_tick: fired
+         } = rule,
+         catalog
+       )
+       when map_size(rule) == 6 and is_integer(priority) and priority >= 0 and is_list(readings) and
+              is_list(responses) and backup in [:none, :unmet, :undecidable] and
+              (fired == nil or (is_integer(fired) and fired >= 0)) do
+    glyphs = Enum.map(responses, &glyph_from_record(&1, catalog))
+    backup_glyph = backup_response && glyph_from_record(backup_response, catalog)
+
+    if Enum.all?(readings, &reading?/1) and :error not in glyphs and backup_glyph != :error,
+      do: {:ok, %{rule | responses: glyphs, backup_response: backup_glyph}},
+      else: :error
+  end
+
+  defp rule_from_record(_rule, _catalog), do: :error
+
+  defp reading?(%{kind: :contact, pending: p} = r) when map_size(r) == 2, do: is_boolean(p)
+
+  defp reading?(%{kind: :timer, due_tick: due, done: done} = r) when map_size(r) == 3,
+    do: is_integer(due) and due >= 0 and is_boolean(done)
+
+  defp reading?(%{kind: :load, quantity: q, dir: dir, threshold: t, last_q: last} = r)
+       when map_size(r) == 5,
+       do: q in [:load, :coherence] and dir in [:above, :below] and is_number(t) and (last == nil or is_integer(last))
+
+  defp reading?(_), do: false
+
+  defp glyph_from_record(%{index: index, id: id, params: params} = g, %Catalog{symbols: symbols})
+       when map_size(g) == 3 and is_map(params) do
+    case Map.get(symbols, index) do
+      %{id: ^id} -> %Glyph{index: index, id: id, params: params}
+      _ -> :error
+    end
+  end
+
+  defp glyph_from_record(_g, _catalog), do: :error
 
   # ---------------------------------------------------------------------------
   # 出生

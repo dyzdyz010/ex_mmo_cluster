@@ -14,6 +14,9 @@ defmodule VoxelRegion.World.Thermal do
   require Logger
 
   @micro VoxelRegion.Spatial.micro_resolution()
+  # 热提交拍长：唯一定义在 `Magic.Structure.tick_ms/0`（设计 v2.7 R9、决策稿 Q4-9）；定时间隔与每次提交的模拟时长都取它。
+  @tick_ms VoxelRegion.Magic.Structure.tick_ms()
+  @tick_s @tick_ms / 1000
   # 施法留热、走火与取能损耗以有限热源落地，在一个 500 ms 热提交内放完（热源机制要求有限功率）。
   @deposit_seconds 0.5
 
@@ -24,7 +27,7 @@ defmodule VoxelRegion.World.Thermal do
   def schedule(state) do
     if state.thermal_timer, do: Clock.cancel_timer(state, state.thermal_timer)
     now = Clock.monotonic(state)
-    due = state.thermal_due || now + 500
+    due = state.thermal_due || now + @tick_ms
     %{state | thermal_due: due, thermal_timer: Clock.send_after(state, self(), {:thermal_tick, due}, max(due - now, 0))}
   end
 
@@ -198,7 +201,7 @@ defmodule VoxelRegion.World.Thermal do
 
     if continues?(state) do
       run = %{ref: make_ref(), scheduled_due: scheduled_due, damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
-        remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0, impacts: %{},
+        remaining: @tick_s, segment: nil, seq: state.seq, busy_us: 0, steps: 0, impacts: %{},
         started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
       work = state.thermal_work
@@ -241,7 +244,7 @@ defmodule VoxelRegion.World.Thermal do
 
     if run.remaining < 1.0e-12 do
       # 显式强制步与到期步共用内核；只有到期步完成才消费相应墙钟事件。
-      state = if run.scheduled_due, do: %{state | thermal_due: run.scheduled_due + 500}, else: state
+      state = if run.scheduled_due, do: %{state | thermal_due: run.scheduled_due + @tick_ms}, else: state
       {state, commit} = settle_run(%{state | thermal_run: nil}, run)
       {:done, state, commit}
     else
@@ -328,7 +331,7 @@ defmodule VoxelRegion.World.Thermal do
     scanned = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_thermal_sim steps_us=#{run.busy_us} scan_us=#{scanned - stepped} damage_rows=#{map_size(state.damage)} simulated_s=0.5 max_step_ms=50 elapsed_us=#{run.busy_us + System.monotonic_time(:microsecond) - stepped} wall_us=#{System.monotonic_time(:microsecond) - run.started} kernel_steps=#{run.steps} hot=#{MapSet.size(work.hot)} candidates=#{MapSet.size(work.cells)} geometry_builds=#{work.builds}"
+      "voxel_thermal_sim steps_us=#{run.busy_us} scan_us=#{scanned - stepped} damage_rows=#{map_size(state.damage)} simulated_s=#{@tick_s} max_step_ms=50 elapsed_us=#{run.busy_us + System.monotonic_time(:microsecond) - stepped} wall_us=#{System.monotonic_time(:microsecond) - run.started} kernel_steps=#{run.steps} hot=#{MapSet.size(work.hot)} candidates=#{MapSet.size(work.cells)} geometry_builds=#{work.builds}"
     )
 
     # 步间编辑可能已删除记录；已被编辑改写的记录按当前值随本事务再发一次。
@@ -1167,7 +1170,7 @@ defmodule VoxelRegion.World.Thermal do
     now = Clock.monotonic(state)
     due = state.thermal_due
     run = state.thermal_run
-    remaining = if run && run.scheduled_due != nil, do: run.segment || run.remaining, else: 0.5
+    remaining = if run && run.scheduled_due != nil, do: run.segment || run.remaining, else: @tick_s
     through = if due, do: due - round(remaining * 1000)
     reason = cond do
       VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
@@ -1179,7 +1182,7 @@ defmodule VoxelRegion.World.Thermal do
     end
     %{next_due_ms: due, simulated_through_ms: through, target_through_ms: if(due, do: now),
       lag_ms: if(through, do: max(now - through, 0), else: 0),
-      pending_steps: if(due && now >= due, do: div(now - due, 500) + 1, else: 0),
+      pending_steps: if(due && now >= due, do: div(now - due, @tick_ms) + 1, else: 0),
       remaining_s: if(run, do: run.segment || run.remaining, else: 0.0), wait_reason: reason,
       model_elapsed_s: if(state.thermal, do: state.thermal.elapsed_s, else: 0.0),
       circuit: CircuitGraph.observe(Map.get(state.thermal_work, :circuit))}

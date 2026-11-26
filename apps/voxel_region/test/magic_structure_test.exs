@@ -526,4 +526,47 @@ defmodule VoxelRegion.MagicStructureTest do
     # 经 apply/3 调用：编译期类型检查已能静态看出这次调用不匹配（会产生编译警告），这里要证明的是运行期同样显式失败。
     assert_raise FunctionClauseError, fn -> apply(Structure, :wire, [responded]) end
   end
+
+  # ---- 持久化记录（切片 4c，决策稿 Q4-7、S4-1）----
+
+  test "S4-1 to_record/from_record：运行中途（有欠账、规则读数已消费、〈时〉待决）往返后结构逐字段相同，记录里没有结构体",
+       c do
+    # 定时火种走到第 10 拍（〈时〉未到期），驱散脉冲旁 1 m 的灯第 1 拍后带欠账与 debt_int，火球带热份额与动能。
+    {_, ember, _} = run(ember(c), 10, c, fn _ -> inputs() end)
+    field = Structure.disruption_field(pulse(c), 1.0, 1, c.catalog)
+    {lamp, _} = Structure.step(lamp(c), inputs(fields: [field]), 1, c.catalog)
+    assert lamp.debt_micro > 0 and lamp.debt_int_micro > 0
+
+    for s <- [ember, lamp, fireball(c), pulse(c)] do
+      record = Structure.to_record(s)
+      refute Map.has_key?(record, :__struct__)
+      assert record |> Map.values() |> List.flatten() |> Enum.all?(&(not is_struct(&1)))
+      # 持久化是 ETF：经 term_to_binary 往返后同样可读。
+      record = record |> :erlang.term_to_binary() |> :erlang.binary_to_term()
+      assert {:ok, ^s} = Structure.from_record(record, c.catalog)
+    end
+  end
+
+  test "S4-1 损坏的记录显式失败：缺字段、多字段、负运转储能、debt_int > debt、拍号倒序、未知响应符号", c do
+    record = Structure.to_record(fireball(c))
+    [rule] = record.rules
+    bad_glyph = %{hd(rule.responses) | id: "resp.nope"}
+
+    for {broken, field} <- [
+          {Map.delete(record, :e_op_mj), :keys},
+          {Map.put(record, :extra, 1), :keys},
+          {%{record | e_op_mj: -1}, :energy},
+          {%{record | e_op_mj: 1.5}, :energy},
+          {%{record | debt_micro: 1, debt_int_micro: 2}, :debt},
+          {%{record | born_tick: 5, last_tick: 4}, :ticks},
+          {%{record | status: {:terminated, :exhausted}}, :status},
+          {%{record | rules: [%{rule | responses: [bad_glyph]}]}, :rules},
+          {%{record | id: {-1, 0}}, :id}
+        ] do
+      assert Structure.from_record(broken, c.catalog) == {:error, {:invalid_structure_record, field}},
+             inspect(field)
+    end
+
+    assert Structure.from_record(:not_a_map, c.catalog) == {:error, {:invalid_structure_record, :record}}
+  end
 end
