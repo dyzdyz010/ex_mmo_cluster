@@ -284,20 +284,61 @@ defmodule VoxelRegion.World do
 
   defp valid_thermal_target?(_state, _target), do: false
 
-  @doc "Test-only: install an MCP-authored finite basin once, before player actions; never a refill source."
+  @doc "只测试作者入口：一次安装有限液盆初态，先于玩家操作，不作补给源。"
   def liquid_experiment(server, path) do
-    data = Jason.decode!(File.read!(path))
-    edits = Enum.map(data["deposits"], fn row -> {List.to_tuple(row["macro"]), row["material"]} end)
-    prepare(server, Edits.edit_keys(Enum.map(edits, &elem(&1,0))), fn ->
-      VoxelRegion.World.PageLoad.call(server, {:liquid_experiment, edits}, 300_000)
-    end)
+    with {:ok, raw} <- File.read(path),
+         {:ok, data} <- Jason.decode(raw),
+         {:ok, edits} <- parse_liquid_experiment(data) do
+      prepare(server, Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), fn ->
+        VoxelRegion.World.PageLoad.call(server, {:liquid_experiment, edits}, 300_000)
+      end)
+    end
   end
+
+  defp parse_liquid_experiment(%{"deposits" => deposits}) when is_list(deposits) do
+    Enum.reduce_while(deposits, {:ok, []}, fn
+      %{"macro" => [x, y, z], "material" => material}, {:ok, acc}
+      when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(material) ->
+        cell = {x, y, z}
+
+        if Edits.valid_edit_coord?(cell),
+          do: {:cont, {:ok, [{cell, material} | acc]}},
+          else: {:halt, {:error, :invalid_liquid_experiment}}
+
+      _, _ ->
+        {:halt, {:error, :invalid_liquid_experiment}}
+    end)
+    |> case do
+      {:ok, edits} -> {:ok, Enum.reverse(edits)}
+      error -> error
+    end
+  end
+
+  defp parse_liquid_experiment(_), do: {:error, :invalid_liquid_experiment}
 
   @doc """
   全局系统作者入口：一笔事务写入受保护区域 `[%{holder, min: {x, z}, max: {x, z}}]`（闭区间宏格，y 不限），
   holder 为 `:reserved` 或 `{:character, cid}`；与既有区域或彼此重叠时整体拒绝。不经 Gate 暴露。
   """
-  def author_regions(server, regions), do: VoxelRegion.World.PageLoad.call(server, {:author_regions, regions}, 300_000)
+  def author_regions(server, regions) do
+    if valid_author_regions?(regions),
+      do: VoxelRegion.World.PageLoad.call(server, {:author_regions, regions}, 300_000),
+      else: {:error, :invalid_region}
+  end
+
+  defp valid_author_regions?(regions) when is_list(regions) and regions != [] do
+    Enum.all?(regions, fn
+      %{holder: holder, min: {min_x, min_z}, max: {max_x, max_z}}
+      when is_integer(min_x) and is_integer(min_z) and is_integer(max_x) and is_integer(max_z) ->
+        (holder == :reserved or match?({:character, cid} when is_integer(cid) and cid > 0, holder)) and
+          min_x <= max_x and min_z <= max_z
+
+      _ ->
+        false
+    end)
+  end
+
+  defp valid_author_regions?(_), do: false
 
   @doc "角色确认余额；单位为一个 canonical 微格体积。"
   def material_balances(server, cid),
@@ -1247,26 +1288,55 @@ defmodule VoxelRegion.World do
 
   # 只测试作者供给入口；不可由 Gate 玩家消息调用。
   defp call({:liquid_experiment, edits}, _, state) do
-    true = Liquids.liquid_enabled?(state)
-    true = Enum.all?(edits, fn {cell,_} -> Edits.valid_edit_coord?(cell) and Liquids.liquid_inside?(cell,state.liquid_bounds) end)
-    changes = for {cell,m} <- edits, Phase.liquid?(m) or Canonical.phase_material?(state,m) or Map.has_key?(state.liquid_units,cell),
-      into: %{}, do: {cell,if(Phase.liquid?(m) or Canonical.phase_material?(state,m),do: Canonical.liquid_capacity(state),else: 0)}
-    values = for {cell,m} <- edits, Canonical.phase_material?(state,m), into: %{},
-      do: {cell,Phase.quantize({Phase.energy(%{material: m},1.0,state.properties.materials[m],Canonical.ambient_at(state,cell)),Canonical.liquid_capacity(state)})}
-    # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
-    thermal=VoxelRegion.World.Phases.authored(state.thermal,values)
-    case Edits.apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{liquid_changes: changes,phase_values: values}) do
-      {:ok,next} -> {:reply,{:ok,next.seq},next}
-      {:error,reason} -> {:reply,{:error,reason},state}
+    cond do
+      not Liquids.liquid_enabled?(state) ->
+        {:reply, {:error, :liquid_disabled}, state}
+
+      not Enum.all?(edits, fn {cell, _} -> Liquids.liquid_inside?(cell, state.liquid_bounds) end) ->
+        {:reply, {:error, :liquid_out_of_bounds}, state}
+
+      true ->
+        changes =
+          for {cell, m} <- edits,
+              Phase.liquid?(m) or Canonical.phase_material?(state, m) or
+                Map.has_key?(state.liquid_units, cell),
+              into: %{},
+              do:
+                {cell,
+                 if(Phase.liquid?(m) or Canonical.phase_material?(state, m),
+                   do: Canonical.liquid_capacity(state),
+                   else: 0
+                 )}
+
+        values =
+          for {cell, m} <- edits,
+              Canonical.phase_material?(state, m),
+              into: %{},
+              do:
+                {cell,
+                 Phase.quantize(
+                   {Phase.energy(
+                      %{material: m},
+                      1.0,
+                      state.properties.materials[m],
+                      Canonical.ambient_at(state, cell)
+                    ), Canonical.liquid_capacity(state)}
+                 )}
+
+        # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
+        thermal = VoxelRegion.World.Phases.authored(state.thermal, values)
+
+        case Edits.apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{
+               liquid_changes: changes,
+               phase_values: values
+             }) do
+          {:ok, next} -> {:reply, {:ok, next.seq}, next}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
     end
   end
 
   defp call({:author_regions, regions}, _, state) do
-    true = regions != [] and Enum.all?(regions, fn r ->
-      (r.holder == :reserved or match?({:character, cid} when is_integer(cid) and cid > 0, r.holder)) and
-        elem(r.min, 0) <= elem(r.max, 0) and elem(r.min, 1) <= elem(r.max, 1)
-    end)
-
     {delta, _} =
       regions
       |> Enum.with_index(1)

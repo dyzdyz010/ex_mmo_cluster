@@ -643,4 +643,21 @@ defmodule VoxelRegion.ProtectionWorldTest do
     assert map_size(square.index) == 16
     assert map_size(strip.index) == 3907
   end
+
+  test "非法 author_regions 参数返回显式错误且不崩塌 World 进程", c do
+    w = start(c, :invalid_author_regions)
+
+    assert {:error, :invalid_region} = World.author_regions(w, [])
+    assert Process.alive?(w)
+
+    assert {:error, :invalid_region} =
+             World.author_regions(w, [%{holder: :reserved, min: {5, 0}, max: {2, 0}}])
+
+    assert Process.alive?(w)
+
+    assert {:error, :invalid_region} =
+             World.author_regions(w, [%{holder: {:character, 0}, min: {0, 0}, max: {1, 1}}])
+
+    assert Process.alive?(w)
+  end
 end
