@@ -1,7 +1,7 @@
 defmodule VoxelRegion.World.MagicAdmission do
   @moduledoc """
-  全局系统功能（魔法 v2 切片 7）：分区魔法容量的唯一 owner——施放准入（每施法者上限、分区预算、NPC 配额、飞行名额）
-  与施法者在场集合。
+  全局系统功能（魔法 v2 切片 7）：分区魔法容量的唯一 owner——施放准入（每施法者上限、分区预算、NPC 配额、飞行名额）、
+  施法者在场集合、每拍触发预算与热节点休眠规则。`World.Structures` 只取读数并执行本模块的结论。
 
   决策稿 `docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md` §7、§10（75% 准入、分池对照）、§11.1 Q7-1/Q7-2；
   落地稿 `2026-11-19-glyph-v2-server-landing.md` D8；设计 TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`
@@ -55,11 +55,26 @@ defmodule VoxelRegion.World.MagicAdmission do
     登记的条目，所以跨 Scene 移交时新旧 Player 的推送先后不影响结果。在场集合是派生状态，不持久化：World 重启后由
     仍在会话中的 Player 在下次会话就绪时重新推送；在此之前拥挤准入按不在场处理（偏保守的显式失败，不放宽）。
 
+  ## 触发预算（设计 §5.4）
+
+  每分区每拍 `triggers_per_region_tick`（64）、每施法者每拍 `triggers_per_caster_tick`（8）个触发响应。超出的推迟：推迟项
+  `%{since, rule, outcome, contact}` 存在结构条目的 `deferred` 里（随 `thermal.structures` 持久化，同一规则至多一项），拍首
+  按（首次推迟拍号, id）预占预算，再按 id 升序步进时执行。本拍新触发按结构 id 升序、结构内按优先级取预算（与设计“同拍按
+  （优先级, id）”的差别见决策稿 §14 切片 7）。投射物提交点上〈遇〉触发的〈散〉是事件驱动的，不计入每拍预算。
+
+  ## 热节点休眠（设计 §5.3 第 11 步、§5.3.2）
+
+  已落地的热结构每拍末判“平静”（`calm?/4`）；连续 `sleep_after/0`（2）拍平静即休眠（Q7-W2 1 拍滞回），休眠中不作为热内核
+  外部节点（不参与换热，误差上界见设计 §5.3.2），也不计入醒着的热节点（准入权重少 2、不占 16 个上限）。每次组装内核节点时
+  按当前温度复核（`wakes?/3`），任一接触节点温差 ≥ 5 K 即在本次调用重新加入；拍末不平静即连续计数归零。
+
   ## 可观测面
 
   - 每次判定一行 `voxel_magic_admission cid controller decision reason usage_units budget reserve present own_units
     own_structures npc_units flights own_flights flight_slots awake_nodes candidate_units`（决策稿 §7.2）。
   - 在场变化一行 `voxel_magic_presence cid pid status present`。
+  - 每拍有触发或推迟时一行 `voxel_structure_triggers tick fired deferred oldest_deferred_tick region_left`；有休眠变化或休眠中的
+    结构时一行 `voxel_structure_sleep tick asleep woke slept`（`World.Structures`）。
   - `World.stats/1` 的 `magic_admission`（`observe/1`）：当前用量、预算、在场集合、NPC 合计、飞行与醒着的热节点数。
   """
   require Logger
@@ -67,6 +82,9 @@ defmodule VoxelRegion.World.MagicAdmission do
   alias VoxelRegion.Magic.Program.Group
 
   @controllers [:player, :npc]
+  # 热节点休眠的滞回（Q7-W2，按推荐暂行，**待设计确认**）：连续 2 拍满足平静条件才休眠，即比设计 §5.3.2 多等 1 拍。
+  # 对照 Box2D `b2_timeToSleep`、PhysX 唤醒计数器（决策稿 §10）：都要求持续低于阈值一段时间，避免边界附近逐拍来回切换。
+  @sleep_after 2
 
   @doc "施法快照的 `controller` 取值。"
   def controllers, do: @controllers
@@ -161,8 +179,8 @@ defmodule VoxelRegion.World.MagicAdmission do
   @doc "醒着的热节点（见 moduledoc）：带〈热〉、不在休眠。"
   def awake_thermal?(%{structure: s} = entry), do: s.c_th_j_per_k != nil and not asleep?(entry)
 
-  @doc "结构此刻是否休眠（切片 7-3 由 `World.Structures` 每拍写入；没有休眠状态的条目为醒着）。"
-  def asleep?(entry), do: Map.get(entry, :asleep, false)
+  @doc "结构此刻是否休眠：连续平静拍数（条目 `calm`，`World.Structures` 每拍写入）达到 `sleep_after/0`。"
+  def asleep?(entry), do: Map.get(entry, :calm, 0) >= @sleep_after
 
   defp weight(quotas, awake, rules),
     do:
@@ -288,6 +306,65 @@ defmodule VoxelRegion.World.MagicAdmission do
         "awake_nodes=#{usage.awake_nodes} candidate_units=#{c.units} candidate_thermal=#{c.thermal} candidate_flight=#{c.flight}"
     )
   end
+
+  # ---------------------------------------------------------------------------
+  # 触发预算（设计 §5.4、§5.6；决策稿 §7.1、§10 对照 Deficit Round Robin）
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  一拍的触发预算：分区 `triggers_per_region_tick`（64）、每施法者 `triggers_per_caster_tick`（8）。每执行一个触发的响应
+  消耗一份；超出的推迟到之后的拍、不丢弃。数值为原创、待实测（设计 C2-1）。
+  """
+  def trigger_budget(%Catalog{quotas: q}),
+    do: %{region: q.triggers_per_region_tick, per_caster: q.triggers_per_caster_tick, used: %{}}
+
+  @doc "为施法者 `caster` 取一份预算：`{:ok, 新预算}` 或 `:exhausted`（分区或本人已用完）。"
+  def take_trigger(%{region: region, per_caster: per, used: used} = budget, caster) do
+    mine = Map.get(used, caster, 0)
+    if region > 0 and mine < per, do: {:ok, %{budget | region: region - 1, used: Map.put(used, caster, mine + 1)}}, else: :exhausted
+  end
+
+  @doc "退回一份未执行的预算（预占的推迟项所属结构在本拍先行终止时）。"
+  def return_trigger(%{region: region, used: used} = budget, caster),
+    do: %{budget | region: region + 1, used: Map.update!(used, caster, &(&1 - 1))}
+
+  @doc """
+  拍首为推迟队列预占预算：全部推迟项按（首次推迟拍号, 结构 id）排序（设计 §5.4、§5.8：较早被推迟的先执行，相当于调度里的
+  aging，避免低 id 的老结构长期占满名额），依次取预算。`deferred` 为 `[{id, 施法者, 推迟项}]`。返回
+  `{id => 已预占的推迟项（按首次推迟拍号）, 预算}`；没取到的推迟项留在队列里。
+  """
+  def claim_deferred(deferred, budget) do
+    deferred
+    |> Enum.sort_by(fn {id, _caster, item} -> {item.since, id} end)
+    |> Enum.reduce({%{}, budget}, fn {id, caster, item}, {claimed, budget} ->
+      case take_trigger(budget, caster) do
+        {:ok, budget} -> {Map.update(claimed, id, [item], &(&1 ++ [item])), budget}
+        :exhausted -> {claimed, budget}
+      end
+    end)
+  end
+
+  # ---------------------------------------------------------------------------
+  # 热节点休眠（设计 §5.3 第 11 步、§5.3.2；Q7-W2）
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  本拍是否平静（设计 §5.3.2）：端口温度与所有接触节点的温差都 < `thermal_sleep_delta_k`（5 K），且本拍净热流的绝对值
+  < `thermal_sleep_power_w`（100 W）。没有接触节点时只看净热流。
+  """
+  def calm?(port_k, contact_k, net_heat_w, %Catalog{runtime: rt}),
+    do: abs(net_heat_w) < rt.thermal_sleep_power_w and not wakes?(port_k, contact_k, rt)
+
+  @doc "休眠中的结构是否被唤醒：任一接触节点与端口温差 ≥ 5 K（设计 §5.3.2 “每拍按当前温度复核，越过阈值即唤醒”）。"
+  def wakes?(port_k, contact_k, %Catalog{runtime: rt}), do: wakes?(port_k, contact_k, rt)
+  def wakes?(port_k, contact_k, rt), do: Enum.any?(contact_k, &(abs(&1 - port_k) >= rt.thermal_sleep_delta_k))
+
+  @doc "下一拍的连续平静拍数：平静则 +1（封顶 `sleep_after/0`），否则归零。"
+  def next_calm(previous, true), do: min(previous + 1, @sleep_after)
+  def next_calm(_previous, false), do: 0
+
+  @doc "休眠所需的连续平静拍数（Q7-W2：设计的 1 拍加 1 拍滞回）。"
+  def sleep_after, do: @sleep_after
 
   @doc "观察快照（`World.stats/1` 的 `magic_admission`）：用量、上限与在场集合；未加载魔法目录时为 nil。"
   def observe(%{magic: nil}), do: nil

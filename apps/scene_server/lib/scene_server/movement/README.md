@@ -338,6 +338,12 @@ World 尚未接纳前摇（`:preparing`）时仍按原取消路径由本进程�
 `interrupt_channel/1` 不判距离。受伤、驱散剂量与主动取消照样打断；其余施法（含同一程序但不是持物普攻）仍受移动打断。验证：`cast_action_test`（k 的步界、主动取消与剂量通知）、`beacon_travel_test`
 （真实 Player 的移动打断与伤口事件）、`cast_wait_lifecycle_test`（真实 World 的取消原因）。
 
+**施法者身份与在场（魔法 v2 切片 7，决策稿 Q7-1、Q7-2）**：施法快照（`actor_context/1`）带 `controller`——由 `Scene.join`
+映射的角色 kind 给出（0 → `:player`，1 → `:npc`；客户端不能自报），World 的分区准入据此区分玩家与 NPC 配额。玩家 Player
+（kind 0）在会话就绪（`ready`）与移交激活（`activate`）时调 `VoxelRegion.World.caster_presence(world, cid, :present)`，会话解除
+（身体解除 `begin_body_detach`）时推 `:absent`；NPC 不推送。World 监视推送进程、退出即移出，所以本进程不做重试或兜底。
+验证：`cast_wait_lifecycle_test` S7-1（真实 Player + 真实 World 经 `World.stats/1` 观察在场集合）。
+
 ## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）
 
 Global system：Player 在碰撞基线装好之前（非流送：Scene 发来的 `{:anchor, ...}`；流送：首个 `CollisionStream` 窗口）

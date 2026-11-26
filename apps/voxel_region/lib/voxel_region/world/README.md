@@ -44,7 +44,7 @@ sequenceDiagram
 | 提交与持久化 | `Log`、`Interactions`、`PageCut`、`PageWriter`、`CoarseRebuild` | 事务追加与回放；周期性切点把脏页写进 PostgreSQL；离线重建粗层 |
 | 页与缓存 | `Pages`、`Residency`、`Cache`、`Payloads`、`WindowSnapshot` | 页索引与脏单元、驻留与退休、有界 LRU 缓存、区域载荷物化、窗口快照 |
 | 读取 | `Canonical`、`Observation`、`Canopy` | 权威格读取与材料判定；订阅者视图与增量；树冠派生 |
-| 玩法意图 | `Tools`、`Production`、`Prefabs`、`Definitions`、`AttachmentOps`、`Casting`、`Beacons`、`Claims`、`Phases`、`Edits` | 工具、建造与合成、预制件、附件、施法、信标、领地认领、相态操作、逐格编辑批次 |
+| 玩法意图 | `Tools`、`Production`、`Prefabs`、`Definitions`、`AttachmentOps`、`Casting`、`MagicAdmission`、`Beacons`、`Claims`、`Phases`、`Edits` | 工具、建造与合成、预制件、附件、施法、魔法分区容量（准入、在场、触发预算、热节点休眠规则）、信标、领地认领、相态操作、逐格编辑批次 |
 | 运维与作者 | `Catalogs`、`Parcel`、`Gm` | 目录发布、地块导出与安装、只测试的 GM 施工 |
 | 模拟 | `Thermal`、`HeatCommit`、`Liquids`、`Structures`、`Projectiles`、`CircuitGraph`、`CircuitAdmission` | 热步与热提交的世界后果、液体流动、魔法结构的运行时（物理体、逐拍步进、记录与持久化）、飞行中结构的墙钟飞行驱动（地形求交、人物采样、接触结算）、电路图与新增连接的接纳 |
 | 迁移 | `SemblanceMigration` | 旧存档拟态的一次性散解（恢复时，魔法 v2 Q4-6；退出条件见模块头注） |
@@ -81,8 +81,8 @@ sequenceDiagram
 - 中断支出落在形成位置（〈握〉〈取〉手边格、〈附〉目标格），`release_heat_fraction` 一份作为有限热源、其余记
   `cast_interrupt_radiation_j`；格子不是未细分热节点时全部计入辐射账。成功施法的构型损耗仍记 `cast_waste_j`（脚下）。
 - 结构建成（切片 4c）：扣报价 `total_mj`，按形成锚与〈投〉求物理体，`Magic.Structure.new/4` 放进 `thermal.structures`；
-  施放记录 live 0 与结构记录 live 1 在同一笔事务。施法者名下已有 `quotas.structures_per_caster`（6）个结构时，前摇开始、
-  第 k 步检查与出手都回 `:structure_quota`（决策稿 Q4-5，其余准入在切片 7）。
+  施放记录 live 0 与结构记录 live 1 在同一笔事务。前摇开始、第 k 步检查与出手都经 `MagicAdmission.admit/3` 准入
+  （切片 7，见下节），拒绝 `:structure_quota`、`:flight_quota`、`:region_budget`，不扣能。
 - 可观测：`voxel_spell_quote`（phase=quote|prepare|checkpoint|release）、`voxel_cast_begin`、`voxel_spell`、
   `voxel_structure_built`、`voxel_cast_rejected`、`voxel_magic_program_rejected`；热账 `cast_interrupt_heat_j` /
   `cast_interrupt_radiation_j`、`structure_created_mj`。
@@ -118,6 +118,37 @@ flowchart LR
 - 可观测：`voxel_structure_tick`、`voxel_structure_end`、`voxel_thermal_throttle`、`voxel_structure_restored`、
   `voxel_structure_migrated`；`voxel_thermal_commit` 行尾追加上述科目与 `commit_tick`；观察快照的 `thermal_accounting`
   带同名科目与 `commit_tick`、`structures`、`structure_stored_mj`。
+
+## 分区容量：准入、在场、触发预算与热节点休眠（魔法 v2，切片 7）
+
+决策稿 [`2026-11-26-p1-closure-slices4-8.md`](../../../../../docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md) §7；设计 §5.4、
+§5.6、§5.3.2。`MagicAdmission` 是这些规则的唯一 owner，`Casting` 与 `Structures` 只调用它。用量每次从 `thermal.structures` 现算，
+不另存计数；单 World 阶段“每分区”即“每 World”（设计 §12.1 D12）。
+
+```mermaid
+flowchart LR
+  P[Scene Player<br/>会话就绪 / 解除] -->|caster_presence/3| PR[(magic_presence<br/>派生、World 监视推送者)]
+  C[Casting：前摇开始 / 第 k 步 / 出手] -->|admit/3| A{MagicAdmission}
+  PR --> A
+  S[(thermal.structures<br/>body.controller、calm、deferred)] -->|usage/1 现算| A
+  A -->|:ok / :structure_quota / :flight_quota / :region_budget| C
+  ST[Structures.tick/3] -->|claim_deferred / take_trigger| A
+  ST -->|calm?/4、next_calm/2| A
+  TH[Thermal 内核组装<br/>Structures.heat_nodes/1] -->|asleep? / wakes?| A
+```
+
+- 准入顺序与原因：每施法者结构（玩家 6、NPC 4）→ `:structure_quota`；每施法者飞行 3（Q7-5）→ `:flight_quota`；醒着的热节点
+  16（Q7-3）、分区飞行名额（16 + 在场人数，在场保底 1，其余先到先得 Q7-4）、分区预算（75% 线以下照常；以上按在场人数分份额；
+  在场者名下为空时用 32 单位预留保底；NPC 合计 ≤ 25%·B 且不享保底与预留；硬上限 B + 32）→ `:region_budget`。
+- 权重 = 1 + 2·醒着的热节点 + 0.5·规则 + 0.5·感知耦合（P1 为 0，Q7-6）；飞行中的热结构按醒着计。
+- 身份：施法快照的 `controller`（`:player | :npc`）由 Player 按 `Scene.join` 的角色 kind 给出，存进物理体。在场只由玩家
+  Player 推送；World 监视推送进程、退出即移出；不持久化，World 重启后由下次会话就绪重新推送。
+- 触发预算（每分区每拍 64、每施法者每拍 8）：拍首按（首次推迟拍号, id）为推迟队列预占，步进时先执行预占项，再为新触发
+  取预算；取不到的写进条目 `deferred`（同一规则至多一项，随持久化）。投射物提交点的〈遇〉触发不计入每拍预算。
+- 热节点休眠：落地热结构拍末判平静（与接触节点温差 < 5 K 且净热流 < 100 W），条目 `calm` 连续 2 拍即休眠（Q7-W2 1 拍
+  滞回）：不进热内核、线上 status `:asleep`、不计入醒着的热节点。每次组装内核节点按当前接触温度复核，温差 ≥ 5 K 即唤醒。
+- 可观测：`voxel_magic_admission`（每次判定：原因、用量、预算、在场、NPC 合计、飞行、醒着的热节点）、`voxel_magic_presence`、
+  `voxel_structure_triggers`、`voxel_structure_sleep`；`World.stats/1` 的 `magic_admission`。
 
 ## 飞行与〈遇〉（魔法 v2，切片 5、5b）
 

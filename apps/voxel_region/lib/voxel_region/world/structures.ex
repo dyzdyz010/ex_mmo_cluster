@@ -48,7 +48,14 @@ defmodule VoxelRegion.World.Structures do
     泄漏沉积阈值用接触格热容，没有接触格时为 0（每拍沉积，热半落不进格即计入辐射）。
   - 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3`（与处理顺序无关）。
   - 邻近终止释放剂量：按 id 升序，本拍已终止结构的释放作用于其后处理的结构。
-  - 规则触发不设触发预算（切片 7）。〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。
+  - 〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。
+
+  ## 触发预算与热节点休眠（切片 7，规则在 `World.MagicAdmission`）
+
+  - 每拍拍首按（首次推迟拍号, id）为推迟队列预占预算，步进时先执行本结构的预占项，再为新触发取预算，取不到的写进条目
+    `deferred`（随持久化）。投射物提交点上的〈遇〉触发不计入每拍预算。
+  - 已落地的热结构拍末判平静，条目 `calm` 记连续平静拍数，达到 2 拍即休眠：不进热内核（`heat_nodes/1` 按当前接触温度
+    复核唤醒）、线上 status 位 `:asleep`。
 
   ## 干预场与施法者处剂量（切片 6，决策稿 §6.1；设计 §5.3 第 0′ 步、§7.3）
 
@@ -455,15 +462,20 @@ defmodule VoxelRegion.World.Structures do
 
   def restore(state), do: state
 
-  defp from_record(id, %{structure: s, body: body, wire: wire} = record, magic, commit_tick)
-       when map_size(record) == 3 or (map_size(record) == 4 and is_map_key(record, :delivery)) do
+  # 条目的可选键：冻结交付（切片 5）、触发推迟队列与连续平静拍数（切片 7）。
+  @optional_keys [:delivery, :deferred, :calm]
+
+  defp from_record(id, %{structure: s, body: body, wire: wire} = record, magic, commit_tick) do
     delivery = Map.get(record, :delivery)
 
-    with {:ok, %Structure{id: ^id} = s} <- Structure.from_record(s, magic),
+    with true <- (Map.keys(record) -- [:structure, :body, :wire | @optional_keys]) == [] or {:error, :record},
+         {:ok, %Structure{id: ^id} = s} <- Structure.from_record(s, magic),
          true <- s.last_tick == commit_tick or delivery != nil or {:error, :tick_or_id},
          true <- body?(body) or {:error, :body},
          true <- wire?(wire) or {:error, :wire},
-         true <- delivery == nil or delivery?(delivery) or {:error, :delivery} do
+         true <- delivery == nil or delivery?(delivery) or {:error, :delivery},
+         true <- deferred?(Map.get(record, :deferred, []), s, commit_tick) or {:error, :deferred},
+         true <- Map.get(record, :calm, 0) in 0..MagicAdmission.sleep_after() or {:error, :calm} do
       {:ok, Map.put(record, :structure, s)}
     else
       {:ok, %Structure{}} -> {:error, :tick_or_id}
@@ -499,6 +511,19 @@ defmodule VoxelRegion.World.Structures do
 
   defp delivery?(_), do: false
 
+  defp deferred?(queue, s, commit_tick) when is_list(queue) do
+    Enum.all?(queue, fn
+      %{since: since, rule: rule, outcome: outcome, contact: contact} = item when map_size(item) == 4 ->
+        is_integer(since) and since <= commit_tick and is_integer(rule) and rule in 0..(length(s.rules) - 1)//1 and
+          outcome in [:met, :unmet, :undecidable] and is_boolean(contact)
+
+      _ ->
+        false
+    end) and length(Enum.uniq_by(queue, & &1.rule)) == length(queue)
+  end
+
+  defp deferred?(_, _, _), do: false
+
   defp vector?({x, y, z}), do: is_number(x) and is_number(y) and is_number(z)
   defp vector?(_), do: false
 
@@ -515,13 +540,27 @@ defmodule VoxelRegion.World.Structures do
   @doc """
   本次热提交作为内核外部节点的结构（按 id 升序）：带〈热〉（C_th 非空）且已落地。飞行中的结构不进热内核
   （设计 §5.3 C1-15 跳过第 0、2、11 步），已冻结人物命中交付的结构也不进（冻结期间不换热，沿 v1 合同）。
+  休眠中的结构不进（设计 §5.3.2、切片 7），除非此刻任一接触节点与端口温差已 ≥ 5 K（`MagicAdmission.wakes?/3`）：
+  每次组装都按当前温度复核，被唤醒的结构在本次调用就重新参与换热。
   """
   def heat_nodes(state) do
     all(state)
     |> Enum.filter(fn {_, %{structure: s, body: body} = e} ->
-      s.c_th_j_per_k != nil and body.flight == nil and not Map.has_key?(e, :delivery)
+      s.c_th_j_per_k != nil and body.flight == nil and not Map.has_key?(e, :delivery) and
+        (not MagicAdmission.asleep?(e) or
+           MagicAdmission.wakes?(elem(port(s, 0.0, state.magic), 0), contact_temperatures(state, body), state.magic))
     end)
     |> Enum.sort()
+  end
+
+  # 休眠判定用的接触节点温度：物理体候选宏格里与其包围盒接触、且是未细分热节点的实占用格（与热内核接触边同一候选集；
+  # 细分格不计，近似）。温度取属性记录（提交末已写回原生热域）。
+  defp contact_temperatures(state, body) do
+    for {x, y, z} <- Semblance.span(body),
+        Semblance.contact(body, {{x * 1.0, y * 1.0, z * 1.0}, {x + 1.0, y + 1.0, z + 1.0}}) != nil,
+        {target, _} = target_at({x * 8 + 4, y * 8 + 4, z * 8 + 4}, state),
+        match?(%{granularity: 0}, target) and heat_node?(state, target),
+        do: temperature(state, target)
   end
 
   @doc """
@@ -562,8 +601,12 @@ defmodule VoxelRegion.World.Structures do
       emitters = emitters(ordered, neighbors, tick, catalog)
       fields = fields(emitters, ordered, neighbors, tick, catalog)
       state = windup_doses(state, emitters, tick, catalog)
+      # 触发预算（设计 §5.4，规则在 `MagicAdmission`）：拍首先按（首次推迟拍号, id）为推迟队列预占，余下的给本拍新触发。
+      queued = for {id, e} <- ordered, item <- Map.get(e, :deferred, []), do: {id, e.body.caster, item}
+      {claimed, budget} = MagicAdmission.claim_deferred(queued, MagicAdmission.trigger_budget(catalog))
 
-      acc = %{state: state, ended: [], records: %{}, states: %{}, step_us: [], rounding: 0.0}
+      acc = %{state: state, ended: [], records: %{}, states: %{}, step_us: [], rounding: 0.0, budget: budget,
+        claimed: claimed, fired: 0, sleep: %{asleep: 0, woke: 0, slept: 0}}
 
       acc =
         Enum.reduce(ordered, acc, fn {id, entry}, acc ->
@@ -574,6 +617,8 @@ defmodule VoxelRegion.World.Structures do
 
       state = acc.state
       ended = length(acc.ended)
+      log_triggers(state, tick, acc)
+      log_sleep(tick, acc.sleep)
 
       Logger.info(
         "voxel_structure_tick tick=#{tick} structures=#{map_size(structures)} awake_nodes=#{map_size(heat)} " <>
@@ -589,6 +634,22 @@ defmodule VoxelRegion.World.Structures do
       {state, extra}
     end
   end
+
+  defp log_triggers(state, tick, acc) do
+    since = for {_, e} <- all(state), item <- Map.get(e, :deferred, []), do: item.since
+
+    if acc.fired > 0 or since != [],
+      do:
+        Logger.info(
+          "voxel_structure_triggers tick=#{tick} fired=#{acc.fired} deferred=#{length(since)} " <>
+            "oldest_deferred_tick=#{Enum.min(since, fn -> 0 end)} region_left=#{acc.budget.region}"
+        )
+  end
+
+  defp log_sleep(_tick, %{asleep: 0, woke: 0, slept: 0}), do: :ok
+
+  defp log_sleep(tick, sleep),
+    do: Logger.info("voxel_structure_sleep tick=#{tick} asleep=#{sleep.asleep} woke=#{sleep.woke} slept=#{sleep.slept}")
 
   defp step_one(acc, id, entry, tick, heat_j, neighbors, fields, catalog) do
     %{structure: s, body: body} = entry
@@ -609,17 +670,22 @@ defmodule VoxelRegion.World.Structures do
 
     {stepped, out} = Structure.step(s, inputs, tick, catalog)
 
-    # 第 12 步之后：P1 的响应只有〈散〉，触发预算属切片 7，按优先级执行第一个带〈散〉的触发。读〈遇〉的规则触发记 live 2
-    # （投射物命中时读数丢失、接触保持待决，在之后的热拍触发），其余记 live 6（设计方答复 Q4-W3）。
-    {final, responded, contact?} =
-      case release_trigger(out.triggered) do
-        {release, contact?} when stepped.status == :running ->
-          {ended, response_out} = Structure.respond(stepped, release, catalog)
-          {ended, response_out, contact?}
+    # 第 12 步之后（设计 §5.4）：先执行本结构已预占预算的推迟项（按首次推迟拍号），再按优先级为本拍新触发取预算；
+    # 取不到的推迟（同一规则至多一项）。P1 的响应只有〈散〉，执行第一个即终止。读〈遇〉的规则触发记 live 2（投射物命中时
+    # 读数丢失、接触保持待决，在之后的热拍触发），其余记 live 6（设计方答复 Q4-W3）。
+    claimed = Map.get(acc.claimed, id, [])
+    queue = Map.get(entry, :deferred, []) -- claimed
 
-        _ ->
-          {stepped, nil, false}
+    {final, responded, contact?, budget, queue, fired} =
+      if stepped.status == :running do
+        candidates = Enum.map(claimed, &{:paid, &1}) ++ Enum.map(out.triggered, &{:new, &1})
+        run_triggers(stepped, candidates, acc.budget, queue, body.caster, tick, catalog, 0)
+      else
+        # 本拍先行终止（衰竭等）：预占的预算退回给其后的结构，推迟队列随结构消失。
+        {stepped, nil, false, Enum.reduce(claimed, acc.budget, fn _, b -> MagicAdmission.return_trigger(b, body.caster) end), [], 0}
       end
+
+    acc = %{acc | budget: budget, fired: acc.fired + fired}
 
     requests = out.requests ++ if(responded, do: responded.requests, else: [])
     {state, deposit} = execute(state, site, requests)
@@ -630,6 +696,23 @@ defmodule VoxelRegion.World.Structures do
 
     case final.status do
       :running ->
+        # 第 11 步热节点休眠（设计 §5.3.2、Q7-W2，规则在 `MagicAdmission`）：已落地的热结构拍末判平静，连续计数达到
+        # `sleep_after/0` 即休眠（下一拍起不进热内核、线上 status 位 5）。飞行中与无〈热〉的结构不判，计数为 0。
+        was_asleep = MagicAdmission.asleep?(entry)
+
+        calm =
+          if s.c_th_j_per_k != nil and body.flight == nil do
+            port_k = elem(port(final, 0.0, catalog), 0)
+            net_w = heat_j / (Structure.tick_ms() / 1000)
+            calm? = MagicAdmission.calm?(port_k, contact_temperatures(state, body), net_w, catalog)
+            MagicAdmission.next_calm(Map.get(entry, :calm, 0), calm?)
+          else
+            0
+          end
+
+        asleep = calm >= MagicAdmission.sleep_after()
+        wire = with_sleep(wire, asleep)
+        acc = %{acc | sleep: sleep_counts(acc.sleep, was_asleep, asleep)}
         changed = bins(wire) != bins(entry.wire)
         states = if changed, do: Map.put(acc.states, id, record(body, wire, 1)), else: acc.states
 
@@ -641,7 +724,8 @@ defmodule VoxelRegion.World.Structures do
                 "env=#{out.metrics.env} coherence=#{out.metrics.coherence} status=#{inspect(wire.status)} temperature_k=#{site.temperature_k}"
             )
 
-        state = put_entry(state, id, %{entry | structure: final, wire: wire})
+        entry = %{entry | structure: final, wire: wire} |> optional(:deferred, queue, []) |> optional(:calm, calm, 0)
+        state = put_entry(state, id, entry)
         %{acc | state: state, states: states, rounding: acc.rounding + rounding}
 
       {:terminated, type} ->
@@ -875,6 +959,37 @@ defmodule VoxelRegion.World.Structures do
   end
 
   # 第一个带〈散〉的触发：{响应符号, 该规则是否读〈遇〉}，没有时为 nil。
+  # 触发执行（设计 §5.4）：`candidates` 为 `[{:paid | :new, 触发或推迟项}]`，已预占的在前。新触发向预算取一份，取不到就推迟
+  # （`%{since, rule, outcome, contact}`，同一规则在队列里至多一项）。执行第一个带〈散〉的响应即终止，其余已预占的退回预算。
+  # 返回 {结构, respond 输出 | nil, 是否接触触发, 预算, 推迟队列, 本结构执行的触发数}。
+  defp run_triggers(s, [], budget, queue, _caster, _tick, _catalog, fired), do: {s, nil, false, budget, queue, fired}
+
+  defp run_triggers(s, [{kind, item} | rest], budget, queue, caster, tick, catalog, fired) do
+    paid = if kind == :paid, do: {:ok, budget}, else: MagicAdmission.take_trigger(budget, caster)
+
+    case paid do
+      {:ok, budget} ->
+        case Enum.find(Structure.trigger_responses(s, item.rule, item.outcome), &(&1.id == "resp.release")) do
+          nil ->
+            run_triggers(s, rest, budget, queue, caster, tick, catalog, fired + 1)
+
+          release ->
+            {ended, response_out} = Structure.respond(s, release, catalog)
+            budget = Enum.reduce(rest, budget, fn {k, _}, b -> if k == :paid, do: MagicAdmission.return_trigger(b, caster), else: b end)
+            {ended, response_out, item.contact, budget, [], fired + 1}
+        end
+
+      :exhausted ->
+        queue =
+          if Enum.any?(queue, &(&1.rule == item.rule)),
+            do: queue,
+            else: queue ++ [%{since: tick, rule: item.rule, outcome: item.outcome, contact: item.contact}]
+
+        run_triggers(s, rest, budget, queue, caster, tick, catalog, fired)
+    end
+  end
+
+  # 投射物提交点（〈遇〉命中）：按优先级取第一个带〈散〉的触发。事件驱动、不计入每拍触发预算。
   defp release_trigger(triggered) do
     Enum.find_value(triggered, fn trigger ->
       case Enum.find(trigger.responses, &(&1.id == "resp.release")) do
@@ -883,6 +998,22 @@ defmodule VoxelRegion.World.Structures do
       end
     end)
   end
+
+  defp with_sleep(wire, true), do: %{wire | status: Enum.uniq(wire.status ++ [:asleep])}
+  defp with_sleep(wire, false), do: %{wire | status: wire.status -- [:asleep]}
+
+  defp sleep_counts(c, was, now) do
+    %{
+      c
+      | asleep: c.asleep + if(now, do: 1, else: 0),
+        woke: c.woke + if(was and not now, do: 1, else: 0),
+        slept: c.slept + if(now and not was, do: 1, else: 0)
+    }
+  end
+
+  # 条目的可选键只在非缺省值时出现：无推迟、无平静计数的结构条目与切片 4–6 的形状相同。
+  defp optional(entry, key, default, default), do: Map.delete(entry, key)
+  defp optional(entry, key, value, _default), do: Map.put(entry, key, value)
 
   # 飞行在此刻结束（就地终止）：飞行终点取已推进到的飞行时长与位置；返回 {物理体, 是否原在飞行}。
   defp settle_flight(%{flight: %{age_s: age}} = body),

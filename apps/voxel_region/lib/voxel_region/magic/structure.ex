@@ -166,6 +166,7 @@ defmodule VoxelRegion.Magic.Structure do
   是否读〈遇〉：World 据此区分〈散〉的线上事件（读〈遇〉的规则触发 → live 2，其余 → live 6，设计方答复 Q4-W3）。
   """
   @type trigger :: %{
+          rule: non_neg_integer(),
           priority: non_neg_integer(),
           outcome: :met | :unmet | :undecidable,
           responses: [Glyph.t()],
@@ -1041,7 +1042,9 @@ defmodule VoxelRegion.Magic.Structure do
     lost = reading_lost?(s, tick, rt)
 
     {rules, triggered} =
-      Enum.map_reduce(s.rules, [], fn rule, acc ->
+      s.rules
+      |> Enum.with_index()
+      |> Enum.map_reduce([], fn {rule, index}, acc ->
         observed = Enum.map(rule.readings, &observe(&1, s, contact, tick, rt))
         pending = %{rule | readings: Enum.map(observed, & &1.pending)}
 
@@ -1063,6 +1066,7 @@ defmodule VoxelRegion.Magic.Structure do
               {%{rule | fired_tick: tick},
                [
                  %{
+                   rule: index,
                    priority: rule.priority,
                    outcome: outcome,
                    responses: responses,
@@ -1078,6 +1082,13 @@ defmodule VoxelRegion.Magic.Structure do
   end
 
   defp consumed(rule, observed), do: %{rule | readings: Enum.map(observed, & &1.consumed)}
+
+  @doc """
+  第 `index` 条规则在结果 `outcome` 下要执行的响应（与 `evaluate_rules/4` 触发项的 `responses` 同一规则）。World 的触发
+  预算把超额的触发推迟到之后的拍（设计 §5.4），推迟项只记规则下标与结果，执行时由这里取回响应，不另存字形。
+  """
+  @spec trigger_responses(t(), non_neg_integer(), :met | :unmet | :undecidable) :: [Glyph.t()]
+  def trigger_responses(%__MODULE__{rules: rules}, index, outcome), do: responses(Enum.at(rules, index), outcome)
 
   defp responses(rule, :met), do: rule.responses
   defp responses(%{backup: outcome, backup_response: response}, outcome), do: [response]
