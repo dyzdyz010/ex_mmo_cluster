@@ -1,6 +1,6 @@
 # 符号组合魔法 v2：P1 收口（分支切片 4–8）实施决策稿
 
-> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 设计方问题由用户代答（待答）；切片 4 未开工。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
+> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 中 Q4-2、Q4-W3 已由用户代答（按推荐），其余待答；切片 4 进行中。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
 > 上游（均已批准）：[`2026-11-19-slice3-protocol.md`](2026-11-19-slice3-protocol.md)（下称“切片 3 稿”，§2.2 切片划分、P1–P14、§14 日志）、
 > [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md)（下称“落地稿”，D1–D9）、[`2026-11-19-catalog-v5-schema.md`](2026-11-19-catalog-v5-schema.md)、[`cast-phases-2026-10-05.md`](cast-phases-2026-10-05.md)。
 > 设计：TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.11（下称“设计”），只引节号不复述。
@@ -528,3 +528,7 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
     - gate_server 排除的 68 项都是 `@moduletag :quic_transport` 的 `T1TransportTest`。它会起真实 QUIC 监听，按本机 UDP 约束没有跑。
     - scene_server 首轮有 3 项失败，都在 `P0BodyLifecycleTest`，原因是 `:stale_owner`：该测试的 cid 取 `System.unique_integer + 500_000`，每次运行都会重复，而本地测试库保留了上一轮写下的 `character_bodies` 行（owner_epoch 2/3）。单跑该文件 5/5 通过。删掉这 6 行测试残留后全量通过。CI 每次用新库，不受影响。
     - `mix format --check-formatted` 通过；mmo_contracts、gate_server、npc_server、world_server、auth_server、data_service 的 `mix compile --force --warnings-as-errors --no-optional-deps` 全部通过。
+- 2026-11-26：用户以设计方身份回答 Q4-2 和 Q4-W3，都按推荐：
+  - Q4-2：v2 里"无质量"和"不受重力"是同一个事实（Q17(a)：有没有质量决定受不受重力）。Hello 45 的 `no_gravity` 是 v1 为了给有质量的光弹关掉重力而加的特例，v2 不再需要。所以只留一位，含义定为"无质量"，放在 flags 第 1 位；状态字节不再重复放这一位。客户端在"飞行中且有质量"时按弹道插值。
+  - Q4-W3：〈遇〉→〈散〉（碰撞触发）一律发 live 2，沿用客户端现有的命中表现；live 6 只用于非接触读数触发的〈散〉（〈满〉、〈时〉等）。
+  - 其余 §11.2 问题等用到时再答。切片 4 开工，拆成 4a（对外字节与 golden）、4b（热内核限流）、4c（World 接线、步进、持久化、迁移）。
