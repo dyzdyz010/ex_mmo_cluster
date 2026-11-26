@@ -20,7 +20,7 @@ defmodule SceneServer.Body do
   另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
   另存两个复活 debuff 的剩余秒数 `weak_s`（虚弱）、`daze_s`（恍惚），`Repair.tick/4` 按时间递减。
-  身体不跨登录（已知缺口，同 §10.7）；死亡后由 Player 换成 `revive/0` 的统一复活状态（身体闭环 H2）。
+  完整身体、待吸收热与分世界食物游标由 `SceneServer.Movement.Player` 经 `SceneServer.Body.Snapshot` / `DataService.BodyStore` 跨登录持久化（离线冻结，重登继续）；死亡后由 Player 换成 `revive/0` 的统一复活状态（身体闭环 H2）。
 
   状态推进由 `SceneServer.Body.Repair.tick/4`（修复 → `SceneServer.Body.Thermo.step/3`）完成；本模块只放数据、参数与推导。
 
