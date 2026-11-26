@@ -233,7 +233,9 @@ defmodule NpcServer.Actions do
   法术带 `%{名字 => IR v2 字节}`（0x82 v2 的程序字段；注册表里以小写十六进制登记，`NpcServer.Spells.decode!/1` 解码；
   D-10：LLM 只选名字）：schema 只列名字，译码时由名字取出程序字节。目标句柄只取 0x82 能表达的 granularity 0..2
   （附件 g3 与人物 g5 都不行）。结算语义（设计 v2.11 §5.5、§11.4.6）：能量或施法分辨率不足时建构在第 k 步中断，
-  扣第 1..k 步的累计支出；World 的回复只带中断原因（`interrupted_energy` / `interrupted_omega`），k 在施放记录里。
+  扣第 1..k 步的累计支出；World 的回复带中断原因（`interrupted_energy` / `interrupted_omega`）与 `fail_step`（= k，魔法 v2
+  切片 6）。前摇中取消或被打断（移动、伤口、干预剂量）：第一笔注能前免费（原施法以打断原因被拒），之后同样按进行中的第 k 步
+  结账（outcome 为 `interrupted_cancelled` / `interrupted_moved` / `interrupted_wounded` / `interrupted_disrupted`）。
   """
   def spells(profile) do
     case Map.get(profile, :spells, %{}) do
@@ -252,7 +254,9 @@ defmodule NpcServer.Actions do
                 "落在形成处（同样是已提交事务）。进入场景时报价就被拒的法术回 spell_rejected。",
             done:
               "前摇结束且 World 已结算（data.seq）：data.outcome 为 null 是正常施放，interrupted_energy（能量不足）/ " <>
-                "interrupted_omega（施法分辨率不足）是建构在第 k 步中断；data.caster 是结算后的施法者状态" <>
+                "interrupted_omega（施法分辨率不足）是建构在第 k 步中断，interrupted_cancelled / interrupted_moved / " <>
+                "interrupted_wounded / interrupted_disrupted 是前摇进行到第 k 步时被取消或打断（移动、受伤、驱散），" <>
+                "同样扣第 1..k 步；data.fail_step 是 k（正常施放为 0）；data.caster 是结算后的施法者状态" <>
                 "（energy_j 能量、capacity_j 容量、resolution_eff 施法分辨率、spent_j 本次支出），同 self.caster。",
             params: [spell: {:enum, spells}, target: handle([0, 1, 2])],
             build: fn %{spell: program, target: target}, _ ->
@@ -262,8 +266,12 @@ defmodule NpcServer.Actions do
           %{
             name: "cancel_cast",
             group: :magic,
-            description: "取消自己正在前摇的施法，不扣能量。没有在前摇的施法时回 no_active_cast。",
-            done: "角色 owner 已撤销前摇（data 为空）；原 cast_spell 随后以 cast_cancelled 被拒。",
+            description:
+              "取消自己正在前摇的施法：第一笔注能前取消不扣能量，之后按进行中的第 k 步结账（扣第 1..k 步）。" <>
+                "没有在前摇的施法时回 no_active_cast。",
+            done:
+              "角色 owner 已撤销前摇（data 为空）；原 cast_spell 随后以 interrupted_cancelled 结束" <>
+                "（第一笔注能前为拒绝、不扣能量；之后为结算，data.fail_step = k）。",
             params: [],
             build: fn _, _ -> %{verb: :cancel_cast} end
           }

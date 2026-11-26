@@ -491,4 +491,33 @@ defmodule GateServer.VoximSpellDispatchTest do
                IO.iodata_to_binary(frame)
     end
   end
+
+  # G6-1（魔法 v2 切片 6，决策稿 §3.4、Q6-4）：四条前摇打断原因。进行到第 k ≥ 1 步的打断是已提交事务（扣第 1..k 步），
+  # 0x68 accepted、result_ref = seq、原因串为 outcome 文本；第一笔注能前（k = 0）免费，0x68 rejected、原因串为 inspect 形式。
+  # 准入原因 :structure_quota（切片 4c）同 rejected 形式；:flight_quota / :region_budget 属切片 7。
+  test "G6-1 前摇打断的 0x68 原因串：k ≥ 1 accepted \"interrupted_*\"，k = 0 rejected \":interrupted_*\"" do
+    alias GateServer.Session.QuicConnection
+    {:ok, conn} = QuicConnection.init(conn: :test, listener: self(), hello: nil)
+    request = %{request_id: 7, client_intent_seq: 8, logical_scene_id: 1, action: 1}
+    caster = %{seq: 9, energy_j: 1.0, capacity_j: 5.0e6, resolution_eff: 16.0, quote_j: 0.0, quote_s: 0.0, spent_j: 870.689,
+      quote_windup_s: 0.0, x0: 0.0, x_star: 0.0, e_min_j: 0.0, p_maint_w: 0.0, life_s: 0.0, detect_w: 0.0, fail_step: 0,
+      rejects: [], entries_charge: 0, entries_spoof: 0, first_tick_min_j: 0.0}
+
+    for reason <- [:interrupted_cancelled, :interrupted_moved, :interrupted_disrupted, :interrupted_wounded] do
+      text = Atom.to_string(reason)
+      size = byte_size(text)
+      reply = %{seq: 9, outcome: reason, fail_step: 2, caster: caster}
+      assert {:noreply, sent} = QuicConnection.handle_info({:mmo_spell_reply, conn.edit_ref, request, reply}, conn)
+      assert [{<<0x83, _::binary>>, _, _}, {receipt, _, _}] = :queue.to_list(sent.reliable[2])
+      assert <<0x68, 7::64, 8::32, 1::64, 0, 9::64, 0::16, ^size::16, ^text::binary>> = receipt
+
+      {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, reason) |> Codec.encode()
+      text = ":" <> text
+      size = byte_size(text)
+      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> = IO.iodata_to_binary(frame)
+    end
+
+    {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, :structure_quota) |> Codec.encode()
+    assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, 16::16, ":structure_quota">> = IO.iodata_to_binary(frame)
+  end
 end

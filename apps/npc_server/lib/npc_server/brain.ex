@@ -167,13 +167,15 @@ defmodule NpcServer.Brain do
   生产材料给出，与 World 进食 / 合成门一致：非 nil 时 `eat` / `craft` 不会因 `not_edible` / `unknown_recipe` 被拒，
   余额不足照常回 `insufficient_material`）；`:tools` 是
   `%{tools: [%{tool_id:, action:, range_m:, interval_s:}]}`。
-  `cast_spell` 的 `:done` = 前摇结束（或在预判的第 k 步）且 World 已结算，`data` 是 World 回复原样 `%{seq:, outcome:, caster:}`：
-  `outcome` 为 nil 是正常施放，`:interrupted_energy` / `:interrupted_omega` 是建构在第 k 步中断（扣第 1..k 步累计支出，
-  同样是已提交事务；k 只在施放记录里，回复不带）；`caster` 是结算后的 0x83 v2 状态
+  `cast_spell` 的 `:done` = 前摇结束（或在预判的第 k 步、或前摇进行到第 k 步时被取消 / 打断）且 World 已结算，`data` 是
+  World 回复原样 `%{seq:, outcome:, fail_step:, caster:}`：`outcome` 为 nil 是正常施放（`fail_step` 0），
+  `:interrupted_energy` / `:interrupted_omega` 是建构在第 k 步中断，`:interrupted_cancelled` / `:interrupted_moved` /
+  `:interrupted_wounded` / `:interrupted_disrupted` 是前摇进行到第 k 步时被取消或打断（魔法 v2 切片 6）；都扣第 1..k 步累计支出、
+  同样是已提交事务，`fail_step` = k；`caster` 是结算后的 0x83 v2 状态
   `%{seq:, energy_j:, capacity_j:, resolution_eff:, quote_j:, quote_s:, spent_j:, quote_windup_s:, …}`（报价扩展段为零）。
   拒绝原样来自权威（`cast_too_soon`、`dead`、`no_target`、`{:rejects, [检查名]}`、`structure_quota`、
-  `stale_target`…）；进入场景时报价就被拒的法术由 Body 就地回 `{:spell_rejected, 原因}`（`NpcServer.Spells`）；前摇中被 `cancel_cast` 或 `Player.stop/1` 撤销回
-  `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
+  `stale_target`…）；进入场景时报价就被拒的法术由 Body 就地回 `{:spell_rejected, 原因}`（`NpcServer.Spells`）；前摇中第一笔注能前被 `cancel_cast`
+  取消回 `interrupted_cancelled`（不扣能），被 `Player.stop/1` 撤销回 `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
   `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回
   `already_released`（原样来自 Player）。
   `find_route` 的 `:done` data 是 `NpcServer.Route` moduledoc 的回答形状（`routes` 每条带依次调用的原子 `calls`、代价与终点，

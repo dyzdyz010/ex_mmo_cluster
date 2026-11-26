@@ -317,7 +317,8 @@ defmodule NpcServer.NpcCastWorldTest do
     cast(body, :again, handle)
     assert %{status: :rejected, reason: :cast_too_soon} = outcome(:again)
 
-    assert %{status: :done, data: %{seq: seq, outcome: nil, caster: caster}} = outcome(:cast)
+    # 结算回复带 fail_step（魔法 v2 切片 6，决策稿 §3.4 / R2）：建成为 0。
+    assert %{status: :done, data: %{seq: seq, outcome: nil, fail_step: 0, caster: caster}} = outcome(:cast)
     assert System.monotonic_time(:millisecond) - started >= @windup_ms
     assert is_integer(seq) and caster.seq == seq
     assert caster.capacity_j == 5.0e6 and caster.resolution_eff == 16.0 and caster.quote_s == 1.0
@@ -334,7 +335,19 @@ defmodule NpcServer.NpcCastWorldTest do
     assert stored_j(world) == 9.0e6
   end
 
-  test "T4.2 取消：前摇中 cancel_cast 完成，原施法以 cast_cancelled 结束且不再结算；没有前摇时 no_active_cast",
+  # 魔法 v2 切片 6（决策稿 §3.4、§11.1 R2）：NPC 的 Outcome 原样带 World 结算回复，所以拿得到中断步 k。新 NPC 余额 0，灯在
+  # 第 1 步〈握〉（累计 286.787 J）余额不足：World 预判第 1 步中断，Player 到 t_1 检查，World 结算 interrupted_energy、fail_step 1。
+  test "结构法术在第 k 步中断：NPC Outcome 的 data 带 fail_step（k = 1），扣到余额为止（0）",
+       %{world: world, body: body} do
+    handle = probe(body)
+    cast(body, :lamp, handle, "lamp")
+    assert %{status: :done, data: %{outcome: :interrupted_energy, fail_step: 1, caster: caster}} = outcome(:lamp)
+    assert caster.spent_j == 0.0
+    assert {:ok, %{energy_j: +0.0}} = World.caster_state(world, @npc)
+  end
+
+  # 魔法 v2 切片 6（决策稿 Q6-4）：主动取消的原因是 interrupted_cancelled；取消紧跟施放、在第一笔注能前，免费（k = 0）。
+  test "T4.2 取消：前摇中 cancel_cast 完成，原施法以 interrupted_cancelled 结束且不再结算；没有前摇时 no_active_cast",
        %{world: world, body: body} do
     handle = probe(body)
     cast(body, :cast, handle)
@@ -342,7 +355,7 @@ defmodule NpcServer.NpcCastWorldTest do
 
     assert %{status: :done, data: data} = outcome(:cancel)
     assert data == %{}
-    assert %{status: :rejected, reason: :cast_cancelled} = outcome(:cast)
+    assert %{status: :rejected, reason: :interrupted_cancelled} = outcome(:cast)
 
     # 等过整段前摇：World 不在取消后结算。结算时 World 先发给 caster_recipient 的施法者状态会经 Observation 的
     # self.caster 出现（初值 nil，会话一直在；进入场景的报价校验不经 Body，不改它），它不出现才说明没有结算。

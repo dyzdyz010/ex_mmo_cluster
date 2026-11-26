@@ -127,7 +127,8 @@ flowchart LR
   技能 `design_house` 的发布不经 Intent（见下条“技能”）；创世编辑 `genesis_edit` 也不经 Intent，直接写 World（见“创世”）。
 - **施法**：`cast_spell` / `cancel_cast` 与玩家同一个角色 owner 入口：执行进程读 `World.magic_digest/1` 填入 0x82 请求后调
   `Player.cast_spell/5`（不经 Intent、不等前摇），回复目标 `{Body, {:npc_cast, id}}`；取消以同一 client_intent_seq 同步调
-  `Player.spell/4` action 2，cancel 自己 `done`（data `%{}`），原施法由 World 回 `cast_cancelled`；没有待施法回
+  `Player.spell/4` action 2，cancel 自己 `done`（data `%{}`），原施法由 World 回 `interrupted_cancelled`（第一笔注能前为拒绝、不扣能；进行到第 k 步后
+  为结算，扣第 1..k 步，魔法 v2 切片 6）；没有待施法回
   `no_active_cast`。施法只登记在在途世界事务表（id → `:cast_spell`），`{{:npc_cast, id}, 结果}` 是唯一的 Outcome 来源
   （结算 done、立即拒绝、取消、World 侧会话结束 `invalid_session`）；`{:mmo_spell_reply, …}` 只更新 Observation 的
   `self.caster`。取消用的请求按 id 记在 `casts`，`cancel_cast` 取最早提交、还没有终态的那次（执行进程按提交顺序投递，
@@ -139,8 +140,9 @@ flowchart LR
   法术来自作者给的 `profile.spells`（`%{名字 => IR v2 字节}`，0x82 v2 的程序字段；注册表行里写小写十六进制，与目录 v5
   `presets[].program_hex` 同形，登记时由 `NpcServer.Spells.decode!/1` 解码，非法十六进制登记被拒；LLM 只选名字），`:magic` 组
   条目只在它非空时投影；目标句柄同 use_tool，但只有 0x82 能表达的 g0..g2。只在流送 Scene 可用（非流送 Scene 的 Player 没有
-  `authority_ref`）。结算回复的 `outcome`：nil 建成，`interrupted_energy` / `interrupted_omega` = 建构在第 k 步中断（扣第 1..k 步
-  累计支出；k 只在施放记录里）。新 NPC 能量 0：结构类法术在第 1 步中断（spent 0）；〈取〉的构型损耗从取得的能量里付，所以
+  `authority_ref`）。结算回复的 `outcome`：nil 建成，`interrupted_energy` / `interrupted_omega` = 建构在第 k 步中断，`interrupted_cancelled` /
+  `_moved` / `_wounded` / `_disrupted` = 前摇进行到第 k 步被取消或打断（扣第 1..k 步累计支出）；回复带 `fail_step` = k
+  （切片 6 起，NPC Outcome 的 data 原样带出；建成为 0）。新 NPC 能量 0：结构类法术在第 1 步中断（spent 0）；〈取〉的构型损耗从取得的能量里付，所以
   法术带里先放取能程序（目录预设 `draw_1mj` / `draw_2mj`）。
   **进入场景时的报价校验**（魔法 v2 切片 3 P10，`NpcServer.Spells`）：收到 InputStart（Player 已 ready）时起一个链接 Body 的
   进程，经 `Player.spell/5` 对每道法术发一次 0x82 action 0（竖直向上、不瞄准目标，`WorldRequest.quote/2`）；World 目录 digest
