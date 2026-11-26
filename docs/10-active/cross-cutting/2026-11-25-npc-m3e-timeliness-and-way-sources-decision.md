@@ -32,15 +32,15 @@
 | 起草稿之后 | 「都照建议」：两份起草稿的 8 个待定细节全照建议（见下“已定 ①–⑧”） |
 | 决策稿之后 | 「都照建议」：合成时新发现的 3 题全照建议（见下“已定 ⑨–⑪”） |
 
-Q1–Q7（综合稿 §七 的建议，用户已定）：Q1 Jev 在计划队头选“先停下想”后，等待期间沿用现有判停；Q2 每条计划只能从队头请一次思考（表思考关掉另写的新条目可再请）；
+Q1–Q7（综合稿 §七 的建议，用户已定）：Q1 Jev 在计划队头选“先停下想”后，等待期间沿用现有判停；Q2 每条计划只能从队头请一次思考（表思考关掉另写的新条目可再请）； （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5、F-H-14 取代：Q1、Q2 随 D-1 取消，计划节点到队头不再问 Jev）
 Q3 接纳时时段已过的日程整条拒绝、原因交回同一会话，接纳后时段过了没开始的写一条事实；Q4 前驱“做成”= 最近一次执行结局为完成或被表思考以 done 关闭，
 没做成写事实、由 Jev 判要不要停下想；Q5 固定地点这一轮写在经验的参数声明上（区域名），计划条目仍只写方式名；Q6 区域名已用过就整条拒绝；
 Q7 工具 schema 这一轮不删字面分支，只在接纳边界按契约校验。仍有效的旧决定：U-30–U-32、D1–D5、UDP 看护放宽档等。
 
 **用户已定（2026-11-25，原话「都照建议」，记在 plan.md §10 末条）**：两份起草稿列的 8 个待定细节全照建议，正文以下引用为“已定 ①–⑧”：
 
-1. ① 一次性指令任何结局之后都不再到队头，要再做由表思考另写一条；
-2. ② 前驱只写一个、可空，几件事串成链；
+1. ① 一次性指令任何结局之后都不再到队头，要再做由表思考另写一条； （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 改写：被打断即节点 `failed`（终态））
+2. ② 前驱只写一个、可空，几件事串成链； （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-1 取代：`after` 收列表（可空），用户 2026-11-25 定（U-35））
 3. ③ 一次性指令只作根，与别的条目用 `after` 接；
 4. ④ 推送心智里一次性指令只列原子个数；
 5. ⑤ 契约下 8 个原子（move_to、dig_cell、place、pour、attach、scoop、detach、prefab 的 remove / replace）不能直接写进经验，经路线参数或一次性指令做；
@@ -68,7 +68,7 @@ Q7 工具 schema 这一轮不删字面分支，只在接纳边界按契约校验
 
 - 不删工具 schema 的字面分支（Q7）；不从契约派生 strict schema（以后实测再定）。
 - 不整个停决策循环；不加“时段结束”的定时；不为某个场景（吃饭、出坑）写专门分支。
-- 前驱不收列表（已定 ②）；一次性指令不带 parent（已定 ③）。
+- 前驱不收列表（已定 ②）；一次性指令不带 parent（已定 ③）。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-1 改写：前驱收列表（可空），改已定 ②；③ 不变。）
 - 地点类参数（`travel.x / z`）不加区域名，“去某处”用“区域名 + 路线”；世界地标、地块归属这一轮不进命名区域表。
 - 不改表思考的系统提示词（`think.SYSTEM`）与 Jev 现有问法、选项文字（`JUDGE_OPTIONS` 里的 should 是 M-2c 冻结措辞，不在本稿范围）。
 - 不设评价阈值、不按置信度自动丢经验；不给 inspect 加结果契约、不加“建筑实例”语义类型（已定 ⑤）。
@@ -91,16 +91,16 @@ Q7 工具 schema 这一轮不删字面分支，只在接纳边界按契约校验
 |---|---|
 | 条目种类 / 工具 | 种类 `command`（id 前缀 `c`，只作根）；工具 `add_command`，字段 `what`、`why`、`calls`、`after`；英文称 one-time command。工具 `evaluate_experience`，字段 `name`、`version`、`confidence`、`reason` |
 | 帧上的方式保留名 | `one_time_command` |
-| 节点字段 | `after`（一个条目 id 或 null）；`calls`（指令的调用列表，冻结）；关闭时存 `closed_outcome`（done / given_up）、`closed_at`；`last_run` 多 `status`（completed / failed / interrupted） |
+| 节点字段 | `after`（一个条目 id 或 null） （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-1 改写：改为条目 id 的列表，可空。）；`calls`（指令的调用列表，冻结）；关闭时存 `closed_outcome`（done / given_up）、`closed_at`；`last_run` 多 `status`（completed / failed / interrupted） |
 | 谓词 | `queue_view.window_ended(window, now)` ⇔ `now ≥ to`（左闭右开，唯一定义；队列、作废、Q3 都用它） |
-| 条目状态 `state` | `not_rated`、`waits_for_thinking`、`waits_for_time`、`window_ended`、`waits_for_after`、`not_taken_up`、`started`、`waits_for_steps`、`can_start` |
-| 前驱状态 `after_state` | `done`、`given_up`、`failed`、`window_ended`、`not_run` |
-| 新事实种类（提交方决策循环） | `stopped_to_think`、`window_ended_unstarted`、`after_not_done`；现有 `no_candidates` 在日志多 `reason_kind`（`region_unknown` / `none_listed`） |
+| 条目状态 `state` | `not_rated`、`waits_for_thinking`、`waits_for_time`、`window_ended`、`waits_for_after`、`not_taken_up`、`started`、`waits_for_steps`、`can_start` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 取代：换成 F-7 的 14 种状态，唯一定义处仍是 `item_status`） |
+| 前驱状态 `after_state` | `done`、`given_up`、`failed`、`window_ended`、`not_run` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 取代：改读前驱的 F-7 状态） |
+| 新事实种类（提交方决策循环） | `stopped_to_think`、`window_ended_unstarted`、`after_not_done`；现有 `no_candidates` 在日志多 `reason_kind`（`region_unknown` / `none_listed`） （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-9 改写：`stopped_to_think` 取消；新增 `stuck`、`cannot_start`，`cannot_start` 取代 `no_candidates`） |
 | 记忆栏 | `way_judgments`（只追加；记录种类 `judged` / `dropped`） |
-| Jev 选项 | `stop_and_think` |
+| Jev 选项 | `stop_and_think` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5 取代：计划侧的 `stop_and_think` 取消，事实判停的 `stop_and_think` 照旧） |
 | 拒绝规则码（唯一定义 `accept.RULES`） | 计划一侧 `window_ended`、`after_missing`、`after_closed`、`after_ancestor`、`command_calls`、`command_decode`、`reserved_name`；契约 `literal_not_allowed`、`atom_not_in_ways`、`param_sem_not_allowed`、`result_pair_not_allowed`、`not_one_group`、`one_of_on_spatial`、`bounds_on_spatial`；区域名 `region_on_wrong_type`、`region_differs_in_group`、`region_unknown`、`region_name_taken`；评价 `way_unknown`、`version_mismatch`、`given_at_start` |
 | 游戏钟 | 回执给模型的键 `game_time`（字符串，`mind.moment` 写法，如 `day 2, 12:07`）；日志一律 `game_minute`（绝对游戏分钟，整数） |
-| 日志字段 | `queue.open_items`；`jev.withheld`；`session_end.accepted / rejected[]` 多 `game_minute`、`rules`（列表，本轮新检查的码；空表 = 本轮以前就有的检查）；`session_start` 多 `reasoning_effort`、`game_minute`；`session_end` 多 `game_minute`；`deepseek` 多 `reasoning_effort`；新事件 `experience_check`；`boot` 多 `contract_sha`、`named_regions`；`listing` 多 `region_fixed`、`region_source`；`fact` 多 `reason_kind` |
+| 日志字段 | `queue.open_items`；`jev.withheld`；`session_end.accepted / rejected[]` 多 `game_minute`、`rules`（列表，本轮新检查的码；空表 = 本轮以前就有的检查）；`session_start` 多 `reasoning_effort`、`game_minute`；`session_end` 多 `game_minute`；`deepseek` 多 `reasoning_effort`；新事件 `experience_check`；`boot` 多 `contract_sha`、`named_regions`；`listing` 多 `region_fixed`、`region_source`；`fact` 多 `reason_kind` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5 改写：`jev.withheld` 随 D-1 取消） |
 | 配置 | `deepseek.reasoning_effort: {"outer": "low", "inner": "high"}` |
 
 **两稿对齐时定下的事**：
@@ -129,7 +129,7 @@ Q7 工具 schema 这一轮不删字面分支，只在接纳边界按契约校验
 稍后还写一条事实，下一轮 Jev 只看得到“推迟到几点”（综合稿核对表第 3、4 条）。条目行只写档位、不早于、上次结局、已判做完（`render.py:216-236`），
 Jev 看不到“采石排在出坑之后、出坑刚失败”：walled-1 出坑失败之后采石照常开帧，在坑里 `unreachable` 失败 6 次（per-link §4、plan §10 walled-1 条）。
 
-**定了什么**：
+**定了什么**： （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5、F-H-14 取代：计划节点不再问 Jev，第 12 步不做 D-1，改做“卡住”（总框架稿 §10 的 12a–12c）；`append_judged_fact` 留给卡住事实（F-8））
 
 - **谁判断**：Jev，在计划到队头、开帧之前，用完整推送心智 + 这一条（与现在“现在做不做”同一份输入）。代码不判断合不合适，只给客观状态（U-10）。
 - **新选项** `stop_and_think`，文字 `Not now: stop and think over my plans first.`，排在现有选项之后（现有键、文字、次序不变）。
@@ -161,14 +161,14 @@ Bratman, Israel & Pollack 1988（部分成立）只作借鉴：过滤覆盖要 �
 6 条接纳时已过期、3 条只剩 1–2 游戏分钟没轮到，推理里反复是 “the teleport window left no result in the history”。采石排在出坑之后，出坑失败后采石照常开帧，
 表思考看到的历史里只有采石失败，没有“出坑那条没做”（plan §10 “细化 walled-1 的计时问题”条）。
 
-**定了什么**：两种事实都只在“这条已不可能按原样做成”时写，每条只写一次，照常进队头交 Jev 判“继续 / 停下想”（Q4：不直接请表思考）。
+**定了什么**：两种事实都只在“这条已不可能按原样做成”时写，每条只写一次，照常进队头交 Jev 判“继续 / 停下想”（Q4：不直接请表思考）。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-9 改写：新事实 `cannot_start`（节点造不出帧）同样进队头交 Jev 判）
 
 - **时段过了没开始** `window_ended_unstarted`：决策循环每一轮，在作废再也做不成的帧之后、算队列之前，问纯函数 `queue_view.one_shot_facts_due(snap, now)`。
   条目 N 应写 ⇔ 自己与祖先都没关；N **自己**有时段且 `window_ended`；N 与全部子孙**都没有帧进过执行槽**；经历里还没有引用 N 的这种事实。
   “开始”按“有帧进过执行槽”认，不按“有上次结局”：一步跑过、日程本身只是父条目时算开始过；选值中被作废的帧没进过槽，算没开始。
   事实时刻 `at` 取写下它的这一轮的此刻，时段写在文本里（免得事实时刻倒序）。
 - **前驱没做成** `after_not_done`：同一处。条目 X 应写 ⇔ 自己与祖先都没关；X **自己**写了 `after = P`；`after_status(P)` 是 `failed`、`given_up` 或 `window_ended`；
-  经历里还没有引用 (X, P) 的这种事实。只看 X 自己的前驱：祖先的前驱没做成，事实写在祖先上。`refs` 带两个 id。
+  经历里还没有引用 (X, P) 的这种事实。只看 X 自己的前驱：祖先的前驱没做成，事实写在祖先上。`refs` 带两个 id。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-9 改写：前驱被打断不再写 `after_not_done`，被打断的方式节点回 `ready`、不算没做成）
 - **去重**从事实现算，不另开一栏。不加“时段结束”的定时：事实在窗尾之后决策循环的第一轮写，在那之前条目行已由 `item_status` 现算成 `window_ended`。
 - **与现有“过窗只作废、不写事实”**（M-3 plan B-8，统筹当时的决定）：作废这一步不变；另由本项对从没开始的条目写一次。开始过的不写（已有结局事实）。
   两种事实都**不挡**条目：时段已过的本来永久不可做；前驱的挡法由 `item_status` 现算。
@@ -185,17 +185,17 @@ properly”——只在计划不再能按原样做成时交回重规划；Kinny 
 
 **定了什么**：
 
-- **形状**：`add_todo`、`add_schedule_entry`、`add_command` 各加必填可空字段 `after`：一个条目 id 或 null，不收列表（几件都先做完就串成链；已定 ②）。
+- **形状**：`add_todo`、`add_schedule_entry`、`add_command` 各加必填可空字段 `after`：一个条目 id 或 null，不收列表（几件都先做完就串成链；已定 ②）。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-1 改写：`after` 收列表（可空），改已定 ②）
   存在条目节点上，写一次之后不变（条目不能原地改）。可指向待办、日程、一步、一次性指令；不能指向参数槽、帧。
 - **做成**（Q4）：`queue_view.after_status(snap, P, now)` 取第一条成立的——`done`（最近一次结局为完成，或 P / 关掉它的祖先以 done 关闭）、`given_up`（已关、不是以 done 关）、
-  `failed`（有上次结局、不是完成）、`window_ended`（P 或祖先的时段已结束）、`not_run`（其余，含正在跑）。
+  `failed`（有上次结局、不是完成）、`window_ended`（P 或祖先的时段已结束）、`not_run`（其余，含正在跑）。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7、F-H-15 改写：前驱状态改读前驱的 F-7 状态；以 done 关闭算做成，不论之前是否失败，Q4 原样）
 - **可做**：`item_status` 在“到时”之后查自己与全部祖先的 `after`，任何一个不是 `done` → `waits_for_after`（detail = 第一个没做成的前驱）。祖先的前驱约束子孙。
-- **没做成之后**：`given_up`、`failed`、`window_ended` 都写一次 D-2 的事实；后继**不关、不自动跳过**（关条目只由表思考做，U-29）。`failed` 不是终局：P 重做完成后后继放开。
+- **没做成之后**：`given_up`、`failed`、`window_ended` 都写一次 D-2 的事实；后继**不关、不自动跳过**（关条目只由表思考做，U-29）。`failed` 不是终局：P 重做完成后后继放开。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7、F-H-15 取代：`failed` 是终态，P 不再开帧，后继进终态 `upstream_failed`；P 被表思考以 done 关闭时后继重新现算）
   连锁时只给直接后继写事实，更后面的条目行写 `waits for [X]`。一次性指令至多执行一次（D-5），所以它作前驱时失败就不会再变成 done，后继等表思考关或另写。
 - **要补的数据**：`close_todo` 存 `closed_outcome` 与 `closed_at`（现在只记 `closed = true`）；`last_run` 另存 `status`（判据读它，不从结局文字反解）。
 - **环与死锁**：`after` 只能指向接纳那一刻已存在的条目，条目又不能改，每条边都从新条目指向更早的条目，创建次序就是拓扑序，**环写不出来，不做环检测**。
   要拒的是指向自己的祖先（祖先有未关的一步就不可做，这一步又等祖先做成，永远互等）。校验在 `store._tree_add`（与 `parent` 同一把锁），原因由接纳边界交回：
-  `after_missing`、`after_closed`（指向已关条目一并拒，含以 done 关的）、`after_ancestor`（原文见附录 C.5）。
+  `after_missing`、`after_closed`（指向已关条目一并拒，含以 done 关的）、`after_ancestor`（原文见附录 C.5）。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-7 改写：`after_closed` 改为拒指向非 done 终态的，指向 `done`（含以 done 关闭）的照收）
 
 **owner**：`store`（字段与提交时检查、关闭结局、`last_run.status`）、`queue_view`（`after_status`、`item_status`）、`accept`（透传与原因）、`formats`（`AFTER` 字段）。
 **日志**：`queue.open_items[].after / after_state`；`session_end.rejected[].rules`。
@@ -234,9 +234,9 @@ practice”，pit-2 outer4 r2）。表思考在思考时直接调世界动作 14
 - **存储**：待办树新根种类 `command`（只作根，不带 parent、时段、不早于；已定 ③），节点字段 `calls` 冻结、`how = null`；`store.ROOT_KINDS` 加上它，重要性评估照常评档。
 - **校验**：格式（工具 schema + 本地校验）；`formats.tree_problems({"do_in_order": calls})`（至少一步、至多 40 步）；`Acceptor._prepare_steps` 只有译码失败算拒绝，
   与位置有关的不合格只记 notes、留给执行时由权威裁决（同经验）；`after` 同 D-3。**不受契约管**；不查“值是否过时”（由执行结局给出，U-32 同理）。
-- **执行**：到队头照常问 Jev（含“先停下想”），没有参数槽。`do_now` → `decide._plan` 在“没写方式”检查之前按种类分支：开帧，方式记保留名 `one_time_command`、版本 0、
+- **执行**：到队头照常问 Jev（含“先停下想”），没有参数槽。`do_now` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5 改写：到队头不问 Jev、直接开帧，没有 `do_now` 这一答） → `decide._plan` 在“没写方式”检查之前按种类分支：开帧，方式记保留名 `one_time_command`、版本 0、
   树 `{"do_in_order": calls}`、参数 `[]`，直接 `FrameStart`。`write_experience` 用这个保留名整条拒绝。执行器 `do_in_order` 第一个失败就停（`executor.py:69-74`）；
-  被抢占时挂起、重放恢复（现有）。**至多执行一次**：有了上次结局就 `not_taken_up`，不再到队头（被打断的也一样，要再做由表思考另写一条；已定 ①）；不自动关。
+  被抢占时挂起、重放恢复（现有）。**至多执行一次**：有了上次结局就 `not_taken_up`，不再到队头（被打断的也一样，要再做由表思考另写一条；已定 ①）；不自动关。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 改写：有了上次结局即进终态，被打断即节点 `failed`；已定 ① 不变）
 - **结局**：走 `slot._end` 现有路径写结局事实（`I ran my one-time command [c40] for "…". Result: … Steps: …`，只列原子名与结局，不写实参）；`last_run` 带 `status`；不记经验统计。
 - **它不是经验、不当先例**：不进经验区、不出现在推送心智的经验一区、不能被条目的 how 引用（`accept._how` 不变）；推送心智里它的行只写原子个数（已定 ④），
   具体值只在写它的那次会话（工具调用与回执）与心智快照里。
@@ -292,7 +292,7 @@ look / survey / gather / travel、空间参数界限规则是**原创决策 O-7*
 - **重名**（Q6）：`note_region` 的名字已在命名表里（启动的或记下的）→ 整条拒绝 `region_name_taken`，原因写这个名字属于哪一块、来源。名字按原样字符串比较。
 - **使用时**：开帧时 sem 里写了 region 的区域槽直接绑成命名表此刻那一块，不问 Jev；在那块里按此刻的世界列路线 / 料堆 / 点位（现有列举器），由 Jev 选。三种失败分开报：
   ①名字不在表里（本轮正常运行碰不到：启动区域固定、记下的只追加、名字不重用、没有删除；解析函数仍显式返回，单测覆盖）→ `no_candidates` 事实、`reason_kind = region_unknown`；
-  ②区域里列出 0 个 → `no_candidates`、`none_listed`；③Jev 答都不合适 → 投 `slot_open` 请表思考，**不走**收窄回退（原 B-7：撤掉区域换别的区域重问），因为区域是固定的。
+  ②区域里列出 0 个 → `no_candidates`、`none_listed`；③Jev 答都不合适 → 投 `slot_open` 请表思考，**不走**收窄回退（原 B-7：撤掉区域换别的区域重问），因为区域是固定的。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7、F-9 改写：①② 改为节点 `failed`、写 `cannot_start`（`reason_kind` `no_candidates`，细分 `region_unknown` / `none_listed`）；③ 投 `slot_open` 一次，补过仍不合 → 节点 `failed`、写 `cannot_start`（`slot_unfilled`））
 - `candidates.slots_for`：经验的 sem 里有任何非 null 的 region 时一律按 sem 成槽；没写区域名的 G0 与改写版照旧走槽表。
 - 推送心智：`render._kind` 在经验参数行写出区域名（A-9）。
 
@@ -338,7 +338,7 @@ M-3d 读数（约束段逐字被引用却引出“stays the same”的误读）�
   第二次提交被拒只可能是 harness 缺陷，按异常暴露。
 - **表思考与 Jev 怎样看到**：经验行在使用统计之后写当前版本最新一条评价（没有就不写）；被丢方式的条目行在 “a way I no longer know” 后接丢的时刻与理由（附录 C.3）。
   Jev 读的也是同一份推送心智，所以“现在做不做”时也看得到评价——它是事实，不是指示（U-10）。
-- **丢掉经验的规则不新造**：被引用的经验丢掉后，条目到队头写 `WAY_GONE_FACT`、不开帧；在跑的帧绑定的版本在帧内不变（三循环稿原创决策 T-6）；选值中的帧遇到经验已变按现有规则作废。
+- **丢掉经验的规则不新造**：被引用的经验丢掉后，条目到队头写 `WAY_GONE_FACT`、不开帧；在跑的帧绑定的版本在帧内不变（三循环稿原创决策 T-6）；选值中的帧遇到经验已变按现有规则作废。 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7、F-9 改写：被引用的经验丢掉后，条目到队头开帧时节点进 `failed`、写 `cannot_start`（`way_gone`），不再写 `WAY_GONE_FACT`）
   丢不丢、丢哪条由模型判断，代码不设阈值、不按置信度自动丢。
 
 **owner**：`inner`（模板、工具表、视图接线）、`render`（`inner_view`、`_ways`、`_how`）、`store`（新栏）、`accept`（评价、丢弃记录）、`formats`（`EVALUATE_EXPERIENCE`、`m3_inner_ops`）、`run.py`（接线）。
@@ -459,10 +459,10 @@ O-1–O-6 出自计划与执行稿，O-7、O-8 出自心智与提示词稿；编
 
 | # | 决策 | 为什么不照搬 | 风险 | 不变量 | 怎样验证 |
 |---|---|---|---|---|---|
-| O-1 | 条目行状态的枚举与写法；`doable` 改由 `item_status` 派生 | Park 等的计划只有地点、开始时刻、时长，没有状态；BDI 出处不涉及给判断者看什么 | 行变长，Jev 请求接近长上下文门槛（§七 风险 4） | 条目可做 ⇔ 状态为 `can_start`；状态只写事实词 | V-7、V-32；实跑读 `jev.request_bytes` |
-| O-2 | “先停下想”记成一条已判过的事实，经条件提交（游标在末尾才写）；“请过一次”从这条事实现算 | 出处不给去重键；按 id 一次是用户定的（Q2），机制是本项目的 | 并发时 Jev 白问一次 | 这条事实写入即判过；同一 id 至多一条 | V-9、V-24、V-35 |
-| O-3 | 前驱只有一个、可空；只能指向接纳时已存在、未关、非祖先的条目，因此不做环检测 | RFC 9253 与 GitHub Actions 都允许多个、都没写环的处理；本项目条目不可改，创建次序就是拓扑序 | 真要“几件都做完”时只能串成链，多等 | 前驱边总指向更早的条目 | V-14、V-33 |
-| O-4 | 前驱没做成不自动跳过后继，只写一次事实；`failed` 不是终局，按最近一次结局放开 | GitHub Actions 自动跳过后继；本项目代码不替判断（U-10）、关条目只由表思考做 | 后继长期挂在计划里 | 每对 (X, P) 至多一条事实；做成即放开 | V-23、V-33 |
+| O-1 | 条目行状态的枚举与写法；`doable` 改由 `item_status` 派生 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 改写：状态换成 F-7 的 14 种，`can_start` 改名 `ready`；`item_status` 仍是唯一定义处） | Park 等的计划只有地点、开始时刻、时长，没有状态；BDI 出处不涉及给判断者看什么 | 行变长，Jev 请求接近长上下文门槛（§七 风险 4） | 条目可做 ⇔ 状态为 `can_start`；状态只写事实词 | V-7、V-32；实跑读 `jev.request_bytes` |
+| O-2 | “先停下想”记成一条已判过的事实，经条件提交（游标在末尾才写）；“请过一次”从这条事实现算 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-5、F-8 改写：计划侧随 D-1 取消；条件提交 `append_judged_fact` 与“从事实现算”留给卡住事实） | 出处不给去重键；按 id 一次是用户定的（Q2），机制是本项目的 | 并发时 Jev 白问一次 | 这条事实写入即判过；同一 id 至多一条 | V-9、V-24、V-35 |
+| O-3 | 前驱只有一个、可空；只能指向接纳时已存在、未关、非祖先的条目，因此不做环检测 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-H-1、F-H-7 改写：前驱改列表（可空）；指向非 done 终态的拒，指向 `done`（含以 done 关闭）的照收；无环论证不变） | RFC 9253 与 GitHub Actions 都允许多个、都没写环的处理；本项目条目不可改，创建次序就是拓扑序 | 真要“几件都做完”时只能串成链，多等 | 前驱边总指向更早的条目 | V-14、V-33 |
+| O-4 | 前驱没做成不自动跳过后继，只写一次事实；`failed` 不是终局，按最近一次结局放开 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) F-7 取代：`failed` 是终态，后继进终态 `upstream_failed`；只写一次事实由 D-2 保留） | GitHub Actions 自动跳过后继；本项目代码不替判断（U-10）、关条目只由表思考做 | 后继长期挂在计划里 | 每对 (X, P) 至多一条事实；做成即放开 | V-23、V-33 |
 | O-5 | 一次性指令是只作根的新种类，至多执行一次，推送心智只列原子个数，帧用保留名 | BT 的 Sequence、Actions 的 steps 都会重跑；它们没有“写给自己看的计划会被当先例”的问题 | 表思考看不到自己写过的具体步骤，诊断失败要重查 find_route | 具体值不进经验区、经历与推送心智 | V-8、V-29、V-34 |
 | O-6 | “时段过了没开始”按有没有帧（含子孙）进过执行槽认，事实时刻取写下的那一刻 | RFC 5545 只定时段边界 | 窗尾到写下之间有延迟（到下一次决策循环被唤起） | 每条至多一条；开始过的不写 | V-22 |
 | O-7 | 契约的逐格取值：位置类一律不收字面；8 个原子整条不能进经验；成组推广到 look / survey / gather / travel；空间参数界限只能等于使用处原子 schema | Voyager、AWM 只给“方法常量写死、实例值抽掉”的方向，没有按参数逐格的表；用户要“格式由程序校验”，需要一张可机械判的表 | 被拒次数多、占轮次（离线试算 M-3d 64 条里 55 条会被拒，§七 风险 1）；8 个原子的合法用途进不了经验 | 被接纳的经验里字面空间值为 0；G0 全过 | V-16、V-17、V-18、V-26 |
@@ -562,6 +562,7 @@ O-1–O-6 出自计划与执行稿，O-7、O-8 出自心智与提示词稿；编
 只在那份副本里改表里列的模块；每步先写用例、在未改的代码上看到红，再实现到绿；判据处做原位变异、被抓到后逐字节恢复；不跑 `run.py live`、不调模型。
 每步回报：改了哪些函数、新增用例名、红绿证据、变异结果、动到的共用文件。改同一文件的步骤按编号串行；可以并行的只有第 4 步与第 1–3 步、第 15 步与第 11–12 步。
 全部完成后（第 21 步）重算指纹；实跑前另写 M-3e 计划（按环节的判定与读数），**报用户额度**后再定（M-3d 账本 $2.468，DeepSeek 按高峰价）。
+（2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) §10 改写：第 11 步起按该节继续——先做 11a（`after` 收列表、`after_closed` 按 F-H-7、有方式的节点不挂子节点 F-H-6），再做第 11 步；第 12 步不做 D-1，改为 12a–12c；第 13–21 步按该节的表调整）
 
 ```mermaid
 flowchart LR
@@ -610,8 +611,8 @@ flowchart LR
 | 8 | `add_command` 工具（说明用附录 B.4 原文）与检查、提交；保留名；`ITEM_ID`；`think.HINT` | `formats.py`、`accept.py`、`think.py` | 7 | V-4（指令）、V-5（表思考）、V-15、V-21 | 先红后绿；工具表摘要与字符数记进回报 |
 | 9 | `EVALUATE_EXPERIENCE`（说明用附录 B.14 原文）；评价的检查与提交；丢弃记录 | `formats.py`、`accept.py` | 8 | V-4（评价）、V-20、V-27 | 先红后绿 |
 | 10 | 强度按会话类型；会话的 `game_minute` | `config.py`、`models.py`、`run.py`、`session.py`、`logschema` | 9（同文件次序） | V-40、V-41 | 先红后绿 |
-| 11 | 每轮作废之后写 `one_shot_facts_due` 给出的事实 | `decide.py` | 3、10 | V-22、V-23（决策循环一半） | 先红后绿；“写一次”去重变异被抓到 |
-| 12 | `stop_and_think` 选项、条件提交、作废挂起帧、请求、GoIdle；`jev.withheld` | `decide.py`、`logschema.JEV` | 11 | V-9、V-24（决策循环一半）、V-35 | 先红后绿；两个变异被抓到 |
+| 11 | 每轮作废之后写 `one_shot_facts_due` 给出的事实 （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) §10 改写：先做 11a（`after` 收列表、`after_closed` 按 F-H-7、有方式的节点不挂子节点 F-H-6），再做本步；前驱被打断不写 `after_not_done`（F-9）） | `decide.py` | 3、10 | V-22、V-23（决策循环一半） | 先红后绿；“写一次”去重变异被抓到 |
+| 12 | `stop_and_think` 选项、条件提交、作废挂起帧、请求、GoIdle；`jev.withheld` （2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) §10 取代：不做 D-1，改做“卡住”，拆为 12a–12c，内容与用例见该节） | `decide.py`、`logschema.JEV` | 11 | V-9、V-24（决策循环一半）、V-35 | 先红后绿；两个变异被抓到 |
 | 13 | 指令分支；帧 `by` 文字；`_started` 的指令帧写法 | `decide.py`、`slot.py`、`render._started` | 8、12 | V-29、V-34（执行一半）、V-36 | 先红后绿 |
 | 14 | 固定区域预绑、三种失败、固定区域不收窄；`slots_for` / `sem_slots` / `listing` | `candidates.py`、`decide.py` | 7、13 | V-31、V-37、V-38 | 先红后绿；`test_decide` 原有用例全绿 |
 | 15 | `_line` 的状态段、前驱段、指令行；`outer.plan_facts` | `render.py`、`outer.py` | 3、8 | V-7、V-8 | 先红后绿；推送心智评价词 0 |
@@ -656,6 +657,8 @@ flowchart LR
 7. M-3d `report/per-link.md` §6 候选 6 项 → 各指向本稿的决策项。
 8. 新一轮 harness 的模块说明（实施时随代码改，不另列）：`queue_view`（`doable` 来自 `item_status`）、`decide`（B-8 一句）、`accept`（契约、读钟一次）、`inner`（新模板）、`config`（强度）。
 
+（2026-11-25 被 [总框架稿](2026-11-25-npc-four-layer-framework-decision.md) 取代或改写的本稿各处，回填见其 §11 第 3 条）
+
 ## 十一、进度
 
 - 2026-11-25：今天写成本稿与附录（合成两份起草稿：统一命名、定下对齐项 15 处、合并实施步骤为 21 步、待用户定 11 题）。**未实施、未实跑**；0 次模型请求。
@@ -676,3 +679,4 @@ flowchart LR
 - 2026-11-25T18:10Z：第 8 步（指令接纳侧：add_command 只给表思考、command_calls / command_decode、保留名 one_time_command、ITEM_ID 补 c4、think.HINT）完成并经统筹核对，指纹 `f4c0ac35cd37dd6d`。附录 B.4 例子的 <CALLS> 暂为占位，按已定 ⑪ 在实跑准备时填；表思考工具表 53,889 → 65,950 字符。
 - 2026-11-25T18:30Z：第 9 步（评价接纳侧：evaluate_experience 工具定义、way_unknown / version_mismatch / given_at_start、评价追加不改经验、丢弃记录）完成并经统筹核对，指纹 `e0357623f249191b`。
 - 2026-11-25T19:05Z：第 10 步（思考强度按会话类型 outer low / inner high、别名载入即拒；会话 game_minute；experience_check 事件；boot 多 contract_sha / named_regions）完成并经统筹核对，指纹 `4ac4e20efda2f5d2`。§3.11 漏列、统筹允许的清单外改动：presets.py boot 事件一处、outer.py / inner.py 各一行传游戏钟。**按用户定在此暂停**：第 11 步起等意图图稿（docs/10-active/cross-cutting/2026-11-25-npc-intention-graph-decision.md，另一会话写、待用户定）定了再决定。仍未实跑、0 次模型请求。
+- 2026-11-25：用户定[总框架稿](2026-11-25-npc-four-layer-framework-decision.md)（U-34、U-35），按其 §11 第 3 条回填本稿，只加注、原文保留：§一 已定 ①②、Q1–Q2；§3.0 统一命名表的条目状态、前驱状态、新事实种类、Jev 选项、日志字段五行；§3.1 D-1；§3.2 D-2 两处；§3.3 D-3 四处；§3.5 D-5 两处；§3.7 D-7；§3.9 D-9；§五 O-1–O-4；§八 做法与第 11、12 步；§十 末尾；统筹另补 §二“前驱不收列表”、§3.0 节点字段 `after` 两处；第 11 步起按其 §10 继续。
