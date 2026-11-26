@@ -38,7 +38,7 @@ defmodule VoxelRegion.World.Closure do
       {:parcel_prepare, 2}, {:prefab_request, 2}, {:prefab_inputs, 3}, {:prefab_loaded, 4}, {:prefab_ready, 3}, {:prefab_known, 3},
       {:publish_prefab, 4}, {:stats, 0}, {:residency_status, 0}, {:maintain_residency, 0}, {:subscribe, 5},
       {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3}, {:serve_result, 6},
-      {:compact, 0}, {:timeout, 3}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
+      {:compact, 0}, {:timeout, 3}, {:projectile_tick, 0}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
       {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5},
       {:cancel_cast, 3}, {:thermal_step, 2}, {:DOWN, 5}, {:prepare_sort, 4}, {:commit_sort, 4},
       {:simulation_windows, 4}
@@ -158,6 +158,10 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(state, {:authorize_cast, key, actor, _request}), do: pending_cast(state, key, actor)
   # 第 k 步检查（设计 v2.11 W1）同出手：按当时射线重判，读同一射程区域。
   defp seeds(state, {:check_cast, key, actor, _request}), do: pending_cast(state, key, actor)
+
+  # 投射物采样结果（魔法 v2 切片 5）：本轮飞行弦段两端所在区域（`Projectiles.accept/2` 沿段求地形）。
+  defp seeds(%{projectile_task: %Task{ref: ref}} = state, {ref, results}),
+    do: {Pages.with_ancestors(VoxelRegion.World.Projectiles.result_keys(state, results)), []}
 
   defp seeds(_state, _message), do: :none
 

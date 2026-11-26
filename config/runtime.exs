@@ -80,6 +80,12 @@ end
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
 config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
 
+# 魔法 v2 切片 5：飞行中结构的人物采样后端（Harm 判定点 1；World 只在 ends_on_contact 且施法者是 Player 时调用）。
+# 测试环境不配：各 app 单独跑测试时 world_server 未必编译；需要后端的 World 用例以 `projectile_backend:` 显式注入替身。
+if config_env() != :test do
+  config :voxel_region, :projectile_backend, WorldServer.Movement.Projectile
+end
+
 # One explicitly deployed Voxim scene. Gate caches its World route at subscription/join;
 # HTTP resolves this same route per request. Distributed deployments replace these refs.
 config :world_server, :movement_routes, %{

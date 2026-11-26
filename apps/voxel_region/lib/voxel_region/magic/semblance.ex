@@ -10,8 +10,9 @@ defmodule VoxelRegion.Magic.Semblance do
   物理体与世界轴对齐（第一轴 x、第二轴 y、第三轴 z；P1 没有朝向，待设计确认）。
 
   - 弹道：先走眼 → 手直线段，再自手边按 p(t) = hand + v·t − ½·g·t²·ŷ（g = 9.81 m/s²，Y-up；无质量时 g = 0）以 0.05 s
-    弦段求交；命中面精确解出穿越时刻（x/z 面线性、y 面二次），物理体中心停在命中点沿面法线外移该轴半尺寸处。施法时对当时
-    世界求交，之后世界变化不改弹道（已知偏差：运动学、无冲量与反冲、中心点求交而非扫掠体）。
+    弦段求交；命中面精确解出穿越时刻（x/z 面线性、y 面二次），物理体中心停在命中点沿面法线外移该轴半尺寸处。`trace/8` 是
+    施放时对当时世界的预测；切片 5 起真实飞行由 `World.Projectiles` 按墙钟沿 `flight_segments/2` 的弦段逐段用 `segment/5`
+    求交（命中点在弦上，与抛物线差不超过拱高 g·Δt²/8 ≈ 3 mm）。已知偏差：运动学、无冲量与反冲、中心点求交而非扫掠体。
   - 接触（落地后每段按当前世界重算，不绑定命中格）：物理体的包围盒（中心 rest、半尺寸 half）与每个热节点的实占用盒
     （`ThermalGeometry.bounds/2`）贴面或重叠即接触；接触法向取重叠最小的轴，接触面积 = 其余两轴重叠
     （`ThermalGeometry.overlap/3`）× 形状系数（球 π/4 = 内切圆占外切正方形投影，块与板 1）。每条边导热
@@ -151,19 +152,17 @@ defmodule VoxelRegion.Magic.Semblance do
   end
 
   @doc """
-  按已过时间把飞行切成最多 0.05 s 的弹道弦段 `[{t0, t1, a, b}]`（自 `age_s` 到 `ending`）。人物采样后端
-  `WorldServer.Movement.Projectile` 用它沿弦段扫掠人物；该后端的飞行体 map 仍是 v1 形状（`no_gravity` 键），
-  切片 5 把人物采样接回结构时改为物理体的 `massless`（决策稿 §5.1）。
+  按飞行时长把飞行切成最多 0.05 s 的弹道弦段 `[{t0, t1, a, b}]`（自 `age_s` 到 `ending`）。`s` 带 `origin`、`velocity`、
+  `age_s` 与 `massless`（无质量者 g = 0，Q17(a)）。World 的飞行驱动（`World.Projectiles`）沿这些弦段求地形，人物采样后端
+  `WorldServer.Movement.Projectile` 沿同一组弦段扫掠人物：两侧弦段同源，命中先后可比。
   """
-  def flight_segments(s, ending) do
-    no_gravity = Map.get(s, :no_gravity, false)
-
+  def flight_segments(%{massless: massless} = s, ending) do
     Stream.unfold(s.age_s, fn t ->
       if t >= ending - 1.0e-9 do
         nil
       else
         next = min(t + @step_s, ending)
-        {{t, next, position(s.origin, s.velocity, t, no_gravity), position(s.origin, s.velocity, next, no_gravity)}, next}
+        {{t, next, position(s.origin, s.velocity, t, massless), position(s.origin, s.velocity, next, massless)}, next}
       end
     end)
     |> Enum.to_list()

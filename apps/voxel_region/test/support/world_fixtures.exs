@@ -119,6 +119,16 @@ defmodule VoxelRegion.TestSupport do
     state.thermal_run == nil and map_size(state.page_load.tasks) == 0 and :queue.is_empty(state.input_ready)
   end
 
+  @doc """
+  只测试：投射物拍（魔法 v2 切片 5）已处理完——没有在途采样任务、过闸的输入队列为空、没有装页任务。测试直接投递
+  `:projectile_tick` 后据此等待（任务结果经页闸回到 World，不能只看投递是否返回）。
+  """
+  def projectiles_settled?(world) do
+    state = :sys.get_state(world)
+    state.projectile_task == nil and state.input_current == nil and :queue.is_empty(state.input_ready) and
+      map_size(state.page_load.tasks) == 0
+  end
+
   @doc "只测试：消费限定窗口/角色的只读契约；键表仅便于按目标身份断言，不读取进程 state。"
   def observe(world, characters, box) do
     snapshot = VoxelRegion.World.simulation_snapshot(world, characters, box)

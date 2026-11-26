@@ -240,14 +240,13 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
       position: ac.position
     }
 
-    # 只测试：查询输入是纯弹道值；不向在线 World/身体写入测试真值。
+    # 只测试：查询输入是纯弹道值（World 飞行驱动交给后端的结构形状，魔法 v2 切片 5）；不向在线 World/身体写入测试真值。
     shot = %{
       projectile_source: source,
       origin: {x - 1.0, y, z},
       velocity: {20.0, 0.0, 0.0},
       age_s: 0.0,
-      flight_s: 0.08,
-      lifetime_s: 1.0,
+      massless: false,
       radius_m: 0.2,
       t0_us: MmoContracts.ServerTime.server_us() - 100_000
     }
@@ -255,7 +254,7 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
     [{_, _, {:sample, age, actor, {_, target}, sampled_us}}] =
       WorldServer.Movement.Projectile.poll([{{50, 0}, shot}], {MmoContracts.ServerTime, nil})
 
-    assert age >= 0.1 and age > shot.flight_s
+    assert age >= 0.1
     assert sampled_us >= shot.t0_us + 100_000
     assert target.id == ctx.cid + 1
     assert target.position != before.position
@@ -293,7 +292,7 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
     assert {:error, :stale_owner} = WorldServer.Movement.Projectile.deliver(newer)
     assert Player.body_snapshot(restored) == saved
 
-    # Hello 45：20 m 水平 30 m/s 投射物身体采样——无重力直线命中目标胶囊，有重力下坠 ½·9.81·(2/3)² = 2.18 m 脱靶。
+    # 20 m 水平 30 m/s 投射物身体采样——无质量（g = 0，Q17(a)）直线命中目标胶囊，有质量下坠 ½·9.81·(2/3)² = 2.18 m 脱靶。
     {:ok, target_ctx} = Player.hit_context(restored)
     {tx, ty, tz} = target_ctx.position
 
@@ -302,15 +301,13 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
       origin: {tx - 20.0, ty, tz},
       velocity: {30.0, 0.0, 0.0},
       age_s: 0.0,
-      flight_s: 1.0,
-      lifetime_s: 1.0,
       radius_m: 0.05,
       t0_us: MmoContracts.ServerTime.server_us() - 750_000
     }
 
     [{_, _, {:sample, _, _, {frac, hit_target}, _}}] =
       WorldServer.Movement.Projectile.poll(
-        [{{52, 0}, Map.put(long_shot, :no_gravity, true)}],
+        [{{52, 0}, Map.put(long_shot, :massless, true)}],
         {MmoContracts.ServerTime, nil}
       )
 
@@ -319,7 +316,7 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
 
     [{_, _, {:sample, _, _, nil, _}}] =
       WorldServer.Movement.Projectile.poll(
-        [{{53, 0}, Map.put(long_shot, :no_gravity, false)}],
+        [{{53, 0}, Map.put(long_shot, :massless, false)}],
         {MmoContracts.ServerTime, nil}
       )
   end

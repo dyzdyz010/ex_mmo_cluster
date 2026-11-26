@@ -481,6 +481,10 @@ defmodule SceneServer.Movement.Player do
         profile: state.config.profile,
         scope: Map.get(state.config, :combat_scope),
         status: state.body.status,
+        # 局部接触组织块此刻的温度（含已收未推进的组织热）与热容：结构命中人物时 World 按它把热份额至多加热到
+        # T_port（魔法 v2 切片 5，Q5-2）。
+        tissue_k: state.body.tissue_k + state.body_heat.tissue_j / Body.tissue_capacity_j_per_k(),
+        tissue_c_j_per_k: Body.tissue_capacity_j_per_k(),
         body: if(state.id == body_for, do: Body.report(state.body, 1.0), else: nil)
       }}, state}
   end

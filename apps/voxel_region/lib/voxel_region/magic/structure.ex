@@ -161,11 +161,15 @@ defmodule VoxelRegion.Magic.Structure do
           | {:release_thermal, integer(), float()}
           | {:caster_heat, pos_integer()}
 
-  @typedoc "一条被触发的规则：优先级、判定结果与要执行的响应（交给 World 按触发预算调度，再调 `respond/2`）。"
+  @typedoc """
+  一条被触发的规则：优先级、判定结果与要执行的响应（交给 World 按触发预算调度，再调 `respond/2`）。`contact` 是该规则
+  是否读〈遇〉：World 据此区分〈散〉的线上事件（读〈遇〉的规则触发 → live 2，其余 → live 6，设计方答复 Q4-W3）。
+  """
   @type trigger :: %{
           priority: non_neg_integer(),
           outcome: :met | :unmet | :undecidable,
-          responses: [Glyph.t()]
+          responses: [Glyph.t()],
+          contact: boolean()
         }
 
   @typedoc """
@@ -776,6 +780,27 @@ defmodule VoxelRegion.Magic.Structure do
   end
 
   @doc """
+  散解即终止（断供衰竭类型 `:exhausted`，线上 live 3）：不经规则、不收调整耗散，按释放形态一次释放全部储能。
+  World 只在两处调用（决策稿 §5.1“恢复”、切片 5 §14）：冷重启恢复时仍在飞行的结构（飞行以墙钟与当时人物为准，
+  停机间隙不可追溯，W5-5），以及飞行离开 World 能读出 canonical 的范围（`World.Projectiles` 的显式终止规则）。
+  返回值与 `respond/3` 同形；`metrics` 为空。
+  """
+  @spec dissipate(t(), Catalog.t()) :: {t(), outputs()}
+  def dissipate(%__MODULE__{status: :running} = s, %Catalog{runtime: rt}) do
+    before = stored_mj(s)
+    {s, requests, out, event} = terminate(s, :exhausted, rt)
+
+    {s,
+     %{
+       requests: requests,
+       events: [event],
+       triggered: [],
+       ledger: ledger(before, s, %{}, out),
+       metrics: %{}
+     }}
+  end
+
+  @doc """
   动能的唯一出口：飞行结束（命中或落地）时由 World 调用。整笔动能作为有限热源沉积到落点或命中点所在格，不进热份额，
   有无〈热〉都一样（设计 §5.3.3 R7③）；动量接触（P4，决策稿风险 4）落地时替换本函数，不改其他步进逻辑。
   """
@@ -1025,7 +1050,15 @@ defmodule VoxelRegion.Magic.Structure do
 
             responses ->
               {%{rule | fired_tick: tick},
-               [%{priority: rule.priority, outcome: outcome, responses: responses} | acc]}
+               [
+                 %{
+                   priority: rule.priority,
+                   outcome: outcome,
+                   responses: responses,
+                   contact: Enum.any?(rule.readings, &(&1.kind == :contact))
+                 }
+                 | acc
+               ]}
           end
         end
       end)

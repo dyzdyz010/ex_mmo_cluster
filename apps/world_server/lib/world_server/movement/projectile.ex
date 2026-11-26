@@ -1,9 +1,18 @@
 defmodule WorldServer.Movement.Projectile do
-  @moduledoc "全局系统功能：投射物查询/身体交付的组合边界，经显式 Scene 路由访问当前 Player；不持有拟态或身体真值。"
+  @moduledoc """
+  全局系统功能：投射物查询/身体交付的组合边界，经显式 Scene 路由访问当前 Player；不持有结构或身体真值。
+
+  设计 §12.1 的两个 Harm 判定点：World 异步采样任务调 `poll/2`（本模块按 `Harm.permitted?/3` 只取施法者可伤的人物），
+  Player 接纳交付时 `receive_effect` 再复核一次；不另设第三处。
+  """
   alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
   alias VoxelRegion.Magic.Semblance
 
-  @doc "在 World 异步工作中逐次采当前 owner；位置只归属这一实际采样时刻（World 的服务器时间线时钟）。"
+  @doc """
+  在 World 异步工作中逐个处理飞行体：冻结交付 → `{:delivered, deliver/1 的结果}`；飞行体 → 采当前人物，
+  `{:sample, 墙钟时长, 施法者（位置取当前）, {弦段内比例, 命中人物上下文} | nil, 采样时刻}`。返回 `[{id, 发出时的 age_s, 结果}]`。
+  位置只归属这一实际采样时刻（World 的服务器时间线时钟）。
+  """
   def poll(shots, clock) do
     Enum.map(shots, fn {id, s} ->
       result =
@@ -25,11 +34,14 @@ defmodule WorldServer.Movement.Projectile do
     end
   end
 
+  # 飞行体是 World 的结构形状（魔法 v2 切片 5，`VoxelRegion.World.Projectiles`）：施法者身份、弹道（origin、velocity、
+  # massless）、t0、已推进时长与扫掠半径。没有寿命上限：飞行的终止（接触、衰竭、离开可读范围）都由 World 判定，
+  # 这里只把墙钟时长推进到当前采样时刻。
   defp sample(s, clock) do
     source = s.projectile_source
     targets = contexts(source.identity.scene_id)
     now = MmoContracts.ServerTime.server_us(clock)
-    age = min(max(s.age_s, (now - s.t0_us) / 1.0e6), s.lifetime_s)
+    age = max(s.age_s, (now - s.t0_us) / 1.0e6)
 
     actor =
       Enum.find(

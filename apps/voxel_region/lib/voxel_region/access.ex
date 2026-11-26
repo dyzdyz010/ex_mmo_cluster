@@ -119,6 +119,7 @@ defmodule VoxelRegion.Access do
     liquid_tick: :simulation,
     thermal_tick: :simulation,
     thermal_step: :simulation,
+    projectile_tick: :simulation,
     input_continue: :simulation,
     timeout: :simulation,
     reference: :simulation,

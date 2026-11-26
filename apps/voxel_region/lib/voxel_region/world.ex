@@ -814,6 +814,11 @@ defmodule VoxelRegion.World do
           thermal_quiet_seq: nil,
           # 进行中的分步热提交；nil 表示两次提交之间。
           thermal_run: nil,
+          # 飞行中结构的墙钟飞行驱动（魔法 v2 切片 5，`World.Projectiles`）：人物采样后端（生产为
+          # `WorldServer.Movement.Projectile`；nil 时只求地形、不采样人物）、50 ms 投射物拍的定时器与在途采样任务。
+          projectile_backend: Keyword.get(opts, :projectile_backend, Application.get_env(:voxel_region, :projectile_backend)),
+          projectile_timer: nil,
+          projectile_task: nil,
           material_balances: %{},
           # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
           caster_energy: %{},
@@ -963,6 +968,8 @@ defmodule VoxelRegion.World do
         state = Thermal.wake(state)
         # 旧存档拟态一次散解（决策稿 Q4-6）；之后运行时不再有拟态。
         state = VoxelRegion.World.SemblanceMigration.migrate(state)
+        # 冷重启时仍在飞行的结构以 live 3 散解（决策稿 W5-5）；冻结的人物命中交付照常重投。
+        state = state |> VoxelRegion.World.Projectiles.settle_restored() |> VoxelRegion.World.Projectiles.wake()
         {:ok, state}
 
       error -> error
@@ -1666,7 +1673,8 @@ defmodule VoxelRegion.World do
           cache: "process_local", runtime: "world", disk: "not_counted"},
         simulation_io: VoxelRegion.World.PageLoad.observe(state),
         residency: Residency.observe(state),
-        simulation_progress: %{thermal: Thermal.progress(state), liquid: VoxelRegion.World.Liquids.progress(state)},
+        simulation_progress: %{thermal: Thermal.progress(state), liquid: VoxelRegion.World.Liquids.progress(state),
+          projectiles: VoxelRegion.World.Projectiles.progress(state)},
         entries: Cache.stats(state.cache).namespaces.payload.entries,
         shared_cache: Cache.stats(state.cache),
         prefab_residency: %{definitions: map_size(state.prefabs), preparing: map_size(state.prefab_requests),
@@ -1989,8 +1997,8 @@ defmodule VoxelRegion.World do
 
   def handle_info(message, state) do
     tag = if is_tuple(message), do: elem(message, 0), else: message
-    state = if tag in [:thermal_tick, :thermal_step, :thermal_commit, :liquid_tick, :liquid_commit],
-      do: Residency.request(state), else: state
+    state = if tag in [:thermal_tick, :thermal_step, :thermal_commit, :liquid_tick, :liquid_commit, :projectile_tick] or
+      projectile_result?(message, state), do: Residency.request(state), else: state
     gated_info(message, state, 0) |> continue_callback()
   end
 
@@ -2006,7 +2014,7 @@ defmodule VoxelRegion.World do
 
   # 同上：热提交自己的节拍与步消息之外，其他消息都先写回原生热域的变化。
   defp info(message, %{page_load: %{sim: %{status: :failed}}} = state)
-       when message in [:thermal_tick, :thermal_commit, :liquid_commit] or
+       when message in [:thermal_tick, :thermal_commit, :liquid_commit, :projectile_tick] or
          (is_tuple(message) and elem(message, 0) in [:thermal_tick, :thermal_step, :liquid_tick]),
        do: {:noreply, halt_simulation_io(state)}
 
@@ -2022,7 +2030,10 @@ defmodule VoxelRegion.World do
   defp info({:timeout, ref, :replica_retire}, %{page_store: %{replica_timer: ref}} = state),
     do: {:noreply, VoxelRegion.World.PageCut.retire_replicas(put_in(state.page_store.replica_timer, nil))}
 
-  # 积压中上限（m2a §5.3）：不开始新的液体 / 热步进（进行中的已走到提交边界）；`PageCut.assess/1` 回落时恢复调度。
+  # 积压中上限（m2a §5.3）：不开始新的投射物 / 液体 / 热步进（进行中的已走到提交边界）；`PageCut.assess/1` 回落时恢复调度。
+  defp info(:projectile_tick, state) when state.page_store.level in [:mid, :hard],
+    do: {:noreply, VoxelRegion.World.PageCut.pause(%{state | projectile_timer: nil})}
+
   defp info(:thermal_tick, %{thermal_run: nil} = state) when state.page_store.level in [:mid, :hard],
     do: {:noreply, state |> Thermal.fired() |> VoxelRegion.World.PageCut.pause()}
 
@@ -2048,6 +2059,18 @@ defmodule VoxelRegion.World do
       when message == :page_pump or (is_tuple(message) and elem(message, 0) in [:page_begun, :page_ack, :page_published, :page_failed]),
       do: {:noreply, VoxelRegion.World.PageCut.handle(state, message)}
 
+
+  # 投射物拍（魔法 v2 切片 5）：先把进行中的热提交走完（结构值不被两处同时改），再开始一轮采样。
+  defp info(:projectile_tick, state) do
+    state = drain_thermal(state)
+    {:noreply, VoxelRegion.World.Projectiles.poll(%{state | projectile_timer: nil})}
+  end
+
+  defp info({ref, results}, %{projectile_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = drain_thermal(state)
+    {:noreply, VoxelRegion.World.Projectiles.accept(%{state | projectile_task: nil}, results)}
+  end
 
   defp info(:liquid_commit, state), do: liquid_tick(state, nil)
   defp info({:liquid_tick, due}, %{liquid_due: due} = state), do: {:noreply, drive_inputs(state)}
@@ -2301,13 +2324,17 @@ defmodule VoxelRegion.World do
 
   defp info(_msg, state), do: {:noreply, state}
 
+  # 投射物采样结果（`Projectiles.poll/1` 的任务回复）要按飞行弦段读世界：同样过闸。
+  defp projectile_result?({ref, _results}, %{projectile_task: %Task{ref: ref}}), do: true
+  defp projectile_result?(_message, _state), do: false
+
   # 装页任务结束：正常即重放挂起的消息（重新过闸），异常即对挂起的调用显式回错（不当空气）；模拟的装页唤醒调度。
   # 模拟装页完整结束才续原步；失败保留due/run/paused并显式停止，依赖修复后的公共retry只开启一次新attempt。
   defp redo(:wake, _attempt, reason, state) do
     if reason == :normal do
       state = put_in(state.page_load.paused, nil)
       if state.thermal_run, do: send(self(), {:thermal_step, state.thermal_run.ref})
-      state |> Thermal.wake() |> Liquids.schedule_liquid()
+      state |> Thermal.wake() |> Liquids.schedule_liquid() |> VoxelRegion.World.Projectiles.wake()
     else
       state |> halt_simulation_io() |> reject_waiting_simulation_inputs(reason)
     end
@@ -2371,6 +2398,12 @@ defmodule VoxelRegion.World do
   end
 
   # 身体接触每秒续报，下一次报告即重来；其余消息不带业务回复。
+  # 投射物采样：放掉这次结果（与进度不符的旧结果同样处理），任务位清空、下一拍重新采样，不让死任务封住飞行。
+  defp page_failed({ref, _results}, _error, %{projectile_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    VoxelRegion.World.Projectiles.wake(%{state | projectile_task: nil})
+  end
+
   defp page_failed(_message, _error, state), do: state
 
   defp replay(entry, state, attempt \\ 0)
@@ -2415,9 +2448,9 @@ defmodule VoxelRegion.World do
   end
 
   defp halt_simulation_io(state) do
-    for timer <- [state.thermal_timer, state.liquid_timer], timer != nil,
+    for timer <- [state.thermal_timer, state.liquid_timer, state.projectile_timer], timer != nil,
       do: Clock.cancel_timer(state, timer)
-    %{state | thermal_timer: nil, liquid_timer: nil}
+    %{state | thermal_timer: nil, liquid_timer: nil, projectile_timer: nil}
   end
 
   defp continue_callback({:reply, reply, state}), do: {:reply, reply, state |> Residency.maintain() |> schedule_inputs()}

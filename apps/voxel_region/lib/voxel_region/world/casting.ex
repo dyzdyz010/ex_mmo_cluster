@@ -551,7 +551,10 @@ defmodule VoxelRegion.World.Casting do
     case Structures.launch(state, actor, request, group, checked.effect.target, state.magic) do
       {:ok, launch, state} ->
         s = Structure.new({seq, 0}, group, quote, Structures.commit_tick(state))
-        body = Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock))
+        body =
+          Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock))
+          |> Structures.sampled(actor)
+
         entry = Structures.entry(s, body, quote)
         created_mj = Structures.stored_mj(%{s.id => entry})
         waste_mj = quote.total_mj - quote.physical_mj
@@ -567,8 +570,16 @@ defmodule VoxelRegion.World.Casting do
             "shape=#{body.shape} mass=#{inspect(body.mass_g)} flags=#{inspect(Enum.filter([:ends_on_contact, :massless], &Map.fetch!(body, &1)))} " <>
             "e_op_mj=#{s.e_op_mj} e_th_mj=#{s.e_th_mj} kinetic_mj=#{s.kinetic_mj} e_cap_mj=#{s.e_cap_mj} e_min_mj=#{s.e_min_mj} " <>
             "x0=#{quote.x0} x_star=#{quote.x_star} born_tick=#{s.born_tick} flight_s=#{body.flight_s} rest=#{inspect(body.rest)} " <>
-            "contact=#{inspect(body.contact && body.contact.cell)}"
+            "contact=#{inspect(body.contact && body.contact.cell)} flying=#{body.flight != nil} sampled=#{body.flight != nil and body.flight.source != nil}"
         )
+
+        if body.flight,
+          do:
+            Logger.info(
+              "voxel_structure_flight sid=#{inspect(s.id)} cid=#{actor.cid} phase=launch target=none t_s=0.0 massless=#{body.massless} " <>
+                "origin=#{inspect(body.origin)} velocity=#{inspect(body.velocity)} t0_us=#{body.t0_us} " <>
+                "predicted_flight_s=#{body.flight_s} predicted_rest=#{inspect(body.rest)}"
+            )
 
         commit_settlement(state, pending, checked, quote, %{
           thermal: thermal,
@@ -677,7 +688,7 @@ defmodule VoxelRegion.World.Casting do
             seq: seq,
             outcome: settlement.outcome,
             caster: settled_view(next, actor, quote, settlement.spent_mj / 1000)
-          }}, Thermal.wake(next)}
+          }}, next |> Thermal.wake() |> VoxelRegion.World.Projectiles.wake()}
 
       {:error, reason} ->
         {{:error, reason}, before}
