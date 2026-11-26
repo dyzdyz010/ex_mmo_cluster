@@ -392,7 +392,8 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     assert_receive {:simulation_io_read, reader, @cold}, 2_000
     ref = Process.monitor(reader)
     assert {:ok, :controlled} = Player.spell(c.player, c.identity, request(2), %{})
-    assert_receive {^tag, {:error, :cast_cancelled}}, 1_000
+    # 主动取消的原因串（魔法 v2 切片 6，决策稿 Q6-4）；World 尚未接纳前摇，k = 0 免费。
+    assert_receive {^tag, {:error, :interrupted_cancelled}}, 1_000
     assert_receive {:DOWN, ^ref, :process, ^reader, _}, 1_000
 
     await(fn ->
@@ -446,7 +447,13 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     assert {:ok, :controlled} =
              Player.spell(c.player, c.identity, %{request | action: 2}, ingress)
 
-    assert_receive {^tag, {:error, :cast_cancelled}}, 1_000
+    # 已接纳前摇后的取消由 World 结账并给出唯一回复（魔法 v2 切片 6，决策稿 §6.1）：取消通常落在第 1 步调整段（0.13 s）内，
+    # k = 0 免费回 interrupted_cancelled；机器很慢、越过调整段时 k = 1，按第 1 步中断结账（余额 0，扣 0）回同一原因的结算。
+    assert_receive {^tag, result}, 1_000
+
+    assert match?({:error, :interrupted_cancelled}, result) or
+             match?({:ok, %{outcome: :interrupted_cancelled, fail_step: 1}}, result)
+
     await(fn -> World.simulation_snapshot(c.world, [1001], @box).casts == %{} end)
     assert World.seq(c.world) > accepted
     assert Player.observe(c.player).pending_spell_requests == 0

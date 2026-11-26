@@ -86,6 +86,11 @@ defmodule VoxelRegion.TestSupport do
     def handle_call(:seal,_,state),do: {:reply,:ok,%{state | identity: :sealed}}
     # World 单元测试显式提供授权；不模拟角色前摇 owner。
     def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
+    # 干预剂量通知（魔法 v2 切片 6）：只转给初始状态里登记的 `observer`（测试进程），不模拟 Player 的打断。
+    def handle_info({:windup_disrupted, _, _} = message, state) do
+      if observer = state[:observer], do: send(observer, message)
+      {:noreply, state}
+    end
   end
 
   defmodule Log do

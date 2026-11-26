@@ -1009,4 +1009,182 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_in_delta String.to_float(x_star), 0.25, 0.005
     assert hot_state.load / 255 > String.to_float(x_star)
   end
+
+  # ---------------------------------------------------------------------------
+  # 切片 6：驱散脉冲（决策稿 §6、§13 W6-1–W6-4；设计 §7.3、附录 A.4、§12.2 切片 1 验收第 4 条）
+  # ---------------------------------------------------------------------------
+
+  # 驱散脉冲〈附 准星格面〉〈形 球 0.2 m〉〈乱 100 kW，3 m〉〈蓄 60 kJ〉自默认眼位瞄向墙石 (2, 2, 4) 的中心微格：眼射线
+  # 命中 z = 4 面，球心沿该面法向外移半径 0.2 m（`Structures.launch/7` 的〈附〉），即 z = 3.8。先按几何预测球心，好让灯
+  # 先于脉冲建成（id 更小、同拍先步进）：脉冲第 2 拍衰竭的终止释放剂量只作用于其后处理的结构，这样不混进 A.4 的对拍。
+  # 脉冲建成后再核对球心与预测一致。
+  defp pulse_center(c) do
+    {ex, ey, ez} = c.a.eye
+    {dx, dy, dz} = aim(c.a, @wall_micro)
+    t = (4.0 - ez) / dz
+    {ex + dx * t, ey + dy * t, 3.8}
+  end
+
+  defp build_pulse(c, at) do
+    {id, record, _} = build(c, @wall_micro, "dispel_pulse", at)
+    {px, py, pz} = pulse_center(c)
+    {rx, ry, rz} = record.rest
+    assert_in_delta rx, px, 1.0e-6
+    assert_in_delta ry, py, 1.0e-6
+    assert_in_delta rz, pz, 1.0e-6
+    {id, record}
+  end
+
+  # 〈握〉的灯放在 `point`：施法者面朝 +z、眼在 point 后 0.5 m（手边 = 眼 + 0.5 m），脚踩 y = 0 的地面（脚 = 眼 − 1.5 m）。
+  # `extra` 可换施法者 cid 与战斗范围。灯不求射线，请求的目标字段只按 0x82 形状给零值。
+  defp hand_lamp(c, {x, y, z} = point, at, extra \\ %{}) do
+    a = actor(Map.merge(%{eye: {x, y, z - 0.5}, feet: {x, y - 1.5, z - 0.5}}, extra))
+    assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, program("lamp"), {0.0, 0.0, 1.0}, at)
+    {records, _} = drain()
+    assert [{^seq, id, %{live: 1, rest: rest}}] = records
+    assert distance(rest, point) < 1.0e-9
+    id
+  end
+
+  defp hand_spell(c, bytes, direction, at) do
+    seq = next()
+
+    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
+      direction: direction, program: bytes, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
+
+    VoxelRegion.TestSupport.spell(c.w, Map.merge(c.a, %{received_us: at, clock_node: node()}), request)
+  end
+
+  defp offset({x, y, z}, {dx, dy, dz}), do: {x + dx, y + dy, z + dz}
+  defp debt(s), do: s.debt_micro / 1.0e6
+
+  test "W6-1/验收 4 驱散脉冲正中熄灭未供能的灯：第 1 拍以 live 5（驱散）终止；发出者不受自身场，第 2 拍以 live 3 衰竭", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    lamp = hand_lamp(c, pulse_center(c), 2_000_000)
+    {pulse, _} = build_pulse(c, 3_000_000)
+
+    log = info_log(fn -> commit(c) end)
+    {records, _} = drain()
+    ended = Map.new(for {_, id, %{live: live}} <- records, live != 1, do: {id, live})
+    # 附录 A.4：d = 0 的灯第 1 拍末欠账 1.182 > 0.7，被干预场打掉 → 驱散（live 5）；脉冲自己第 1 拍照常运行（R2）。
+    assert ended == %{lamp => Codec.structure_end_live(:dispelled)}
+    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(lamp))} .*live=5 type=dispelled/
+    assert log =~ ~r/voxel_structure_field emitter=#{Regex.escape(inspect(pulse))} .*t_eff_s=0\.5 .*targets=1/
+
+    {n, pulse_end} = commit_until_end(c, pulse, 3)
+    # 附录 A.3：脉冲存续约 0.6 s，逐拍在第 2 拍衰竭（断供，live 3）。
+    assert {n, pulse_end.live} == {1, Codec.structure_end_live(:exhausted)}
+    assert_accounts_closed(observe(c.w).thermal)
+  end
+
+  test "W6-1/验收 4 驱散脉冲 1 m 外的灯存活并变暗：脉冲结束时欠账 0.601 ± 0.005（附录 A.4）", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    lamp = hand_lamp(c, offset(pulse_center(c), {-1.0, 0.0, 0.0}), 2_000_000)
+    build_pulse(c, 3_000_000)
+    commit(c)
+    commit(c)
+    {records, states} = drain()
+    refute Enum.any?(for {_, ^lamp, r} <- records, do: r.live != 1)
+    assert_in_delta debt(persisted(c, lamp)), 0.601, 0.005
+    # 变暗：相干随欠账下降（线上 coherence < 255，客户端据此表现变暗与读数时断时续）。
+    assert [_ | _] = dim = for({_, ^lamp, r} <- states, do: r.coherence)
+    assert List.last(dim) < 255
+  end
+
+  test "W6-1/W6-2/验收 4 驱散脉冲 2 m 外的灯存活、轻微受损：欠账 0.131 ± 0.005（附录 A.4）；施法者自己的结构同样受剂量", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    # 灯与脉冲同一施法者（@cid）：误伤己方（设计 §7.3、§14.0 Q16），不过 Harm。灯放在球心 +x 2 m（−x 一侧施法者的眼会落进叶格）。
+    lamp = hand_lamp(c, offset(pulse_center(c), {2.0, 0.0, 0.0}), 2_000_000)
+    build_pulse(c, 3_000_000)
+    commit(c)
+    commit(c)
+    assert_in_delta debt(persisted(c, lamp)), 0.131, 0.005
+  end
+
+  test "W6-3 战斗范围外的他人结构不受剂量；施法时带战斗范围的脉冲照常作用于范围内的他人结构（Harm，Q6-3）", c do
+    other = actor(%{cid: 2002})
+    fund(%{c | a: other}, 1_000_000, 1_000_000)
+    fund(c, 1_000_000, 1_500_000)
+    subscribe(c)
+    lamp = hand_lamp(c, offset(pulse_center(c), {-1.0, 0.0, 0.0}), 2_000_000, %{cid: 2002})
+
+    # 施法者没有战斗范围（本场禁伤，Scene 配置缺省）：他人的灯不受场，欠账 0、相干满。
+    log = info_log(fn -> build_pulse(c, 3_000_000); commit(c); commit(c) end)
+    assert debt(persisted(c, lamp)) == 0
+    assert log =~ ~r/voxel_structure_field .*targets=0 doses=\[\{#{Regex.escape(inspect(lamp))}, [\d.e-]+, false\}\]/
+
+    # 对照：施放时带覆盖双方的战斗范围，同一位置的第二个脉冲作用于他人的灯（附录 A.4 的 1 m 量级）。
+    scoped = actor(%{combat_scope: {{-20.0, -20.0, -20.0}, {20.0, 20.0, 20.0}}})
+    build_pulse(%{c | a: scoped}, 4_000_000)
+    commit(c)
+    commit(c)
+    assert debt(persisted(c, lamp)) > 0.5
+  end
+
+  # W6-4：施法者处剂量按“单位精度、零装载”累计 D0·a_X·(P/1 kW)·(1 − d/r)²·t_eff（设计 §7.3、附录 A.4：1 m 0.527 打断，
+  # 1.5 m 0.297 不打断）。施法者站在地面上（中心 y = 1.9），离球心的三维距离取 d，水平后撤量 √(d² − Δy²)。
+  defp windup_caster(c, d) do
+    {px, py, pz} = pulse_center(c)
+    h = :math.sqrt(d * d - (py - 1.9) * (py - 1.9))
+    x = px - h
+    actor(%{eye: {x, 2.5, pz}, feet: {x, 1.0, pz}, position: {x, 1.9, pz}, observer: self()})
+  end
+
+  defp doses(log), do: for([_, total] <- Regex.scan(~r/voxel_cast_dose cid=#{@cid} .*total=([\d.e-]+)/, log), do: String.to_float(total))
+
+  test "W6-4 前摇中的施法者距发出者 1 m：第 1 拍累计 0.444 ≥ 0.3 即通知前摇 owner 一次，脉冲结束时累计 0.527", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    build_pulse(c, 2_000_000)
+    a = windup_caster(c, 1.0)
+    seq = next()
+
+    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
+      direction: {-1.0, 0.0, 0.0}, program: program("lamp"), micro: {0, 0, 0}, granularity: 0, incarnation: 0,
+      owner: {0, 0}, material: 0}
+
+    task = Task.async(fn -> World.spell_intent(c.w, Map.merge(a, %{received_us: 3_000_000, clock_node: node()}), request) end)
+    await(fn -> Map.has_key?(observe(c.w).casts, @cid) end)
+    key = {a.identity, seq}
+
+    log = info_log(fn -> commit(c) end)
+    assert_receive {:windup_disrupted, ^key, first}, 1_000
+    # 第 1 拍：0.02 × 100 × (1 − 1/3)² × 0.5 s = 0.4444。
+    assert_in_delta first, 0.4444, 0.001
+    assert log =~ "voxel_cast_disrupted cid=#{@cid}"
+
+    log = info_log(fn -> commit(c) end)
+    assert [total] = doses(log)
+    assert_in_delta total, 0.527, 0.002
+    # 只通知一次（Player 收到后自行打断；仍在前摇的 World 只累计不重发）。
+    refute_receive {:windup_disrupted, _, _}, 100
+
+    send(c.w, {:cancel_cast, key, :interrupted_disrupted, 0})
+    assert Task.await(task) == {:error, :interrupted_disrupted}
+  end
+
+  test "W6-4 前摇中的施法者距发出者 1.5 m：两拍累计 0.297 < 0.3，不通知", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    build_pulse(c, 2_000_000)
+    a = windup_caster(c, 1.5)
+    seq = next()
+
+    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
+      direction: {-1.0, 0.0, 0.0}, program: program("lamp"), micro: {0, 0, 0}, granularity: 0, incarnation: 0,
+      owner: {0, 0}, material: 0}
+
+    task = Task.async(fn -> World.spell_intent(c.w, Map.merge(a, %{received_us: 3_000_000, clock_node: node()}), request) end)
+    await(fn -> Map.has_key?(observe(c.w).casts, @cid) end)
+    # 脉冲两拍后衰竭；之后没有结构，热提交拍号不再推进（前摇中的灯尚未建成）。
+    log = info_log(fn -> commit(c); commit(c) end)
+    assert_in_delta List.last(doses(log)), 0.297, 0.002
+    refute_receive {:windup_disrupted, _, _}, 100
+
+    send(c.w, {:cancel_cast, {a.identity, seq}, :interrupted_cancelled, 0})
+    assert Task.await(task) == {:error, :interrupted_cancelled}
+  end
 end

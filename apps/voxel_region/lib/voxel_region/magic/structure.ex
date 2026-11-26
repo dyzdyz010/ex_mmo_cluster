@@ -910,6 +910,17 @@ defmodule VoxelRegion.Magic.Structure do
     end
   end
 
+  @doc """
+  一个干预场在施法者处造成的前摇扰乱量（无量纲）：按“单位精度、零装载”的结构计，D0·a_X·(P_act / 1 kW)·(1 − d/r)²·t_eff
+  （设计 §7.3“打断前摇”、§5.5 打断行）。即 `disruption_rate/4` 在 P = 1、x = 0 时乘以场的存续时长；`field` 是
+  `disruption_field/4` 的结果（env 已含 a_X·(P/1 kW)·(1 − d/r)²）。World 在每个热提交拍为前摇中的施法者累计，
+  累计达到目录 `runtime.windup_interrupt_dose` 即通知前摇 owner（Player）打断（落地稿 D7）。
+  附录 A.4：〈乱 100 kW，3 m〉脉冲两拍合计存续 0.593 s，1 m 处 0.527、1.5 m 处 0.297。
+  """
+  @spec windup_dose(field(), Catalog.t()) :: float()
+  def windup_dose(%{env: env, seconds: seconds}, %Catalog{} = catalog),
+    do: disruption_rate(%{precision: 1}, 0, env, catalog) * seconds
+
   # 第 0′ 步的预付（§5.3.3 v2.9 A1），只读拍首状态：返回 {预付活动能 mJ, t_eff 秒}。
   # 预付额 = min(名义存续内的活动能, max(0, E_op − E_min))，整数 mJ；t_eff = 预付额 ÷ P_act（mJ / W = ms），
   # 所以扣款与场的存续逐位对应。无〈乱〉时为 {0, 0.0}。

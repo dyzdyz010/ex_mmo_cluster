@@ -498,4 +498,69 @@ defmodule VoxelRegion.MagicWorldTest do
     assert energy(c) == balance
     assert {:ok, %{energy_j: +0.0}} = World.caster_state(w, 2002)
   end
+
+  # ---------------------------------------------------------------------------
+  # 切片 6：取消与打断结账、结算回复带 fail_step（决策稿 §6.1、§13 W6-5、W6-6、Q6-1、Q6-4；设计 §5.5、§14.0 Q6）
+  # 测试进程充当 Player：k 由真实 Player 按已流逝时间求出（scene_server 用例覆盖），这里直接给 k。
+  # ---------------------------------------------------------------------------
+
+  test "W6-5 第一笔注能前取消（k = 0）免费：outcome 2、不扣能、等待方收到打断原因", c do
+    balance = fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    cast = prepare(c, @leaf_micro, program("lamp"), 2_000_000)
+    # 前摇计划带已广播的各步时长（Player 求 k 用），与报价样本一致。
+    assert length(cast.plan.steps) == length(sample("lamp")["steps"])
+
+    send(c.w, {:cancel_cast, cast.key, :interrupted_moved, 0})
+    assert {:error, :interrupted_moved} = reply(cast)
+    assert_settled(%{live: 0, outcome: 2, fail_step: 0})
+    assert energy(c) == balance
+    assert observe(c.w).casts == %{}
+  end
+
+  test "W6-5/W6-6 前摇进行到第 2 步时取消（k = 2）：outcome 1、fail_step 2，扣第 1–2 步累计支出并落在形成处（W7）", c do
+    balance = fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    cast = prepare(c, @leaf_micro, program("lamp"), 2_000_000)
+    request = cast.request
+    before = observe(c.w)
+
+    send(c.w, {:cancel_cast, cast.key, :interrupted_cancelled, 2})
+    # 期望取报价样本：灯第 2 步〈形〉的累计支出 870 689 mJ（Q6-1：按进行中的步 k 扣第 1..k 步，与分阶段失败同一口径）。
+    charge_j = Enum.at(sample("lamp")["steps"], 1)["spent_mj"] / 1000
+    assert {:ok, %{outcome: :interrupted_cancelled, fail_step: 2, caster: caster} = settled} = reply(cast)
+    assert_in_delta caster.spent_j, charge_j, 1.0e-9
+    assert_settled(%{live: 0, outcome: 1, fail_step: 2})
+    # 余额未被扣光：只付到第 2 步。
+    assert_in_delta energy(c), balance - charge_j, 1.0e-6
+    # 结算回复也经施法者的连接下发（0x83 带实际扣除、0x68 accepted 原因串即 outcome）。
+    assert_receive {:mmo_spell_reply, _, ^request, ^settled}, 1_000
+    # 〈握〉的形成位置是手边点所在格（空气）：全部支出计入辐射账（W7）。
+    s = observe(c.w)
+    assert_in_delta ledger(s, :cast_interrupt_radiation_j) - ledger(before, :cast_interrupt_radiation_j), charge_j, 1.0e-9
+    assert observe(c.w).casts == %{}
+  end
+
+  test "验收 3/W6-6 分辨不足在第 k 步中断：报价的 fail_step 与结算一致，扣第 1..k 步、余额未被扣光；回复带 fail_step", c do
+    balance = fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    # Ω_eff = 16 × 0.1 = 1.6：灯各步累计 S·P 为 0、1、2、2（报价样本），第 3 步超过 → fail_step 3。
+    :ok = GenServer.call(c.a.player, {:coherence, 0.1})
+    assert {:ok, %{caster: quoted}} = spell(c, @leaf_micro, program("lamp"), action: 0, at: 2_000_000)
+    assert quoted.fail_step == 3
+
+    cast = prepare(c, @leaf_micro, program("lamp"), 3_000_000)
+    check(c, cast, 3_000_000)
+    assert {:ok, %{outcome: :interrupted_omega, fail_step: 3, caster: caster}} = reply(cast)
+    assert_settled(%{live: 0, outcome: 1, fail_step: 3})
+    charge_j = Enum.at(sample("lamp")["steps"], 2)["spent_mj"] / 1000
+    assert_in_delta caster.spent_j, charge_j, 1.0e-9
+    assert_in_delta energy(c), balance - charge_j, 1.0e-6
+    assert energy(c) > 0
+  end
+
+  test "W6-6 建成的结算回复带 fail_step 0", c do
+    fund(c, 1_000_000, 1_000_000)
+    assert {:ok, %{outcome: nil, fail_step: 0}} = spell(c, @leaf_micro, program("lamp"), at: 2_000_000)
+  end
 end

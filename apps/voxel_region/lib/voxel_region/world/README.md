@@ -68,7 +68,7 @@ sequenceDiagram
   participant P as Player（前摇计时 owner）
   participant W as World（Casting）
   P->>W: prepare_cast
-  W-->>P: cast_prepared %{windup_s, checkpoint_s}
+  W-->>P: cast_prepared %{windup_s, checkpoint_s, steps}
   opt 预判第 k 步中断（checkpoint_s = t_k）
     P->>W: check_cast（到 t_k）
     W-->>P: cast_checked :continue | :ended（已在第 k 步结算）
@@ -162,6 +162,46 @@ flowchart LR
 - 账目闭合式加一项：`… + structure_released_mj + structure_body_mj + Δstored`。
 - 可观测：`voxel_structure_flight phase=launch|contact|landed|out_of_domain|restored`、`voxel_structure_end … hit=terrain|body`、
   `voxel_structure_state`（随状态增量记 load、x*、env、相干、温度）、`World.stats/1` 的 `simulation_progress.projectiles`。
+
+## 驱散脉冲与前摇打断（魔法 v2，切片 6）
+
+决策稿 §6（Q6-1–Q6-5）；设计 §5.3 第 0′ 步、§5.5 打断行、§7.3。按 id 驱散早已删除，驱散只有“区域扰乱、误伤己方”一种。
+前摇计时与打断的唯一 owner 是 Scene 的 Player（落地稿 D7）：World 只算剂量、通知 Player，并在收到取消时结账。
+
+```mermaid
+sequenceDiagram
+  participant P as Player（前摇 owner）
+  participant W as World（Structures / Casting）
+  Note over W: 热提交拍首（第 0′ 步）：发出者按拍首 E_op 预付，t_eff 定场的存续
+  W->>W: fields：半径内每个目标的 env 增量（含己方结构、不含发出者；他人先过 MmoContracts.Harm）
+  W->>W: windup_doses：前摇中的施法者按单位精度、零装载累计 D0·env·t_eff
+  W-->>P: windup_disrupted（累计首次 ≥ 0.3，只发一次）
+  Note over P: 移动 > 0.25 m / Body 新增创伤 / 主动取消 / 收到剂量通知
+  P->>W: cancel_cast(key, reason, k)（k = 进行中的步号）
+  alt k = 0（第一笔注能前）
+    W-->>P: {:error, reason}（outcome 2，免费）
+  else k ≥ 1
+    W-->>P: {:ok, %{outcome: reason, fail_step: k, …}}（扣第 1..k 步，outcome 1）
+  end
+```
+
+- 干预场（`Structures.tick/3` 第 0′ 步）：发出者是带〈乱〉、本拍预付存续 t_eff > 0 的运行中结构；目标是半径内其余运行中结构
+  （飞行中的也算，位置取已推进到的飞行位置；已冻结人物命中交付的不算）。作用于他人结构前按发出者**施放时**的战斗范围
+  （物理体 `combat_scope`，Player 施法快照给出，缺省 nil = 禁伤）判 `MmoContracts.Harm`，同一施法者的结构不判。场作为
+  `inputs.fields` 交给目标的 `Structure.step/4`；被打到相干跌破且 `debt_int > debt/2` 的结构以 live 5（驱散）终止。
+- 施法者处剂量：位置取待施放里的施法者快照（前摇开始时，第 k 步检查时随快照刷新；Q6-2），`Structure.windup_dose/2`
+  按拍累计在待施放的 `windup_dose` 上，首次达到目录 `runtime.windup_interrupt_dose` 时给前摇 owner 发一次
+  `{:windup_disrupted, 动作键, 累计量}`。他人的场先过 Harm。
+- 取消结账（`Casting.cancel_pending_cast/4`）：k = 0 免费（outcome 2，回 `{:error, reason}`）；k ≥ 1 与分阶段失败同一口径
+  （`Cost.charge_through/3`：第 1..k 步累计支出、付到余额为止），报价按此刻施法者所在格的气候温度重算，作用面沿用前摇开始时的
+  `checked`（不再求射线）；支出落在形成位置（W7）。施放记录 outcome 1、`fail_step = k`，结算回复的 outcome 即打断原因
+  （`interrupted_cancelled / moved / disrupted / wounded`，Q6-4），经 `publish_cast_reply` 给连接下发 0x83 与 0x68 accepted。
+  World 自己收尾的取消（Player 退出 `invalid_session`、装页失败）一律 k = 0。
+- 结算回复（建成、第 k 步中断、取消结账）都带 `fail_step`（切片 3 残余 R2），NPC 的 Outcome 原样拿到。
+- 可观测：`voxel_structure_field emitter cid tick t_eff_s radius_m targets doses=[{sid, 单位剂量, permitted}]`（每个有场的发出者
+  每拍一行）、`voxel_cast_dose cid key tick dose total threshold notify`、`voxel_cast_disrupted cid key tick dose`、
+  `voxel_cast_cancel seq cid request_id reason k charged_mj outcome windup_dose`；终止仍由 `voxel_structure_end … type=dispelled` 记。
+- 待用户确认（按推荐暂行）：Q6-1 取消按进行中的步 k 扣第 1–k 步；Q6-5 只有 Body 新增创伤算伤口事件。
 
 ## 必须守住的不变量
 

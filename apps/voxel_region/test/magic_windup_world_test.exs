@@ -347,7 +347,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     monitors = elem(Process.info(c.w, :monitors), 1)
     {task, request, _} = begin(c, @stone_micro, program("draw_1mj"), 1_000_000)
     key = {c.a.identity, request.client_intent_seq}
-    send(c.w, {:cancel_cast, key, :cast_cancelled})
+    send(c.w, {:cancel_cast, key, :cast_cancelled, 0})
     assert Task.await(task) == {:error, :cast_cancelled}
     seq = World.seq(c.w)
     assert energy(c) == 0.0
@@ -375,7 +375,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert_receive {:cast_prepared, ^key, %{windup_s: windup, checkpoint_s: nil}}, 10_000
     assert_in_delta windup, sample("draw_1mj")["windup_s"], 1.0e-6
     assert VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
-    send(w, {:cancel_cast, key, :cast_cancelled})
+    send(w, {:cancel_cast, key, :cast_cancelled, 0})
     assert_receive {^ref, {:error, :cast_cancelled}}, 5_000
   end
 
@@ -392,7 +392,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     key = {actor.identity, request.client_intent_seq}
     ref = make_ref()
     send(w, {:prepare_cast, key, actor, request, {self(), ref}})
-    send(w, {:cancel_cast, key, :cast_cancelled})
+    send(w, {:cancel_cast, key, :cast_cancelled, 0})
     assert_receive {^ref, {:error, :cast_cancelled}}, 10_000
     assert :sys.get_state(w).pending_casts == %{}
     assert energy(%{c | w: w}) == 0.0

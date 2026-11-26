@@ -54,7 +54,11 @@ defmodule VoxelRegion.World.Casting do
   - 每人上限（Q4-5）：施法者名下已有 `quotas.structures_per_caster` 个结构时，前摇开始、第 k 步检查与出手都以
     `:structure_quota` 拒绝（其余准入在切片 7）。
   - 结算时拒绝（目标失效、数值检查违规等）：outcome 2，不扣能、不改世界。
-  - 施放记录只带 outcome 与 `fail_step`；实际扣除量只经 0x83 `spent_j` 发给施法者本人（W3）。
+  - 前摇取消与打断（切片 6，决策稿 §6.1、Q6-1、Q6-4；`cancel_pending_cast/4`）：Player 给出原因与进行中的步号 k。k = 0
+    （第一笔注能前）免费、outcome 2；k ≥ 1 按“在第 k 步中断”结账，与分阶段失败同一口径（`Cost.charge_through/3`），outcome 1、
+    `fail_step = k`，结算 outcome 即打断原因 `interrupted_cancelled / moved / disrupted / wounded`。
+  - 施放记录只带 outcome 与 `fail_step`；实际扣除量只经 0x83 `spent_j` 发给施法者本人（W3）。结算回复
+    `{:ok, %{seq, outcome, fail_step, caster}}` 也带 `fail_step`（切片 3 残余 R2：NPC 的 Outcome 拿得到 k）。
 
   施法者账 `state.caster_energy` 为整数毫焦（守恒量按整数最小单位结算，见 `balance_mj/2`）；旧浮点 J 余额在读入时
   向零截断为 mJ 并在下次结算写回整数（退出条件：S1a A1 迁入 `Pages.character_row`）。`open_account/2` 在角色首次请求
@@ -67,6 +71,8 @@ defmodule VoxelRegion.World.Casting do
   import VoxelRegion.World.Canonical
 
   @hand_reach 0.5
+  # 前摇打断原因（决策稿 Q6-4；Player 给出，作为 0x68 原因串与结算 outcome）。
+  @windup_interrupts [:interrupted_cancelled, :interrupted_moved, :interrupted_disrupted, :interrupted_wounded]
   # 报价限频的滑动窗口（World 单调时钟，毫秒）。
   @quote_window_ms 1_000
   # 开户一次性充能（整数 mJ）：沿用 master 22d64628 的 497 084 850 mJ（497 084.85 J），随日志持久化，每角色至多一次。
@@ -356,7 +362,7 @@ defmodule VoxelRegion.World.Casting do
          {:ok, checked, next} <- check_cast(state, actor, request, program),
          quote = spell_quote(next, actor, program, checked.effect),
          :ok <- numeric_checks(quote) do
-      begin_cast(next, from, actor, request, program, checked.effect, quote)
+      begin_cast(next, from, actor, request, program, checked, quote)
     else
       true -> reject(state, actor, request, :prepare, :cast_too_soon)
       {:error, reason} -> reject(state, actor, request, :prepare, reason)
@@ -365,7 +371,9 @@ defmodule VoxelRegion.World.Casting do
 
   # 前摇开始：施放记录（t0 = 服务器时间线 MmoContracts.ServerTime，出发点 = 手边，每步带 part_index）随一笔只带记录的
   # 事务广播；按当时的 Ω_eff 与可用资金预判中断步 k，有 k 时 Player 的计时器设在 t_k（W1）。
-  defp begin_cast(state, from, actor, request, program, effect, quote) do
+  defp begin_cast(state, from, actor, request, program, checked, quote) do
+    effect = checked.effect
+
     predicted =
       Cost.staged_failure(
         quote,
@@ -375,9 +383,12 @@ defmodule VoxelRegion.World.Casting do
 
     checkpoint = predicted && elem(predicted, 0)
 
+    # `steps` 是已广播的各步 {调整, 注能} 时长（与施放记录同一份）：Player 按前摇已流逝时间对照它求进行中的步 k，
+    # 取消与打断据此结账（设计 §5.5 打断行、§14.0 Q6；决策稿 §6.1）。
     plan = %{
       windup_s: quote.windup_s,
-      checkpoint_s: checkpoint && elapsed_through(quote, checkpoint)
+      checkpoint_s: checkpoint && elapsed_through(quote, checkpoint),
+      steps: Enum.map(quote.steps, &Map.take(&1, [:adjust_s, :inject_s]))
     }
 
     record = %{
@@ -401,14 +412,19 @@ defmodule VoxelRegion.World.Casting do
             "steps=#{inspect(Enum.map(record.steps, &{&1.part_index, &1.adjust_s, &1.inject_s}))}"
         )
 
+        # `checked`：前摇开始时的作用面、脚下与施法间隔准入，取消结账（`cancel_pending_cast/4`）沿用它，不再求射线。
+        # `windup_dose` / `disrupted`：施法者处累计的干预扰乱量与是否已通知 Player（`World.Structures` 在热提交拍写入）。
         pending = %{
           record: record,
           from: from,
           actor: actor,
           request: request,
           program: program,
+          checked: checked,
           monitor: monitor,
-          checkpoint: checkpoint
+          checkpoint: checkpoint,
+          windup_dose: 0.0,
+          disrupted: false
         }
 
         {:noreply, %{next | pending_casts: Map.put(next.pending_casts, actor.cid, pending)}}
@@ -440,18 +456,63 @@ defmodule VoxelRegion.World.Casting do
         request: %{pending.request | direction: request.direction}
     }
 
-  @doc "取消待施放：提交一笔只带 live = 0 / outcome 2 记录的事务，不扣能，调用方收到 `{:error, reason}`。"
-  def cancel_pending_cast(state, key, reason) do
+  @doc """
+  取消或打断待施放（设计 §5.5 打断行、§14.0 Q6；决策稿 §6.1、Q6-1、Q6-4）。`k` 是 Player 按前摇已流逝时间与已广播步长
+  求出的进行中的步号（前摇计时的唯一 owner 是 Player，落地稿 D7）：
+
+  - `k = 0`（第一笔注能之前，仍在第 1 步调整段；以及 World 自己收尾的会话结束、装页失败）：免费。提交一笔只带
+    live = 0 / outcome 2 记录的事务，不扣能，调用方收到 `{:error, reason}`。
+  - `k ≥ 1`：按“在第 k 步中断”结算，与分阶段失败同一口径（`Cost.charge_through/3`）：扣第 1..k 步累计支出、付到余额为止，
+    全部支出落在形成位置（W7，`cast_interrupt_heat_j` / `cast_interrupt_radiation_j`）；施放记录 outcome 1、`fail_step = k`；
+    调用方与连接收到 `{:ok, %{seq, outcome: reason, fail_step: k, caster}}`（0x83 带实际扣除、0x68 accepted 原因串即 reason）。
+    报价按此刻施法者所在格的气候温度重算（Q6-1 的“用当时的 site”），作用面沿用前摇开始时的 `checked`（取消不再求射线）。
+
+  **待用户确认**（Q6-1 按推荐暂行）：取消按进行中的步 k 扣第 1–k 步，而不是只扣已完成的步。
+  """
+  def cancel_pending_cast(state, key, reason, k \\ 0) do
     case Enum.find(state.pending_casts, fn {_, pending} -> pending.actor.action_key == key end) do
       nil ->
         state
 
       {cid, pending} ->
         Process.demonitor(pending.monitor, [:flush])
-        {:ok, next} = commit_casts(state, :system, %{cid => %{live: 0, outcome: 2, fail_step: 0}})
-        GenServer.reply(pending.from, {:error, reason})
-        %{next | pending_casts: Map.delete(next.pending_casts, cid)}
+        state = %{state | pending_casts: Map.delete(state.pending_casts, cid)}
+
+        if k == 0 do
+          {:ok, next} = commit_casts(state, :system, %{cid => %{live: 0, outcome: 2, fail_step: 0}})
+          log_cancel(next, pending, reason, 0, 0, 2)
+          GenServer.reply(pending.from, {:error, reason})
+          next
+        else
+          {reply, next} = settle_cancelled(state, pending, reason, k)
+          publish_cast_reply(pending.actor, pending.request, reply)
+          GenServer.reply(pending.from, reply)
+          next
+        end
     end
+  end
+
+  # k ≥ 1 的取消结账：与 `settle_interrupted/6` 同一结算，中断原因换成打断原因。
+  defp settle_cancelled(state, pending, reason, k) do
+    %{actor: actor, program: program, checked: checked} = pending
+    quote = spell_quote(state, actor, program, checked.effect)
+    funding = cast_funding(state, actor.cid, checked.effect)
+    {^k, spent_mj} = Cost.charge_through(quote, k, funding.available_mj)
+    {reply, next} = settle_interrupted(state, pending, checked, quote, funding, {k, spent_mj, reason})
+
+    case reply do
+      {:ok, settled} -> log_cancel(next, pending, reason, k, settled.caster.spent_j * 1000, 1)
+      {:error, error} -> log_cancel(state, pending, {reason, error}, k, 0, :failed)
+    end
+
+    {reply, next}
+  end
+
+  defp log_cancel(state, pending, reason, k, charged_mj, outcome) do
+    Logger.info(
+      "voxel_cast_cancel seq=#{state.seq} cid=#{pending.actor.cid} request_id=#{pending.request.request_id} " <>
+        "reason=#{inspect(reason)} k=#{k} charged_mj=#{round(charged_mj)} outcome=#{outcome} windup_dose=#{pending.windup_dose}"
+    )
   end
 
   # ---------------------------------------------------------------------------
@@ -555,7 +616,8 @@ defmodule VoxelRegion.World.Casting do
       {:ok, launch, state} ->
         s = Structure.new({seq, 0}, group, quote, Structures.commit_tick(state))
         body =
-          Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock))
+          Structures.body(group, state.magic, actor.cid, launch, MmoContracts.ServerTime.server_us(state.server_clock),
+            Map.get(actor, :combat_scope))
           |> Structures.sampled(actor)
 
         entry = Structures.entry(s, body, quote)
@@ -626,13 +688,19 @@ defmodule VoxelRegion.World.Casting do
       balance_mj: funding.balance_mj,
       left_mj: funding.balance_mj - charge_mj,
       spent_mj: charge_mj,
-      outcome: if(cause == :omega, do: :interrupted_omega, else: :interrupted_energy),
+      outcome: interrupt_outcome(cause),
       record: %{live: 0, outcome: 1, fail_step: k},
       log:
         "outcome=interrupted fail_step=#{k} cause=#{cause} release_cell=#{inspect(checked.effect.formation)} " <>
           "heat_mj=#{if node, do: heat_mj, else: 0} radiation_mj=#{if node, do: radiation_mj, else: charge_mj}"
     })
   end
+
+  # 中断的结算回复原因（0x68 accepted 原因串即其文本，决策稿 §3.4）：分阶段失败的两种原因（P6）与前摇打断的四种原因
+  # （Q6-4：主动取消、移动、干预剂量、伤口），后者由 Player 给出、原样作为 outcome。
+  defp interrupt_outcome(:omega), do: :interrupted_omega
+  defp interrupt_outcome(:energy), do: :interrupted_energy
+  defp interrupt_outcome(reason) when reason in @windup_interrupts, do: reason
 
   # 中断支出的落点（设计 v2.11 W7、§5.5 释放形态）：形成位置所在宏格是未细分热节点才作为有限热源落入，否则（空气、
   # 细分构件）返回 nil，全部计入辐射账。地块持有者的执行时复核（设计 §14.0 Q7）已由同一回合的 `check_cast/4` 完成：
@@ -686,10 +754,13 @@ defmodule VoxelRegion.World.Casting do
             "resolution_eff=#{resolution_eff(before, actor)} foot=#{inspect(Damage.macro(checked.foot))}"
         )
 
+        # fail_step（决策稿 §3.4、切片 3 残余 R2）：建成为 0，中断为第 k 步；与施放记录同一个值，回复的读者（Player 转给
+        # Gate 与 NPC Body）不必再读施放记录。
         {{:ok,
           %{
             seq: seq,
             outcome: settlement.outcome,
+            fail_step: settlement.record.fail_step,
             caster: settled_view(next, actor, quote, settlement.spent_mj / 1000)
           }}, next |> Thermal.wake() |> VoxelRegion.World.Projectiles.wake()}
 

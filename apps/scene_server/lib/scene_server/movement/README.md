@@ -309,8 +309,32 @@ Global system：Player 仍是前摇计时器的唯一 owner（落地稿 D7），
 Player 先把计时器设在 t_k，到时以当前 `actor_context` 发 `{:check_cast, key, actor, request}`（动作进入 `:checking`，
 观察事件 `cast_checkpoint`）。World 回 `{:cast_checked, key, :continue}` 时 Player 按剩余前摇（整毫秒，
 `ceil(windup) − ceil(t_k)`）再计时，到终点照常 `authorize_cast`；回 `:ended` 表示 World 已在第 k 步结算（结果经原请求
-relay 先到）或这次施放已不存在，动作槽清空。没有预判时计时器直接设在前摇终点，与以前相同。施法移动不打断前摇。
+relay 先到）或这次施放已不存在，动作槽清空。没有预判时计时器直接设在前摇终点，与以前相同。（切片 6 起移动会打断前摇，见下节。）
 `cast_action_test` 覆盖检查、继续与结束三种消息；World 侧判定见 `voxel_region` 的 `world/README.md`。
+
+## 2026-11-26 前摇打断与取消结账（魔法 v2 切片 6，设计 §5.5 打断行、§14.0 Q6）
+
+Global system：Player 是前摇打断的唯一 owner（落地稿 D7）。施法动作槽带 `kind: :spell` 与前摇起点 `origin`（发出
+`prepare_cast` 时的位置，与 World 收到的施法者快照同一时刻）；`cast_prepared` 的计划多一项 `steps`（各步 {调整, 注能} 秒，
+与施放记录同一份），Player 同时记下前摇开始的单调时刻。打断来源与原因（决策稿 Q6-4，原因即 0x68 原因串）：
+
+| 来源 | 判定 | 原因 |
+|---|---|---|
+| 主动取消 | 0x82 action 2（与 NPC `cancel_cast` 同一入口） | `interrupted_cancelled` |
+| 移动 | 前摇中（`:windup` / `:checking`）离开起点超过 0.25 m（与信标、分选同一 `@channel_interrupt_m`） | `interrupted_moved` |
+| 伤口事件 | `receive_effect` 后 Body 的 `traumas` 改变（工具冲击新增创伤；投射物热不改创伤、不算；Q6-5 按推荐暂行，待用户确认） | `interrupted_wounded` |
+| 干预剂量 | World 报来 `{:windup_disrupted, key, dose}`（施法者处累计扰乱量首次 ≥ 0.3），且仍在前摇 | `interrupted_disrupted` |
+
+前摇中（World 已接纳）打断时，`step_in_progress/2` 按已流逝时间对照 `steps` 求进行中的步 k（仍在第 1 步调整段即第一笔注能前，
+k = 0；之后取所在步，各步之后的出手前置段算最后一步），发 `{:cancel_cast, key, reason, k}`，动作槽立即释放（输入限幅恢复），
+观察事件 `cast_interrupted %{client_intent_seq, reason, k, elapsed_s}`。这次施放的唯一回复归 World：k = 0 免费回 `{:error, reason}`，
+k ≥ 1 按第 k 步中断结账回 `{:ok, %{outcome: reason, fail_step: k, …}}`，经原请求 relay 转交一次，本进程不自行回复等待方。
+World 尚未接纳前摇（`:preparing`）时仍按原取消路径由本进程回复（k = 0）。系统撤销（下线、移交 seal、等待者退出、到期时已死亡或
+会话失败）不是玩家的打断，照旧回 `cast_cancelled`、k = 0 免费。
+
+注意：前摇期间输入限幅 0.35（`publish_movement_scale`），按住移动施法仍可能在前摇内走出 0.25 m 而被打断；法杖普攻前摇 0.3 s
+也受此规则约束（设计 §5.5 原文，未设例外）。验证：`cast_action_test`（k 的步界、主动取消与剂量通知）、`beacon_travel_test`
+（真实 Player 的移动打断与伤口事件）、`cast_wait_lifecycle_test`（真实 World 的取消原因）。
 
 ## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）
 

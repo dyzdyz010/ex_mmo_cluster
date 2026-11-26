@@ -220,17 +220,26 @@ defmodule VoxelRegion.Magic.Cost do
   """
   @spec staged_failure(map(), integer(), number()) ::
           nil | {pos_integer(), non_neg_integer(), :omega | :energy}
-  def staged_failure(%{steps: steps}, available_mj, resolution) do
+  def staged_failure(%{steps: steps} = quote, available_mj, resolution) do
     steps
     |> Enum.with_index(1)
     |> Enum.find_value(fn {step, k} ->
       cond do
-        step.complexity > resolution -> {k, min(available_mj, step.spent_mj), :omega}
-        step.spent_mj > available_mj -> {k, available_mj, :energy}
+        step.complexity > resolution -> Tuple.append(charge_through(quote, k, available_mj), :omega)
+        step.spent_mj > available_mj -> Tuple.append(charge_through(quote, k, available_mj), :energy)
         true -> nil
       end
     end)
   end
+
+  @doc """
+  在第 k 步中断的扣费（设计 §5.5、v2.9 A6）：`{k, min(可用余额, 第 1..k 步累计支出)}`，即“第 1..k 步照付、付到耗尽为止，
+  其余步不发生”。分阶段失败（`staged_failure/3`）与前摇取消、打断（决策稿 §6.1、Q6-1：按进行中的步 k 结账）共用这一处。
+  k 从 1 起、不超过报价步数。
+  """
+  @spec charge_through(map(), pos_integer(), integer()) :: {pos_integer(), non_neg_integer()}
+  def charge_through(%{steps: steps}, k, available_mj) when k >= 1 and k <= length(steps),
+    do: {k, min(available_mj, Enum.at(steps, k - 1).spent_mj)}
 
   # ---- 部件与构造顺序（§3.5）----
 

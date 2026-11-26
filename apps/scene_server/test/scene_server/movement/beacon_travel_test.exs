@@ -18,6 +18,13 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   - 放行：结束校验的事务 seq 原样回执一次，动作槽释放、原地不瞬移。
   - 读条中再发分选或信标、或以不大于上次的 client_intent_seq 重放：`cast_too_soon`，不发新的开始校验。
   - 读条中走开 0.25 m 以上、或 action 7 取消：回 `cast_cancelled`，不发结束校验；没有可取消的分选时取消回 `already_released`。
+
+  施法前摇（魔法 v2 切片 6，设计 §5.5 打断行；决策稿 §6.1、§13 P6-1、Q6-4、Q6-5）与读条同一打断距离，本进程同样扮 World
+  收 `{:player_spell_request …}`、回 `{:cast_prepared …}`（计划带各步时长）：
+
+  - 前摇中按 +x 走开 0.25 m 以上：Player 发 `{:cancel_cast, key, :interrupted_moved, k}`，k 按已流逝时间对照各步时长求出；
+    不自己回等待方，World 的结账回复经它原样转交一次。
+  - 受到工具冲击（Body 新增创伤）即以 `interrupted_wounded` 打断；投射物热（不改创伤）不打断（Q6-5 按推荐暂行）。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Scene, Player}
@@ -105,7 +112,8 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   # bottom：场景最低 y tile；移动范围下沿与出生下限都取该 tile 底 + 16 m（青岚这两者远低于出生窗口）。
-  defp config(bottom) do
+  # extra：追加的配置键（伤口用例给 `test_combat_bounds_m`，否则本场禁伤、作用被 Harm 拒绝）。
+  defp config(bottom, extra) do
     path = Path.expand("../../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
 
     profile =
@@ -124,6 +132,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
       "profile" => profile,
       "collision_window_radius_tiles" => 1
     }
+    |> Map.merge(extra)
   end
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
@@ -160,7 +169,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   # 入场、就绪，原地站 4 帧。
-  defp enter(bottom \\ 7) do
+  defp enter(bottom \\ 7, extra \\ %{}) do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{owner: self()}})
     body_store = start_supervised!({MmoTest.BodyStore, []})
@@ -172,7 +181,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
            scene_id: 1,
            scene_epoch: 7,
            world_ref: source,
-           config: config(bottom),
+           config: config(bottom, extra),
            clock: {Clock, clock},
            sink: Sink,
            body_store: {MmoTest.BodyStore, store: body_store},
@@ -403,5 +412,61 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     assert {:ok, _} = Player.tool_context(p, identity())
     refute_receive {:authority, {:commit_sort, _, _, _}}, 50
     refute_receive {^ref, _}, 0
+  end
+
+  # 施法前摇：经角色 owner 的公共入口发起，扮 World 接纳前摇并给出计划（各步 {调整, 注能} 秒）；返回 {等待标签, 动作键, relay}。
+  defp windup(p, steps) do
+    ref = make_ref()
+    request = %{action: 1, client_intent_seq: 70, request_id: 5, logical_scene_id: 1, direction: {1.0, 0.0, 0.0}}
+    Player.cast_spell(p, identity(), request, %{caster_recipient: {self(), make_ref()}}, {self(), ref})
+    assert_receive {:authority, {:player_spell_request, _, relay, {:prepare_cast, key, actor, ^request, relay}}}, 2000
+    assert actor.position == Player.observe(p).state.position
+    send(p, {:cast_prepared, key, %{windup_s: 60.3, checkpoint_s: nil, steps: steps}})
+    wait(fn -> match?(%{phase: :windup}, :sys.get_state(p).action) end)
+    {ref, key, relay}
+  end
+
+  test "P6-1 施法前摇中走开 0.25 m 以上即打断：interrupted_moved 带进行中的步 k，结账回复只经 World 转交一次" do
+    {ctx, p, _} = enter()
+    # 第 1 步从 0 s 起注能 60 s：此刻处在第 1 步，k = 1。
+    {ref, key, relay} = windup(p, [%{adjust_s: 0.0, inject_s: 60.0}])
+    origin = Player.observe(p).state.position
+
+    Enum.reduce_while(5..80, nil, fn seq, _ ->
+      step(ctx, p, seq, 32767)
+      if :sys.get_state(p).action == nil, do: {:halt, seq}, else: {:cont, nil}
+    end)
+
+    assert_receive {:authority, {:cancel_cast, ^key, :interrupted_moved, 1}}, 2000
+    {x0, _, _} = origin
+    {x1, _, _} = Player.observe(p).state.position
+    assert x1 - x0 > 0.25 and x1 - x0 < 0.5
+    refute_receive {:authority, {:authorize_cast, _, _, _}}, 50
+    refute_received {^ref, _}
+
+    settled = {:ok, %{seq: 9, outcome: :interrupted_moved, fail_step: 1, caster: %{}}}
+    GenServer.reply(relay, settled)
+    assert_receive {^ref, ^settled}, 2000
+    refute_receive {^ref, _}, 50
+  end
+
+  test "伤口事件打断前摇：工具冲击新增创伤 → interrupted_wounded；投射物热不改创伤、不打断（Q6-5）" do
+    {_ctx, p, _} = enter(7, %{"test_combat_bounds_m" => [[-48.0, 464.0, -48.0], [112.0, 624.0, 112.0]]})
+    # 第 1 步调整 60 s：仍在第一笔注能前，k = 0。
+    {_ref, key, _relay} = windup(p, [%{adjust_s: 60.0, inject_s: 1.0}])
+    {:ok, target} = Player.hit_context(p)
+    source = %{identity: identity(), position: target.position, cid: 999, life_generation: 1}
+
+    heat = %{key: {:projectile, 1}, q_j: 50.0, position: target.position, target: target, actor: source}
+    assert {:ok, _} = Player.receive_effect(p, heat)
+    refute_receive {:authority, {:cancel_cast, _, _, _}}, 100
+    assert %{phase: :windup} = :sys.get_state(p).action
+
+    hit = %{key: {identity(), 11}, target: target, request_id: 42, part: :torso,
+      impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0}, actor: source}
+
+    assert {:ok, _} = Player.receive_effect(p, hit)
+    assert_receive {:authority, {:cancel_cast, ^key, :interrupted_wounded, 0}}, 2000
+    assert :sys.get_state(p).action == nil
   end
 end

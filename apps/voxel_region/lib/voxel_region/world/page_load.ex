@@ -216,7 +216,7 @@ defmodule VoxelRegion.World.PageLoad do
   def order_key({tag, key, _, _, _}) when tag == :prepare_cast, do: {:action, key}
   def order_key({tag, key, _, _}) when tag in [:authorize_cast, :prepare_beacon, :commit_beacon, :prepare_sort, :commit_sort],
     do: {:action, key}
-  def order_key({:cancel_cast, key, _reason}), do: {:action, key}
+  def order_key({:cancel_cast, key, _reason, _k}), do: {:action, key}
   def order_key({tag, cid, _, _}) when tag in [:body_contact, :body_detach], do: {:body, cid}
   def order_key({:body_death, cid, _feet}), do: {:body, cid}
   def order_key(_message), do: nil

@@ -514,8 +514,10 @@ defmodule VoxelRegion.World do
 
   @doc """
   全局系统功能（魔法 v2，切片 3–4）：施法意图（0x82，程序为 IR v2）。action 0 = 报价（不改世界，回 0x83 v2 全字段）；
-  1 = 施放。返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 建成 / `:interrupted_omega` / `:interrupted_energy`，
-  第 k 步中断也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界；数值检查违规为 `{:rejects, [检查名]}`，
+  1 = 施放。返回 `{:ok, %{seq, outcome, fail_step, caster}}`（outcome：nil 建成 / `:interrupted_omega` / `:interrupted_energy`，
+  第 k 步中断也是一笔已提交事务，`fail_step` = k、建成为 0；切片 6 起前摇进行到第 k ≥ 1 步时被取消或打断，outcome 为
+  `:interrupted_cancelled | :interrupted_moved | :interrupted_disrupted | :interrupted_wounded`，第一笔注能前取消或打断回
+  `{:error, 同一原因}`）或 `{:error, reason}`（不扣能量、不改世界；数值检查违规为 `{:rejects, [检查名]}`，
   射线落空为 `:no_target`，报价超频为 `:quote_rate`，施法者名下结构已达上限为 `:structure_quota`）。结构建成后由热提交逐拍
   步进（`VoxelRegion.World.Structures`）。
   施放通过立即校验后先进入前摇，本调用在结算完成后才返回；前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
@@ -2191,7 +2193,8 @@ defmodule VoxelRegion.World do
         end
     end
   end
-  defp info({:cancel_cast, key, reason}, state), do: {:noreply, Casting.cancel_pending_cast(state, key, reason)}
+  # 前摇取消与打断（切片 6，决策稿 §6.1）：Player 给出原因与进行中的步号 k（k = 0 免费，k ≥ 1 按第 k 步中断结账）。
+  defp info({:cancel_cast, key, reason, k}, state), do: {:noreply, Casting.cancel_pending_cast(state, key, reason, k)}
 
   # 传送信标：Player 是读条 owner；World 只在开始与结束各校验一次，结果异步回给 Player（不回调 Player，避免互等）。
   defp info({:prepare_beacon, key, actor, request}, state) do

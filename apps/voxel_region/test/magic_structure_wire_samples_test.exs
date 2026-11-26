@@ -6,7 +6,7 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   - 契约：样本里每条记录的动态字段（装载、相干、状态、失效段、温度、发光）都等于对同一结构调用 `Structure.wire/1`
     的结果；结构由冻结程序 `fixtures/magic/ir-v2-samples.json` 经真实 `Program.decode_ir/2`、`Cost.quote_structure/3`、
     `Structure.new/4`（终止样本再经 `Structure.step/4`、`Structure.respond/3`）产生，都是玩家施放能产生的结构。
-  - 静态与运动字段由 World 的真实结构记录生产者给出（切片 4c）：`World.Structures.body/5` 从解码后的结构组与发射求物理体，
+  - 静态与运动字段由 World 的真实结构记录生产者给出（切片 4c）：`World.Structures.body/6` 从解码后的结构组与发射求物理体，
     `World.Structures.launch/4` 把 `Semblance.trace/8` 在一个测试世界（y < 1 m 的宏格为实占用地面）里的求交结果换成运动字段，
     `World.Structures.record/3` 拼出完整记录；`:flying` 状态位与 live 编号（`Codec.structure_end_live/1`）按样本场景给出。
     样本字节在 4a 冻结：生产者换成 World 的实现后逐字段不变，证明生产者与 golden 一致。
@@ -115,9 +115,9 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   # 一条完整记录：World 的生产者（物理体 + `Structure.wire/1` 的动态字段 + 样本场景给出的状态位与 live）。
   defp record(c, group, live, place, wire, world_status \\ []) do
     # 物理体的半尺寸与无质量位只取决于程序；先以静止发射求一次，再按样本场景的发射求真实物理体。
-    probe = Structures.body(group, c.catalog, @caster, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us)
+    probe = Structures.body(group, c.catalog, @caster, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us, nil)
     place = if match?({:thrown, _}, place), do: place, else: {:at, place}
-    body = Structures.body(group, c.catalog, @caster, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us)
+    body = Structures.body(group, c.catalog, @caster, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us, nil)
     Structures.record(body, %{wire | status: wire.status ++ world_status}, live)
   end
 

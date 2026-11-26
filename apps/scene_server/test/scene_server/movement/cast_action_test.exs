@@ -10,6 +10,14 @@ defmodule SceneServer.Movement.CastActionTest do
   end
 
   # Test-only：直接驱动 owner 回调和消息顺序；World 支付另由真实 World 测试证明。
+  # World 前摇计划里的各步 {调整, 注能} 秒（取灯的报价样本 `quote-v2-samples.json` lamp，四舍五入到 0.1 ms）。
+  @steps [
+    %{adjust_s: 0.1434, inject_s: 0.0},
+    %{adjust_s: 0.201, inject_s: 0.0},
+    %{adjust_s: 0.0944, inject_s: 0.0},
+    %{adjust_s: 0.1185, inject_s: 0.05}
+  ]
+
   setup do
     id = %Session.Identity{session_epoch: 7, scene_id: 1, scene_epoch: 2}
 
@@ -67,10 +75,11 @@ defmodule SceneServer.Movement.CastActionTest do
     assert {:reply, {:ok, :controlled}, s} =
              Player.handle_call({:spell, c.id, %{c.request | action: 2}, %{}}, c.from, s)
 
-    assert_receive {:cancel_cast, ^key, :cast_cancelled}
+    # 准备中（World 尚未接纳前摇）的主动取消：本进程收尾，k = 0（魔法 v2 切片 6，原因 Q6-4）。
+    assert_receive {:cancel_cast, ^key, :interrupted_cancelled, 0}
 
     assert {:noreply, s} =
-             Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+             Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
 
     assert {:noreply, _} = Player.handle_info({:release_cast, key}, s)
     refute_receive {:authorize_cast, _, _, _}, 0
@@ -101,7 +110,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
 
     aim = %{c.request | action: 3, direction: {0.0, 1.0, 0.0}}
     {:reply, {:ok, :controlled}, s} = Player.handle_call({:spell, c.id, aim, %{}}, c.from, s)
@@ -126,7 +135,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 0.06, checkpoint_s: 0.02}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 0.06, checkpoint_s: 0.02, steps: @steps}}, s)
 
     assert_receive {:cast_checkpoint, ^key}, 1_000
     refute_received {:release_cast, ^key}
@@ -153,7 +162,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: 5.0}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: 5.0, steps: @steps}}, s)
 
     {:noreply, s} = Player.handle_info({:cast_checkpoint, key}, s)
     assert_receive {:check_cast, ^key, _, _}
@@ -204,7 +213,7 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
 
     {:noreply, s} =
-      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil}}, s)
+      Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
 
     old = %{c.id | session_epoch: 6}
 
@@ -214,7 +223,8 @@ defmodule SceneServer.Movement.CastActionTest do
     {:noreply, _} =
       Player.handle_info({:release_cast, key}, %{s | body: %{s.body | status: :dead}})
 
-    assert_receive {:cancel_cast, ^key, :cast_cancelled}
+    # 系统撤销（死亡、会话失败、移交）不是玩家的打断：免费，k = 0。
+    assert_receive {:cancel_cast, ^key, :cast_cancelled, 0}
     refute_receive {:authorize_cast, _, _, _}, 0
   end
 
@@ -258,5 +268,60 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_raise FunctionClauseError, fn ->
       Player.cast_spell(self(), c.id, c.request, %{caster_recipient: recipient}, :nowhere)
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # 魔法 v2 切片 6：前摇打断（设计 §5.5 打断行、§14.0 Q6；决策稿 §6.1、Q6-1、Q6-4；落地稿 D7）
+  # ---------------------------------------------------------------------------
+
+  # 期望按步界手算：灯各步结束于 0.1434、0.3444、0.4388、0.6073 s（第 4 步注能 0.05 s），之后是出手前置段。
+  test "进行中的步 k：第 1 步调整段内为 0（第一笔注能前）；之后取所在步，调整段也算该步；出手前置段算最后一步" do
+    assert Player.step_in_progress(@steps, 0.0) == 0
+    assert Player.step_in_progress(@steps, 0.1433) == 0
+    assert Player.step_in_progress(@steps, 0.1435) == 2
+    assert Player.step_in_progress(@steps, 0.40) == 3
+    assert Player.step_in_progress(@steps, 0.58) == 4
+    assert Player.step_in_progress(@steps, 0.9) == 4
+    # 第 1 步带注能时，注能段内即 k = 1。
+    assert Player.step_in_progress([%{adjust_s: 0.1, inject_s: 0.2}], 0.15) == 1
+  end
+
+  test "前摇中主动取消：按已流逝时间求 k 发给 World，动作槽立即释放；等待方只收 World 的一次回复", c do
+    {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
+    assert_receive {:player_spell_request, ref, _, {:prepare_cast, key, _, _, _}}
+    # 第 1 步从 0 s 起注能 60 s：任何时刻取消都在第 1 步，k = 1（须结账）。
+    plan = %{windup_s: 60.3, checkpoint_s: nil, steps: [%{adjust_s: 0.0, inject_s: 60.0}]}
+    {:noreply, s} = Player.handle_info({:cast_prepared, key, plan}, s)
+
+    assert {:reply, {:ok, :controlled}, s} =
+             Player.handle_call({:spell, c.id, %{c.request | action: 2}, %{}}, c.from, s)
+
+    assert_receive {:cancel_cast, ^key, :interrupted_cancelled, 1}
+    assert s.action == nil
+    {_, tag} = c.from
+    refute_received {^tag, _}
+    # 结账回复由 World 给出（outcome 即打断原因、fail_step = k），经本进程原样转交一次。
+    settled = {:ok, %{seq: 9, outcome: :interrupted_cancelled, fail_step: 1, caster: %{}}}
+    {:noreply, s} = Player.handle_info({{:spell_reply, ref}, settled}, s)
+    assert_receive {^tag, ^settled}
+    assert s.spell_requests == %{}
+    # 旧到期消息不再授权。
+    {:noreply, _} = Player.handle_info({:release_cast, key}, s)
+    refute_receive {:authorize_cast, _, _, _}, 0
+  end
+
+  test "干预剂量打断：前摇中收到 windup_disrupted 即以 interrupted_disrupted 取消；准备中、旧动作的通知忽略", c do
+    {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
+    # World 尚未接纳前摇：施法者不在 World 的待施放里，不会有剂量；到达的通知一律忽略。
+    assert {:noreply, ^s} = Player.handle_info({:windup_disrupted, key, 0.44}, s)
+    {:noreply, s} = Player.handle_info({:cast_prepared, key, %{windup_s: 10.0, checkpoint_s: nil, steps: @steps}}, s)
+    assert {:noreply, ^s} = Player.handle_info({:windup_disrupted, {c.id, 0}, 0.44}, s)
+    refute_received {:cancel_cast, _, _, _}
+
+    {:noreply, s} = Player.handle_info({:windup_disrupted, key, 0.44}, s)
+    # 刚进入前摇：仍在第 1 步调整段（0.1434 s），k = 0，免费。
+    assert_receive {:cancel_cast, ^key, :interrupted_disrupted, 0}
+    assert s.action == nil
   end
 end

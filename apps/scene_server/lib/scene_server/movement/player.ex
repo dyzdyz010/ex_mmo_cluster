@@ -139,12 +139,18 @@ defmodule SceneServer.Movement.Player do
 
   @doc """
   施放（0x82 action 1）的角色 owner 入口：异步排进与 `spell/4` 同一处理，调用方不等前摇。前摇与授权由本进程推进，
-  World结算先回Player的本请求relay，再向原reply_to转交一次 `{tag, {:ok, %{seq, outcome, caster}} | {:error, reason}}`；
-  立即拒绝（`cast_too_soon`、`dead`、`invalid_state` 等）、取消（`cast_cancelled`）与会话结束（`invalid_session`）
-  经同一 `reply_to`，本进程处理到的每次施放恰好一个回复；处理前本进程已退出则没有回复，调用方以本进程的 DOWN 收尾
-  （Dispatch 的等待进程与 Body 都监视它）。成功结算的施法者状态由 World 先发往 `ingress.caster_recipient`
+  World结算先回Player的本请求relay，再向原reply_to转交一次 `{tag, {:ok, %{seq, outcome, fail_step, caster}} | {:error, reason}}`；
+  立即拒绝（`cast_too_soon`、`dead`、`invalid_state` 等）、系统撤销（移交 / 下线 / 等待者退出：`cast_cancelled`）与会话结束
+  （`invalid_session`）经同一 `reply_to`，本进程处理到的每次施放恰好一个回复；处理前本进程已退出则没有回复，调用方以本进程的
+  DOWN 收尾（Dispatch 的等待进程与 Body 都监视它）。成功结算的施法者状态由 World 先发往 `ingress.caster_recipient`
   （`{pid, ref}` → `{:mmo_spell_reply, ref, request, reply}`）。函数头要求两者都是 `{pid, tag}`：缺 caster_recipient 时
   World 在结算出口 KeyError（能力库设计稿 F26 / S4）。调用方只有 Gate 的 `Dispatch` 与 NPC `Body`。
+
+  前摇打断（魔法 v2 切片 6，设计 §5.5 打断行；落地稿 D7：本进程是唯一 owner）：主动取消（action 2）、离开前摇起点超过
+  0.25 m、Body 新增创伤、World 报来施法者处的干预扰乱量达阈值（`{:windup_disrupted, key, dose}`），原因依次为
+  `interrupted_cancelled / moved / wounded / disrupted`（决策稿 Q6-4）。本进程按前摇已流逝时间对照 World 广播的各步时长
+  求进行中的步 k（第 1 步调整段内为 0），发 `{:cancel_cast, key, reason, k}`；World 接纳前摇后的结账与回复都归 World：
+  k = 0 回 `{:error, reason}`，k ≥ 1 按第 k 步中断扣费并回 `{:ok, %{outcome: reason, fail_step: k, ...}}`。
   """
   def cast_spell(
         player,
@@ -524,6 +530,13 @@ defmodule SceneServer.Movement.Player do
           %{next | effect_receipts: Map.put(receipts, effect.key, receipt)}
           |> persist_body()
 
+        # 伤口事件（设计 §5.5 打断行；Q6-5 按推荐暂行，待用户确认）：只有 Body 新增创伤（traumas 改变）才打断前摇，
+        # 投射物热等不改 traumas 的作用不算。
+        next =
+          if next.body.traumas != state.body.traumas,
+            do: interrupt_spell(next, :interrupted_wounded),
+            else: next
+
         {:reply, {:ok, receipt}, publish_effect(next, effect, receipt)}
     end
   end
@@ -778,8 +791,9 @@ defmodule SceneServer.Movement.Player do
   # t_k（第 k 步结束），到时发 `{:check_cast, key, actor, request}` 请 World 用当时的值重判第 1..k 步；回 :continue 则为
   # 剩余前摇重设计时器，回 :ended 表示 World 已结算（或这次施放已不存在），动作槽清空。没有预判时计时器直接设在前摇终点。
   # 两段计时按整毫秒切分（ceil(t_k)、ceil(windup) − ceil(t_k)），总长与无检查时相同。
+  # 计划里的 `steps`（各步 {调整, 注能} 秒）与此刻的单调时钟随动作槽保存，打断时据此求进行中的步 k（`interrupt_spell/2`）。
   def handle_info(
-        {:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: checkpoint_s}},
+        {:cast_prepared, key, %{windup_s: windup_s, checkpoint_s: checkpoint_s, steps: steps}},
         %{action: %{key: key, phase: :preparing} = action} = state
       ) do
     {message, delay_ms} =
@@ -794,7 +808,9 @@ defmodule SceneServer.Movement.Player do
         phase: :windup,
         timer: timer,
         windup_s: windup_s,
-        checkpoint_s: checkpoint_s
+        checkpoint_s: checkpoint_s,
+        steps: steps,
+        started_ms: System.monotonic_time(:millisecond)
       })
 
     {:noreply, %{state | action: action}}
@@ -837,6 +853,19 @@ defmodule SceneServer.Movement.Player do
     do: {:noreply, clear_cast(state)}
 
   def handle_info({:cast_checked, _, _}, state), do: {:noreply, state}
+
+  # 干预剂量打断（设计 §5.5、§7.3；落地稿 D7）：World 在热提交拍累计施法者处的扰乱量，首次达到阈值时报来一次；
+  # 本进程只在这次施放仍在前摇时打断，已出手、已结束或换了动作的旧通知忽略。
+  def handle_info(
+        {:windup_disrupted, key, dose},
+        %{action: %{key: key, kind: :spell, phase: phase}} = state
+      )
+      when phase in [:windup, :checking] do
+    Logger.info("voxel_player_windup_disrupted id=#{state.id} key=#{inspect(key)} dose=#{dose}")
+    {:noreply, interrupt_spell(state, :interrupted_disrupted)}
+  end
+
+  def handle_info({:windup_disrupted, _, _}, state), do: {:noreply, state}
 
   # 传送信标：World 校验开始 → 读条；读条起点记下，移动超过 0.25 m 即打断（`interrupt_channel/1`）。
   def handle_info(
@@ -1612,7 +1641,10 @@ defmodule SceneServer.Movement.Player do
       feet: {x, y - state.config.profile.half_height, z},
       tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
       coherence_factor: Body.coherence_factor(state.body),
-      life_generation: state.life_generation
+      life_generation: state.life_generation,
+      # 本场战斗范围（`MmoContracts.Harm`）：施法快照带进 World，结构存下施放时的值，驱散脉冲作用于他人结构与他人前摇前据此判
+      # （魔法 v2 切片 6，决策稿 §6.1、Q6-3）。
+      combat_scope: Map.get(state.config, :combat_scope)
     }
   end
 
@@ -1653,7 +1685,14 @@ defmodule SceneServer.Movement.Player do
 
         next = %{
           state
-          | action: %{key: key, request: request, phase: :preparing, timer: nil},
+          | action: %{
+              key: key,
+              kind: :spell,
+              request: request,
+              phase: :preparing,
+              timer: nil,
+              origin: state.state.position
+            },
             action_seq: request.client_intent_seq
         }
 
@@ -1663,7 +1702,7 @@ defmodule SceneServer.Movement.Player do
         {:reply, {:error, :cast_too_soon}, state}
 
       {2, %{key: ^key}} ->
-        {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
+        {:reply, {:ok, :controlled}, interrupt_spell(state, :interrupted_cancelled)}
 
       {3, %{key: ^key} = action} ->
         # 控制请求只更新当前动作的方向，不替换程序和目标。
@@ -1698,7 +1737,7 @@ defmodule SceneServer.Movement.Player do
       {request, pending} ->
         Process.demonitor(request.monitor, [:flush])
         GenServer.cast(state.authority_ref, {:page_cancel, ref})
-        if request.key, do: send(state.authority_ref, {:cancel_cast, request.key, reason})
+        if request.key, do: send(state.authority_ref, {:cancel_cast, request.key, reason, 0})
         GenServer.reply(request.from, {:error, reason})
         state = %{state | spell_requests: pending}
 
@@ -1734,14 +1773,68 @@ defmodule SceneServer.Movement.Player do
             cancel_spell_request(state, ref, reason)
 
           nil ->
-            send(state.authority_ref, {:cancel_cast, key, reason})
+            send(state.authority_ref, {:cancel_cast, key, reason, 0})
             clear_cast(state)
         end
     end
   end
 
+  # 施法前摇打断（魔法 v2 切片 6，设计 §5.5 打断行、§14.0 Q6；决策稿 §6.1、Q6-1、Q6-4）。`reason` 是四种打断原因之一。
+  # - World 还没接纳前摇（:preparing）：按原取消路径收尾（本进程回等待方、撤销读闸），k = 0。
+  # - 前摇中（:windup / :checking）：按已流逝时间求进行中的步 k，发 `{:cancel_cast, key, reason, k}`，动作槽立即释放；
+  #   本次施放的唯一回复由 World 给出（k = 0 免费回错误，k ≥ 1 结账回结算），所以这里不回等待方、保留请求跟踪。
+  defp interrupt_spell(%{action: %{kind: :spell, phase: :preparing}} = state, reason),
+    do: cancel_cast(state, reason)
+
+  defp interrupt_spell(%{action: %{kind: :spell, phase: phase} = action} = state, reason)
+       when phase in [:windup, :checking] do
+    elapsed_s = (System.monotonic_time(:millisecond) - action.started_ms) / 1000
+    k = step_in_progress(action.steps, elapsed_s)
+
+    character_event(state, state, :cast_interrupted, %{
+      client_intent_seq: action.request.client_intent_seq,
+      reason: reason,
+      k: k,
+      elapsed_s: elapsed_s
+    })
+
+    send(state.authority_ref, {:cancel_cast, action.key, reason, k})
+    clear_cast(state)
+  end
+
+  defp interrupt_spell(state, _reason), do: state
+
+  # 进行中的步号 k（设计 §5.5 打断行“第一笔注能前”）：对照已广播的各步 {调整, 注能} 时长；仍在第 1 步调整段即第一笔注能之前，
+  # k = 0；之后取已流逝时间所在的步（某步调整段也算该步，与分阶段失败“第 k 步失败扣第 1..k 步”同一口径）；各步之后的
+  # 出手前置段算最后一步。
+  @doc false
+  def step_in_progress(steps, elapsed_s), do: step_in_progress(steps, elapsed_s, 1, 0.0)
+
+  defp step_in_progress([], _elapsed_s, k, _start), do: k - 1
+
+  defp step_in_progress([%{adjust_s: adjust, inject_s: inject} | rest], elapsed_s, k, start) do
+    cond do
+      k == 1 and elapsed_s < start + adjust -> 0
+      elapsed_s < start + adjust + inject -> k
+      true -> step_in_progress(rest, elapsed_s, k + 1, start + adjust + inject)
+    end
+  end
+
   # 传送信标、分选与传送回出生点读条中离开起点超过 @channel_interrupt_m 即打断（Voxim Docs/Gameplay/Beacon.md §3；
   # 分选 Docs/Items.md §3.2 回 cast_cancelled；原因按 @channel_moved）。
+  defp interrupt_channel(
+         %{
+           action: %{kind: :spell, phase: phase, origin: {ox, oy, oz}},
+           state: %{position: {x, y, z}}
+         } = state
+       )
+       when phase in [:windup, :checking] do
+    if (x - ox) * (x - ox) + (y - oy) * (y - oy) + (z - oz) * (z - oz) >
+         @channel_interrupt_m * @channel_interrupt_m,
+       do: interrupt_spell(state, :interrupted_moved),
+       else: state
+  end
+
   defp interrupt_channel(
          %{
            action: %{kind: kind, phase: :windup, origin: {ox, oy, oz}},

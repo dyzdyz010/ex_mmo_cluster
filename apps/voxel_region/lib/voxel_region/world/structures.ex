@@ -50,6 +50,14 @@ defmodule VoxelRegion.World.Structures do
   - 邻近终止释放剂量：按 id 升序，本拍已终止结构的释放作用于其后处理的结构。
   - 规则触发不设触发预算（切片 7）。〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。
 
+  ## 干预场与施法者处剂量（切片 6，决策稿 §6.1；设计 §5.3 第 0′ 步、§7.3）
+
+  每拍在任何结构步进之前，用拍首状态取齐全部干预场：发出者（带〈乱〉、本拍预付存续 t_eff > 0）对半径内其余运行中结构给出
+  `Structure.disruption_field/4`（含施法者自己的其他结构，不含发出者自身 R2，不含冻结交付中的结构）；作用于他人结构前按发出者
+  施放时的战斗范围（物理体 `combat_scope`）判 `MmoContracts.Harm`（Q6-3、设计 §14.0 Q7）。同一拍给前摇中的施法者累计
+  “单位精度、零装载”的扰乱量（`Structure.windup_dose/2`），首次达到 `runtime.windup_interrupt_dose` 时通知前摇 owner（Player，
+  落地稿 D7），由它打断。场与剂量只依赖发出者拍首状态，与处理顺序无关。
+
   ## 飞行（切片 5，决策稿 §5、§14 用户答复）
 
   - 带初速的结构出生即在飞行（物理体 `flight = %{age_s, source}`），由 `World.Projectiles` 按墙钟 50 ms 拍逐段推进
@@ -277,17 +285,20 @@ defmodule VoxelRegion.World.Structures do
   @doc """
   由结构组、目录与发射求物理体（纯函数）：形状枚举序号、三轴半尺寸、`size1_m` 与 `size2_mm`/`size3_mm`、质量、无质量位、
   `ends_on_contact`（有一条读〈遇〉且响应〈散〉的规则，设计 §11.1 v2.11 W5）、耦合位名、锚类型，以及运动字段与 `t0_us`。
+  `combat_scope` 是施放时施法者所在场的战斗范围快照（Player 施法快照给出，缺省 nil = 禁伤；决策稿 §6.1、Q6-3）：本结构
+  若带〈乱〉，作用于他人结构与他人前摇前按它判 `MmoContracts.Harm`。
 
   飞行（切片 5）：带初速且 `flight_s > 0` 的发射出生即在飞行，`flight = %{age_s: 0.0, source: nil}`（`age_s` 是飞行驱动
   已推进到的墙钟飞行时长；`source` 是人物采样的施法者身份，由 `sampled/2` 填入）。飞行中没有接触格（接触在飞行驱动命中时
   才确定），其余为 `flight = nil`。
   """
-  def body(%Group{} = group, %Catalog{} = catalog, caster, launch, t0_us) do
+  def body(%Group{} = group, %Catalog{} = catalog, caster, launch, t0_us, combat_scope) do
     shape = shape_params(group)
     flying = launch.velocity != {0.0, 0.0, 0.0} and launch.flight_s > 0
 
     %{
       caster: caster,
+      combat_scope: combat_scope,
       shape: shape_index(catalog, shape["shape"]),
       half: half(shape),
       size1_m: shape["size1_mm"] / 1000,
@@ -462,17 +473,21 @@ defmodule VoxelRegion.World.Structures do
 
   defp from_record(_id, _record, _magic, _tick), do: {:error, :record}
 
-  @body_keys ~w(caster shape half size1_m size2_mm size3_mm mass_g massless ends_on_contact coupling anchor_type
+  @body_keys ~w(caster combat_scope shape half size1_m size2_mm size3_mm mass_g massless ends_on_contact coupling anchor_type
                origin velocity t0_us flight_s rest contact flight)a
 
   defp body?(%{shape: shape, half: {a, b, c}, flight_s: flight, caster: caster} = body) do
     Enum.sort(Map.keys(body)) == Enum.sort(@body_keys) and shape in 0..2 and Enum.all?([a, b, c], &(is_number(&1) and &1 > 0)) and
       is_number(flight) and flight >= 0 and is_integer(caster) and Enum.all?([body.origin, body.rest, body.velocity], &vector?/1) and
       (body.contact == nil or match?(%{target: %{granularity: _}, key: _, cell: {_, _, _}}, body.contact)) and
-      flight?(body.flight)
+      flight?(body.flight) and scope?(body.combat_scope)
   end
 
   defp body?(_), do: false
+
+  defp scope?(nil), do: true
+  defp scope?({low, high}), do: vector?(low) and vector?(high)
+  defp scope?(_), do: false
 
   defp flight?(nil), do: true
   defp flight?(%{age_s: age, source: source} = f) when map_size(f) == 2, do: is_number(age) and age >= 0 and (source == nil or is_map(source))
@@ -539,16 +554,21 @@ defmodule VoxelRegion.World.Structures do
     else
       started = System.monotonic_time(:microsecond)
       catalog = state.magic
-      # 已冻结人物命中交付的结构不步进（不出账、不计时、不触发），等目标接纳结果在投射物提交点终止（沿 v1 合同）。
+      # 已冻结人物命中交付的结构不步进（不出账、不计时、不触发），等目标接纳结果在投射物提交点终止（沿 v1 合同）；
+      # 它们也不是干预场的目标（设计 §7.3 末条“冻结期不可驱散”）。
       ordered = structures |> Enum.reject(fn {_, e} -> Map.has_key?(e, :delivery) end) |> Enum.sort()
       neighbors = neighbor_index(ordered, catalog)
+      # 第 0′ 步（设计 §5.3、§7.3）：任何结构步进之前，用拍首状态为全部目标取齐干预场，并给前摇中的施法者累计扰乱量。
+      emitters = emitters(ordered, neighbors, tick, catalog)
+      fields = fields(emitters, ordered, neighbors, tick, catalog)
+      state = windup_doses(state, emitters, tick, catalog)
 
       acc = %{state: state, ended: [], records: %{}, states: %{}, step_us: [], rounding: 0.0}
 
       acc =
         Enum.reduce(ordered, acc, fn {id, entry}, acc ->
           step_started = System.monotonic_time(:microsecond)
-          acc = step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), neighbors, catalog)
+          acc = step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), neighbors, Map.get(fields, id, []), catalog)
           %{acc | step_us: [System.monotonic_time(:microsecond) - step_started | acc.step_us]}
         end)
 
@@ -570,7 +590,7 @@ defmodule VoxelRegion.World.Structures do
     end
   end
 
-  defp step_one(acc, id, entry, tick, heat_j, neighbors, catalog) do
+  defp step_one(acc, id, entry, tick, heat_j, neighbors, fields, catalog) do
     %{structure: s, body: body} = entry
     state = acc.state
     site = site(state, entry, tick)
@@ -582,7 +602,7 @@ defmodule VoxelRegion.World.Structures do
       cell_heat_capacity_j_per_k: site.cell_c,
       embedded: site.embedded,
       neighbors: neighbors_of(neighbors, id, site.position, catalog),
-      fields: [],
+      fields: fields,
       release_doses: release_doses(acc.ended, site.position, catalog),
       contact: false
     }
@@ -1011,6 +1031,102 @@ defmodule VoxelRegion.World.Structures do
     |> Enum.sort_by(fn {other, n} -> {-n.leak_w * (1 - n.distance_m / r), other} end)
     |> Enum.take(rt.env_neighbor_max)
     |> Enum.map(&elem(&1, 1))
+  end
+
+  # ---------------------------------------------------------------------------
+  # 干预场（切片 6，设计 §5.3 第 0′ 步、§7.3；决策稿 §6.1）
+  # ---------------------------------------------------------------------------
+
+  # 本拍仍有场的发出者（带〈乱〉且拍首预付的存续 t_eff > 0）：位置与网格桶取拍首（同邻居索引），战斗范围取施放时的快照。
+  # 场的存续只依赖发出者自身的拍首状态（`Structure.disruption_field/4` 的契约），所以与结构的处理顺序无关。
+  defp emitters(ordered, neighbors, tick, catalog) do
+    for {id, %{structure: %Structure{activity: %{radius_m: radius}} = s, body: body}} <- ordered,
+        probe = Structure.disruption_field(s, 0.0, tick, catalog),
+        probe != nil do
+      %{id: id, structure: s, caster: body.caster, scope: body.combat_scope, radius_m: radius, t_eff_s: probe.seconds}
+      |> Map.merge(Map.take(neighbors[id], [:position, :bucket]))
+    end
+  end
+
+  # 每个目标本拍收到的干预场 %{目标 id => [field]}（设计 §7.3）：半径内全部运行中结构，含施法者自己的其他结构（误伤己方），
+  # 不含发出者自身（v2.7 R2）。作用于他人结构先过 `MmoContracts.Harm`（发出者施放时的战斗范围、发出者位置、目标位置；
+  # 设计 §14.0 Q7、决策稿 Q6-3）；同一施法者的结构不是“他人”，不判。每个发出者记一行 `voxel_structure_field`，`doses` 的
+  # 剂量是“单位精度、零装载”的扰乱量 D0·env·t_eff（与施法者处同一口径，目标的实际欠账取决于它自己的精度与装载）。
+  defp fields(emitters, ordered, neighbors, tick, catalog) do
+    Enum.reduce(emitters, %{}, fn e, acc ->
+      hits =
+        for {id, %{body: body}} <- ordered,
+            id != e.id,
+            n = neighbors[id],
+            near_bucket?(e, n.bucket),
+            d = distance(e.position, n.position),
+            field = Structure.disruption_field(e.structure, d, tick, catalog),
+            field != nil,
+            do: {id, field, body.caster == e.caster or MmoContracts.Harm.permitted?(e.scope, e.position, n.position)}
+
+      Logger.info(
+        "voxel_structure_field emitter=#{inspect(e.id)} cid=#{e.caster} tick=#{tick} t_eff_s=#{e.t_eff_s} radius_m=#{e.radius_m} " <>
+          "targets=#{Enum.count(hits, &elem(&1, 2))} doses=#{inspect(for {id, f, ok} <- hits, do: {id, Structure.windup_dose(f, catalog), ok})}"
+      )
+
+      Enum.reduce(hits, acc, fn
+        {id, field, true}, acc -> Map.update(acc, id, [field], &[field | &1])
+        {_id, _field, false}, acc -> acc
+      end)
+    end)
+  end
+
+  # 施法者处的前摇扰乱量（设计 §5.5 打断行、§7.3“打断前摇”；落地稿 D7）：本拍对每个前摇中的施法者按“单位精度、零装载”
+  # 累计 `Structure.windup_dose/2`，累计首次达到目录 `runtime.windup_interrupt_dose`（0.3）时向前摇 owner（Player）发一次
+  # `{:windup_disrupted, 动作键, 累计量}`，由 Player 判断是否仍在前摇并打断（World 不持有前摇计时，D7）。
+  # 位置取待施放里的施法者快照（前摇开始时给出，第 k 步检查时随快照刷新；决策稿 Q6-2：World 不向 Scene 拉位置，
+  # 移动超过 0.25 m 已由 Player 打断，误差有界）。他人的场先过 Harm（施法者本人对自己的场不判）。
+  defp windup_doses(state, [], _tick, _catalog), do: state
+
+  defp windup_doses(%{pending_casts: casts} = state, emitters, tick, %Catalog{runtime: rt} = catalog) do
+    casts =
+      Map.new(casts, fn {cid, pending} ->
+        at = pending.actor.position
+
+        dose =
+          Enum.sum(
+            for e <- emitters,
+                e.caster == cid or MmoContracts.Harm.permitted?(e.scope, e.position, at),
+                field = Structure.disruption_field(e.structure, distance(e.position, at), tick, catalog),
+                field != nil,
+                do: Structure.windup_dose(field, catalog)
+          )
+
+        {cid, accumulate_windup_dose(pending, dose, tick, rt.windup_interrupt_dose)}
+      end)
+
+    %{state | pending_casts: casts}
+  end
+
+  defp accumulate_windup_dose(pending, dose, _tick, _threshold) when dose == 0, do: pending
+
+  defp accumulate_windup_dose(pending, dose, tick, threshold) do
+    total = pending.windup_dose + dose
+    key = pending.actor.action_key
+    notify = total >= threshold and not pending.disrupted
+
+    Logger.info(
+      "voxel_cast_dose cid=#{pending.actor.cid} key=#{inspect(key)} tick=#{tick} dose=#{dose} total=#{total} " <>
+        "threshold=#{threshold} notify=#{notify}"
+    )
+
+    if notify do
+      send(pending.actor.player, {:windup_disrupted, key, total})
+      Logger.info("voxel_cast_disrupted cid=#{pending.actor.cid} key=#{inspect(key)} tick=#{tick} dose=#{total}")
+    end
+
+    %{pending | windup_dose: total, disrupted: pending.disrupted or notify}
+  end
+
+  # 发出者的作用半径可达的网格桶（半径不超过网格边长时即相邻 27 桶）。
+  defp near_bucket?(%{bucket: {ex, ey, ez}, radius_m: radius}, {x, y, z}) do
+    reach = max(1, ceil(radius / @grid_m))
+    abs(x - ex) <= reach and abs(y - ey) <= reach and abs(z - ez) <= reach
   end
 
   defp release_doses(ended, position, %Catalog{runtime: rt}) do
