@@ -5,61 +5,76 @@ defmodule GateServer.Session.QuicConnection do
   alias MmoContracts.{Session, Movement}
   alias GateServer.Session.Auth
 
+  # 连接状态字段显式冻结为结构体，防止拼写错误在运行时静默写入隐式键。
+  defstruct conn: nil,
+            listener: nil,
+            hello: nil,
+            hello_seen: false,
+            identity: nil,
+            cid: nil,
+            joined_ms: nil,
+            end_reason: nil,
+            route: nil,
+            player: nil,
+            pending_transfer: nil,
+            transfer_prepared: 0,
+            transfer_committed: 0,
+            previous_scene_id: nil,
+            transfer_pending_inputs: 0,
+            transfer_last_us: 0,
+            edit_worker: nil,
+            edit_ref: nil,
+            edit_pending: 0,
+            edit_completed: 0,
+            edit_queue_wait_us: 0,
+            edit_worker_us: 0,
+            bounds: nil,
+            voxim_overlay: false,
+            scene: SceneServer.Movement.Scene,
+            auth: Auth,
+            auth_monitor: nil,
+            router: WorldServer.Movement,
+            streams: %{},
+            purposes: %{},
+            max_datagram: 0,
+            closing: false,
+            stale_identity: 0,
+            bytes_in: 0,
+            bytes_out: 0,
+            reliable: %{},
+            busy: nil,
+            queue_age_us: 0,
+            reliable_completed: 0,
+            pending_datagrams: nil,
+            snapshot_keys: %{},
+            snapshot_order: 0,
+            datagram_busy: false,
+            datagrams_replaced: 0,
+            datagrams_sent: 0,
+            snapshot_records_sent: 0,
+            snapshot_datagrams_sent: 0,
+            snapshot_bytes_sent: 0
+
+  @type t :: %__MODULE__{}
+
   @doc "在 listener 转交连接 owner 之前创建邮箱。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
   @impl true
   def init(opts) do
     {:ok,
-     %{
+     %__MODULE__{
        conn: Keyword.fetch!(opts, :conn),
        listener: Keyword.fetch!(opts, :listener),
        hello: Keyword.fetch!(opts, :hello),
-       hello_seen: false,
-       identity: nil,
-       cid: nil,
-       joined_ms: nil,
-       end_reason: nil,
-       route: nil,
-       player: nil,
-       pending_transfer: nil,
-       transfer_prepared: 0,
-       transfer_committed: 0,
-       previous_scene_id: nil,
-       transfer_pending_inputs: 0,
-       transfer_last_us: 0,
-       edit_worker: nil,
        edit_ref: make_ref(),
-       edit_pending: 0,
-       edit_completed: 0,
-       edit_queue_wait_us: 0,
-       edit_worker_us: 0,
        bounds: Keyword.get(opts, :bounds),
-       voxim_overlay: false,
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        auth: Keyword.get(opts, :auth_module, Auth),
-       auth_monitor: nil,
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
-       streams: %{},
-       purposes: %{},
-       max_datagram: 0,
-       closing: false,
-       stale_identity: 0,
-       bytes_in: 0,
-       bytes_out: 0,
        reliable: %{1 => :queue.new(), 2 => :queue.new()},
        busy: MapSet.new(),
-       queue_age_us: 0,
-       reliable_completed: 0,
-       pending_datagrams: :gb_trees.empty(),
-       snapshot_keys: %{},
-       snapshot_order: 0,
-       datagram_busy: false,
-       datagrams_replaced: 0,
-       datagrams_sent: 0,
-       snapshot_records_sent: 0,
-       snapshot_datagrams_sent: 0,
-       snapshot_bytes_sent: 0
+       pending_datagrams: :gb_trees.empty()
      }}
   end
 
@@ -565,8 +580,7 @@ defmodule GateServer.Session.QuicConnection do
         # bootstrap. This admission never creates an independent Gate log sender.
         # 魔法增量 1：接纳时经编辑 worker 下发一次施法者状态（request_id 0）。
         # 传送信标：同时下发一次信标目录（request_id 0）。
-        state
-        |> Map.put(:voxim_overlay, true)
+        %{state | voxim_overlay: true}
         |> enqueue_edit(
           {:voxel_caster_state_request,
            %{request_id: 0, logical_scene_id: state.identity.scene_id}}
