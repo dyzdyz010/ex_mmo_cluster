@@ -5,7 +5,7 @@ mod kernel;
 mod sim;
 
 use domain::{Contact, Domain, Sight};
-use kernel::{Events, Input, Output, Radiation};
+use kernel::{Events, Input, Limit, Output, Radiation};
 #[cfg(test)]
 use kernel::PhaseInput;
 use rustler::{Error, NifResult, ResourceArc};
@@ -40,9 +40,11 @@ enum AdvanceOutput {
 
 type Advanced = (f64, Vec<AdvanceOutput>, f64, f64);
 
-// 纯数值调用保持原元组；World 额外声明点燃阈值、相变回写和共享完整度结算边界。
+// 纯数值调用保持原元组；World 额外声明点燃阈值、相变回写和共享完整度结算边界；
+// 受限的外部节点（魔法结构热端口）再附 {吞吐上限 W, 温度下限 K, 温度上限 K}（设计 §5.3.1），不附即不限。
 #[derive(rustler::NifUntaggedEnum)]
 enum AdvanceInput {
+    Limited((Input, Events, Limit)),
     Controlled((Input, Events)),
     Numeric(Input),
 }
@@ -57,9 +59,11 @@ struct NodeStatic(f64, f64, f64, f64, f64, Option<f64>, bool, Option<u32>, Vec<u
 #[derive(rustler::NifTuple)]
 struct NodeDynamic(f64, f64, f64, Option<f64>, f64, bool, Option<f64>, Option<(f64, f64, bool)>);
 
-/// 一步结算：{实际时长, 供能, 环境交换, 燃烧耗燃, 外部节点结果, 新热格, 点燃候选, 共享损失, 熄灭, 变化节点, 有限源余量, 所请求下标的温度}。
+/// 一步结算：{实际时长, 供能, 环境交换, 燃烧耗燃, 外部节点结果, 新热格, 点燃候选, 共享损失, 熄灭, 变化节点, 有限源余量,
+/// 所请求下标的温度, 内核计数 {子步数, 吞吐受限节点数, 温度钳制节点数, 最小吞吐缩放比}}。
 #[derive(rustler::NifTuple)]
-struct StepOut(f64, f64, f64, f64, Vec<Output>, Vec<u32>, Vec<u32>, Vec<(u32, f64, f64)>, Vec<u32>, Vec<u32>, Vec<(u32, f64)>, Vec<f64>);
+struct StepOut(f64, f64, f64, f64, Vec<Output>, Vec<u32>, Vec<u32>, Vec<(u32, f64, f64)>, Vec<u32>, Vec<u32>, Vec<(u32, f64)>,
+               Vec<f64>, (u32, u32, u32, f64));
 
 fn node(s: NodeStatic, d: NodeDynamic) -> Node {
     let mut n = Node {
@@ -117,15 +121,18 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
 fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: Ambient, exchange: f64,
            tolerance: f64, duration: f64, radiation: Radiation) -> NifResult<Advanced> {
-    let (input, events): (Vec<_>, Vec<_>) = nodes.into_iter().map(unpack).unzip();
+    let (mut input, mut events, mut limits) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, e, l) in nodes.into_iter().map(unpack) { input.push(i); events.push(e); limits.push(l); }
+    // 全部不限时传空表，与 domain_step 同一约定。
+    if limits.iter().all(Option::is_none) { limits.clear(); }
     let ambient = match ambient {
         Ambient::Uniform(a) => vec![a; input.len()],
         Ambient::PerNode(a) => a,
     };
-    if !kernel::valid(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation) {
+    if !kernel::valid(&input, &events, &limits, &contacts, &ambient, exchange, tolerance, duration, &radiation) {
         return Err(Error::BadArg);
     }
-    let out = kernel::advance(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation);
+    let out = kernel::advance(&input, &events, &limits, &contacts, &ambient, exchange, tolerance, duration, &radiation);
     let output = out.state.into_iter().zip(out.phases).map(|(s, p)| match p {
         Some(energy) => AdvanceOutput::Phase((s.0, s.1, s.2, energy)),
         None => AdvanceOutput::Numeric(s),
@@ -133,10 +140,11 @@ fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: 
     Ok((out.elapsed, output, out.supplied, out.environment))
 }
 
-fn unpack(node: AdvanceInput) -> (Input, Events) {
+fn unpack(node: AdvanceInput) -> (Input, Events, Option<Limit>) {
     match node {
-        AdvanceInput::Controlled((input, events)) => (input, events),
-        AdvanceInput::Numeric(input) => (input, (None, None, false)),
+        AdvanceInput::Limited((input, events, limit)) => (input, events, Some(limit)),
+        AdvanceInput::Controlled((input, events)) => (input, events, None),
+        AdvanceInput::Numeric(input) => (input, (None, None, false), None),
     }
 }
 
@@ -204,7 +212,7 @@ fn domain_index(domain: ResourceArc<DomainResource>, order: Vec<u32>, emissivity
 }
 
 // 一个内核步：世界节点取自常驻工作副本（上次 `domain_index` 的次序）；外部节点（拟态、身体）的接触追加在世界边之后，
-// 外部辐射项排在世界辐射项之前，与 World 端原拼接次序相同。`sources` 为 {宏格编号, 功率, 余能}，`powers` 为 {槽位, 电功率}，
+// 外部辐射项排在世界辐射项之前，与 World 端原拼接次序相同。外部节点可带限流参数（见 `AdvanceInput::Limited`）。`sources` 为 {宏格编号, 功率, 余能}，`powers` 为 {槽位, 电功率}，
 // `epsilon` 为燃料耗尽阈值（VoxelRegion.Combustion.fuel_epsilon_j/0）。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
 fn domain_step(domain: ResourceArc<DomainResource>, duration: f64, exchange: f64, tolerance: f64, epsilon: f64,
@@ -224,8 +232,9 @@ fn domain_step(domain: ResourceArc<DomainResource>, duration: f64, exchange: f64
     let extra = extra.into_iter().map(unpack).collect();
     let s = sim.step(&domain.order, contacts, radiation, duration, exchange, tolerance, epsilon, &sources, &powers,
                      extra, extra_ambient, &requested).ok_or(Error::BadArg)?;
+    let k = s.kernel;
     Ok(StepOut(s.elapsed, s.supplied, s.environment, s.combustion, s.extra, s.hot, s.ignitions, s.losses,
-               s.extinguished, s.changed, s.sources, s.requested))
+               s.extinguished, s.changed, s.sources, s.requested, (k.steps, k.throttled, k.clamped, k.min_scale)))
 }
 
 // 取回自上次取回以来变化的节点当前值 {槽位, 动态量}，交 World 写回属性记录。

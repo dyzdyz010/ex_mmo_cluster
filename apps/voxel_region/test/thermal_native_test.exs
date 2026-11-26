@@ -1,7 +1,7 @@
 defmodule VoxelRegion.ThermalNativeTest do
   use ExUnit.Case, async: true
   @moduletag :t0
-  alias VoxelRegion.{Thermal, ThermalNative}
+  alias VoxelRegion.{Thermal, ThermalDomain, ThermalNative}
 
   test "批量与逐步导热、有限供能、过热损伤和能量账一致" do
     cells=[{63,0,0},{64,0,0},{65,1,0}]
@@ -46,6 +46,36 @@ defmodule VoxelRegion.ThermalNativeTest do
 
   test "原生边界拒绝非法索引" do
     assert_raise ArgumentError,fn -> ThermalNative.batch([], [{0,1}],293.15,0.0,0.01,0.05,10) end
+  end
+
+  # 只测试：外部节点限流参数经 ThermalDomain.step 进入内核，计数从返回值取回（设计 §5.3.1；期望手算）。
+  # 2000 K、C = 1000 J/K 的结构经 g = 10 W/K 接触 300 K、C = 1e6 J/K 的外部节点；单子步 0.05 s 未限流传 850 J，
+  # Φ = 1000 W 只放行 50 J，s = 1/17；不附参数时照旧传 850 J。
+  test "外部节点限流参数经热域步进生效，内核计数从返回值取回" do
+    hot = {2000.0, 1.0, 1.0, 1000.0, 1.0, 1.0e6, 0.0, 0.0, 0.0, true}
+    cold = {300.0, 1.0, 1.0, 1.0e6, 1.0, 1.0e6, 0.0, 0.0, 0.0, true}
+    none = {nil, nil, false}
+
+    step = fn extra ->
+      domain = ThermalDomain.put_hot(ThermalDomain.new(), MapSet.new())
+      {_, out} = ThermalDomain.step(domain, 0.05, 0.0, 0.01, [], %{}, extra, [{0, 1, 10.0}], [300.0, 300.0], {[], []}, [])
+      out
+    end
+
+    limited = step.([{hot, none, {1000.0, 0.0, 2500.0}}, {cold, none}])
+    [{t_hot, _, _}, {t_cold, _, _}] = limited.extra
+    assert_in_delta 1000.0 * (2000.0 - t_hot), 50.0, 1.0e-9
+    assert_in_delta 1.0e6 * (t_cold - 300.0), 50.0, 1.0e-6
+    assert %{steps: 1, throttled_nodes: 1, clamped_nodes: 0} = limited.kernel
+    assert_in_delta limited.kernel.min_scale, 1 / 17, 1.0e-15
+
+    free = step.([{hot, none}, {cold, none}])
+    assert_in_delta 1000.0 * (2000.0 - elem(hd(free.extra), 0)), 850.0, 1.0e-9
+    assert free.kernel == %{steps: 1, throttled_nodes: 0, clamped_nodes: 0, min_scale: 1.0}
+
+    for bad <- [{-1.0, 0.0, 2500.0}, {1000.0, 2600.0, 2500.0}] do
+      assert_raise ArgumentError, fn -> step.([{hot, none, bad}, {cold, none}]) end
+    end
   end
 
   test "源耗尽且温差低于阈值时立即交还 World 收缩活动范围" do

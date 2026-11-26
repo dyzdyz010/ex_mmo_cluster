@@ -111,9 +111,11 @@ defmodule VoxelRegion.ThermalDomain do
   end
 
   @doc """
-  一个内核步。`sources` 为 `[{宏格, 功率, 余能}]`，`powers` 为 `%{节点键 => 电功率}`，`extra` 为外部节点的
-  `{输入, 事件}`（接在世界节点之后），`requested` 为需要步末温度的世界节点下标。返回节点表（热格集合已并入新热格）和结算：
-  新热格、点燃候选、共享损失、熄灭与变化的节点都按内核次序给出节点键。
+  一个内核步。`sources` 为 `[{宏格, 功率, 余能}]`，`powers` 为 `%{节点键 => 电功率}`，`extra` 为外部节点（接在世界节点之后），
+  每个是 `{输入, 事件}`，或受限节点 `{输入, 事件, {吞吐上限 W, 温度下限 K, 温度上限 K}}`（设计 §5.3.1，不附即不限，
+  全部不附时数值与引入限流前逐位相同）；`requested` 为需要步末温度的世界节点下标。返回节点表（热格集合已并入新热格）和结算：
+  新热格、点燃候选、共享损失、熄灭与变化的节点都按内核次序给出节点键；`kernel` 为本次调用的内核计数
+  `%{steps: 子步数, throttled_nodes: 吞吐受限节点数, clamped_nodes: 温度钳制节点数, min_scale: 最小吞吐缩放比（无缩放为 1.0）}`。
   """
   def step(domain, duration, exchange, tolerance, sources, powers, extra, extra_contacts, extra_ambient, prefix, requested) do
     {domain, sources} = Enum.map_reduce(sources, domain, fn {cell, power, remaining}, d ->
@@ -122,7 +124,8 @@ defmodule VoxelRegion.ThermalDomain do
     end) |> then(fn {sources, d} -> {d, sources} end)
     powers = for {key, power} <- powers, slot = domain.slots[key], slot != nil, do: {slot, power}
 
-    {elapsed, supplied, environment, combustion, extra_out, hot, ignitions, losses, extinguished, changed, left, temps} =
+    {elapsed, supplied, environment, combustion, extra_out, hot, ignitions, losses, extinguished, changed, left, temps,
+     {steps, throttled, clamped, min_scale}} =
       ThermalNative.domain_step(domain.native, duration, exchange, tolerance, Combustion.fuel_epsilon_j(), sources,
         powers, extra, extra_contacts,
         extra_ambient, prefix, requested)
@@ -136,7 +139,8 @@ defmodule VoxelRegion.ThermalDomain do
      %{elapsed: elapsed, supplied: supplied, environment: environment, combustion: combustion, extra: extra_out,
        hot: new_hot, ignitions: Enum.map(ignitions, key), losses: for({slot, before, hp} <- losses, do: {key.(slot), before, hp}),
        extinguished: Enum.map(extinguished, key), changed: Enum.map(changed, key),
-       sources: for({id, rest} <- left, do: {domain.cell_at[id], rest}), temperatures: temps}}
+       sources: for({id, rest} <- left, do: {domain.cell_at[id], rest}), temperatures: temps,
+       kernel: %{steps: steps, throttled_nodes: throttled, clamped_nodes: clamped, min_scale: min_scale}}}
   end
 
   @doc "取回自上次取回以来变化的节点当前值 `[{键, ThermalRecord.dynamic/4 形状}]`，交调用方写回属性记录；`pending` 即是否可能有待取回的节点。"

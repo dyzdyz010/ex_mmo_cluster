@@ -4,7 +4,7 @@
 //! 演进并结算（有限源余量、燃烧推进、热损、采掘基线、热点），World 在处理任何其他消息前与提交结束时取回变化的节点写回记录。
 //! 点燃、共享完整度损失与相态焓初值仍由 World 的既有规则处理：这里只报告事件，由 World 回写后重新装入。
 //! 数值与原 `ThermalBatch.prepare/6` + `ThermalSettlement.apply/5` 逐位相同（同样的算式、次序与比较）。
-use crate::kernel::{self, Events, Input, Outcome, PhaseInput, Radiation};
+use crate::kernel::{self, Counters, Events, Input, Limit, Outcome, PhaseInput, Radiation};
 use std::collections::{HashMap, HashSet};
 
 /// 相态节点：相变温度、单格潜热、单格热容、是否液体（目录值），有限体积与焓（`stored` 为记录已有焓字段）。
@@ -60,6 +60,8 @@ pub struct Step {
     pub changed: Vec<u32>,
     pub sources: Vec<(u32, f64)>,
     pub requested: Vec<f64>,
+    /// 本次调用的内核计数（子步数、限流与钳制节点数、最小吞吐缩放比）。
+    pub kernel: Counters,
 }
 
 /// 一步的内核输入：实际批长、世界节点输入与事件、逐节点空气温度。
@@ -226,25 +228,33 @@ impl Sim {
         Some(step)
     }
 
-    /// 一个内核步：`order` 是世界节点的内核次序（槽位）；`extra` 为拟态／身体等外部节点，排在世界节点之后；
-    /// `epsilon` 为燃料耗尽阈值（`Combustion.fuel_epsilon_j/0`）。
+    /// 一个内核步：`order` 是世界节点的内核次序（槽位）；`extra` 为拟态／身体等外部节点，排在世界节点之后，
+    /// 可带限流参数（世界节点一律不限）；`epsilon` 为燃料耗尽阈值（`Combustion.fuel_epsilon_j/0`）。
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, order: &[u32], contacts: Vec<(usize, usize, f64)>, radiation: Radiation,
                 duration: f64, exchange: f64, tolerance: f64, epsilon: f64, sources: &[(u32, f64, f64)],
-                powers: &HashMap<u32, f64>, extra: Vec<(Input, Events)>, extra_ambient: Vec<f64>,
+                powers: &HashMap<u32, f64>, extra: Vec<(Input, Events, Option<Limit>)>, extra_ambient: Vec<f64>,
                 requested: &[usize]) -> Option<Step> {
         let sources: HashMap<u32, (f64, f64)> = sources.iter().map(|&(c, p, r)| (c, (p, r))).collect();
         let Batch { duration, mut input, mut events, mut ambient } =
             self.batch(order, duration, &sources, powers, epsilon)?;
         let count = input.len();
-        for (i, e) in extra { input.push(i); events.push(e); }
+        // 没有任何外部节点带限流参数时传空表（全部不限）；否则世界节点补 None，与节点同序同长。
+        let limited = extra.iter().any(|e| e.2.is_some());
+        let mut limits = if limited { vec![None; count] } else { Vec::new() };
+        for (i, e, l) in extra {
+            input.push(i);
+            events.push(e);
+            if limited { limits.push(l); }
+        }
         ambient.extend(extra_ambient);
-        if !kernel::valid(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation) {
+        if !kernel::valid(&input, &events, &limits, &contacts, &ambient, exchange, tolerance, duration, &radiation) {
             return None;
         }
-        let out = kernel::advance(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation);
+        let out = kernel::advance(&input, &events, &limits, &contacts, &ambient, exchange, tolerance, duration, &radiation);
         let mut step = self.settle(order, &out, &sources, tolerance, epsilon)?;
         step.extra = out.state[count..].to_vec();
+        step.kernel = out.counters;
         step.requested = requested.iter().map(|&i| out.state.get(i).map(|s| s.0)).collect::<Option<Vec<_>>>()?;
         Some(step)
     }
@@ -335,7 +345,8 @@ mod tests {
     fn settlement_spends_only_the_completed_duration_and_deducts_pick_baseline() {
         let node = Node { temperature: 300.0, ambient: 300.0, hp: 10.0, max_hp: 10.0, baseline: Some(8.0), ..sample() };
         let (mut s, order) = sim(vec![node]);
-        let out = Outcome { elapsed: 2.0, state: vec![(301.0, 7.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0 };
+        let out = Outcome { elapsed: 2.0, state: vec![(301.0, 7.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0,
+                            counters: Counters::default() };
         let step = s.settle(&order, &out, &HashMap::from([(7, (10.0, 100.0))]), 0.01, EPSILON).unwrap();
         assert_eq!(step.sources, vec![(7, 80.0)]);
         assert_eq!(step.hot, vec![7]);
@@ -347,13 +358,36 @@ mod tests {
     #[test]
     fn burning_spends_fuel_by_elapsed_time_and_goes_out_when_empty() {
         let (mut s, order) = sim(vec![Node { burning: true, fuel: Some(3.0), power: 2.0, ..sample() }]);
-        let out = Outcome { elapsed: 1.0, state: vec![(900.0, 100.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0 };
+        let out = Outcome { elapsed: 1.0, state: vec![(900.0, 100.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0,
+                            counters: Counters::default() };
         let step = s.settle(&order, &out, &HashMap::new(), 0.01, EPSILON).unwrap();
         assert_eq!((step.combustion, s.node(0).unwrap().fuel, s.node(0).unwrap().burning), (2.0, Some(1.0), true));
         let step = s.settle(&order, &Outcome { elapsed: 1.0, ..out }, &HashMap::new(), 0.01, EPSILON).unwrap();
         let n = s.node(0).unwrap();
         assert_eq!((step.combustion, n.fuel, n.burning, n.power), (1.0, Some(0.0), false, 0.0));
         assert_eq!(step.extinguished, vec![0]);
+    }
+
+    // 只测试：外部节点的限流参数在有、无世界节点时都进入内核（世界节点补"不限"），计数随结算返回。
+    // 2000 K、C = 1000 J/K 的外部节点经 g = 10 W/K 接触 300 K 世界节点；单子步 850 J，Φ = 1000 W 只放行 50 J。
+    #[test]
+    fn extra_node_limits_reach_the_kernel_with_or_without_world_nodes() {
+        let hot = Input(2000.0, 1.0, 1.0, 1000.0, 1.0, 1.0e6, 0.0, 0.0, 0.0, true);
+        let cold = Input(300.0, 1.0, 1.0, 1.0e6, 1.0, 1.0e6, 0.0, 0.0, 0.0, true);
+        let none: Events = (None, None, false);
+        let limit = Some(Limit(1000.0, 0.0, 2500.0));
+        let world = Node { capacity: 1.0e6, temperature: 300.0, ambient: 300.0, ignition: None, faces: 0.0, ..sample() };
+        let (mut s, order) = sim(vec![world]);
+        let step = s.step(&order, vec![(0, 1, 10.0)], (vec![], vec![]), 0.05, 0.0, 0.01, EPSILON, &[], &HashMap::new(),
+                          vec![(hot, none, limit)], vec![300.0], &[]).unwrap();
+        assert!((1000.0 * (2000.0 - step.extra[0].0) - 50.0).abs() < 1.0e-9);
+        assert_eq!((step.kernel.steps, step.kernel.throttled), (1, 1));
+
+        let (mut s, _) = sim(vec![]);
+        let step = s.step(&[], vec![(0, 1, 10.0)], (vec![], vec![]), 0.05, 0.0, 0.01, EPSILON, &[], &HashMap::new(),
+                          vec![(hot, none, limit), (cold, none, None)], vec![300.0, 300.0], &[]).unwrap();
+        assert!((1000.0 * (2000.0 - step.extra[0].0) - 50.0).abs() < 1.0e-9);
+        assert_eq!(step.kernel.throttled, 1);
     }
 
     // 缺失槽位在 order 中出现时返回 None 而非 panic，避免 NIF 触发进程崩溃。

@@ -653,7 +653,7 @@ defmodule VoxelRegion.World.Thermal do
     state = seen(state)
 
     Logger.info(
-      "voxel_thermal_kernel simulated_s=#{done} nodes=#{count + length(extra) + length(body_nodes)} edges=#{work.domain.edges} radiation_pairs=#{work.domain.pairs + length(elem(radiation, 0))} sky_faces=#{work.domain.sky + length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
+      "voxel_thermal_kernel simulated_s=#{done} nodes=#{count + length(extra) + length(body_nodes)} edges=#{work.domain.edges} radiation_pairs=#{work.domain.pairs + length(elem(radiation, 0))} sky_faces=#{work.domain.sky + length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated} kernel_steps=#{step.kernel.steps}"
     )
 
     Logger.info(
