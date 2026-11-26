@@ -127,4 +127,13 @@ defmodule GateServer.DialogueDispatchTest do
       assert identity == state.identity
     end
   end
+
+  test "未知非元组或空元组消息返回通用错误帧而不崩溃" do
+    ctx = context()
+
+    for unknown <- [:unexpected_atom, {}] do
+      assert {:ok, ^ctx} = Dispatch.handle(unknown, ctx)
+      assert_receive {:mmo_voxel_bytes, _, _}
+    end
+  end
 end

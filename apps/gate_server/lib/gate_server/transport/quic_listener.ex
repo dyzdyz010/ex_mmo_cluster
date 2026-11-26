@@ -41,8 +41,8 @@ defmodule GateServer.Transport.QuicListener do
       "voxim_quic_listener port=#{Keyword.fetch!(opts, :port)} maximum_mtu=#{@maximum_mtu}"
     )
 
-    # quicer rejects NEW_CONNECTION immediately when its acceptor queue is empty.
-    # The M1 simultaneous two-account probe requires two armed native accepts.
+    # quicer 在 acceptor 队列为空时会直接拒绝 NEW_CONNECTION；
+    # M1 双账号并发握手要求至少预挂两个原生 accept。
     for _ <- 1..2, do: {:ok, ^listener} = :quicer.async_accept(listener, %{})
 
     {:ok,
@@ -58,14 +58,27 @@ defmodule GateServer.Transport.QuicListener do
   def handle_info({:quic, :new_conn, conn, _info}, state) do
     {:ok, _} = :quicer.async_accept(state.listener, %{})
 
-    {:ok, pid} =
-      DynamicSupervisor.start_child(
-        state.supervisor,
-        {QuicConnection, [conn: conn, listener: state.claims] ++ state.opts}
-      )
+    case DynamicSupervisor.start_child(
+           state.supervisor,
+           {QuicConnection, [conn: conn, listener: state.claims] ++ state.opts}
+         ) do
+      {:ok, pid} ->
+        case :quicer.controlling_process(conn, pid) do
+          :ok ->
+            GenServer.cast(pid, :activate)
 
-    :ok = :quicer.controlling_process(conn, pid)
-    GenServer.cast(pid, :activate)
+          {:error, reason} ->
+            # 对端在 accept 后、转交 owner 前断开是正常网络竞态，不能带崩整个 listener。
+            Logger.warning("voxim_quic_handoff_failed reason=#{inspect(reason)}")
+            _ = DynamicSupervisor.terminate_child(state.supervisor, pid)
+            _ = :quicer.async_shutdown_connection(conn, 0, 0)
+        end
+
+      {:error, reason} ->
+        Logger.warning("voxim_quic_child_start_failed reason=#{inspect(reason)}")
+        _ = :quicer.async_shutdown_connection(conn, 0, 0)
+    end
+
     {:noreply, state}
   end
 

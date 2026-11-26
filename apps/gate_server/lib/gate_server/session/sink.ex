@@ -15,7 +15,7 @@ defmodule GateServer.Session.Sink do
 
   @type t :: %__MODULE__{
           transport: transport(),
-          ref: port() | pid(),
+          ref: {pid(), term()},
           event_prefix: String.t()
         }
 
@@ -34,10 +34,17 @@ defmodule GateServer.Session.Sink do
   defdelegate close(gate_pid, identity, reason), to: MmoContracts.Session.Outbound
 
   @doc "只选择消息所属的字节 owner，不改变传输行为。"
+  @spec encode(term()) :: {:ok, iodata()} | {:error, term()}
   def encode(message) when SessionCodec.is_message(message), do: SessionCodec.encode(message)
   def encode(message) when VoxelCodec.is_message(message), do: VoxelCodec.encode(message)
-  def encode(message), do: {:error, {:unknown_outbound, elem(message, 0)}}
 
+  def encode(message) when is_tuple(message) and tuple_size(message) > 0,
+    do: {:error, {:unknown_outbound, elem(message, 0)}}
+
+  def encode(message), do: {:error, {:unknown_outbound, message}}
+
+  @doc "构造指向指定 QUIC 连接 owner 与会话归属标识（identity 或 edit_ref）的出站 Sink。"
+  @spec quic(pid(), term()) :: t()
   def quic(owner_pid, identity),
     do: %__MODULE__{transport: :quic, ref: {owner_pid, identity}, event_prefix: "quic_"}
 
@@ -47,7 +54,7 @@ defmodule GateServer.Session.Sink do
   编码失败（新消息类型漏所属领域 `encode/1` 子句）只记结构化日志并丢弃，
   不 raise —— 一条编不出来的下行消息不该带崩整条连接。
   """
-  @spec send_encoded(t(), tuple()) :: :ok
+  @spec send_encoded(t(), term()) :: :ok
   def send_encoded(%__MODULE__{} = sink, message) do
     case encode(message) do
       {:ok, encoded} ->
@@ -68,10 +75,9 @@ defmodule GateServer.Session.Sink do
   end
 
   @doc """
-  下发一份已经含 opcode 的裸 payload（Field 快照等由生产方编好的帧）。
+  下发一份已经含 opcode 的裸 payload（体素结果帧或由生产方编好的帧）。
 
-  TCP socket 的 `{packet, 4}` 选项会在 `:gen_tcp` 层补 4 字节大端长度前缀；
-  WebSocket 侧由 owner 进程按 binary frame 发出。
+  由 QUIC 连接 owner 进程在可靠 voxel 流上补 4 字节大端长度前缀后写出。
   """
   @spec send_raw(t(), binary()) :: :ok
   def send_raw(%__MODULE__{transport: :quic, ref: {owner_pid, identity}}, payload)
@@ -87,9 +93,9 @@ defmodule GateServer.Session.Sink do
   end
 
   @doc """
-  发一条带**传输名**前缀的 observe 事件（`tcp_` / `ws_`）。
+  发一条带**传输名**前缀的 observe 事件（当前为 `quic_`）。
 
-  只服务于历史上两条链路都显式带自己传输名的少数事件，保持 CLI 契约不变。
+  保留事件命名契约，供 CLI 观察脚本按传输前缀过滤。
   """
   @spec emit_transport_tagged(t(), String.t(), map() | (-> map())) :: :ok
   def emit_transport_tagged(%__MODULE__{transport: transport}, event, fields) do

@@ -1,6 +1,7 @@
 defmodule MmoContracts.Session.Codec do
   @protocol_version 45
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
+  @spec protocol_version() :: pos_integer()
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
 
@@ -194,6 +195,7 @@ defmodule MmoContracts.Session.Codec do
                   elem(message, 0) in [:result, :enter_scene_result, :heartbeat_reply]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
+  @spec decode(binary()) :: {:ok, struct() | tuple()} | {:error, term()}
   def decode(<<255, _::binary>> = bytes),
     do: MmoContracts.Session.Wire.decode(1, bytes, @m1_messages, &accept_m1/1)
 
@@ -223,6 +225,7 @@ defmodule MmoContracts.Session.Codec do
   def decode(_), do: {:error, :invalid_message}
 
   @doc "协议值编码为现行帧 iodata。"
+  @spec encode(struct() | tuple()) :: {:ok, iodata()} | {:error, term()}
   def encode(%{__struct__: _} = message),
     do: MmoContracts.Session.Wire.encode(1, @m1_messages, message)
 
@@ -276,24 +279,30 @@ defmodule MmoContracts.Session.Codec do
   ]
 
   @doc "原因名 => 线上数值，例如 `end_reason(:protocol_violation) == 8`。"
+  @spec end_reason(atom()) :: 1..13
   def end_reason(name), do: Keyword.fetch!(@end_reasons, name)
 
   @doc "线上数值 => 原因名；不在表里的数值返回 nil。"
+  @spec end_reason_name(integer()) :: atom() | nil
   def end_reason_name(code),
     do: Enum.find_value(@end_reasons, fn {name, value} -> if value == code, do: name end)
 
   @doc "全部原因名与数值（测试与日志用）。"
+  @spec end_reasons() :: keyword(1..13)
   def end_reasons, do: @end_reasons
 
   @doc "未分配 identity 的 application close code；13（`:auth_rejected`）仅用于认证拒绝。接受原因名或数值。"
+  @spec pre_auth_close(atom() | 1..13) :: pos_integer()
   def pre_auth_close(reason) when is_atom(reason), do: pre_auth_close(end_reason(reason))
   def pre_auth_close(reason) when reason in 1..13, do: 0x10000 + reason
 
   @doc "canonical Y-up yaw 对应水平朝向。"
+  @spec yaw_forward(number()) :: {float(), float(), float()}
   def yaw_forward(yaw),
     do: {:math.cos(yaw * 2 * :math.pi() / 65536), 0.0, :math.sin(yaw * 2 * :math.pi() / 65536)}
 
   @doc "最短 yaw 差（量化角单位）；恰半圈选正向。"
+  @spec yaw_delta(integer(), integer()) :: integer()
   def yaw_delta(from, to) do
     delta = Integer.mod(to - from, 65536)
     if delta > 32768, do: delta - 65536, else: delta

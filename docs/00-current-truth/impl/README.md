@@ -10,34 +10,16 @@
 
 当前主线边界见 [Voxim runtime](../design/server/voxim-runtime.md)。
 
-- `apps/voxel_region/lib/voxel_region/`：canonical World owner、GeneratedStore、OverlayLog 与只读 Replica。
-- `apps/scene_server/lib/scene_server/movement/`：Scene/Player、bootstrap/Ready、历史碰撞与 Replication/AOI。
+- `apps/voxel_region/lib/voxel_region/`：canonical World owner、GeneratedStore、OverlayLog、热/液相/电路/魔法与只读 Replica。
+- `apps/scene_server/lib/scene_server/movement/`、`body/`：Scene/Player、bootstrap/Ready、身体热伤/修复、历史碰撞与 Replication/AOI。
 - `apps/npc_server/lib/npc_server/application.ex`：常驻 NPC 正式组合根；感知、决策、技能、情绪与记忆由独立 NPC 应用拥有。
-- `apps/world_server/lib/world_server/session.ex`：玩家与 NPC 共用的会话占用及移交 owner。
-- `apps/gate_server/lib/gate_server/transport/quic_listener.ex`、`session/quic_connection.ex`：正式 QUIC 入口。
-- `apps/mmo_contracts/lib/mmo_contracts/{session,movement,voxel}/`：现行字节契约。
+- `apps/world_server/lib/world_server/session.ex`、`movement.ex`：玩家与 NPC 共用的会话占用、路由与跨 Scene 移交 owner。
+- `apps/gate_server/lib/gate_server/transport/quic_listener.ex`、`session/quic_connection.ex`：正式 QUIC 入口与会话分帧/鉴权。
+- `apps/auth_server/lib/auth_server/`：Phoenix 账号鉴权、角色目录、凭证签发与会话审计。
+- `apps/data_service/lib/data_service/`：PostgreSQL 持久化（角色身体 `BodyStore`、体素页/日志后端等）。
+- `apps/mmo_contracts/lib/mmo_contracts/{session,movement,voxel}/`：现行纯字节契约 SSOT（31 个 G0 fixture 保持冻结）。
 
-下表 TCP/WS、ChunkProcess、FieldRuntime 与旧 region ledger 是仍有调用方的 reference/legacy 链路；不构成 Voxim canonical owner。
-
-| 领域 | 入口文件/目录 | 当前用途 |
-| --- | --- | --- |
-| 现行 Session/Voxel | `apps/mmo_contracts/lib/mmo_contracts/{session,voxel}/codec.ex`、`voxel/payload.ex` | 纯字节唯一 owner，G0 bytes 不变 |
-| Gate 遗留协议 | `apps/gate_server/lib/gate_server/codec.ex` | 有活调用方的旧移动/NPC/战斗/Scene 等领域 |
-| Gate TCP | `apps/gate_server/lib/gate_server/worker/tcp_connection.ex` | TCP `{packet,4}` connection、dispatch、forward |
-| Gate WS | `apps/gate_server/lib/gate_server/worker/ws_connection.ex` | WebSocket transport；与 TCP 共用 Session.Dispatch/Sink |
-| Voxel routing | `apps/gate_server/lib/gate_server/voxel/routing.ex` | Gate → World route/lease helper |
-| Subscription worker | `apps/gate_server/lib/gate_server/voxel/subscription_worker.ex` | per-connection 订阅所有者 |
-| World region grid | `apps/world_server/lib/world_server/voxel/region_grid.ex` | `chunk_coord -> region_id` |
-| World ledger | `apps/world_server/lib/world_server/voxel/map_ledger.ex` | route、lease、migration、materialization |
-| Scene node registry | `apps/world_server/lib/world_server/voxel/scene_node_registry.ex` | live scene node registry / reassignment |
-| Chunk directory | `apps/scene_server/lib/scene_server/voxel/chunk_directory.ex` | chunk process route/start/lookup/subscribe |
-| Chunk process | `apps/scene_server/lib/scene_server/voxel/chunk_process.ex` | chunk hot truth / edit / field / fan-out |
-| Voxel codec | `apps/scene_server/lib/scene_server/voxel/codec.ex` | chunk snapshot/delta/object/field payload codec |
-| Legacy LOD projection | `apps/scene_server/lib/scene_server/voxel/lod_projection.ex` + `apps/data_service/lib/data_service/voxel/lod_heightmap_store.ex` | 0x6A/0x6B 历史 decoder/offline regression；不得作为新 runtime/default/production LOD |
-| Field runtime | `apps/scene_server/lib/scene_server/voxel/field/` | field region/layer/kernel/runtime |
-| Data chunk store | `apps/data_service/lib/data_service/voxel/chunk_snapshot_store.ex` | canonical chunk snapshot CAS |
-| Data region dir | `apps/data_service/lib/data_service/voxel/region_directory_store.ex` | durable region directory |
-| Data write token | `apps/data_service/lib/data_service/voxel/write_token_store.ex` | write fence |
+> 旧 TCP/WS、Gate 遗留 codec、`ChunkProcess`、`ChunkDirectory`、`FieldRuntime` 与旧 region ledger/store 链路均已在 `af180c98` 删除，详见 [Voxim runtime §已删除的旧链路](../design/server/voxim-runtime.md#已删除的旧链路)。
 
 ## 客户端
 

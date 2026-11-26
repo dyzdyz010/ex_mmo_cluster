@@ -142,13 +142,14 @@ impl Sim {
     /// 组装世界节点的内核输入（原 `ThermalBatch.prepare/6`）：共同批长不越过有限源与燃料耗尽点；
     /// 功率 = 电 + 燃烧 + 同宏格有限源（只落在整宏格节点），能量上限 = |功率| × 批长。
     pub fn batch(&self, order: &[u32], duration: f64, sources: &HashMap<u32, (f64, f64)>,
-                 powers: &HashMap<u32, f64>, epsilon: f64) -> Batch {
+                 powers: &HashMap<u32, f64>, epsilon: f64) -> Option<Batch> {
         let world: Vec<&Node> = order.iter()
-            .map(|&slot| self.nodes[slot as usize].as_ref().expect("indexed slot is loaded")).collect();
+            .map(|&slot| self.node(slot))
+            .collect::<Option<Vec<_>>>()?;
         let mut duration = duration;
         for &(power, remaining) in sources.values() { duration = duration.min(remaining / power); }
         for n in &world {
-            if n.burning { duration = duration.min(n.fuel.unwrap_or(0.0) / n.power); }
+            if n.burning && n.power > 0.0 { duration = duration.min(n.fuel.unwrap_or(0.0) / n.power); }
         }
         let mut batch = Batch { duration, ..Batch::default() };
         for (&slot, n) in order.iter().zip(&world) {
@@ -164,19 +165,19 @@ impl Sim {
             batch.events.push((ignition, phase, n.shared));
             batch.ambient.push(n.ambient);
         }
-        batch
+        Some(batch)
     }
 
     /// 结算世界节点的内核结果（原 `ThermalSettlement.apply/5` 与点燃检查）：有限源按实际时长扣减，燃烧中的节点
     /// 耗燃（`Combustion.step/2`，取尽即熄灭），相态写回焓，采掘基线随 HP 下降扣减（`Damage.pick_baseline/2`），
     /// 共享完整度节点报告损失且自身 HP 不变；与记录不同的节点记为待写回。
     pub fn settle(&mut self, order: &[u32], out: &Outcome, sources: &HashMap<u32, (f64, f64)>,
-                  tolerance: f64, epsilon: f64) -> Step {
+                  tolerance: f64, epsilon: f64) -> Option<Step> {
         let elapsed = out.elapsed;
         let mut step = Step { elapsed, supplied: out.supplied, environment: out.environment, ..Step::default() };
         for (i, &slot) in order.iter().enumerate() {
-            let (temperature, hp, _) = out.state[i];
-            let n = self.nodes[slot as usize].as_mut().unwrap();
+            let &(temperature, hp, _) = out.state.get(i)?;
+            let n = self.nodes.get_mut(slot as usize).and_then(Option::as_mut)?;
             if let Some(cell) = n.macro_cell {
                 if let Some(&(power, remaining)) = sources.get(&cell) {
                     let rest = (remaining - power * elapsed).max(0.0);
@@ -192,7 +193,7 @@ impl Sim {
                 (fuel, power, burning) = (Some(rest), if alive { n.power } else { 0.0 }, alive);
                 step.combustion += used;
             }
-            let phase = n.phase.map(|p| match out.phases[i] {
+            let phase = n.phase.map(|p| match out.phases.get(i).copied().flatten() {
                 Some(energy) => Phase { energy, stored: true, ..p },
                 None => p,
             });
@@ -217,12 +218,12 @@ impl Sim {
         }
         // 结算后按内核次序检查可燃节点（原 ignite_heated_materials/3 的条件）；点燃由 World 的 Combustion.ignite/3 完成。
         for &slot in order {
-            let n = self.nodes[slot as usize].as_ref().unwrap();
+            let n = self.node(slot)?;
             if n.ignition.is_some_and(|t| n.hp > 0.0 && !n.burning && !exhausted(n.fuel, epsilon) && n.temperature >= t) {
                 step.ignitions.push(slot);
             }
         }
-        step
+        Some(step)
     }
 
     /// 一个内核步：`order` 是世界节点的内核次序（槽位）；`extra` 为拟态／身体等外部节点，排在世界节点之后；
@@ -233,7 +234,8 @@ impl Sim {
                 powers: &HashMap<u32, f64>, extra: Vec<(Input, Events)>, extra_ambient: Vec<f64>,
                 requested: &[usize]) -> Option<Step> {
         let sources: HashMap<u32, (f64, f64)> = sources.iter().map(|&(c, p, r)| (c, (p, r))).collect();
-        let Batch { duration, mut input, mut events, mut ambient } = self.batch(order, duration, &sources, powers, epsilon);
+        let Batch { duration, mut input, mut events, mut ambient } =
+            self.batch(order, duration, &sources, powers, epsilon)?;
         let count = input.len();
         for (i, e) in extra { input.push(i); events.push(e); }
         ambient.extend(extra_ambient);
@@ -241,9 +243,9 @@ impl Sim {
             return None;
         }
         let out = kernel::advance(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation);
-        let mut step = self.settle(order, &out, &sources, tolerance, epsilon);
+        let mut step = self.settle(order, &out, &sources, tolerance, epsilon)?;
         step.extra = out.state[count..].to_vec();
-        step.requested = requested.iter().map(|&i| out.state[i].0).collect();
+        step.requested = requested.iter().map(|&i| out.state.get(i).map(|s| s.0)).collect::<Option<Vec<_>>>()?;
         Some(step)
     }
 }
@@ -279,20 +281,20 @@ mod tests {
         let burner = Node { burning: true, fuel: Some(0.5), power: 10.0, ..sample() };
         let sources = HashMap::from([(7, (20.0, 2.0))]);
         let (s, order) = sim(vec![burner]);
-        let b = s.batch(&order, 0.5, &sources, &HashMap::from([(0, -5.0)]), EPSILON);
+        let b = s.batch(&order, 0.5, &sources, &HashMap::from([(0, -5.0)]), EPSILON).unwrap();
         assert!((b.duration - 0.05).abs() < 1.0e-12);
         assert_eq!((b.input[0].7, b.input[0].8, b.input[0].9), (25.0, 1.25, true));
         assert!(b.events[0].0.is_none() && b.events[0].1.is_none() && !b.events[0].2);
 
         let (s, order) = sim(vec![sample()]);
-        let b = s.batch(&order, 0.5, &sources, &HashMap::new(), EPSILON);
+        let b = s.batch(&order, 0.5, &sources, &HashMap::new(), EPSILON).unwrap();
         assert_eq!((b.duration, b.input[0].8), (0.1, 2.0));
     }
 
     #[test]
     fn signed_cold_power_keeps_a_positive_budget_and_reads_current_values() {
         let (s, order) = sim(vec![Node { temperature: 280.0, hp: 7.0, ..sample() }]);
-        let b = s.batch(&order, 0.5, &HashMap::new(), &HashMap::from([(0, -12.0)]), EPSILON);
+        let b = s.batch(&order, 0.5, &HashMap::new(), &HashMap::from([(0, -12.0)]), EPSILON).unwrap();
         let i = b.input[0];
         assert_eq!((i.0, i.1, i.2, i.7, i.8, i.9, b.duration), (280.0, 7.0, 100.0, -12.0, 6.0, true, 0.5));
     }
@@ -305,7 +307,7 @@ mod tests {
                                  (Node { hp: 0.0, ..sample() }, None),
                                  (Node { burning: true, fuel: Some(5.0), power: 1.0, ..sample() }, None)] {
             let (s, order) = sim(vec![node]);
-            assert_eq!(s.batch(&order, 0.5, &HashMap::new(), &HashMap::new(), EPSILON).events[0].0, expected);
+            assert_eq!(s.batch(&order, 0.5, &HashMap::new(), &HashMap::new(), EPSILON).unwrap().events[0].0, expected);
         }
     }
 
@@ -315,7 +317,7 @@ mod tests {
                             energy: 12.0, stored: true };
         let (mut s, order) = sim(vec![Node { ignition: None, temperature: 273.15, phase: Some(phase), ..sample() }]);
         s.set_hot(vec![7]);
-        let b = s.batch(&order, 0.5, &HashMap::new(), &HashMap::new(), EPSILON);
+        let b = s.batch(&order, 0.5, &HashMap::new(), &HashMap::new(), EPSILON).unwrap();
         let p = b.events[0].1.unwrap();
         assert_eq!((p.0, p.1, p.2, p.3, p.4, p.5), (12.0, 0.25, 273.15, 250.0, 100.0, true));
         assert!(b.input[0].9);
@@ -325,7 +327,7 @@ mod tests {
     fn micro_and_attachment_nodes_skip_same_cell_sources_and_keep_shared_hp() {
         let fine = Node { shared: true, macro_cell: None, ..sample() };
         let (s, order) = sim(vec![fine.clone(), fine]);
-        let b = s.batch(&order, 0.5, &HashMap::from([(7, (20.0, 100.0))]), &HashMap::new(), EPSILON);
+        let b = s.batch(&order, 0.5, &HashMap::from([(7, (20.0, 100.0))]), &HashMap::new(), EPSILON).unwrap();
         assert!(b.input.iter().zip(&b.events).all(|(i, e)| i.7 == 0.0 && !i.9 && e.2));
     }
 
@@ -334,7 +336,7 @@ mod tests {
         let node = Node { temperature: 300.0, ambient: 300.0, hp: 10.0, max_hp: 10.0, baseline: Some(8.0), ..sample() };
         let (mut s, order) = sim(vec![node]);
         let out = Outcome { elapsed: 2.0, state: vec![(301.0, 7.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0 };
-        let step = s.settle(&order, &out, &HashMap::from([(7, (10.0, 100.0))]), 0.01, EPSILON);
+        let step = s.settle(&order, &out, &HashMap::from([(7, (10.0, 100.0))]), 0.01, EPSILON).unwrap();
         assert_eq!(step.sources, vec![(7, 80.0)]);
         assert_eq!(step.hot, vec![7]);
         assert!(step.losses.is_empty() && step.combustion == 0.0 && step.changed == vec![0]);
@@ -346,11 +348,34 @@ mod tests {
     fn burning_spends_fuel_by_elapsed_time_and_goes_out_when_empty() {
         let (mut s, order) = sim(vec![Node { burning: true, fuel: Some(3.0), power: 2.0, ..sample() }]);
         let out = Outcome { elapsed: 1.0, state: vec![(900.0, 100.0, 0.0)], phases: vec![None], supplied: 0.0, environment: 0.0 };
-        let step = s.settle(&order, &out, &HashMap::new(), 0.01, EPSILON);
+        let step = s.settle(&order, &out, &HashMap::new(), 0.01, EPSILON).unwrap();
         assert_eq!((step.combustion, s.node(0).unwrap().fuel, s.node(0).unwrap().burning), (2.0, Some(1.0), true));
-        let step = s.settle(&order, &Outcome { elapsed: 1.0, ..out }, &HashMap::new(), 0.01, EPSILON);
+        let step = s.settle(&order, &Outcome { elapsed: 1.0, ..out }, &HashMap::new(), 0.01, EPSILON).unwrap();
         let n = s.node(0).unwrap();
         assert_eq!((step.combustion, n.fuel, n.burning, n.power), (1.0, Some(0.0), false, 0.0));
         assert_eq!(step.extinguished, vec![0]);
+    }
+
+    // 缺失槽位在 order 中出现时返回 None 而非 panic，避免 NIF 触发进程崩溃。
+    #[test]
+    fn step_returns_none_when_order_contains_unloaded_slot() {
+        let (mut s, _order) = sim(vec![sample()]);
+        let bad_order = vec![0, 99];
+        assert!(s.batch(&bad_order, 0.5, &HashMap::new(), &HashMap::new(), EPSILON).is_none());
+        let step = s.step(
+            &bad_order,
+            vec![],
+            (vec![], vec![]),
+            0.5,
+            0.0,
+            0.01,
+            EPSILON,
+            &[],
+            &HashMap::new(),
+            vec![],
+            vec![],
+            &[],
+        );
+        assert!(step.is_none());
     }
 }

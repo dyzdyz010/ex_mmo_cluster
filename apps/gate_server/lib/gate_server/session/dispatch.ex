@@ -192,28 +192,14 @@ defmodule GateServer.Session.Dispatch do
         {:voxel_spell_intent, %{action: 1} = request},
         %{status: :in_scene, voxim_overlay: true} = state
       ) do
-    ref = make_ref()
-
-    waiter =
-      spawn(fn ->
-        monitor = Process.monitor(state.player)
-
-        receive do
-          {^ref, result} ->
-            Process.demonitor(monitor, [:flush])
-            reply_spell_result(result, request, state)
-
-          {:DOWN, ^monitor, :process, _, _} ->
-            reply_spell_result({:error, :invalid_session}, request, state)
-        end
-      end)
+    reply_to = await_result(state, &reply_spell_result(&1, request, state))
 
     SceneServer.Movement.Player.cast_spell(
       state.player,
       state.identity,
       request,
       spell_ingress(state),
-      {waiter, ref}
+      reply_to
     )
 
     {:ok, state}
@@ -295,7 +281,8 @@ defmodule GateServer.Session.Dispatch do
   end
 
   def handle(message, state) do
-    Logger.warning("Unhandled message: #{inspect(elem(message, 0))}")
+    tag = if is_tuple(message) and tuple_size(message) > 0, do: elem(message, 0), else: message
+    Logger.warning("Unhandled message: #{inspect(tag)}")
     result_error(state, :unknown_message, 0)
     {:ok, state}
   end
@@ -304,7 +291,7 @@ defmodule GateServer.Session.Dispatch do
 
   defp send_encoded(state, message), do: Sink.send_encoded(state.sink, message)
 
-  # 读条类意图（信标、分选）的结果在读条结束后才有：独立进程等 Player 的唯一回复（`{:ok, _} | {:error, reason}`），
+  # 读条与施法前摇类意图的结果在计时结束后才有：独立进程等 Player 的唯一回复（`{:ok, _} | {:error, reason}`），
   # 编辑 worker 不被占住；Player 先退出按 invalid_session 处理。返回交给 Player 的 `{waiter, ref}`。
   defp await_result(state, on_result) do
     ref = make_ref()
@@ -314,8 +301,12 @@ defmodule GateServer.Session.Dispatch do
         monitor = Process.monitor(state.player)
 
         receive do
-          {^ref, result} -> on_result.(result)
-          {:DOWN, ^monitor, :process, _, _} -> on_result.({:error, :invalid_session})
+          {^ref, result} ->
+            Process.demonitor(monitor, [:flush])
+            on_result.(result)
+
+          {:DOWN, ^monitor, :process, _, _} ->
+            on_result.({:error, :invalid_session})
         end
       end)
 

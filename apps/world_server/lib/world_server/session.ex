@@ -6,7 +6,17 @@ defmodule WorldServer.Session do
   use GenServer
   alias MmoContracts.Session.Identity
 
+  # 会话登记处状态结构体，显式约束字段集合。
+  defstruct opts: [], characters: %{}, next_epoch: 0
+
+  @type t :: %__MODULE__{
+          opts: keyword(),
+          characters: %{optional(integer()) => map()},
+          next_epoch: integer()
+        }
+
   @doc "启动唯一会话登记处；生产由 WorldServer 监督，测试可使用独立名字。"
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts),
     do:
       GenServer.start_link(
@@ -16,20 +26,25 @@ defmodule WorldServer.Session do
       )
 
   @doc "以调用进程占用角色并加入权威 Scene，替换同 cid 的旧会话。"
+  @spec claim(GenServer.server(), module(), map(), map()) :: {Identity.t(), term()}
   def claim(server, scene, route, character),
     do: GenServer.call(server, {:claim, scene, route, character})
 
   @doc "准备跨 Scene 移交；调用者必须仍是该身份的 owner。"
+  @spec prepare_transfer(GenServer.server(), Identity.t(), pos_integer(), map()) ::
+          {:ok, Identity.t(), map(), pid()} | {:error, term()}
   def prepare_transfer(server, identity, target_scene_id, artifact),
     do: GenServer.call(server, {:prepare_transfer, identity, target_scene_id, artifact})
 
   @doc "提交已经准备好的移交；提交前旧 Scene 保持 owner。"
+  @spec commit_transfer(GenServer.server(), Identity.t(), Identity.t(), integer()) ::
+          :ok | {:error, term()}
   def commit_transfer(server, old, fresh, cid),
     do: GenServer.call(server, {:commit_transfer, old, fresh, cid})
 
   @impl true
   def init(opts),
-    do: {:ok, %{opts: opts, characters: %{}, next_epoch: System.system_time(:microsecond)}}
+    do: {:ok, %__MODULE__{opts: opts, next_epoch: System.system_time(:microsecond)}}
 
   @impl true
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do

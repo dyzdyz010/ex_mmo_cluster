@@ -2,6 +2,12 @@ defmodule MmoContracts.Session.Identity do
   @moduledoc "M1 Identity 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。"
   @enforce_keys [:session_epoch, :scene_id, :scene_epoch]
   defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          session_epoch: non_neg_integer(),
+          scene_id: non_neg_integer(),
+          scene_epoch: non_neg_integer()
+        }
 end
 
 defmodule MmoContracts.Session.State do

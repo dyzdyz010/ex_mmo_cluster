@@ -17,8 +17,9 @@ defmodule VoxelRegion.CollisionSource do
   @compile {:inline, blocked: 1}
   defp blocked(material), do: elem(@blocking, material)
 
+  @doc "返回半开 L0 区域盒 `[min, max)` 内的全部区域坐标；任一轴为空（`min >= max`）时返回空列表。"
   def regions({{x0, y0, z0}, {x1, y1, z1}}) do
-    for x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {x, y, z}
+    for x <- x0..(x1 - 1)//1, y <- y0..(y1 - 1)//1, z <- z0..(z1 - 1)//1, do: {x, y, z}
   end
 
   def chunk_coord({x, y, z}) do

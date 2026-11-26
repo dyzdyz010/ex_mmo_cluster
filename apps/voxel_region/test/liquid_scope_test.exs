@@ -175,4 +175,18 @@ defmodule VoxelRegion.LiquidScopeTest do
     tick(world)
     assert quantities(world) == %{{127, 0, 0} => @capacity - @side, {128, 0, 0} => @side}
   end
+
+  test "非法 liquid_experiment 参数或越界坐标返回显式错误且不崩塌 World 进程", c do
+    {world, _} = world(c, {{0, 0, 0}, {1, 2, 1}})
+
+    bad_json = Path.join(c.root, "bad_liquid.json")
+    File.write!(bad_json, Jason.encode!(%{deposits: "not_a_list"}))
+    assert {:error, :invalid_liquid_experiment} = World.liquid_experiment(world, bad_json)
+    assert Process.alive?(world)
+
+    out_of_bounds = Path.join(c.root, "oob_liquid.json")
+    File.write!(out_of_bounds, Jason.encode!(%{deposits: [%{macro: [99, 0, 0], material: 21}]}))
+    assert {:error, :liquid_out_of_bounds} = World.liquid_experiment(world, out_of_bounds)
+    assert Process.alive?(world)
+  end
 end

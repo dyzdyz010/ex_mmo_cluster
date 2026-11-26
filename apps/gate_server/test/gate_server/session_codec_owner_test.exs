@@ -10,4 +10,10 @@ defmodule GateServer.SessionCodecOwnerTest do
     assert :ok = Sink.send_encoded(sink, {:voxel_log_transaction_payload, <<1, 2, 3>>})
     assert_receive {:mmo_voxel_bytes, :identity, <<0x79, 1, 2, 3>>}
   end
+
+  test "Sink.encode/1 returns explicit error for non-tuple and empty-tuple messages" do
+    assert {:error, {:unknown_outbound, :not_a_tuple}} = Sink.encode(:not_a_tuple)
+    assert {:error, {:unknown_outbound, {}}} = Sink.encode({})
+    assert {:error, {:unknown_outbound, :unknown_tag}} = Sink.encode({:unknown_tag, 1})
+  end
 end

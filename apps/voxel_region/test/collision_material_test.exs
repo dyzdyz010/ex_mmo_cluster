@@ -41,4 +41,21 @@ defmodule VoxelRegion.CollisionMaterialTest do
     for {index, value} <- expected, do: assert(:binary.at(chunk.cells, index) == value)
     assert Enum.sum(:binary.bin_to_list(chunk.cells)) == Enum.sum(Map.values(expected))
   end
+
+  test "空半开盒返回空区域列表，非空正负 XYZ 盒与 in_box?/2 一致" do
+    assert CollisionSource.regions({{0, 0, 0}, {0, 0, 0}}) == []
+    assert CollisionSource.regions({{-1, 2, 0}, {1, 2, 2}}) == []
+    assert CollisionSource.regions({{3, 0, 0}, {1, 2, 2}}) == []
+
+    box = {{-1, -2, 0}, {1, 0, 2}}
+    regions = CollisionSource.regions(box)
+    assert length(regions) == 8
+
+    for {rx, ry, rz} = coord <- regions do
+      assert CollisionSource.in_box?({rx * 4, ry * 4, rz * 4}, box)
+      assert coord in regions
+    end
+
+    refute CollisionSource.in_box?({4, 0, 0}, box)
+  end
 end

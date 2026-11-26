@@ -386,3 +386,7 @@ Global system：工具冲击与投射物热经同一入口 `Player.receive_effec
 - 结果：区内无人 `{:area, seq, []}`（打空，已接纳）；区内有人但全都不可作用 `combat_not_permitted`（频率已消耗）；提交时 `receive_effect` 全部拒绝返回首个拒绝；Scene 关闭战斗 `combat_not_permitted`（不调 World、不消耗频率）。
 - 频率按“角色 × 工具”各一份（§6.2 技能独立冷却）；同一工具打人／挖地仍共用。
 验证：`apps/voxel_region` 下 `mix test --no-start test/area_tool_world_test.exs`，`apps/scene_server` 下 `test/scene_server/movement/tool_action_test.exs`；不替代 QUIC、双客户端输入、表现或性能验收。
+
+## 2026-11-25 PlayerWire 纯协议与窗口几何投影
+
+`SceneServer.Movement.PlayerWire` 承接原 `Player` 中的无状态纯投影：`window_domain/1`、`property_box/1`、`property_batch/4`、`canonical_bootstrap/5`、`collision_window/6`、`collision_applied/5`、`relocate/3`、`body_state/2` 与 `body_contact/4`。不新增进程或可变状态，所有时序、发送顺序与状态所有权仍归唯一 owner `Player`。验证：`apps/scene_server` 下 `mix test --no-start test/scene_server/movement/player_wire_test.exs`（`:t0`）与 `voxim_player_test.exs`。

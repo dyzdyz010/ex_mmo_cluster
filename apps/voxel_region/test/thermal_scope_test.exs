@@ -259,6 +259,57 @@ defmodule VoxelRegion.ThermalScopeTest do
     assert_in_delta stored, snapshot.thermal.supplied_j + snapshot.thermal.environment_j, 1.0e-6
   end
 
+  test "非法 thermal_experiment 参数或不可加热目标返回显式错误且不崩塌 World 进程", c do
+    world = start(c, [{1, 0, 0}], {1, 0, 0})
+
+    bad_classification = Path.join(c.root, "bad_classification.json")
+
+    File.write!(
+      bad_classification,
+      Jason.encode!(%{
+        classification: "Production",
+        source_macro: [1, 0, 0],
+        power_w: 100.0,
+        energy_j: 100.0
+      })
+    )
+
+    assert {:error, :invalid_thermal_experiment} =
+             World.thermal_experiment(world, bad_classification)
+
+    assert Process.alive?(world)
+
+    bad_power = Path.join(c.root, "bad_power.json")
+
+    File.write!(
+      bad_power,
+      Jason.encode!(%{
+        classification: "Test-only",
+        source_macro: [1, 0, 0],
+        power_w: 0.0,
+        energy_j: 100.0
+      })
+    )
+
+    assert {:error, :invalid_thermal_experiment} = World.thermal_experiment(world, bad_power)
+    assert Process.alive?(world)
+
+    air_target = Path.join(c.root, "air_target.json")
+
+    File.write!(
+      air_target,
+      Jason.encode!(%{
+        classification: "Test-only",
+        source_macro: [9, 0, 0],
+        power_w: 100.0,
+        energy_j: 100.0
+      })
+    )
+
+    assert {:error, :invalid_thermal_target} = World.thermal_experiment(world, air_target)
+    assert Process.alive?(world)
+  end
+
   defp await(check, left \\ 2_000)
 
   defp await(check, left) do
