@@ -1,6 +1,6 @@
 # 符号组合魔法 v2：P1 收口（分支切片 4–8）实施决策稿
 
-> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 中 Q4-2、Q4-W3 已由用户代答（按推荐），其余待答；切片 4（4a、4b、4c）、切片 5 与收尾 5b、切片 6 已完成，切片 7 待开工；待设计确认项见 §14 切片 5、5b、6 三条。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
+> 状态：**用户已于 2026-11-26 批准 §11.1 全部决策点（按推荐）；§11.2 中 Q4-2、Q4-W3 已由用户代答（按推荐），其余待答；切片 4（4a、4b、4c）、切片 5 与收尾 5b、切片 6、切片 7 已完成（P1 功能完整），切片 8 待开工；待设计确认项见 §14 切片 5、5b、6、7 各条。** 依据 AGENTS.md §3-8（运行时边界、协议、事务变化先写决策稿）与 §2.2-8（原创决策实施前报告）。
 > 上游（均已批准）：[`2026-11-19-slice3-protocol.md`](2026-11-19-slice3-protocol.md)（下称“切片 3 稿”，§2.2 切片划分、P1–P14、§14 日志）、
 > [`2026-11-19-glyph-v2-server-landing.md`](2026-11-19-glyph-v2-server-landing.md)（下称“落地稿”，D1–D9）、[`2026-11-19-catalog-v5-schema.md`](2026-11-19-catalog-v5-schema.md)、[`cast-phases-2026-10-05.md`](cast-phases-2026-10-05.md)。
 > 设计：TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.11（下称“设计”），只引节号不复述。
@@ -654,3 +654,46 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
     - `magic_staff_bolt_test`：持物普攻程序为真，差 1 字节的同形程序为假。
   - 回归：scene_server 353（排除 1）；voxel_region 施法相关 8 个文件 107；gate_server 49（排除 68 个 `quic_transport`，未起 QUIC）；npc_server 828（排除 20）。`mix format --check-formatted` 通过，八个 app 的 `mix compile --force --warnings-as-errors --no-optional-deps` 通过。未建 UDP/QUIC；UDP 端点 Windows 88、WSL 36。
 - 2026-11-26：切片 7 开工。**目录变更预告（Q7-5，按推荐暂行，待设计确认）**：`flights_per_caster` 只在目录 v5 的 `quotas` 里（`priv/magic/e337873b….json` 第 40 行），World 没有第二处定义，所以避免不了改目录。本片把它由 2 改为 3（法杖发射间隔 0.5 s、单发飞行 (1.0, 1.5] s，按住连发同时在飞至多 3 发）；只改这一个值，schema 与版本号（5）不变。目录字节变了，digest 随之改变：新文件由真实加载器 `Magic.Catalog.load/1` 算 digest 后放到 `priv/magic/<新 sha256>.json`、删除旧文件（唯一作者源），同步 golden（`ir-v2-samples.json`、`quote-v2-samples.json`、`structure-v2-samples.json` 的 `catalog_digest`，`wire-v2-samples.json` 由生成器重写，其中 0x82 帧的 32 B digest 随之改变）与测试常量。客户端需要换用新目录文件并按新 digest 发 0x82，新 digest 与 commit 记在本片完成条目里。
+- 2026-11-26：切片 7（配额、准入、NPC 配额、触发预算与热节点休眠）完成，P1 功能全部落地。提交：`779fb958`（7-1 目录 `flights_per_caster` 2 → 3）、`ab68a934`（7-2 准入 owner、在场推送、施法快照 controller）、`056322cf`（7-3 触发预算、热节点休眠、README）、7-4（统筹核对的证伪补强与本条文档，即记录本条的提交）。
+  - **新目录 digest：`22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc`**（`priv/magic/22c459f0….json`，由 `Magic.Catalog.load/1` 实测；只改 `quotas.flights_per_caster`，schema 与版本 5 不变；旧文件 `e337873b…` 删除）。golden：`ir/quote/structure-v2-samples.json` 的 `catalog_digest` 同步，`wire-v2-samples.json` 由生成器重写，只有 0x82 帧与字段值里的 32 B digest 变化。
+  - **准入唯一 owner `World.MagicAdmission`**（新模块）：前摇开始、第 k 步检查与出手各经 `admit/3` 判一次，用量每次从 `thermal.structures` 现算（含冻结期与冻结交付中的结构），不另存计数。切片 4 的 `Casting.structure_quota` 与 `Structures.count/2` 已删除，没有第二处判断。顺序与原因：
+    - 每施法者结构：玩家 `structures_per_caster` 6、NPC `structures_per_npc` 4 → `:structure_quota`；
+    - 每施法者飞行 `flights_per_caster` 3（Q7-5）→ `:flight_quota`（只数飞行中的结构；候选带〈投〉才判）；
+    - 醒着的热节点 `awake_thermal_nodes_per_region` 16：带〈热〉的候选在已满时拒（Q7-3）→ `:region_budget`；
+    - 分区飞行名额 `region_flight_slots_base` 16 + 在场人数：在场玩家飞行数低于保底时用自己的保底，否则用共享部分（先到先得，Q7-4）；NPC 与不在场者只用共享部分 → `:region_budget`；
+    - 分区预算 B = 256、预留 R = 32：U + w > B + R 一律拒；NPC 要求 NPC 合计 + w ≤ 25%·B 且 U + w ≤ B（不看在场、无保底与预留）；玩家 U < 75%·B 且 U + w ≤ B 照常；在场且名下为空 → 保底用预留；U ≥ 75%·B 时在场且本人用量 < 0.75·B / 在场人数、U + w ≤ B；其余拒 → `:region_budget`。
+    - 权重 = 1 + 2·醒着的热节点 + 0.5·规则 + 0.5·感知耦合；**感知耦合 P1 为 0（Q7-6）**。飞行中的热结构按醒着计（落地即成为热节点，飞行中不判休眠）。
+  - **在场（Q7-1）**：新公共 API `World.caster_presence(server, cid, :present | :absent)`，调用进程即登记的会话 owner。玩家 Player（kind 0）在会话就绪（`ready`）与移交激活（`activate`）时推 `:present`，身体解除（`begin_body_detach` 两个分支）时推 `:absent`；NPC 不推送。World 监视推送进程、退出即移出；`:absent` 与进程退出只移除同一 pid 的登记，移交时新旧 Player 的先后无关。在场集合是派生状态、不持久化（新消息 `:caster_presence` 登记为 `:character_intent`，在 `@unflushed`）。
+  - **controller（Q7-2）**：施法快照带 `controller`（`:player | :npc`），Player 按 `Scene.join` 映射的角色 kind 给出（客户端不能自报）；结构物理体存 `controller`，恢复时校验。
+  - **触发预算（设计 §5.4）**：每分区每拍 64、每施法者每拍 8。拍首按（首次推迟拍号, id）为推迟队列预占预算（`MagicAdmission.claim_deferred/2`），步进时先执行本结构的预占项，再按优先级为本拍新触发取预算（`take_trigger/2`），取不到的写进结构条目 `deferred`（`%{since, rule, outcome, contact}`，同一规则至多一项，随 `thermal.structures` 持久化，恢复校验）；本拍先行终止的结构退回预占预算。推迟项只记规则下标，执行时由新函数 `Structure.trigger_responses/3` 取回响应；`evaluate_rules/4` 的触发项加 `rule` 下标。
+  - **热节点休眠（设计 §5.3 第 11 步、§5.3.2，Q7-W2）**：已落地热结构拍末判平静（`calm?/4`：与所有接触节点温差 < 5 K 且本拍净热流 < 100 W），条目 `calm` 记连续平静拍数，**连续 2 拍才休眠（1 拍滞回）**；休眠中不作为热内核外部节点（`Structures.heat_nodes/1`）、线上 status 位 `:asleep`、不计入醒着的热节点。每次组装内核节点按当前接触温度复核（`wakes?/3`，温差 ≥ 5 K 即重新加入）；拍末不平静即计数归零。
+  - **NPC 断链（设计 §5.7、Q20）**：P1 没有〈链〉（`feed.chain` 仍是预留下标），所有结构 `feed_w` 恒为 0，NPC 卸载、死亡或生命代次切换没有可断的供能链；NPC 结构照常运行、照常计入 NPC 合计与分区用量（W7-3 用例里 NPC 结构按 `controller` 计入 `npc_units`）。〈链〉在 P2 落地时按 §5.7 接断链。
+  - 可观测：`voxel_magic_admission cid controller decision reason usage_units budget reserve present own_units own_structures npc_units flights own_flights flight_slots awake_nodes candidate_units candidate_thermal candidate_flight`；`voxel_magic_presence cid pid status present`；`voxel_structure_triggers tick fired deferred oldest_deferred_tick region_left`；`voxel_structure_sleep tick asleep woke slept`；`World.stats/1` 的 `magic_admission`（用量、预算、在场、NPC 合计与上限、飞行与名额、醒着的热节点、每施法者用量）。
+  - **0x68 原因串（客户端配文案）**：rejected `":structure_quota"`（结构数已满）、`":flight_quota"`（飞行中的法术已满）、`":region_budget"`（分区魔法拥挤）。G6-1 冻结三条帧字节。
+  - 测试（`magic_admission_world_test.exs`，新；W7-2、W7-3、W7-5、飞行名额、W7-4、W7-6/7 用 probe 目录，只改 `quotas` 的几个数，把预算缩到几盏灯就能到达分支）：
+    - W7-1 / Q7-5：法杖光弹按 0.5 s 间隔连发，每次之间飞 0.5 s 并走一个热拍，3 发同时在飞都准入；同一刻第 4 发 `:flight_quota`、不扣能；此时灯照常准入。
+    - W7-2（B = 8、R = 2，5 人在场 + 1 人不在场）：75% 线以下照常；以上份额 1.2，已有 5 的被拒、已有 1 的准入、已有 2 的被拒；不在场者拒；名下为空的在场者用预留保底到 B + R = 10；之后新在场者也拒。
+    - W7-3（B = 24）：NPC 第 5 个 `:structure_quota`；NPC 合计到 6 = 25%·B 后再来一个 `:region_budget`；NPC 不需在场、不进在场集合。W7-3（B = 8）：用量到 B 后**名下为空的 NPC**（cid 2002）与已有 1 个结构的 NPC 都以 `:region_budget` 拒，同样名下为空的在场玩家用预留准入。
+    - W7-5：不在场者的结构照常步进与计入用量；拥挤时不在场者拒、重新在场后按份额准入；推送进程退出后在场集合自行缩小。
+    - 分区飞行名额（base = 1）：在场者各有 1 个保底，共享部分先到先得；NPC 只用共享部分。
+    - W7-4（每拍分区 1）：Z（〈时〉1.5 s）、X1、X2、Y（1.0 s）同在第 0 拍出生；第 2 拍 X1 执行、X2/Y 推迟；第 3 拍 X2 执行，新到期的 Z（id 最低）推迟；冷重启后第 4 拍 Y 先于 Z、第 5 拍 Z。W7-4（每人 1）：同拍到期 A 的第 2 个推迟一拍，B 不受影响，推迟期间结构照常存在。
+    - W7-6 / W7-7（醒着的热节点上限 1）：温石（灼点只把 t0 改为 294.0 K，贴孤立叶）醒着时灼点 `:region_budget`、灯照常；温石连续 2 拍平静后 status 带 `:asleep`、准入的 `awake_nodes` 变 0；灼点随即准入并贴同一片叶，下一拍叶升温超过 5 K，温石在该拍末唤醒（`voxel_structure_sleep … woke=1`），`awake_nodes` 变 2（不强制休眠，只拒新施放）。
+    - S7-1（`cast_wait_lifecycle_test`，真实 Player + 真实 World）：会话就绪后 `World.stats/1` 的在场集合为 [1001]，`Player.stop/1` 后为空。
+    - NPC 经真实 Scene 的施放（`npc_cast_world_test`）走到准入时为 `controller=npc`（日志 `voxel_magic_admission cid=9201 controller=npc decision=admit`）。
+  - 先红：7-2 的新用例对着 7-1 的 lib 0/6（缺 `World.caster_presence/3`，属接口缺失）；7-3 的三个用例对着 7-2 的 lib 3/3 失败（行为红：没有推迟、永不休眠），其余 6 项仍过；变异把 `@sleep_after` 改为 1（去掉滞回）时 W7-6/7 变红。
+  - **统筹核对后的证伪补强（7-4）**：原 W7-3（B = 8）被拒的 NPC 名下已有 1 盏灯，而保底只给名下为空者，所以即使规则错成“NPC 也享保底”这条也照样绿。改为另起名下为空的 NPC（cid 2002），NPC 用量仍由 NPC 2001 与玩家凑到 B，断言它被 `:region_budget` 拒。变异核对（各自单独施加、跑 `magic_admission_world_test.exs`、之后还原）：
+    - 变异 A：`MagicAdmission.region/5` 在 NPC 分支前加“NPC 名下结构 < `present_floor_structures` 即准入”（NPC 享保底、可用预留）→ 8/9，红的正是该 W7-3，失败在名下为空 NPC 的拒绝断言（第 280 行）。
+    - 变异 B：去掉 75% 线（把“U < 75%·B 且 U + w ≤ B”改为“U + w ≤ B”）→ 7/9，W7-2 失败在“用量 ≥ 75% 时已有 5 个的 A 被拒”（第 228 行），W7-5 失败在“拥挤时不在场的 B 被拒”（第 305 行）。
+    - 还原后 `git diff` 对 lib 为空；`magic_admission_world_test.exs` 9/9，voxel_region 全部 13 个 `magic_*.exs` 132 通过。
+  - **存档兼容（分支未发布，可接受）**：切片 4–6 存下的结构物理体没有 `controller` 字段，`Structures.restore/1` 的键集合校验会拒绝（`voxel_structure_restore_failed … reason=:body`，World 启动显式失败），不做兼容补字段。只影响本分支开发期的存档；`magic-v2-p1` 未发布，生产没有结构存档（结构从切片 4c 才产生）。条目新增的 `deferred`、`calm` 是可选键，缺省即旧形状。
+  - 测试（WSL）：voxel_region 全量 `1054 passed, 53 excluded`（切片 6 为 1044，新增 10）；mmo_contracts 217；scene_server 352/354（排除 1），两项 `P0BodyLifecycleTest` 为已知本地库残留行，单跑 5/5；gate_server 49（排除 68 个 `quic_transport`，未起 QUIC）；npc_server 828（排除 20）；world_server 13（排除 1，`--sname`）；voxim_thermal `cargo test` 25。`mix format --check-formatted` 通过；mmo_contracts、voxel_region、scene_server、gate_server、npc_server、world_server、auth_server、data_service 的 `mix compile --force --warnings-as-errors --no-optional-deps` 全部通过（`slope` 未读警告来自 Rust NIF 构建，非 Elixir）。7-4 只改测试，按统筹要求只重跑该文件与 voxel_region 魔法文件（132）。未启动任何服务、未建 UDP/QUIC；主机 UDP 端点开始与结束：Windows 90 → 86，WSL 36 → 36。
+  - 与本稿不一致或本片定下的取舍：
+    1. 本拍新触发按结构 id 升序、结构内按优先级取预算，不是设计 §5.8 的全局（优先级, id）：终止释放剂量要在同一拍作用于其后处理的结构（切片 4c 已有语义，W5-2 依赖），全局排序需要先步进全部结构再统一执行响应，会把同拍释放剂量推迟一拍。推迟队列的（首次推迟拍号, id）排序按设计。
+    2. 投射物提交点上〈遇〉触发的〈散〉不计入每拍触发预算（事件驱动，不在热拍里）。
+    3. 分区飞行名额用尽回 `:region_budget`，不是 `:flight_quota`（后者只表示本人的 3 个上限）。
+    4. 飞行中的热结构按醒着的热节点计权与计上限。
+    5. 休眠判定的接触节点取物理体候选宏格中与包围盒接触的未细分热节点格（细分格不计），温度读属性记录；与热内核接触边的候选集一致但更粗。
+    6. World 重启后在场集合为空，直到玩家下次会话就绪重新推送；其间拥挤准入按不在场处理（偏保守）。
+    7. W7-2、W7-3、W7-4、W7-6/7 与飞行名额用 probe 目录（只改 `quotas`）；发布值 256 单位下要几十个施法者，与要证伪的分支无关。
+  - 待设计确认（代码注释已标）：Q7-3（醒着的热节点满时拒新施放，不强制最早休眠）、Q7-4（轮转 = 保底以外先到先得）、Q7-5（`flights_per_caster` 3）、Q7-6（感知耦合权重 0）、Q7-W2（1 拍滞回）；以及上面取舍 1、2。
+  - 客户端需要配合：① 换用新目录 `22c459f0…`，0x82 按新 digest 发（旧 digest 会被 `:stale_magic_catalog` 拒）；② golden `wire-v2-samples.json` 的 0x82 帧 digest 已变；③ 三条准入原因串的文案；④ 结构记录 status 位 5 `:asleep` 现在会置位（字节定义不变，切片 4a 已冻结），可选表现。线字节布局不变。

@@ -263,11 +263,11 @@ defmodule VoxelRegion.MagicAdmissionWorldTest do
   end
 
   @tag quotas: %{"region_budget_units" => 8, "region_reserve_units" => 2}
-  test "W7-3 NPC 不享在场保底与预留（probe B = 8、R = 2）：用量到 B 后 NPC 拒，同样名下为空的在场玩家用预留准入", c do
-    n = caster(%{cid: 2001, controller: :npc})
+  test "W7-3 NPC 不享在场保底与预留（probe B = 8、R = 2）：用量到 B 后名下为空的 NPC 也拒，同样名下为空的在场玩家用预留准入", c do
+    [n, empty] = for cid <- [2001, 2002], do: caster(%{cid: cid, controller: :npc})
     [a, b, p] = for cid <- [1001, 1002, 1003], do: caster(%{cid: cid, controller: :player})
     for x <- [a, b, p], do: present(c, x)
-    for {x, k} <- Enum.with_index([n, a, b, p]), do: fund(c, x, 1_000_000 + k)
+    for {x, k} <- Enum.with_index([n, empty, a, b, p]), do: fund(c, x, 1_000_000 + k)
 
     lamps(c, n, 1, 10_000_000)
     lamps(c, a, 5, 10_000_000)
@@ -275,7 +275,10 @@ defmodule VoxelRegion.MagicAdmissionWorldTest do
     lamps(c, b, 2, 10_000_000)
     assert %{usage_units: 8.0, npc_units: 1.0} = admission(c)
 
-    # NPC 合计 1 + 1 = 2 ≤ 25%·8，但 8 + 1 > B，NPC 不能用预留：拒。
+    # 名下为空的 NPC（与下面的玩家 P 处境相同：名下 0 个结构）：NPC 合计 1 + 1 = 2 ≤ 25%·8，但 8 + 1 > B，NPC 不享保底、
+    # 不能用预留：拒。这条区分“NPC 无保底”与“保底只给名下为空者”——若 NPC 也享保底，它会像 P 一样准入。
+    assert_rejected(c, empty, :region_budget, fn -> lamp(c, empty, 20_000_000) end)
+    # 名下已有结构的 NPC 同样拒。
     assert_rejected(c, n, :region_budget, fn -> lamp(c, n, 20_000_000) end)
     # 名下没有结构的在场玩家用预留保底：8 + 1 ≤ B + R，准入。NPC 的施放没有让它进在场集合。
     assert {:ok, %{outcome: nil}} = lamp(c, p, 20_000_000)
