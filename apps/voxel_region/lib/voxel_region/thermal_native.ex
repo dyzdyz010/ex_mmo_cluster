@@ -6,7 +6,7 @@ defmodule VoxelRegion.ThermalNative do
   def batch(_nodes, _edges, _ambient, _exchange, _tolerance, _dt, _steps),
     do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc "按原 50ms 分段推进焓/温度；新前沿、相变完成、点燃及共享 HP 事件交还 World。节点可附 {点燃温度或 nil, {焓, 体积, 相变温度, 总潜热, 单位体积热容, 是否液体} 或 nil, 共享 HP}；相变结果为 {温度, HP, 余能, 焓}，其他结果与纯数值输入保持原元组。"
+  @doc "按原 50ms 分段推进焓/温度；新前沿、相变完成、点燃及共享 HP 事件交还 World。节点可附 {点燃温度或 nil, {焓, 体积, 相变温度, 总潜热, 单位体积热容, 是否液体} 或 nil, 共享 HP}；受限节点再附第三项 {吞吐上限 W, 温度下限 K, 温度上限 K}（见 `domain_step/12`）；相变结果为 {温度, HP, 余能, 焓}，其他结果与纯数值输入保持原元组。"
   # 灰体辐射 {[{a, b, 有效面积}], [{节点, ε×对天空面积}]}：互见面按 σw(T_b⁴−T_a⁴) 反对称交换，
   # 对天空面按 σs(T_amb⁴−T⁴) 记入环境账；两表为空时与无辐射内核逐位相同。
   # ambient 为全局标量，或逐节点环境温度列表（节点所在气候区，与节点同序同长）。
@@ -40,7 +40,11 @@ defmodule VoxelRegion.ThermalNative do
   @doc """
   一个内核步：世界节点取自常驻工作副本；外部节点 `extra` 的接触 `extra_contacts` 追加在世界边之后，
   外部辐射项 `prefix` 排在世界辐射项之前。返回 `{时长, 供能, 环境交换, 耗燃, 外部节点结果, 新热格, 点燃候选,
-  共享损失, 熄灭, 变化节点, 有限源余量, 所请求下标的温度}`。
+  共享损失, 熄灭, 变化节点, 有限源余量, 所请求下标的温度, {子步数, 吞吐受限节点数, 温度钳制节点数, 最小吞吐缩放比}}`。
+
+  外部节点为 `{输入, 事件}` 或受限节点 `{输入, 事件, {吞吐上限 W, 温度下限 K, 温度上限 K}}`（设计 §5.3.1）：每个子步先算出
+  全部热流，按吞吐上限等比缩放（边取两端较小者），再把越界方向的热流按同一比例缩小使节点恰好停在温度边界；
+  缩放后的热流两端等量施加，守恒不变。三项须有限、吞吐 ≥ 0、下限 ≤ 上限，否则 `ArgumentError`。
   """
   def domain_step(_domain, _duration, _exchange, _tolerance, _epsilon, _sources, _powers, _extra, _extra_contacts,
         _extra_ambient, _prefix, _requested), do: :erlang.nif_error(:nif_not_loaded)
