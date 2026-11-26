@@ -674,3 +674,4 @@ flowchart LR
 - 2026-11-25T17:30Z：第 6 步（接纳：contract_problems 接入、删 build_site_problems 与 do_listed 查树一半、experience_check；原 B-10 的 prefab remove / replace 由收变拒）完成并经统筹核对，指纹 `459876eb1b045e2e`。
 - 2026-11-25T17:50Z：第 7 步（区域名接纳侧：sem.region、区域名三条、note_region 重名、render._kind；sem 为 null 按开放类型）完成并经统筹核对，指纹 `4f92ff52b0069bea`。另：用户定第 7–10 步照做，第 11 步起暂停，等另一份意图图稿定了再决定。
 - 2026-11-25T18:10Z：第 8 步（指令接纳侧：add_command 只给表思考、command_calls / command_decode、保留名 one_time_command、ITEM_ID 补 c4、think.HINT）完成并经统筹核对，指纹 `f4c0ac35cd37dd6d`。附录 B.4 例子的 <CALLS> 暂为占位，按已定 ⑪ 在实跑准备时填；表思考工具表 53,889 → 65,950 字符。
+- 2026-11-25T18:30Z：第 9 步（评价接纳侧：evaluate_experience 工具定义、way_unknown / version_mismatch / given_at_start、评价追加不改经验、丢弃记录）完成并经统筹核对，指纹 `e0357623f249191b`。
