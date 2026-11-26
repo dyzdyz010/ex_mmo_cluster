@@ -576,21 +576,21 @@
       }
     },
     {
-      "design": "法杖光弹（ex_mmo_cluster 魔法 v2 切片 5，Q5-1，非设计 §11.4.4 抽取）：〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1444 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉；〈蓄〉取 30 m/s 发射后第 2 个热拍（路程 30 m）在飞行中衰竭的区间 1296–1592 J 的中点",
+      "design": "法杖光弹（ex_mmo_cluster 魔法 v2 切片 5/5b，Q5-1，非设计 §11.4.4 抽取）：〈握〉〈形 球 0.05 m，无质量〉〈辉 100 W〉〈蓄 1742 J〉〈投 30 m/s〉｜当〈遇〉则〈散〉；〈蓄〉取 30 m/s 发射后第 3 个热拍在飞行中衰竭的区间 1593–1891 J 的中点（第一个热拍在出生后墙钟 (0, 0.5] s 内到来，任何发射相位下路程 30–45 m）",
       "id": "staff_bolt_massless",
       "kind": "structure",
-      "program_hex": "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00",
+      "program_hex": "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00",
       "quote": {
-        "detect_w": 345.9598,
+        "detect_w": 348.161704,
         "e_cap_mj": 8377580,
         "e_min_mj": 1000000,
         "entries_charge": 0,
         "entries_spoof": 1,
-        "first_tick_min_mj": 1295960,
-        "life_s": 0.753512,
-        "loss_mj": 8492275,
-        "p_maint_w": 591.9196,
-        "physical_mj": 1444000,
+        "first_tick_min_mj": 1298162,
+        "life_s": 1.255153,
+        "loss_mj": 8493708,
+        "p_maint_w": 596.323409,
+        "physical_mj": 1742000,
         "precision": 1,
         "rejects": [],
         "steps": [
@@ -619,43 +619,43 @@
             "symbol": "cpl.glow"
           },
           {
-            "adjust_s": 0.132411,
+            "adjust_s": 0.132396,
             "complexity": 2,
-            "inject_s": 0.001444,
+            "inject_s": 0.001742,
             "part_index": 3,
-            "spent_mj": 3570587,
+            "spent_mj": 3869522,
             "symbol": "energy.load"
           },
           {
-            "adjust_s": 0.04749,
+            "adjust_s": 0.047486,
             "complexity": 3,
             "inject_s": 0.0,
             "part_index": 4,
-            "spent_mj": 4067059,
+            "spent_mj": 4366031,
             "symbol": "act.throw"
           },
           {
-            "adjust_s": 0.053851,
+            "adjust_s": 0.053848,
             "complexity": 4,
             "inject_s": 0.0,
             "part_index": 5,
-            "spent_mj": 4932529,
+            "spent_mj": 5231549,
             "symbol": "cond.contact"
           },
           {
-            "adjust_s": 0.161342,
+            "adjust_s": 0.161333,
             "complexity": 4,
             "inject_s": 0.0,
             "part_index": 6,
-            "spent_mj": 9936275,
+            "spent_mj": 10235708,
             "symbol": "resp.release"
           }
         ],
-        "total_mj": 9936275,
+        "total_mj": 10235708,
         "units": 4,
         "volume_m3": 5.24e-4,
-        "windup_s": 1.184048,
-        "x0": 0.172365,
+        "windup_s": 1.184316,
+        "x0": 0.207936,
         "x_star": 0.612372
       }
     }

@@ -459,7 +459,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   # combat_scope = nil，即战斗处处关闭（工具 22/23 的候选在 Scene.tool_candidates 被拒、人物受击在
   # Player.receive_effect 被拒）。施法链路 Player.cast_spell → World 没有战斗范围判定，所以同一个 Player
   # 照常前摇并交 World 结算（切片 4c 起结构建成回 {:ok, outcome nil}，取能回 :ok 并按整数 mJ 入账）。
-  @bolt_hex "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00"
+  @bolt_hex "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00"
   test "战斗范围关闭（combat_scope nil）时法杖光弹与取能照常前摇：真实 Player 按成本模型前摇并交 World 结算", c do
     assert c.config.combat_scope == nil
     refute SceneServer.Movement.Harm.open?(c.config.combat_scope)
@@ -494,7 +494,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户定；魔法 v2 切片 3 迁至 IR v2）：属性目录持物表声明
   # IR v2 光弹为 basic_spell、basic_windup_s 0.3，同一程序经真实 Player 施放时 World 给 0.3 s，Player 定时器
   # ceil(0.3 × 1000) = 300 ms 后交 World 结算。上界 1 000 ms 低于成本模型前摇 1 184 ms，旧规则会红。
-  # 光弹为切片 5 的无质量程序（〈蓄〉1444 J）；物品目录夹具在客户端重新发布前仍是旧程序，所以这里用测试内持物表。
+  # 光弹为切片 5b 的无质量程序（〈蓄〉1742 J）；物品目录夹具在客户端重新发布前仍是旧程序，所以这里用测试内持物表。
   @tag holdables: [
          %{
            "id" => "staff",
@@ -502,7 +502,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
            "basic_windup_s" => 0.3,
            "skill_tool_ids" => [],
            "basic_spell" =>
-             "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00"
+             "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00"
          }
        ]
   test "法杖普攻固定前摇：真实 Player 按 basic_windup_s 0.3 s 完成 IR v2 光弹前摇", c do

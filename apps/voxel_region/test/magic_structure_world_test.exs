@@ -44,8 +44,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   @ground_micro {20, 7, 20}
   # 墙石 (2, 2, 4) 的中心微格：火球自手边瞄向它，弹道越过叶的一侧、在 t ≈ 0.26 s 撞上墙的 z = 4 面。
   @wall_micro {20, 20, 36}
-  # 法杖光弹（切片 5，Q5-1）：无质量（`mass_g` 0000）、〈蓄〉1444 J（选取规则见决策稿 §14 切片 5 记录）。
-  @bolt_hex "020101000700010002000032000000000000010010006401001b05a401001e7530010001002201002c00"
+  # 法杖光弹（切片 5 Q5-1、切片 5b）：无质量（`mass_g` 0000）、〈蓄〉1742 J（第 3 拍衰竭区间的中点，见决策稿 §14 切片 5b）。
+  @bolt_hex "020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00"
 
   defmodule FlightClock do
     @moduledoc "只测试：服务器时间线的注入单调时钟（µs，`MmoContracts.ServerTime` 同接口），由测试推进。"
@@ -563,7 +563,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {id, record}
   end
 
-  defp bolt(energy_j \\ 1444),
+  defp bolt(energy_j \\ 1742),
     do: @bolt_hex |> Base.decode16!(case: :lower) |> binary_part(0, 26) |> Kernel.<>(<<0::4, energy_j::12>>) |>
           Kernel.<>(binary_part(Base.decode16!(@bolt_hex, case: :lower), 28, 14))
 
@@ -683,32 +683,44 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_accounts_closed(observe(c.w).thermal)
   end
 
-  test "W5-3 法杖光弹（无质量）：直线匀速、无射程终点，第 2 拍在飞行中以 live 3 衰竭，飞行 1.0 s、路程 30 m", c do
+  test "W5-3 法杖光弹（无质量）：直线匀速、无射程终点，第 3 拍在飞行中以 live 3 衰竭；发射相位 0.05 s 与 0.5 s 时路程 31.5 m 与 45 m", c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
-    {id, record} = build_program(c, @leaf_micro, bolt(), 2_000_000, {1.0, 0.0, 0.0})
-    assert record.massless and record.ends_on_contact and :flying in record.status
-    assert record.velocity == {30.0, 0.0, 0.0}
 
-    fly_until(c, 0.5, fn -> false end)
-    commit(c)
-    assert %{live: 1} = observe(c.w).structures[id]
-    fly_until(c, 0.5, fn -> false end)
+    # 发射相位 = 出生到第一个热拍的墙钟间隔（生产中在 (0, 0.5] s 内）。第 3 拍衰竭于 相位 + 1.0 s，路程 30 × (相位 + 1.0) m。
+    for {phase, at} <- [{0.05, 2_000_000}, {0.5, 3_000_000}] do
+      {id, record} = build_program(c, @leaf_micro, bolt(), at, {1.0, 0.0, 0.0})
+      assert record.massless and record.ends_on_contact and :flying in record.status
+      assert record.velocity == {30.0, 0.0, 0.0}
+      # 线上预测到预计飞行时长 1.5 s（报价寿命 1.255 s 的整拍上界）为止，不在施法域 30 m 处截断。
+      assert record.flight_s == 1.5
 
-    log = info_log(fn -> commit(c) end)
-    ended = ended_record(id)
-    assert ended.live == Codec.structure_end_live(:exhausted) and :flying not in ended.status
-    {ox, oy, oz} = record.origin
-    assert_in_delta ended.flight_s, 1.0, 1.0e-9
-    assert ended.rest == {ox + 30.0 * ended.flight_s, oy, oz}
-    assert log =~ ~r/voxel_structure_end .*live=3 type=exhausted .*in_flight=true flight_s=1.0 path_m=30.0/
+      fly_until(c, phase, fn -> false end)
+      commit(c)
+      fly_until(c, 0.5, fn -> false end)
+      commit(c)
+      assert %{live: 1} = observe(c.w).structures[id]
+      fly_until(c, 0.5, fn -> false end)
+
+      log = info_log(fn -> commit(c) end)
+      ended = ended_record(id)
+      assert ended.live == Codec.structure_end_live(:exhausted) and :flying not in ended.status
+      {ox, oy, oz} = record.origin
+      assert_in_delta ended.flight_s, phase + 1.0, 1.0e-9
+      {x, y, z} = ended.rest
+      assert_in_delta x - ox, 30.0 * (phase + 1.0), 1.0e-9
+      assert {y, z} == {oy, oz}
+      assert x - ox >= 30.0
+      assert log =~ ~r/voxel_structure_end .*live=3 type=exhausted .*in_flight=true /
+    end
+
     s = observe(c.w)
     # 悬空终止：释放落不进格，全部计入灵炁辐射账。
     assert Map.get(s.thermal, :structure_released_mj, 0) == 0
     assert_accounts_closed(s.thermal)
   end
 
-  test "W5-3 光弹命中人物（采样后端替身）：冻结交付、Player 接纳后 live 2；组织得 E_op 热半 722 J，辐射半只记账", c do
+  test "W5-3 光弹命中人物（采样后端替身）：冻结交付、Player 接纳后 live 2；组织得 E_op 热半 871 J，辐射半只记账", c do
     register_backend(10.0)
     c = restart(c, projectile_backend: BodyBackend)
     # Player 形状的施法者（带生命代次）才采样人物（Q5-4 且沿 v1）。
@@ -728,20 +740,54 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_in_delta elem(frozen.rest, 0), ox + 10.0, 1.0e-9
     assert {elem(frozen.rest, 1), elem(frozen.rest, 2)} == {oy, oz}
 
-    # 下一拍交付：Q5-2 进入组织的是 E_op 热半——命中在第一个热拍之前，E_op = 〈蓄〉1444 J，不补记维持费（Q5-3 暂行），
-    # 所以 q = ½ × 1444 J = 722 J；无〈热〉、无质量，没有热份额与动能；辐射半 722 J 只记账。
+    # 下一拍交付：Q5-2 进入组织的是 E_op 热半——命中在第一个热拍之前，E_op = 〈蓄〉1742 J，不补记维持费（Q5-3 暂行），
+    # 所以 q = ½ × 1742 J = 871 J；无〈热〉、无质量，没有热份额与动能；辐射半 871 J 只记账。
     fly(c, 0.05)
     assert_received {:backend_delivered, ^id, %{q_j: q_j, target: %{id: 2002, life_generation: 7}}}
-    assert q_j == 722.0
-    assert_received {:backend_notified, %{q_j: 722.0}, seq}
+    assert q_j == 871.0
+    assert_received {:backend_notified, %{q_j: 871.0}, seq}
     ended = ended_record(id)
     assert ended.live == Codec.structure_end_live(:contact) and ended.rest == frozen.rest
 
     s = observe(c.w)
     assert s.seq == seq
-    assert s.thermal.structure_body_mj == 722_000
-    assert s.thermal.projectile_body_j == 722.0 and s.thermal.body_exchange_j == 722.0
+    assert s.thermal.structure_body_mj == 871_000
+    assert s.thermal.projectile_body_j == 871.0 and s.thermal.body_exchange_j == 871.0
     assert_accounts_closed(s.thermal)
+  end
+
+  test "A5 伤害随距离衰减是能量账的自然结果：同一光弹约 2 m 处命中进组织 871 J，接近衰竭（第 2 拍后、40 m）处约 574 J", c do
+    register_backend(2.0)
+    c = restart(c, projectile_backend: BodyBackend)
+    c = %{c | a: actor(%{life_generation: 3, position: {0.5, 1.0, 0.5}})}
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+
+    # 近：2 m 处的人物（t = 1/15 s），在第一个热拍之前命中——E_op 仍是〈蓄〉1742 J，q = ½ × 1742 J。
+    {near, _} = build_program(c, @leaf_micro, bolt(), 2_000_000, {1.0, 0.0, 0.0})
+    fly(c, 0.1)
+    fly(c, 0.05)
+    assert_received {:backend_delivered, ^near, %{q_j: near_j}}
+    assert ended_record(near).live == Codec.structure_end_live(:contact)
+
+    # 远：40 m 处的人物（t = 4/3 s）。飞行中走过两个热拍（维持费逐拍扣），第 3 拍之前命中——接近衰竭。
+    register_backend(40.0)
+    {far, _} = build_program(c, @leaf_micro, bolt(), 3_000_000, {1.0, 0.0, 0.0})
+    fly(c, 0.5)
+    commit(c)
+    fly(c, 0.5)
+    commit(c)
+    fly(c, 0.4)
+    fly(c, 0.05)
+    assert_received {:backend_delivered, ^far, %{q_j: far_j}}
+    assert ended_record(far).live == Codec.structure_end_live(:contact)
+
+    # 没有任何距离衰减规则：近大远小只来自飞行中的维持出账（第 2 拍后 E_op = 1 147 879 mJ，q = ½ × E_op 按整数 mJ
+    # 四舍五入 = 573 940 mJ）。组织块热容 209.4 J/K：近处升温 871 / 209.4 ≈ 4.16 K，远处 573.94 / 209.4 ≈ 2.74 K。
+    assert near_j == 871.0
+    assert far_j == 573.94
+    assert near_j > far_j
+    assert_accounts_closed(observe(c.w).thermal)
   end
 
   test "W5-4 带欠账的火球：投射物提交点的〈遇〉读数丢失时不触发、停在命中点，之后第一个未丢失的热拍以 live 2 终止", c do
