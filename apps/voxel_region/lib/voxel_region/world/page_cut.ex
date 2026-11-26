@@ -16,7 +16,7 @@ defmodule VoxelRegion.World.PageCut do
   require Logger
 
   alias VoxelRegion.LogProjection
-  alias VoxelRegion.World.{Liquids, Log, Pages, PageWriter, Projectiles, Thermal}
+  alias VoxelRegion.World.{Liquids, Log, Pages, PageWriter, Thermal}
 
   # 发布后压实 core 稀疏格达到这个数的区域（`Log.rebase_overlay/2`）。
   @rebase_cells 4096
@@ -116,7 +116,7 @@ defmodule VoxelRegion.World.PageCut do
 
     if store.paused and not at_least?(level, :mid) do
       Logger.info("voxel_persist_backlog_resume seq=#{state.seq} published=#{store.published}")
-      put_in(state.page_store.paused, false) |> Thermal.wake() |> Liquids.schedule_liquid() |> Projectiles.wake()
+      put_in(state.page_store.paused, false) |> Thermal.wake() |> Liquids.schedule_liquid()
     else
       state
     end

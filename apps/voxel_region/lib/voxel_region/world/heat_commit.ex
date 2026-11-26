@@ -15,7 +15,8 @@ defmodule VoxelRegion.World.HeatCommit do
   @micro VoxelRegion.Spatial.micro_resolution()
 
   # 一次热提交的记录写成一笔事务，再处理其几何后果（材料转化）。
-  def commit_thermal(state, %{rows: rows, dead: dead, phase_changes: phase_changes, semblances: extra} = commit) do
+  # `commit.extra` 是随同这笔事务下发的附加字段（结构记录与状态增量，`World.Structures`），只广播、不另写日志键。
+  def commit_thermal(state, %{rows: rows, dead: dead, phase_changes: phase_changes, extra: extra} = commit) do
     committing = System.monotonic_time(:microsecond)
 
     state =

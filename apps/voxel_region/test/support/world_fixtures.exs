@@ -127,7 +127,7 @@ defmodule VoxelRegion.TestSupport do
       phase_inventory: snapshot.phase_inventory, epochs: snapshot.epochs,
       property_digest: snapshot.property_context.digest,
       material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units}),
-      semblances: Map.get(snapshot, :semblances, %{}), casts: Map.get(snapshot, :casts, %{})}
+      structures: Map.get(snapshot, :structures, %{}), casts: Map.get(snapshot, :casts, %{})}
   end
 
   @doc """

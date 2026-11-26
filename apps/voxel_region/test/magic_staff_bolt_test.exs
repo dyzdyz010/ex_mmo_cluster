@@ -334,8 +334,8 @@ defmodule VoxelRegion.MagicStaffBoltTest do
     assert energy(c.w) == @grant_mj / 1000
   end
 
-  test "投射物采样结果标签回归：Admission.kind/1 对 {ref, results} 返回 :projectile_result（可插进 info 日志）" do
-    assert Admission.kind({make_ref(), []}) == :projectile_result
+  test "异步任务结果标签回归：Admission.kind/1 对 {ref, results} 返回 :task_result（可插进 info 日志）" do
+    assert Admission.kind({make_ref(), []}) == :task_result
   end
 
   # 只测试：单调时钟比墙钟走快的主机（2026-11-21 devenv 漂移 2 s）。

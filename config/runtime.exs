@@ -79,7 +79,6 @@ end
 # Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
 config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
-config :voxel_region, :projectile_backend, WorldServer.Movement.Projectile
 
 # One explicitly deployed Voxim scene. Gate caches its World route at subscription/join;
 # HTTP resolves this same route per request. Distributed deployments replace these refs.

@@ -47,21 +47,25 @@ defmodule VoxelRegion.OverlayLog do
   @doc """
   已部署日志里的设备记录键与撤下的账目（R8-04 增量 2／3）。回放用 `binary_to_term(_, [:safe])`，原子须已存在；现行代码里
   只有惰性加载的迁移模块还提到其中一些（`:circuit`），回放可能早于它加载。本模块在解码前已加载，这些字面量随之进入原子表。
-  `:mass_kg` 是存档拟态记录的键：魔法 v2 切片 3 删除建拟态的 `Semblance.new/4` 后，运行时代码不再提到它，但旧存档里
-  的拟态仍带着它（切片 4 迁移旧拟态时再撤）。
+  拟态记录的键（`:semblances` 起）：魔法 v2 切片 4c 删除拟态运行时后，只有一次性迁移
+  （`World.SemblanceMigration`）还读其中几项；旧存档的拟态记录带着全部这些键，回放解码时都要已在原子表里。退出条件同该迁移模块。
   """
   def historical_atoms,
     do: [:circuit, :tool_id, :kind, :size, :anchor, :closed, :fault, :remaining_j, :voltage_v, :current_a, :power_w,
-         :circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j, :mass_kg]
+         :circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j,
+         :semblances, :mass_kg, :radius_m, :capacity, :temperature_k, :glow_w, :lifetime_s, :age_s, :kinetic_j,
+         :origin, :velocity, :t0_us, :flight_s, :rest, :contact, :caster, :shape, :no_gravity, :break_on_hit,
+         :projectile_source, :impact_delivery, :semblance_created_j, :semblance_exchanged_j, :semblance_light_j,
+         :semblance_released_j]
 
-  # 元数据的写入方：World 与它的状态模块（`world/*.ex`，按文件名得模块名）、拟态记录。
-  @metadata_modules [VoxelRegion.World, VoxelRegion.Magic.Semblance |
+  # 元数据的写入方：World 与它的状态模块（`world/*.ex`，按文件名得模块名）、结构的持久化记录（`Magic.Structure.to_record/1`）。
+  @metadata_modules [VoxelRegion.World, VoxelRegion.Magic.Structure |
     for(file <- Path.wildcard(Path.join(__DIR__, "world/*.ex")),
       do: Module.concat(VoxelRegion.World, Macro.camelize(Path.basename(file, ".ex"))))]
 
   @doc """
   日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。元数据的键是写入方模块里的字面量原子
-  （拟态记录的 `mass_kg`、`age_s`，施法账的 `semblance_created_j` 等），冷重启的新 VM 回放时这些模块可能还没加载，
+  （结构记录的 `e_op_mj`、`debt_micro`，施法账的 `cast_waste_j` 等），冷重启的新 VM 回放时这些模块可能还没加载，
   所以解码前先加载全部写入方（magic-inc2 首次双端实跑的冷重启即因此失败；World 拆出状态模块后同理）。
   """
   def term(bytes) do

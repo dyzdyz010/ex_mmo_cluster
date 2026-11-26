@@ -9,7 +9,7 @@ defmodule VoxelRegion.ResidencyRequiredTest do
   test "天然活动未登记直接阻退，不先展开观察或准备的整树闭包" do
     state = %{
       source: VoxelRegion.GeneratedStore,
-      thermal: %{active: false, sources: %{}, semblances: %{}, config: %{}},
+      thermal: %{active: false, sources: %{}, config: %{}},
       thermal_work: VoxelRegion.ThermalWork.new(), thermal_run: nil,
       bodies: %{}, damage: %{}, properties: %{materials: %{}},
       liquid_active: MapSet.new(), liquid_bounds: nil, pending_casts: %{},

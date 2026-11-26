@@ -6,7 +6,7 @@ defmodule VoxelRegion.World.Residency do
   """
   require Logger
   alias VoxelRegion.CollisionSource
-  alias VoxelRegion.World.{Casting, Liquids, PageLoad, Pages, Projectiles, SimulationWindows, Thermal}
+  alias VoxelRegion.World.{Casting, Liquids, PageLoad, Pages, SimulationWindows, Thermal}
 
   @doc "World 构造时的派生维护状态；不保存第二份页内容或活动真值。"
   def new, do: %{wanted: false, retired_pages: 0, last: %{status: :idle}}
@@ -21,7 +21,6 @@ defmodule VoxelRegion.World.Residency do
     with {:thermal, {:ok, thermal}} <- {:thermal, Thermal.residency_dependencies(state)},
          {:preparing, {:ok, preparing}} <- {:preparing, PageLoad.residency_dependencies(state)},
          {:liquid, {:ok, liquid}} <- {:liquid, Liquids.residency_dependencies(state)},
-         {:projectiles, {:ok, projectiles}} <- {:projectiles, Projectiles.residency_dependencies(state)},
          {:casting, {:ok, casting}} <- {:casting, Casting.residency_dependencies(state)} do
       boxes = Map.values(state.canonical_subs) ++ Map.values(state.replica_subs)
       observations = {Enum.flat_map(boxes, fn box -> Enum.map(CollisionSource.regions(box), &{0, &1}) end),
@@ -29,7 +28,7 @@ defmodule VoxelRegion.World.Residency do
       inputs = :queue.to_list(state.input_ready) ++ if(state.input_current, do: [state.input_current], else: [])
       ready = Enum.map(inputs, &PageLoad.input_dependencies(state, &1))
       sources = [observation: observations, preparing: preparing, ready: ready,
-        thermal: thermal, liquid: liquid, projectiles: projectiles, casting: casting]
+        thermal: thermal, liquid: liquid, casting: casting]
 
       Enum.reduce_while(sources, {:ok, MapSet.new(), %{}}, fn
         {owner, needs}, {:ok, pages, reasons} ->

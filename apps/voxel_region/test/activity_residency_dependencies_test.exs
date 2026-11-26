@@ -2,10 +2,10 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
   @moduledoc "只测试：物理 owner 的驻留种子投影，不启动 World、数据库或网络。"
   use ExUnit.Case, async: true
   @moduletag :t0
-  alias VoxelRegion.World.{Casting, Liquids, Projectiles, Thermal}
+  alias VoxelRegion.World.{Casting, Liquids, Thermal}
 
   defp thermal_state do
-    %{thermal: %{active: false, sources: %{}, semblances: %{}, config: %{"view_range_cells" => 0}},
+    %{thermal: %{active: false, sources: %{}, config: %{"view_range_cells" => 0}},
       thermal_work: %{hot: MapSet.new(), hot_rows: %{}, touched: MapSet.new(), pending: MapSet.new(),
         due: MapSet.new(), electric: MapSet.new(), burning: %{}, cells: MapSet.new(), geometry: %{},
         sights: %{}, exact: false, domain: %{pending: false, table: %{}, finite: MapSet.new(), seen: nil}},
@@ -49,16 +49,6 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
       assert key in pending_keys
       assert key in Thermal.seed_keys(state)
     end
-  end
-
-  test "未落地拟态保留未来接触及到期释放位置，不能因当前无热格而退休" do
-    state = thermal_state()
-    s = %{origin: {0.5, 0.5, 0.5}, velocity: {1.0, 0.0, 0.0}, age_s: 0.0,
-      flight_s: 3.0, rest: {130.5, -65.5, 192.5}, radius_m: 0.1,
-      contact: %{target: %{granularity: 0, micro: {1040, -528, 1536}, owner: {0, 0}}}}
-    state = put_in(state.thermal.semblances, %{{12, 0} => s})
-    assert {:ok, {keys, [], _ids}} = Thermal.residency_dependencies(state)
-    assert {0, {2, -2, 3}} in keys
   end
 
   test "天然活动尚未发布不能伪装成空依赖" do
@@ -133,22 +123,6 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
     refute {0, {0, 3, 0}} in keys
     assert {0, {1, 2, 0}} in keys
     assert {0, {1, 3, 0}} in keys
-  end
-
-  test "飞行投射物保留未来真实弦段的中间区域，不仅是origin和rest" do
-    shot = %{projectile_source: %{}, origin: {0.0, 0.0, 0.0}, velocity: {6400.0, 0.0, 0.0},
-      age_s: 0.0, lifetime_s: 0.05, t0_us: 0, radius_m: 0.1}
-    state = %{thermal: %{semblances: %{{1, 0} => shot}}}
-    assert {:ok, {keys, [], []}} = Projectiles.residency_dependencies(state)
-    assert {0, {2, -1, 0}} in keys
-    assert {0, {5, -1, 0}} in keys
-    assert {0, {0, 0, 0}} in keys
-    refute {0, {0, 2, 0}} in keys
-  end
-
-  test "已冻结身体交付不再读取飞行几何" do
-    state = %{thermal: %{semblances: %{{1, 0} => %{projectile_source: %{}, impact_delivery: %{}}}}}
-    assert {:ok, {[], [], []}} = Projectiles.residency_dependencies(state)
   end
 
   test "前摇保留脚下与重新裁决射程，不依赖玩家窗口或定时租约" do

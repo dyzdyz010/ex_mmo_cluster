@@ -9,9 +9,7 @@ defmodule VoxelRegion.World.Observation do
   require Logger
   alias VoxelRegion.Damage
   alias VoxelRegion.{CollisionSource, Prefab}
-  alias VoxelRegion.Magic
   alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec}
-  alias VoxelRegion.World.Thermal
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Payloads}
 
@@ -87,21 +85,7 @@ defmodule VoxelRegion.World.Observation do
       :projectile_body_j, :projectile_rejected_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
-    ledger = Map.put(ledger, :sources, sources)
-
-    # 拟态账的剩余项是整个世界的快照：显热 ΣC(T − T_amb) 与其余存量（飞行动能 + 发光余量）；只在出现过拟态的世界里有。
-    # 闭合：semblance_created_j = exchanged + light + released + thermal + stored。
-    case thermal do
-      %{semblances: semblances} ->
-        live = Map.values(semblances)
-        ambient = thermal.config["ambient_kelvin"]
-        thermal_j = Enum.sum(Enum.map(live, &Magic.Semblance.thermal_j(&1, ambient))) * 1.0
-        stored_j = Enum.sum(Enum.map(live, &Magic.Semblance.stored_j(&1, ambient))) * 1.0
-        Map.merge(ledger, %{semblance_thermal_j: thermal_j, semblance_stored_j: stored_j - thermal_j})
-
-      _ ->
-        ledger
-    end
+    Map.put(ledger, :sources, sources)
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
@@ -221,7 +205,6 @@ defmodule VoxelRegion.World.Observation do
       property_context: property_context(state),
       epochs: VoxelRegion.EpochChunk.flat(state.epochs, box),
       protection: state.protection.regions,
-      semblances: Thermal.semblances(state),
       casts: Map.new(state.pending_casts, fn {cid, pending} -> {cid, pending.record} end)
     }
     |> public_properties()

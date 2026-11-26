@@ -1,0 +1,60 @@
+{
+  "cid": 1001,
+  "semblances": [
+    {
+      "id": [
+        8,
+        0
+      ],
+      "fields": "%{origin: {0.5, 2.5, 1.0}, rest: {0.5, 2.5, 1.0}, t0_us: 1795696160664437, contact: nil, kinetic_j: 0.0, velocity: {0.0, 0.0, 0.0}, temperature_k: 293.15, age_s: 1.5, radius_m: 0.15, flight_s: 0.0, shape: 0, lifetime_s: 120.0, glow_w: 100.0, capacity: 50.0, no_gravity: false, caster: 1001, mass_kg: 0.1}",
+      "kind": "held",
+      "stored_j": 11850.0,
+      "contact": "nil",
+      "kinetic_j": 0.0,
+      "temperature_k": 293.15,
+      "landed": true,
+      "age_s": 1.5,
+      "thermal_j": 0.0,
+      "glow_j": 11850.0
+    },
+    {
+      "id": [
+        6,
+        0
+      ],
+      "fields": "%{origin: {0.5, 2.2, 0.9}, rest: {0.5, 1.4, 2.350662735341085}, t0_us: 1795696160648275, contact: %{key: {0, {0, 0, 16}}, target: %{owner: {0, 0}, micro: {0, 0, 16}, granularity: 0, material: 11, incarnation: 1}, cell: {0, 0, 2}}, kinetic_j: 0.0, velocity: {0.0, -7.199999999999999, 9.600000000000001}, temperature_k: 1227.807022549731, age_s: 1.5, radius_m: 0.4, flight_s: 0.15111070159802967, shape: 0, lifetime_s: 60.0, glow_w: 0.0, capacity: 1000.0, no_gravity: false, caster: 1001, mass_kg: 2.0}",
+      "kind": "thrown",
+      "stored_j": 934657.0225497311,
+      "contact": "%{key: {0, {0, 0, 16}}, target: %{owner: {0, 0}, micro: {0, 0, 16}, granularity: 0, material: 11, incarnation: 1}, cell: {0, 0, 2}}",
+      "kinetic_j": 0.0,
+      "temperature_k": 1227.807022549731,
+      "landed": true,
+      "age_s": 1.5,
+      "thermal_j": 934657.0225497311,
+      "glow_j": 0.0
+    }
+  ],
+  "final_seq": 11,
+  "recorded_by": "ex_mmo_cluster 62d9a5a5 (master, Hello 45, magic v1), test/fixtures/semblance_migration/record_62d9a5a5_helper.exs",
+  "master_commit": "62d9a5a5",
+  "catalogs": {
+    "properties": {
+      "file": "combustion/b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec.json",
+      "sha256": "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
+    },
+    "thermal_environment": {
+      "file": "combustion/environment-radiation.json",
+      "sha256": "7c23049aa1e9d2a0aaa18e2d8f3d219803f13e5aeb97214c9cf30ab03153c13e"
+    },
+    "magic_v1": {
+      "file": "semblance_migration/19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88.json",
+      "sha256": "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
+    }
+  },
+  "ambient_kelvin": 293.15,
+  "stored_j_sum": 946507.0225497311,
+  "ledger": {
+    "semblance_created_j": 1718994.0,
+    "semblance_released_j": 0
+  }
+}

@@ -1,10 +1,9 @@
 defmodule VoxelRegion.MagicSemblanceTest do
   @moduledoc """
-  只测试：拟态纯几何弹道（`Magic.Semblance` 的 `position/4`、`current/1`、`trace/7-8`、`flight_segments/2`、`spent?/1`），
-  包含 Hello 45 无重力直线飞行与有重力抛物线对照。
+  只测试：结构物理体的纯几何（`Magic.Semblance` 的 `position/4`、`trace/7-8`、`segment/5`、`surface/1`、`contact/2`），
+  包含无质量直线飞行与有重力抛物线对照、块的三轴半尺寸落点。
 
-  v1 形态造价与旧拟态构造（`new/4`、`form_j/3`、`kinetic_j/2`）已随切片 3 删除；拟态几何与弹道留作切片 4 结构物理体，
-  本文件保留其纯值回归。
+  拟态的能量运行时（寿命、发光余量、`step/3`、`spent?/1` 等）已随切片 4c 删除；几何与弹道是结构物理体，本文件保留其纯值回归。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
@@ -36,7 +35,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
 
   test "弹道：手边 y = 2 m、vx = 10 m/s、地面 y = 0 → t = √(2·2/9.81) = 0.638551 s、x = 6.385509 m；拟态停在地面上方一个半径" do
     {{:hit, t, {x, y, z}, :ground}, _casts} =
-      Semblance.trace({0.0, 2.0, 0.0}, {0.0, 2.0, 0.0}, {10.0, 0.0, 0.0}, 0.25, 30.0, 0, &ground/4)
+      Semblance.trace({0.0, 2.0, 0.0}, {0.0, 2.0, 0.0}, {10.0, 0.0, 0.0}, {0.25, 0.25, 0.25}, 30.0, 0, &ground/4)
 
     assert_in_delta t, 0.638551, 1.0e-6
     assert_in_delta x, 6.385509, 1.0e-6
@@ -47,7 +46,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
                {0.0, 1.0, 0.0},
                {0.0, 1.0, 0.5},
                {0.0, 0.0, 0.0},
-               0.1,
+               {0.1, 0.1, 0.1},
                30.0,
                0,
                &ground/4
@@ -58,7 +57,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
                {0.0, 0.2, 0.0},
                {0.0, -0.3, 0.0},
                {0.0, 0.0, 0.0},
-               0.1,
+               {0.1, 0.1, 0.1},
                30.0,
                0,
                &ground/4
@@ -71,7 +70,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
                {0.0, 2.0, 0.0},
                {0.0, 2.0, 0.0},
                {0.0, 30.0, 0.0},
-               0.25,
+               {0.25, 0.25, 0.25},
                30.0,
                0,
                &ground/4
@@ -94,35 +93,14 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert {30.0, y_drop, +0.0} = Semblance.position(origin, velocity, 1.0, false)
     assert_in_delta y_drop, 2.5 - 0.5 * 9.81, 1.0e-12
 
-    # current 与 flight_segments 遵循 no_gravity；缺省按有重力处理。
-    straight = %{
-      origin: origin,
-      velocity: velocity,
-      age_s: 0.0,
-      flight_s: 1.0,
-      rest: {30.0, 2.5, 0.0},
-      no_gravity: true
-    }
-
-    parabolic = Map.delete(straight, :no_gravity)
-    assert Semblance.current(%{straight | age_s: 0.5}) == {15.0, 2.5, 0.0}
-    assert {15.0, y_mid, +0.0} = Semblance.current(%{parabolic | age_s: 0.5})
-    assert_in_delta y_mid, 2.5 - 0.5 * 9.81 * 0.25, 1.0e-12
-
-    segs = Semblance.flight_segments(straight, 1.0)
-    assert length(segs) == 20
-    assert Enum.all?(segs, fn {_, _, {_, ay, _}, {_, by, _}} -> ay == 2.5 and by == 2.5 end)
-    {_, _, _, {_, end_y, _}} = List.last(Semblance.flight_segments(parabolic, 1.0))
-    assert_in_delta end_y, 2.5 - 4.905, 1.0e-12
-
     # 水平 30 m/s 经 trace 扫过平地 y = 0：无重力直线全程不落地（30 m 处 miss，t = 1.0 s）；有重力命中地面。
     assert {{:miss, t_miss}, _} =
-             Semblance.trace(origin, origin, velocity, 0.05, 30.0, 0, &ground/4, true)
+             Semblance.trace(origin, origin, velocity, {0.05, 0.05, 0.05}, 30.0, 0, &ground/4, true)
 
     assert_in_delta t_miss, 1.0, 1.0e-12
 
     assert {{:hit, t_fall, {_, 0.05, _}, :ground}, _} =
-             Semblance.trace(origin, origin, velocity, 0.05, 30.0, 0, &ground/4, false)
+             Semblance.trace(origin, origin, velocity, {0.05, 0.05, 0.05}, 30.0, 0, &ground/4, false)
 
     assert_in_delta t_fall, :math.sqrt(2 * 2.5 / 9.81), 1.0e-6
 
@@ -132,7 +110,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
                {0.01, 2.1, 0.0},
                {0.01, 2.1, 0.0},
                {3.0, -4.0, 0.0},
-               0.25,
+               {0.25, 0.25, 0.25},
                30.0,
                0,
                &ground/4,
@@ -149,7 +127,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
                {0.01, 1.85, 0.0},
                {0.01, 1.85, 0.0},
                {3.0, 6.0, 0.0},
-               0.25,
+               {0.25, 0.25, 0.25},
                30.0,
                0,
                &ceiling/4,
@@ -161,11 +139,21 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert yu == 4.75 and zu == 0.0
   end
 
-  test "spent?/1：无接触且有初速的拟态到达射程端点后散解，静止或有接触的不散解" do
-    base = %{velocity: {30.0, 0.0, 0.0}, contact: nil, flight_s: 1.0, age_s: 1.0}
-    assert Semblance.spent?(base)
-    refute Semblance.spent?(%{base | age_s: 0.5})
-    refute Semblance.spent?(%{base | contact: %{cell: {0, 0, 0}}})
-    refute Semblance.spent?(%{base | velocity: {0.0, 0.0, 0.0}, flight_s: 0.0, age_s: 0.0})
+  test "块与板按三轴半尺寸：落点沿命中面法线外移该轴的半尺寸；表面积 8(ab + bc + ca)；整面接触、面积不乘 π/4" do
+    # 半尺寸 0.3 × 0.15 × 0.05 m 的板竖直落到 y = 0：中心停在 y = 0.15（第二轴半尺寸），不是 0.3。
+    assert {{:hit, _t, {_, y, _}, :ground}, _} =
+             Semblance.trace({0.0, 2.0, 0.0}, {0.0, 2.0, 0.0}, {0.0, -1.0, 0.0}, {0.3, 0.15, 0.05}, 30.0, 0, &ground/4)
+
+    assert y == 0.15
+    plate = %{shape: 2, half: {0.3, 0.15, 0.05}, rest: {0.5, 0.15, 0.5}}
+    assert_in_delta Semblance.surface(plate), 8 * (0.045 + 0.0075 + 0.015), 1.0e-15
+    # 贴在 y = 0 的整宏格顶面：法向 y，接触面积 = 0.6 × 0.1（x、z 两轴全长之积）。
+    assert {area, 1} = Semblance.contact(plate, {{0.0, -1.0, 0.0}, {1.0, 0.0, 1.0}})
+    assert_in_delta area, 0.06, 1.0e-15
+    # 同尺寸的球（半径 0.15）贴面：面积 = (0.3 × 0.3) × π/4。
+    ball = %{shape: 0, half: {0.15, 0.15, 0.15}, rest: {0.5, 0.15, 0.5}}
+    assert {ball_area, 1} = Semblance.contact(ball, {{0.0, -1.0, 0.0}, {1.0, 0.0, 1.0}})
+    assert_in_delta ball_area, 0.09 * :math.pi() / 4, 1.0e-15
+    assert_in_delta Semblance.surface(ball), 4 * :math.pi() * 0.0225, 1.0e-15
   end
 end

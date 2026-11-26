@@ -18,7 +18,7 @@ defmodule VoxelRegion.PropertyObservation do
     |> project_operation(fn cell -> contains?(cell, box) end)
     |> Map.update(:epochs, %{}, &Map.filter(&1, fn {cell, _} -> contains?(cell, box) end))
     |> project_protection(box)
-    |> project_semblances(box)
+    |> project_structures(box)
     |> project_casts(box)
   end
 
@@ -27,11 +27,17 @@ defmodule VoxelRegion.PropertyObservation do
     do: %{value | protection: Map.filter(regions, fn {_, r} -> r == nil or VoxelRegion.Protection.relevant?(r, box) end)}
   defp project_protection(value, _box), do: value
 
-  # 拟态（魔法增量 2）：出发点或落点宏格在窗口内的保留；删除（nil）不知旧位置，总是保留。
-  defp project_semblances(%{semblances: semblances} = value, box),
-    do: %{value | semblances: Map.filter(semblances, fn {_, s} ->
-      s == nil or Enum.any?(VoxelRegion.Magic.Semblance.cells(s), &contains?(&1, box)) end)}
-  defp project_semblances(value, _box), do: value
+  # 结构记录与状态增量（魔法 v2 切片 4c）：出发点或落点宏格在窗口内的保留；删除（nil）不知旧位置，总是保留。
+  # 状态增量随完整记录一起运输（`World.Structures`），按同一位置筛选，编码时才投影成 20 B 增量。
+  defp project_structures(value, box) do
+    keep = fn records -> Map.filter(records, fn {_, r} -> r == nil or in_window?(r, box) end) end
+
+    value
+    |> then(&if(Map.has_key?(&1, :structures), do: Map.update!(&1, :structures, keep), else: &1))
+    |> then(&if(Map.has_key?(&1, :structure_states), do: Map.update!(&1, :structure_states, keep), else: &1))
+  end
+
+  defp in_window?(record, box), do: Enum.any?(VoxelRegion.Magic.Semblance.cells(record), &contains?(&1, box))
 
   # 待施放（施放前摇）：前摇中的记录按手边出发点宏格投影；已结算记录不带位置，总是保留。
   defp project_casts(%{casts: casts} = value, box),

@@ -136,7 +136,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
         # 自然chunk只运输不可变紧凑正文；发送端观察仍枚举原globalXYZ世代。
         epochs: Map.take(state.epochs, chunks),
         protection: %{regions: state.protection.regions},
-        thermal: state.thermal && Map.take(state.thermal, [:config, :semblances]),
+        thermal: state.thermal && Map.take(state.thermal, [:config]),
         pending_casts:
           Map.new(state.pending_casts, fn {cid, pending} -> {cid, %{record: pending.record}} end)
       })
@@ -160,7 +160,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
   defp transport_fields(view) do
     {view, tables} =
       Enum.reduce(
-        [[:source_state, :index, :bounds], [:protection, :regions], [:thermal, :semblances]],
+        [[:source_state, :index, :bounds], [:protection, :regions]],
         {view, []},
         fn path, {view, tables} ->
           case get_in(view, path) do

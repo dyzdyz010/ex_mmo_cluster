@@ -74,9 +74,9 @@ defmodule VoxelRegion.World.Admission do
   end
 
   @doc "消息的稳定日志标签。"
-  # 投射物采样任务的结果 `{任务引用, 结果}` 以引用开头；引用不能插进日志文本（prod info 级别下 World 因此崩溃，
-  # 2026-11-20 法杖光弹实跑），标签记为 :projectile_result。
-  def kind({ref, _results}) when is_reference(ref), do: :projectile_result
+  # 异步任务的结果 `{任务引用, 结果}` 以引用开头；引用不能插进日志文本（prod info 级别下 World 因此崩溃，
+  # 2026-11-20 法杖光弹实跑），标签记为 :task_result。
+  def kind({ref, _results}) when is_reference(ref), do: :task_result
   def kind(message) when is_tuple(message), do: elem(message, 0)
   def kind(message), do: message
 end
