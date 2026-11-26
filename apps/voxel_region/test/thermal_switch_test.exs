@@ -40,15 +40,42 @@ defmodule VoxelRegion.ThermalSwitchTest do
     path
   end
 
+  # Test-only: all thermal commits are driven explicitly via commit/1; disable wall-clock
+  # background thermal timers so an extra commit cannot sneak between before_* and current.
+  defmodule ManualClock do
+    @behaviour VoxelRegion.World.Clock
+    @impl true
+    def now(_), do: 0
+    @impl true
+    def schedule(_, _, _, _), do: make_ref()
+    @impl true
+    def cancel(_, _), do: false
+  end
+
   defp start(c, name) do
     root = Path.join(c.root, "#{name}")
     File.mkdir_p!(root)
     catalog = catalog_file(c, "#{name}/properties", c.data)
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
-    w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
-      property_catalog_path: catalog, thermal_environment_path: env,
-      production_materials: [@stone, @copper, @alloy, @te, @thermistor]]}, id: name)
+
+    w =
+      start_supervised!(
+        {World,
+         [
+           source: Source,
+           log: Log,
+           root: root,
+           observer: self(),
+           name: nil,
+           clock: {ManualClock, nil},
+           property_catalog_path: catalog,
+           thermal_environment_path: env,
+           production_materials: [@stone, @copper, @alloy, @te, @thermistor]
+         ]},
+        id: name
+      )
+
     :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-1, 0, 0}, {6, 4, 5}})
     {w, root}
   end

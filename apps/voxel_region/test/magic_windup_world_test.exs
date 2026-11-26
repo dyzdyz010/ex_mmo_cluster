@@ -78,11 +78,34 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     end
   end
 
+  # Test-only: isolate World from background 500 ms thermal commits so post-edit /
+  # post-settlement World.seq assertions cannot race an unrelated thermal tick.
+  defmodule ManualClock do
+    @behaviour VoxelRegion.World.Clock
+    @impl true
+    def now(_), do: 0
+    @impl true
+    def schedule(_, _, _, _), do: make_ref()
+    @impl true
+    def cancel(_, _), do: false
+  end
+
   defp start(root, log \\ Log) do
-    start_supervised!({World, [source: Source, log: log, root: root, observer: self(), name: nil,
-      property_catalog_path: Path.join(root, "properties.json"),
-      thermal_environment_path: Path.join(root, "environment.json"),
-      magic_catalog_path: Path.join(root, "magic.json")]}, id: :world)
+    start_supervised!(
+      {World,
+       [
+         source: Source,
+         log: log,
+         root: root,
+         observer: self(),
+         name: nil,
+         clock: {ManualClock, nil},
+         property_catalog_path: Path.join(root, "properties.json"),
+         thermal_environment_path: Path.join(root, "environment.json"),
+         magic_catalog_path: Path.join(root, "magic.json")
+       ]},
+      id: :world
+    )
   end
 
   defp actor do
