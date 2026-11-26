@@ -20,7 +20,7 @@ defmodule GateServer.Voxel.ResultFrame do
   `reason` 会 `inspect/1` 成可诊断字符串下行，不做归一化——客户端与 CLI 都依赖原始
   reason 区分业务级拒绝。
 
-  唯一例外是施法的计价层数值检查违规 `{:rejects, [检查名]}`（World 在施放的前摇开始或出手时给出，Hello 45，
+  唯一例外是施法的计价层数值检查违规 `{:rejects, [检查名]}`（World 在施放的前摇开始或出手时给出，Hello 46，
   决策稿 slice3-protocol §3.4–3.5）：下行为 `"rejects:<检查名,…>"`，检查名按 0x83 `rejects` 位掩码的同一位序
   （`MmoContracts.Voxel.Codec.spell_rejects_reason/1`），不带 `inspect` 的冒号前缀。
   """

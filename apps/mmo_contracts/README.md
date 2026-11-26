@@ -40,8 +40,8 @@ Test-only 回归：本 app 的 `voxel_material_catalog_test.exs`，voxel_region 
 
 ## 测试
 
-当前分支 `magic-v2-p1` 的 Hello 为 45，唯一版本来源为 [`Session.Codec.protocol_version/0`](lib/mmo_contracts/session/codec.ex)，在线只接纳该版本；这表示源码状态，不代表已发布或完成真实客户端验收（分支开发服为 probe，P1 闭环后与 Voxim 同版本合入 master）。
-Hello 45 是魔法 v2 切片 3 的线协议：0x82 v2 删去偏移 125–136 的 12 B 拟态 id（127 + n B，程序为 IR v2）、0x83 v2 为 161 B（偏移 33 改报 Ω_eff `resolution_eff`、49 改报 S·P，73 起 11 个 f64 报价扩展）、施放记录 v2 加 `fail_step` 与每步 `part_index`；布局与位序见 [切片 3 决策稿 §3](../../docs/10-active/magic/2026-11-19-slice3-protocol.md)，冻结样本 `test/fixtures/wire-v2-samples.json` 与 Voxim 测试共读（`test/mmo_contracts/magic_wire_test.exs`）。
+当前分支 `magic-v2-p1` 的 Hello 为 46（顺延自 master Hello 45 拟态去重力 `flags` 位掩码），唯一版本来源为 [`Session.Codec.protocol_version/0`](lib/mmo_contracts/session/codec.ex)，在线只接纳该版本；这表示源码状态，不代表已发布或完成真实客户端验收（分支开发服为 probe，P1 闭环后与 Voxim 同版本合入 master）。
+Hello 46 是魔法 v2 切片 3 的线协议：0x82 v2 删去偏移 125–136 的 12 B 拟态 id（127 + n B，程序为 IR v2）、0x83 v2 为 161 B（偏移 33 改报 Ω_eff `resolution_eff`、49 改报 S·P，73 起 11 个 f64 报价扩展）、施放记录 v2 加 `fail_step` 与每步 `part_index`，并保留 Hello 45 拟态记录的 `flags` 位掩码（`no_gravity`）；布局与位序见 [切片 3 决策稿 §3](../../docs/10-active/magic/2026-11-19-slice3-protocol.md)，冻结样本 `test/fixtures/wire-v2-samples.json` 与 Voxim 测试共读（`test/mmo_contracts/magic_wire_test.exs`）。
 Hello 44 新增生产 action 6 徒手分选、7 取消（8 保留且拒绝），工具 24 `ore.sort`；Hello 42 追加公共生命字段，43 调整 g=6 区域战斗工具语义，见 [M1 唯一规范 §2.1](../../../Voxim/Docs/M1/plan.md#21-身份时间与-wire) 与 [交互设计 §6.3–6.4](../../../Voxim/Docs/Interaction-Targeting-Design.md)。
 
 R7-B6（Global system，Hello 9 时引入的增量字节）：`voxel_property_state` 在温度与可选电路后追加

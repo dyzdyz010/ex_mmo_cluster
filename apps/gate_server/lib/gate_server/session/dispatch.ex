@@ -182,7 +182,7 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  # 魔法施法意图 0x82 v2（Hello 45，无拟态 id；解码后的请求原样转给 Player / World）。先回施法者状态 0x83 v2
+  # 魔法施法意图 0x82 v2（Hello 46，无拟态 id；解码后的请求原样转给 Player / World）。先回施法者状态 0x83 v2
   # （同 request_id，带报价、实际支出与施放后能量）；建成与第 k 步中断都是已提交事务，再回 0x68 accepted
   # （result_ref = seq，reason "ok" / "interrupted_omega" / "interrupted_energy"，由 World 的 outcome 给出）；
   # 报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式，如 ":no_target"；计价数值检查违规为

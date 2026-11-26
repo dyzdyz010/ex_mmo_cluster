@@ -1,7 +1,7 @@
 defmodule MmoContracts.Session.Codec do
-  # Hello 45：魔法 v2 切片 3（0x82 v2 删拟态 id、0x83 v2 报价扩展、施放记录 v2；决策稿
-  # docs/10-active/magic/2026-11-19-slice3-protocol.md §3）。
-  @protocol_version 45
+  # Hello 46：魔法 v2 切片 3（0x82 v2 删拟态 id、0x83 v2 报价扩展、施放记录 v2；决策稿
+  # docs/10-active/magic/2026-11-19-slice3-protocol.md §3；顺延自 master Hello 45 去重力 flags）。
+  @protocol_version 46
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   @spec protocol_version() :: pos_integer()
   def protocol_version, do: @protocol_version

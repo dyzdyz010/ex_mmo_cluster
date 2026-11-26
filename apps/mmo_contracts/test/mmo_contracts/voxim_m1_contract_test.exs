@@ -6,7 +6,7 @@ defmodule MmoContracts.VoximM1ContractTest do
   @root Path.expand("../../../../../Voxim/Docs/M1", __DIR__)
   Code.require_file(Path.join(@root, "tools/capture_movement_wire.exs"))
 
-  # 历史双方样本保持冻结；Hello 45 仅变更版本字段，旧 Hello 必须在线拒绝。
+  # 历史双方样本保持冻结；Hello 46 仅变更版本字段，旧 Hello 必须在线拒绝。
   @fixtures Path.join(@root, "fixtures/movement-wire-v43")
   @v42 Path.join(@root, "fixtures/movement-wire-v42")
 
@@ -73,9 +73,9 @@ defmodule MmoContracts.VoximM1ContractTest do
     end
   end
 
-  test "历史双方 v42/v43 Hello 拒绝；Hello 45 只改变冻结样本的版本字段" do
+  test "历史双方 v42/v43 Hello 拒绝；Hello 46 只改变冻结样本的版本字段" do
     {1, value, current} = packet("hello")
-    assert value.protocol_version == 45
+    assert value.protocol_version == 46
     assert {:ok, ^value} = Codec.decode(current)
 
     for {version, fixtures} <- [{42, @v42}, {43, @fixtures}], producer <- ["elixir", "ue"] do
@@ -83,8 +83,8 @@ defmodule MmoContracts.VoximM1ContractTest do
       assert binary_part(old, 9, 2) == <<version::16>>
       assert {:error, :invalid_m1_message} = Codec.decode(old)
 
-      # 按已批准的字段变更构造独立期望，不改历史文件，也不冒充 UE 45 实际捕获。
-      assert replace(old, 9, <<45::16>>) == current
+      # 按已批准的字段变更构造独立期望，不改历史文件，也不冒充 UE 46 实际捕获。
+      assert replace(old, 9, <<46::16>>) == current
     end
   end
 

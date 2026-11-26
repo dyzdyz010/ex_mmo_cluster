@@ -170,7 +170,7 @@ defmodule MmoContracts.Voxel.Codec do
   def intent?({:voxel_spell_intent, request}), do: spell_intent?(request)
 
   @doc """
-  魔法施法意图 0x82 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.1）的取值约束，线解码与进程内调用方
+  魔法施法意图 0x82 v2（Hello 46，设计 §11.4.6，决策稿 slice3-protocol §3.1）的取值约束，线解码与进程内调用方
   （`NpcServer.WorldRequest`，经 `intent?/1`）共用。帧 127 + n B，大端，与 0x7D 工具意图同一目标表示：
 
   | 偏移 | 字段 | 类型 |
@@ -525,7 +525,7 @@ defmodule MmoContracts.Voxel.Codec do
     {:ok, <<0x81, t.request_id::64, t.seq::64, t.material::16, t.balance::64, t.cost::32>>}
   end
 
-  # 施法者状态 0x83 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.2），161 B，大端：
+  # 施法者状态 0x83 v2（Hello 46，设计 §11.4.6，决策稿 slice3-protocol §3.2），161 B，大端：
   #
   #   0 opcode u8 = 0x83 | 1 request_id u64（登录与身体推送为 0）| 9 seq u64（World 事务号）
   #   17 energy_j | 25 capacity_j | 33 resolution_eff（Ω_eff，原 coherence）| 41 quote_j
@@ -1430,7 +1430,7 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_semblances(_, _, _), do: {:error, :invalid_semblance}
 
   @doc """
-  施放记录 v2（Hello 45，设计 §11.4.6，决策稿 slice3-protocol §3.3）：待施放增量 `%{caster => 记录}` 的线字节，
+  施放记录 v2（Hello 46，设计 §11.4.6，决策稿 slice3-protocol §3.3）：待施放增量 `%{caster => 记录}` 的线字节，
   放在 PropertyBatch 末尾（拟态之后）。大端、按 caster 升序且唯一，变长（定长部分 46 B，每步 17 B）：
 
       caster:u64, live:u8 (1 前摇中 / 0 已结算),

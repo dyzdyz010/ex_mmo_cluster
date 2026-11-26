@@ -1,6 +1,6 @@
 defmodule MmoContracts.MagicWireTest do
   @moduledoc """
-  只测试：魔法线格式冻结样本（Hello 45，魔法 v2 切片 3）。
+  只测试：魔法线格式冻结样本（Hello 46，魔法 v2 切片 3）。
 
   - 0x82 施法意图 v2、0x83 施法者状态 v2、PropertyBatch 施放记录 v2 的正例与反例来自
     `test/fixtures/wire-v2-samples.json`（与 Voxim 测试共读的同一份字节，布局见决策稿
@@ -31,17 +31,17 @@ defmodule MmoContracts.MagicWireTest do
     do:
       Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
 
-  test "Hello 45：当前版本是 45，Hello 44 与更早版本在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 45
-    assert @wire["protocol_version"] == 45
-    hello = %Session.Hello{protocol_version: 45, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 46：当前版本是 46，Hello 45 与更早版本在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 46
+    assert @wire["protocol_version"] == 46
+    hello = %Session.Hello{protocol_version: 46, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 45::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 46::16, tail::binary>> = IO.iodata_to_binary(packet)
 
-    assert {:ok, %Session.Hello{protocol_version: 45}} =
-             Session.Codec.decode(prefix <> <<45::16>> <> tail)
+    assert {:ok, %Session.Hello{protocol_version: 46}} =
+             Session.Codec.decode(prefix <> <<46::16>> <> tail)
 
-    for old <- [44, 43, 35, 29] do
+    for old <- [45, 44, 43, 35, 29] do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<old::16>> <> tail)
     end
   end

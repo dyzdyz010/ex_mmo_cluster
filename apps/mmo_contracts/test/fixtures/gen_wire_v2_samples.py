@@ -140,10 +140,10 @@ negatives = [
 
 doc = {
     "source": "ex_mmo_cluster docs/10-active/magic/2026-11-19-slice3-protocol.md §3.1–3.3；TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.11 §11.4.6",
-    "note": "Hello 45 魔法线协议 v2 冻结样本：服务端 mmo_contracts 与 Voxim 测试读同一份字节，不另存副本。"
+    "note": "Hello 46 魔法线协议 v2 冻结样本：服务端 mmo_contracts 与 Voxim 测试读同一份字节，不另存副本。"
             "每个样本的 segments 逐字段列出偏移（从本帧/本段第 0 字节起）、类型与字节，hex 是 segments 的拼接；"
             "全部大端，f64 为 IEEE 754 binary64 位型。fields 是解码后的字段值（0x83 是编码输入）。改样本前先通知客户端，提交后附 commit。",
-    "protocol_version": 45,
+    "protocol_version": 46,
     "catalog_digest": digest,
     "ir_samples": "apps/voxel_region/test/fixtures/magic/ir-v2-samples.json（program_hex 的唯一来源；本文件的程序字节须与之相同，catalog_digest 亦同）",
     "quote_samples": "apps/voxel_region/test/fixtures/magic/quote-v2-samples.json（0x83 报价字段与施放记录 steps 的来源）",

@@ -2,7 +2,7 @@ Code.require_file("../../../voxel_region/test/support/world_fixtures.exs", __DIR
 
 defmodule GateServer.VoximSpellDispatchTest do
   @moduledoc """
-  只测试：魔法线协议 v2（Hello 45，决策稿 `docs/10-active/magic/2026-11-19-slice3-protocol.md` §3、§9 G-1）的 Gate 胶合——
+  只测试：魔法线协议 v2（Hello 46，决策稿 `docs/10-active/magic/2026-11-19-slice3-protocol.md` §3、§9 G-1）的 Gate 胶合——
   0x82 v2（127 + n B，无拟态 id）经正式解码与 Dispatch 进入真实 World；报价只回 0x83 v2（161 B）；拒绝回 0x68 rejected；
   QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）；World 的施法回复在连接里先 0x83 后 0x68。
 
