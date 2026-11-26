@@ -1,7 +1,8 @@
 defmodule VoxelRegion.MagicSemblanceTest do
   @moduledoc """
   只测试：结构物理体的纯几何（`Magic.Semblance` 的 `position/4`、`trace/7-8`、`segment/5`、`surface/1`、`contact/2`），
-  包含无质量直线飞行与有重力抛物线对照、块的三轴半尺寸落点。
+  包含无质量直线飞行与有重力抛物线对照、块的三轴半尺寸落点。`trace` 的第 5 个参数是预计飞行时长（s，切片 5b 起；
+  原为射程路程上界），只限定预测长度。
 
   拟态的能量运行时（寿命、发光余量、`step/3`、`spent?/1` 等）已随切片 4c 删除；几何与弹道是结构物理体，本文件保留其纯值回归。
   """
@@ -63,20 +64,40 @@ defmodule VoxelRegion.MagicSemblanceTest do
                &ground/4
              )
 
-    # 竖直上抛 30 m/s：30 m 路程内不落地 → miss，并给出射程端点时刻。上升段弦长之和 = 升高 30t − ½·9.81·t²，
-    # 达 30 m 于 t = (30 − √(900 − 588.6)) / 9.81 = 1.2593 s；按 0.05 s 弦段在第 26 段末（t = 1.30 s）首次达到。
-    assert {{:miss, t}, _} =
+    # 竖直上抛 30 m/s：预计飞行时长 1.23 s 内不落地 → miss，预测恰好止于 1.23 s（末段弦截短，不按路程截断）；
+    # 共求交 1 段眼 → 手（长度 0，不调用）+ ⌈1.23 / 0.05⌉ = 25 段弦。
+    assert {{:miss, t}, 25} =
              Semblance.trace(
                {0.0, 2.0, 0.0},
                {0.0, 2.0, 0.0},
                {0.0, 30.0, 0.0},
                {0.25, 0.25, 0.25},
-               30.0,
+               1.23,
                0,
                &ground/4
              )
 
-    assert_in_delta t, 1.30, 1.0e-12
+    assert t == 1.23
+  end
+
+  test "切片 5b：投掷结构没有射程终点——有质量弹道飞过 30 m 路程照常求交到落地；预测只到预计飞行时长或不可读处" do
+    # 有质量：自 y = 40 m 水平 30 m/s 抛出，落地 t = √(2·40/9.81) = 2.855686 s、x = 85.67 m，路程远超施法域 30 m。
+    # 旧实现把第 5 个参数当路程上界（射程 30 m）在 t ≈ 1.0 s 处 miss；现在它是预计飞行时长（这里给 5 s）。
+    assert {{:hit, t, {x, 0.25, _}, :ground}, _} =
+             Semblance.trace({0.0, 40.0, 0.0}, {0.0, 40.0, 0.0}, {30.0, 0.0, 0.0}, {0.25, 0.25, 0.25}, 5.0, 0, &ground/4)
+
+    assert_in_delta t, :math.sqrt(80 / 9.81), 1.0e-6
+    assert_in_delta x, 30.0 * :math.sqrt(80 / 9.81), 1.0e-5
+
+    # 读不出 canonical 的弦段（回调回 :unreadable）：预测在该段起点结束，落点不在任何“端点”。第 13 段（t = 0.60 s）不可读。
+    unreadable = fn origin, d, length, n ->
+      if n == 12, do: {:unreadable, n + 1}, else: ground(origin, d, length, n)
+    end
+
+    assert {{:miss, t_stop}, 13} =
+             Semblance.trace({0.0, 40.0, 0.0}, {0.0, 40.0, 0.0}, {30.0, 0.0, 0.0}, {0.25, 0.25, 0.25}, 5.0, 0, unreadable)
+
+    assert_in_delta t_stop, 0.60, 1.0e-12
   end
 
   test "无重力直线弹道：水平 30 m/s 飞行 0..1 s 零下坠（对照有重力下坠 4.905 m）；上下斜射 Y 面精确线性穿越" do
@@ -93,11 +114,12 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert {30.0, y_drop, +0.0} = Semblance.position(origin, velocity, 1.0, false)
     assert_in_delta y_drop, 2.5 - 0.5 * 9.81, 1.0e-12
 
-    # 水平 30 m/s 经 trace 扫过平地 y = 0：无重力直线全程不落地（30 m 处 miss，t = 1.0 s）；有重力命中地面。
+    # 水平 30 m/s 经 trace 扫过平地 y = 0：无重力直线全程不落地，预测到预计飞行时长 1.5 s（45 m，超过施法域 30 m）
+    # 仍 miss；有重力命中地面。
     assert {{:miss, t_miss}, _} =
-             Semblance.trace(origin, origin, velocity, {0.05, 0.05, 0.05}, 30.0, 0, &ground/4, true)
+             Semblance.trace(origin, origin, velocity, {0.05, 0.05, 0.05}, 1.5, 0, &ground/4, true)
 
-    assert_in_delta t_miss, 1.0, 1.0e-12
+    assert_in_delta t_miss, 1.5, 1.0e-12
 
     assert {{:hit, t_fall, {_, 0.05, _}, :ground}, _} =
              Semblance.trace(origin, origin, velocity, {0.05, 0.05, 0.05}, 30.0, 0, &ground/4, false)

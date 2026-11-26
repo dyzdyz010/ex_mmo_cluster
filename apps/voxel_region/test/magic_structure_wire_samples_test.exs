@@ -88,12 +88,15 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   defp glyph(glyphs, id), do: Enum.find(glyphs, &(&1.id == id))
 
   # 运动字段：静止结构停在形成位置；带〈投〉的结构自手边沿 +Z 抛出，在测试世界里求落点（弹道与 World 同一函数）。
+  # 预测长度取报价推导的预计飞行时长（`Structures.flight_horizon_s/4`，切片 5b）；施法者站在地面 y = 1 m 上，脚下支撑格
+  # 底面 y = 0，下降高度 D = 2.5 m。
   defp launch(_group, _half, _massless, {:at, point}, _catalog),
     do: Structures.launch({:free, point}, point, {0.0, 0.0, 0.0}, true)
 
-  defp launch(group, half, massless, :thrown, catalog) do
+  defp launch(group, half, massless, {:thrown, quote}, _catalog) do
     velocity = {0.0, 0.0, glyph(group.motion, "act.throw").params["speed_mmps"] / 1000}
-    {trace, nil} = Semblance.trace(@hand, @hand, velocity, half, catalog.limits.range_m, nil, &ground_cast/4, massless)
+    horizon = Structures.flight_horizon_s(quote, velocity, massless, elem(@hand, 1) - (@floor_y - 1))
+    {trace, nil} = Semblance.trace(@hand, @hand, velocity, half, horizon, nil, &ground_cast/4, massless)
     assert {:hit, _, _, %{granularity: 0}} = trace
     Structures.launch(trace, @hand, velocity, massless)
   end
@@ -113,7 +116,7 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   defp record(c, group, live, place, wire, world_status \\ []) do
     # 物理体的半尺寸与无质量位只取决于程序；先以静止发射求一次，再按样本场景的发射求真实物理体。
     probe = Structures.body(group, c.catalog, @caster, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us)
-    place = if place == :thrown, do: :thrown, else: {:at, place}
+    place = if match?({:thrown, _}, place), do: place, else: {:at, place}
     body = Structures.body(group, c.catalog, @caster, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us)
     Structures.record(body, %{wire | status: wire.status ++ world_status}, live)
   end
@@ -128,10 +131,10 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     {fireball, fireball_group, fireball_quote} = born(c, "fireball", {102, 0})
 
     fireball_flight =
-      record(c, fireball_group, 1, :thrown, Structure.wire({fireball, fireball_quote}), [:flying])
+      record(c, fireball_group, 1, {:thrown, fireball_quote}, Structure.wire({fireball, fireball_quote}), [:flying])
 
     # 火球接触：第 1 拍带接触步进，〈遇〉→〈散〉触发，respond 主动终止 → live 2，快照取同拍步进结果。
-    {hit, hit_group, _} = born(c, "fireball", {103, 0})
+    {hit, hit_group, hit_quote} = born(c, "fireball", {103, 0})
     {hit_stepped, hit_out} = Structure.step(hit, inputs(contact: true), 1, c.catalog)
     assert [%{outcome: :met, responses: [%{id: "resp.release"} = release]}] = hit_out.triggered
     {hit_ended, _} = Structure.respond(hit_stepped, release, c.catalog)
@@ -142,7 +145,7 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
         c,
         hit_group,
         Codec.structure_end_live(:contact),
-        :thrown,
+        {:thrown, hit_quote},
         Structure.wire({hit_stepped, hit_out})
       )
 

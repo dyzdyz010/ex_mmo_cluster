@@ -22,7 +22,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   import ExUnit.CaptureLog
   alias MmoContracts.Voxel.Codec
   alias VoxelRegion.{OverlayLog, World}
-  alias VoxelRegion.Magic.{Catalog, Semblance, Structure}
+  alias VoxelRegion.Magic.{Catalog, Cost, Program, Semblance, Structure}
+  alias VoxelRegion.World.{Casting, Closure, Structures}
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @properties "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
@@ -829,6 +830,68 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert log =~ ~r/voxel_structure_out_of_domain sid=#{sid} .*reason=\{\{3, 0, 0\}, :missing\}/
     assert log =~ ~r/voxel_structure_flight sid=#{sid} .*phase=out_of_domain/
     assert_accounts_closed(observe(c.w).thermal)
+  end
+
+  # 有质量的光弹变体（`mass_g` 10 g，即 v1 迁来的原程序字节 `000a`）：用来证明有质量投掷同样没有射程终点。
+  defp massed_bolt(energy_j) do
+    bytes = bolt(energy_j)
+    binary_part(bytes, 0, 16) <> <<10::16>> <> binary_part(bytes, 18, byte_size(bytes) - 18)
+  end
+
+  test "A1 有质量投掷没有射程终点：上仰 20° 抛出，施放时预测到弹道下降时刻（不在 30 m 截断），飞过 30 m 路程照常沿弹道飞", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    up = {:math.cos(:math.pi() / 9), :math.sin(:math.pi() / 9), 0.0}
+    {id, record} = build_program(c, @leaf_micro, massed_bolt(4000), 2_000_000, up)
+    assert not record.massless and :flying in record.status
+
+    # 预计飞行时长（`Structures.flight_horizon_s/4`）：有质量取 min(整拍寿命, t_fall)。手边 y = 2.5 + 0.5·sin 20°，
+    # 施法者脚 y = 1.0 → 支撑格底面 y = 0，D = 手边高度；t_fall = (v_y + √(v_y² + 2gD)) / g ≈ 2.33 s（寿命约 5 s）。
+    {_, hy, _} = record.origin
+    {_, vy, _} = record.velocity
+    t_fall = (vy + :math.sqrt(vy * vy + 2 * 9.81 * hy)) / 9.81
+    # 测试世界 x > 12 m 之外没有地面，预测不命中：线上预测到 t_fall 为止。旧规则按路程 30 m（约 1.0 s）截断。
+    assert_in_delta record.flight_s, t_fall, 1.0e-9
+    {ox, _, _} = record.origin
+    {rx, _, _} = record.rest
+    assert rx - ox > 60.0
+
+    # 真实飞行：不推进热拍（不衰竭），飞 1.5 s（路程 > 30 m 施法域）仍在飞行，位置在弹道上。
+    fly_until(c, 1.5, fn -> false end)
+    flight = Enum.find(World.stats(c.w).simulation_progress.projectiles.flights, &(&1.id == inspect(id)))
+    assert_in_delta flight.simulated_through_s, 1.5, 1.0e-9
+    assert :flying in observe(c.w).structures[id].status
+    {x, y, _} = Semblance.position(record.origin, record.velocity, 1.5, false)
+    assert x > 30.0 and y > 2.0
+  end
+
+  test "A3 读取闭包与前摇驻留：施法域按 range_m，投掷结构另加按报价推导的飞行走廊（4000 J 光弹 T = 5 s、约 150 m）", c do
+    state = :sys.get_state(c.w)
+    {:ok, program} = Program.diagnose_ir(bolt(4000), state.magic)
+    key = make_ref()
+    actor = Map.put(c.a, :action_key, key)
+    request = %{direction: {1.0, 0.0, 0.0}, program: bolt(4000)}
+    state = %{state | pending_casts: %{@cid => %{actor: actor, request: request, program: program}}}
+
+    # 预计飞行时长：报价寿命 life_s ≈ 4.886 s → 整拍上界 (⌊4.886 / 0.5⌋ + 1) × 0.5 = 5.0 s；无质量路程 30 m/s × 5 s = 150 m。
+    quote = Cost.quote_structure(program, state.magic, %{ambient_k: 293.15, formation_distance_m: 0.0, emissivity: 0.9,
+      exchange_w_per_m2_k: 10.0})
+    assert_in_delta quote.life_s, 4.886, 0.001
+    assert Structures.flight_horizon_s(quote, {30.0, 0.0, 0.0}, true, 2.5) == 5.0
+
+    # 出手闭包：施法域（眼 ±30 m → x region −1..0）加 +x 走廊到 x = 1 + 150 = 151 m（region 2，[128, 192)）；
+    # 走廊止于 T，不到 region 3；施法域方向之外（−x 的 region −2）不装。
+    {keys, [], []} = Closure.needs(state, {:authorize_cast, key, actor, request})
+    regions = MapSet.new(for {0, r} <- keys, do: r)
+    assert {2, 0, 0} in regions and {1, 0, 0} in regions
+    refute {3, 0, 0} in regions
+    refute {-2, 0, 0} in regions
+    # 报价（前摇开始）不建结构、不预测：只装施法域。
+    {quote_keys, [], []} = Closure.needs(state, {:spell_intent, actor, request})
+    refute {0, {2, 0, 0}} in quote_keys
+    # 前摇期间的驻留需求与出手闭包同一走廊。
+    assert {:ok, {resident, _, _}} = Casting.residency_dependencies(state)
+    assert {0, {2, 0, 0}} in resident
   end
 
   test "W4-6 积压达 mid：热提交与投射物拍都不开始，结构冻结（拍号与飞行进度不变）且仍计入每人上限", c do

@@ -53,7 +53,9 @@ defmodule VoxelRegion.World.Structures do
   ## 飞行（切片 5，决策稿 §5、§14 用户答复）
 
   - 带初速的结构出生即在飞行（物理体 `flight = %{age_s, source}`），由 `World.Projectiles` 按墙钟 50 ms 拍逐段推进
-    （设计 §5.8）；施放时的弹道求交只作线上记录里的预测。无质量者直线匀速、无射程终点；有质量者按弹道直到落地或接触。
+    （设计 §5.8）；施放时的弹道求交只作线上记录里的预测，长度到报价推导的预计飞行时长为止（`flight_horizon_s/4`）。
+    所有投掷结构都没有射程终点（用户 2026-11-26 批准）：无质量者直线匀速、有质量者按弹道，直到接触、落地或飞行中衰竭；
+    射程与距离衰减都由能量账推导，目录 `limits.range_m` 只作施法域（形成位置、准星、〈附〉格面）。
   - 飞行中照常在热拍步进（不进热内核），位置取已推进到的飞行时长；在飞行中终止（衰竭、〈满〉〈时〉触发等）就地释放，
     终态快照的落点即该位置，释放落不进格、计入辐射账。
   - 投射物提交点（`land/5`、`hit_body/5`、`deliver/3`、`dissipate/3`）：动能经 `settle_kinetic/1` 在命中格沉积，〈遇〉按
@@ -110,36 +112,36 @@ defmodule VoxelRegion.World.Structures do
 
   @doc """
   施放时的发射：按形成锚求出发点并按〈投〉初速求弹道（`Magic.Semblance.trace/8`，对当时世界求交）。
-  〈握〉自手边出发；〈附〉沿眼睛射线命中 `target` 的格面，中心外移该轴半尺寸。返回 `{:ok, launch, state}`，〈附〉的射线
+  〈握〉自手边出发；〈附〉沿眼睛射线在施法域（目录 `limits.range_m`）内命中 `target` 的格面，中心外移该轴半尺寸。
+  弹道预测到报价推导的预计飞行时长为止（`flight_horizon_s/4`，与读取闭包 `flight_plan/5` 同一上界），读不出 canonical
+  的弦段处提前结束（`predict_cast/4`）；它只是线上记录的预测，不截断真实飞行。返回 `{:ok, launch, state}`，〈附〉的射线
   已不再命中 `target` 时 `{:error, :stale_target, state}`。
   """
-  def launch(state, actor, request, %Group{} = group, target, %Catalog{} = catalog) do
+  def launch(state, actor, request, %Group{} = group, target, quote, %Catalog{} = catalog) do
     {dx, dy, dz} = direction = request.direction
     {ex, ey, ez} = eye = actor.eye
     shape = shape_params(group)
     half = half(shape)
     massless = shape["mass_g"] == nil
-
-    velocity =
-      case Enum.find(group.motion, &(&1.id == "act.throw")) do
-        %{params: %{"speed_mmps" => v}} -> {dx * v / 1000, dy * v / 1000, dz * v / 1000}
-        nil -> {0.0, 0.0, 0.0}
-      end
+    velocity = throw_velocity(group, direction)
+    horizon = fn {_, y, _} -> flight_horizon_s(quote, velocity, massless, drop_m(actor, y)) end
 
     case group.form_anchor.id do
       "anchor.hand" ->
-        hand = {ex + dx * hand_reach(), ey + dy * hand_reach(), ez + dz * hand_reach()}
-        {trace, state} = Semblance.trace(eye, hand, velocity, half, catalog.limits.range_m, state, &cast/4, massless)
+        hand = hand_point(actor, direction)
+        {trace, state} = Semblance.trace(eye, hand, velocity, half, horizon.(hand), state, &predict_cast/4, massless)
         {:ok, launch(trace, hand, velocity, massless), state}
 
       "anchor.surface" ->
+        # 施法域：〈附〉的准星格面只在 `limits.range_m` 内找（与 `World.Casting` 的眼睛射线同一射程）。
         far = {ex + dx * catalog.limits.range_m, ey + dy * catalog.limits.range_m, ez + dz * catalog.limits.range_m}
 
         case Semblance.segment(eye, far, half, state, &cast/4) do
           {{_fraction, point, hit}, state} ->
             if Damage.key(hit) == Damage.key(target) do
               # 〈附〉上的〈投〉自格面点抛出（待设计确认）；无〈投〉时静止在格面上，接触即目标格。
-              {trace, state} = Semblance.trace(point, point, velocity, half, catalog.limits.range_m, state, &cast/4, massless)
+              {trace, state} =
+                Semblance.trace(point, point, velocity, half, horizon.(point), state, &predict_cast/4, massless)
 
               launch =
                 case trace do
@@ -163,12 +165,95 @@ defmodule VoxelRegion.World.Structures do
   end
 
   @doc """
+  预计飞行时长 T（s，纯函数）：施放时的弹道预测（`launch/7`）与读取闭包（`flight_plan/5` → `World.Projectiles.corridor_keys/1`）
+  共用的上界，由报价推导（用户 2026-11-26 批准：投掷结构没有射程终点，射程与距离衰减由能量账推导，`limits.range_m`
+  只作施法域）。T 不是飞行终点——真实飞行到接触、落地或衰竭为止，超出 T 的弦段由飞行驱动的页闸按段装入。
+
+  - 整拍寿命：T_life = (⌊life_s / Δ⌋ + 1)·Δ，Δ = 热拍长 0.5 s，life_s 是报价的能量切片求积寿命。理由：维持在热拍上
+    整拍扣费，drain 随储能升高，拍首储能扣整拍只会比连续积分更早耗尽，所以衰竭拍号 k ≤ ⌊life_s/Δ⌋ + 1；出生后第一个
+    热拍在墙钟 (0, Δ] 内到来，第 k 拍不晚于 k·Δ。法杖光弹一族（〈蓄〉1296–4095 J 与 4.1–41 kJ 共 2862 个取值）用真实
+    `Cost.quote_structure/3` + `Structure.step/4` 逐拍核对，k 均不超过该界（决策稿 §14 切片 5b）。
+  - 有质量（按弹道，Q17(a)）：T = min(T_life, t_fall)，t_fall = (v_y + √(v_y² + 2·g·D))/g 是弹道中心自出发点下降 D 的时刻
+    （抛体落到低于出发点 D 的水平面的标准解，g = 9.81 m/s²）；D = 出发点高出施法者脚下支撑格底面的高度、至少 1 m
+    （`drop_m/2`）。平地上弹道在这之前落地；落进坑谷时预测在 t_fall 截止，真实飞行照常继续。
+    带〈热〉者的 life_s 是寿命下界，T_life 不保证上界，由 t_fall 截住。
+
+  无质量者路程 = |v|·T（直线匀速）；有质量者路程 = ∫₀ᵀ |v(t)| dt（弹道弦长和，`flight_segments/2`）。
+  """
+  def flight_horizon_s(quote, {_, vy, _}, massless, drop_m) do
+    tick_s = Structure.tick_ms() / 1000
+    life = (Float.floor(quote.life_s / tick_s) + 1) * tick_s
+
+    if massless,
+      do: life,
+      else: min(life, (vy + :math.sqrt(vy * vy + 2 * Semblance.gravity() * drop_m)) / Semblance.gravity())
+  end
+
+  @doc """
+  读取闭包用的飞行计划（纯函数）：没有〈投〉为 nil；否则 `%{starts, velocity, massless, horizon_s}`。〈握〉的出发点是手边；
+  〈附〉的出发点是眼睛射线在施法域 [0, `limits.range_m`] 内的某一格面点，闭包时尚未求交，所以取该线段两端，走廊覆盖
+  两端弹道之间的全部（弹道对出发点是平移，中间出发点的弦段落在两端弦段的包围盒里）；预计飞行时长取两端中较高者的
+  下降高度（t_fall 随 D 单调增，取上界）。与 `launch/7` 的预测同一套公式。
+  """
+  def flight_plan(actor, request, %Group{} = group, quote, %Catalog{} = catalog) do
+    velocity = throw_velocity(group, request.direction)
+
+    if velocity != {0.0, 0.0, 0.0} do
+      massless = shape_params(group)["mass_g"] == nil
+      {ex, ey, ez} = eye = actor.eye
+      {dx, dy, dz} = request.direction
+      range = catalog.limits.range_m
+
+      starts =
+        case group.form_anchor.id do
+          "anchor.hand" -> [hand_point(actor, request.direction)]
+          "anchor.surface" -> [eye, {ex + dx * range, ey + dy * range, ez + dz * range}]
+        end
+
+      top = starts |> Enum.map(&elem(&1, 1)) |> Enum.max()
+
+      %{
+        starts: starts,
+        velocity: velocity,
+        massless: massless,
+        horizon_s: flight_horizon_s(quote, velocity, massless, drop_m(actor, top))
+      }
+    end
+  end
+
+  # 〈投〉初速（m/s）：方向 × speed_mmps / 1000；没有〈投〉为零。
+  defp throw_velocity(group, {dx, dy, dz}) do
+    case Enum.find(group.motion, &(&1.id == "act.throw")) do
+      %{params: %{"speed_mmps" => v}} -> {dx * v / 1000, dy * v / 1000, dz * v / 1000}
+      nil -> {0.0, 0.0, 0.0}
+    end
+  end
+
+  defp hand_point(%{eye: {ex, ey, ez}}, {dx, dy, dz}),
+    do: {ex + dx * hand_reach(), ey + dy * hand_reach(), ez + dz * hand_reach()}
+
+  # 弹道预测的下降高度 D（m）：出发点高出施法者脚下支撑格（与 `Canonical.foot_target/2` 同一格 y = ⌊y_脚 + 0.5⌋ − 1）
+  # 底面的高度，至少 1 m（出发点低于该面时仍预测一格下降）。
+  defp drop_m(%{feet: {_, fy, _}}, y), do: max(y - (floor(fy + 0.5) - 1), 1.0)
+
+  @doc """
+  施放时弹道预测的求交回调：先确认这段弦两端所在 L0 region 都能读出 canonical（与飞行驱动同一判定
+  `World.Projectiles.readable/3`），读不出返回 `:unreadable`（预测在此结束，真实飞行到这里以 live 3 散解），否则同 `cast/4`。
+  """
+  def predict_cast({ox, oy, oz} = origin, {dx, dy, dz} = direction, length, state) do
+    case VoxelRegion.World.Projectiles.readable(state, origin, {ox + dx * length, oy + dy * length, oz + dz * length}) do
+      {:ok, state} -> cast(origin, direction, length, state)
+      {:error, _reason, state} -> {:unreadable, state}
+    end
+  end
+
+  @doc """
   弹道求交结果 → 运动字段 `%{origin, velocity, flight_s, rest, contact}`（纯函数；线上记录与样本生成器共用）：
-  `{:free, 点}` 静止在该点；`{:hit, t, 落点, 目标}` 在 t 秒落到落点并以目标为接触格；`{:miss, t}` 射程窗口内未命中，
-  落点取窗口端点。
+  `{:free, 点}` 静止在该点；`{:hit, t, 落点, 目标}` 在 t 秒落到落点并以目标为接触格；`{:miss, t}` 预测到 t 为止
+  （预计飞行时长或不可读处）未命中，落点取该时刻的弹道位置。
 
   切片 5 起，带初速且未在眼 → 手段被挡住（`flight_s > 0`）的结构由 `World.Projectiles` 按墙钟逐段飞行（设计 §5.8），
-  这里的 `flight_s`/`rest` 只是施放时对当时世界、在射程窗口内的**预测**（线上记录的飞行字段，客户端在飞行位置位时
+  这里的 `flight_s`/`rest` 只是施放时对当时世界、到预计飞行时长为止的**预测**（线上记录的飞行字段，客户端在飞行位置位时
   不按它截断，见 `body/5`）；真实终点由飞行驱动在接触、衰竭或离开可读范围时写回。
   """
   def launch({:free, point}, _from, _velocity, _massless),

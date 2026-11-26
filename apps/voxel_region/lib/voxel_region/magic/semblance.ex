@@ -11,8 +11,9 @@ defmodule VoxelRegion.Magic.Semblance do
 
   - 弹道：先走眼 → 手直线段，再自手边按 p(t) = hand + v·t − ½·g·t²·ŷ（g = 9.81 m/s²，Y-up；无质量时 g = 0）以 0.05 s
     弦段求交；命中面精确解出穿越时刻（x/z 面线性、y 面二次），物理体中心停在命中点沿面法线外移该轴半尺寸处。`trace/8` 是
-    施放时对当时世界的预测；切片 5 起真实飞行由 `World.Projectiles` 按墙钟沿 `flight_segments/2` 的弦段逐段用 `segment/5`
-    求交（命中点在弦上，与抛物线差不超过拱高 g·Δt²/8 ≈ 3 mm）。已知偏差：运动学、无冲量与反冲、中心点求交而非扫掠体。
+    施放时对当时世界的预测，长度到报价推导的预计飞行时长为止（不是射程终点）；切片 5 起真实飞行由 `World.Projectiles`
+    按墙钟沿 `flight_segments/2` 的弦段逐段用 `segment/5` 求交（命中点在弦上，与抛物线差不超过拱高 g·Δt²/8 ≈ 3 mm）。
+    已知偏差：运动学、无冲量与反冲、中心点求交而非扫掠体。
   - 接触（落地后每段按当前世界重算，不绑定命中格）：物理体的包围盒（中心 rest、半尺寸 half）与每个热节点的实占用盒
     （`ThermalGeometry.bounds/2`）贴面或重叠即接触；接触法向取重叠最小的轴，接触面积 = 其余两轴重叠
     （`ThermalGeometry.overlap/3`）× 形状系数（球 π/4 = 内切圆占外切正方形投影，块与板 1）。每条边导热
@@ -47,19 +48,25 @@ defmodule VoxelRegion.Magic.Semblance do
   def macro(point), do: point |> Tuple.to_list() |> Enum.map(&floor/1) |> List.to_tuple()
 
   @doc """
-  自眼睛经手边求首个实占用命中。`cast.(起点, 单位方向, 长度, state)` 返回 `{nil | {目标, 进入微格}, state}`；
-  `half` 为物理体三轴半尺寸 `{a, b, c}`（落点沿命中面法线外移该轴的半尺寸）。
+  自眼睛经手边求首个实占用命中（施放时的飞行**预测**）。`cast.(起点, 单位方向, 长度, state)` 返回
+  `{nil | {目标, 进入微格} | :unreadable, state}`；`half` 为物理体三轴半尺寸 `{a, b, c}`（落点沿命中面法线外移该轴的半尺寸）。
   返回 `{{:hit, 落点时刻 s, 落点中心, 目标}, state}`；速度为零且眼 → 手无遮挡时 `{{:free, 手边}, state}`；
-  抛出后在 `max_path` 路程内无命中 `{{:miss, 射程端点时刻 s}, state}`：已求交的弦段覆盖到该时刻为止。
-  `massless` 为 true 时自手边以 g = 0 直线求交。
+  抛出后到预计飞行时长 `horizon_s` 为止无命中 `{{:miss, horizon_s}, state}`；某段弦读不出 canonical（回调返回
+  `:unreadable`）时预测在该段起点结束 `{{:miss, 该段起点时刻}, state}`。`massless` 为 true 时自手边以 g = 0 直线求交。
+
+  `horizon_s` 只限定预测（与读取闭包同一上界，`World.Structures.flight_horizon_s/4`），不是飞行终点：投掷结构没有射程
+  终点（用户 2026-11-26 批准），真实飞行由 `World.Projectiles` 逐段推进到接触、落地或衰竭。
   """
-  def trace(eye, hand, velocity, half, max_path, state, cast, massless \\ false) do
+  def trace(eye, hand, velocity, half, horizon_s, state, cast, massless \\ false) do
     length = distance(eye, hand)
 
     {hit, state} =
       if length > 0, do: cast.(eye, direction(eye, hand, length), length, state), else: {nil, state}
 
     cond do
+      hit == :unreadable ->
+        {{:miss, 0.0}, state}
+
       hit != nil ->
         {target, micro} = hit
         d = direction(eye, hand, length)
@@ -71,27 +78,33 @@ defmodule VoxelRegion.Magic.Semblance do
         {{:free, hand}, state}
 
       true ->
-        arc(hand, velocity, half, 0, length, max_path, state, cast, massless)
+        arc(hand, velocity, half, 0, horizon_s, state, cast, massless)
     end
   end
 
-  defp arc(_hand, _v, _half, i, path, max_path, state, _cast, _massless) when path >= max_path, do: {{:miss, i * @step_s}, state}
+  # 第 i 段弦 [i·Δt, min((i + 1)·Δt, horizon)]；到达预计飞行时长即结束预测。
+  defp arc(_hand, _v, _half, i, horizon, state, _cast, _massless) when i * @step_s >= horizon - 1.0e-9,
+    do: {{:miss, horizon}, state}
 
-  defp arc(hand, v, half, i, path, max_path, state, cast, massless) do
+  defp arc(hand, v, half, i, horizon, state, cast, massless) do
     t0 = i * @step_s
+    t1 = min(t0 + @step_s, horizon)
     a = position(hand, v, t0, massless)
-    b = position(hand, v, t0 + @step_s, massless)
+    b = position(hand, v, t1, massless)
     length = distance(a, b)
     d = direction(a, b, length)
 
     case cast.(a, d, length, state) do
       {nil, state} ->
-        arc(hand, v, half, i + 1, path + length, max_path, state, cast, massless)
+        arc(hand, v, half, i + 1, horizon, state, cast, massless)
+
+      {:unreadable, state} ->
+        {{:miss, t0}, state}
 
       {{target, micro}, state} ->
         {axis, sign, s} = entry(a, d, micro)
         plane = plane(micro, axis, sign)
-        t = crossing(hand, v, axis, plane, t0 + s / length * @step_s, massless)
+        t = crossing(hand, v, axis, plane, t0 + s / length * (t1 - t0), massless)
         point = hand |> position(v, t, massless) |> put_elem(axis, plane)
         {{:hit, t, rest(point, axis, sign, half), target}, state}
     end

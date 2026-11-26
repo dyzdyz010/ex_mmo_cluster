@@ -9,9 +9,11 @@ defmodule VoxelRegion.World.Projectiles do
 
   ## 飞行规则（用户已定）
 
-  - 无质量结构（`flags` 第 1 位）不设射程终点：直线匀速飞行，直到接触（〈遇〉→〈散〉，live 2）或在飞行中衰竭（热拍判定，
-    live 3）。有质量结构按弹道飞行直到落地或接触。不在端点悬停。
+  - 所有投掷结构都不设射程终点（用户 2026-11-26 批准，覆盖决策稿早先的“路程达 `limits.range_m`”）：无质量结构
+    （`flags` 第 1 位）直线匀速、有质量结构按弹道，直到接触（〈遇〉→〈散〉，live 2）、落地（之后作为静止结构接入热内核）
+    或在飞行中衰竭（热拍判定，live 3）。不在端点悬停。射程与距离衰减都由能量账推导；`limits.range_m` 只作施法域。
   - 飞行中的维持照常在热提交拍步进（`World.Structures.tick/3`，跳过热内核）；位置取本驱动已推进到的墙钟飞行时长。
+  - 施放时的读取闭包按报价推导的预计飞行时长预装走廊（`corridor_keys/1`）；之后的弦段由本驱动的页闸按段装入。
 
   ## 每拍（`:projectile_tick`，50 ms，经 World 的 `Clock`）
 
@@ -35,7 +37,7 @@ defmodule VoxelRegion.World.Projectiles do
 
   ## 离开可读范围（显式终止规则，**待设计确认**）
 
-  无质量结构理论上可以飞很远。每段求交前，World 先确认这段弦两端所在的全部 L0 region 都能从权威 canonical 来源读出
+  投掷结构没有射程终点，理论上可以飞很远。每段求交前，World 先确认这段弦两端所在的全部 L0 region 都能从权威 canonical 来源读出
   （`Canonical.decoded/3`：区域基底或 baseline 源）；读不出（`:missing` 等）就在这段起点以 live 3 就地散解（释放落不进格，
   全部计入辐射账），日志 `voxel_structure_flight phase=out_of_domain reason=…`。理由：canonical 求交在缺失 region 上没有
   真值，把缺失当空气会违反“不得把缺失当空气”（AGENTS 铁律 3）；也不能让飞行停在边界悬停（用户已定不悬停）。
@@ -241,9 +243,12 @@ defmodule VoxelRegion.World.Projectiles do
     end
   end
 
-  # 弦段两端所在的 L0 region 包围范围都能读出 canonical（区域基底或 baseline 源）。
-  defp readable(state, a, b) do
-    Enum.reduce_while(segment_regions(a, b), {:ok, state}, fn region, {:ok, state} ->
+  @doc """
+  一段弦 a → b 两端所在的 L0 region 包围范围都能读出 canonical（区域基底或 baseline 源）：`{:ok, state}` 或
+  `{:error, {region, 原因}, state}`。飞行驱动每段求交前与施放时的弹道预测（`Structures.predict_cast/4`）共用这一判定。
+  """
+  def readable(state, a, b) do
+    Enum.reduce_while(regions([a, b]), {:ok, state}, fn region, {:ok, state} ->
       case decoded(state, 0, region) do
         {:ok, _payload, state} -> {:cont, {:ok, state}}
         {:error, reason, state} -> {:halt, {:error, {region, reason}, state}}
@@ -251,14 +256,31 @@ defmodule VoxelRegion.World.Projectiles do
     end)
   end
 
-  defp segment_regions(a, b) do
-    {ax, ay, az} = region_of(Semblance.macro(a))
-    {bx, by, bz} = region_of(Semblance.macro(b))
+  # 一组点所在 L0 region 的包围范围（弦段两端，或闭包走廊里同一时段各出发点的弦段端点）。
+  defp regions(points) do
+    rs = Enum.map(points, &region_of(Semblance.macro(&1)))
+    [xs, ys, zs] = for i <- 0..2, do: Enum.map(rs, &elem(&1, i))
 
-    for x <- min(ax, bx)..max(ax, bx),
-        y <- min(ay, by)..max(ay, by),
-        z <- min(az, bz)..max(az, bz),
+    for x <- Enum.min(xs)..Enum.max(xs),
+        y <- Enum.min(ys)..Enum.max(ys),
+        z <- Enum.min(zs)..Enum.max(zs),
         do: {x, y, z}
+  end
+
+  @doc """
+  读取闭包的飞行走廊（魔法 v2 切片 5b）：`Structures.flight_plan/5` 的计划 → 带祖页的 L0 页键。对每个出发点按
+  `Magic.Semblance.flight_segments/2` 切出 0 … 预计飞行时长 T 的弦段，同一时段各出发点的弦段端点取 region 包围范围，
+  全部合并。T 由报价推导（`Structures.flight_horizon_s/4`），与施放时预测同一上界；T 之后的飞行由本模块的页闸按段装入，
+  读不出 canonical 时按显式规则散解，所以走廊不必覆盖整个飞行。
+  """
+  def corridor_keys(%{starts: starts, velocity: velocity, massless: massless, horizon_s: horizon}) do
+    starts
+    |> Enum.map(&Semblance.flight_segments(%{origin: &1, velocity: velocity, age_s: 0.0, massless: massless}, horizon))
+    |> Enum.zip()
+    |> Enum.flat_map(fn chords -> chords |> Tuple.to_list() |> Enum.flat_map(fn {_, _, a, b} -> [a, b] end) |> regions() end)
+    |> Enum.uniq()
+    |> Enum.map(&{0, &1})
+    |> Pages.with_ancestors()
   end
 
   @doc """
@@ -274,7 +296,7 @@ defmodule VoxelRegion.World.Projectiles do
             %{origin: body.origin, velocity: body.velocity, age_s: from, massless: body.massless},
             age
           ),
-        region <- segment_regions(a, b),
+        region <- regions([a, b]),
         uniq: true,
         do: {0, region}
   end
@@ -294,7 +316,7 @@ defmodule VoxelRegion.World.Projectiles do
               },
               f.age_s + @lookahead_s
             ),
-          region <- segment_regions(a, b),
+          region <- regions([a, b]),
           uniq: true,
           do: {0, region}
 

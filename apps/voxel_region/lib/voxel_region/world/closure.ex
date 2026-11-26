@@ -8,7 +8,7 @@ defmodule VoxelRegion.World.Closure do
   这样接纳时按当前状态重算即是父稿 P4 的“按依赖版本复核”；P1仅按仍有owner的需求保留驻留。
   """
   alias VoxelRegion.{Attachments, CollisionSource}
-  alias VoxelRegion.World.{Edits, Pages, Prefabs, Tools}
+  alias VoxelRegion.World.{Casting, Edits, Pages, Prefabs, Tools}
   import VoxelRegion.World.Canonical, only: [region_of: 1]
 
   @doc "开发期登记的 World 消息形状，区分页需求与显式无页；原子长度为 0，任务引用为 `:reference`。"
@@ -155,9 +155,9 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(_state, {:body_death, _cid, feet}), do: {Edits.edit_keys([meters(feet)]), []}
   # 已取消 / 已结算的旧授权在入口是空操作，不读页；否则前摇取消后施法区域已退休，旧授权会白白起一个冷装页任务。
   # 同序排队先于闭包（`PageLoad.held?/2`），挂起中的准备之后到达的授权仍排在其后，不会因这里返回 :none 越过它。
-  defp seeds(state, {:authorize_cast, key, actor, _request}), do: pending_cast(state, key, actor)
-  # 第 k 步检查（设计 v2.11 W1）同出手：按当时射线重判，读同一射程区域。
-  defp seeds(state, {:check_cast, key, actor, _request}), do: pending_cast(state, key, actor)
+  defp seeds(state, {:authorize_cast, key, actor, request}), do: pending_cast(state, key, actor, request)
+  # 第 k 步检查（设计 v2.11 W1）同出手：按当时射线重判，读同一施法域与飞行走廊。
+  defp seeds(state, {:check_cast, key, actor, request}), do: pending_cast(state, key, actor, request)
 
   # 投射物采样结果（魔法 v2 切片 5）：本轮飞行弦段两端所在区域（`Projectiles.accept/2` 沿段求地形）。
   defp seeds(%{projectile_task: %Task{ref: ref}} = state, {ref, results}),
@@ -174,13 +174,22 @@ defmodule VoxelRegion.World.Closure do
     end
   end
 
-  defp pending_cast(state, key, actor) do
-    if VoxelRegion.World.Casting.authorized_pending(state, key, actor), do: magic(state, actor), else: :none
+  # 出手会建成结构并做弹道预测：施法域之外再加飞行走廊（魔法 v2 切片 5b：投掷结构没有射程终点，走廊长度由报价推导，
+  # `Casting.flight_keys/4`）。走廊之后的飞行由 `World.Projectiles` 的页闸按段装入，不在这里装。
+  defp pending_cast(state, key, actor, request) do
+    with %{} = pending <- Casting.authorized_pending(state, key, actor),
+         {keys, ids} <- magic(state, actor) do
+      # 与结算同一份当前 actor / 方向（`refresh_pending/3`），走廊与出手时的预测同源。
+      pending = Casting.refresh_pending(pending, actor, request)
+      {keys ++ Casting.flight_keys(state, pending, pending.actor, pending.request), ids}
+    else
+      _ -> :none
+    end
   end
 
   defp magic(state, actor) do
     case state.magic do
-      # 施法会提交（扣能、作用格、中断支出落地）：射程区域（目录 v5 `limits.range_m`）带粗层祖页。
+      # 施法会提交（扣能、作用格、中断支出落地）：施法域（目录 v5 `limits.range_m`：准星射线、形成位置、〈附〉格面）带粗层祖页。
       %{limits: %{range_m: range}} -> {Pages.with_ancestors(Tools.tool_regions(actor, range)), []}
       _ -> :none
     end

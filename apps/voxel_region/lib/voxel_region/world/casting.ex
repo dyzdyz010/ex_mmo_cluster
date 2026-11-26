@@ -149,7 +149,9 @@ defmodule VoxelRegion.World.Casting do
     end
   end
 
-  @doc "前摇到使用／取消之间仍会重新裁决的射程、脚下依赖；不以定时租约或观察窗口替代。"
+  @doc """
+  前摇到使用／取消之间仍会重新裁决的施法域、飞行走廊（`flight_keys/4`）与脚下依赖；不以定时租约或观察窗口替代。
+  """
   def residency_dependencies(%{pending_casts: casts}) when map_size(casts) == 0,
     do: {:ok, {[], [], []}}
 
@@ -164,7 +166,8 @@ defmodule VoxelRegion.World.Casting do
         {fx, fy, fz} = pending.actor.feet
         foot = {floor(fx), floor(fy + 0.5) - 1, floor(fz)}
         foot_keys = VoxelRegion.World.Pages.with_ancestors([{0, region_of(foot)}])
-        {keys ++ more ++ foot_keys, exact ++ precise, ids ++ identities}
+        flight = flight_keys(state, pending, pending.actor, pending.request)
+        {keys ++ more ++ foot_keys ++ flight, exact ++ precise, ids ++ identities}
       end)
 
     {:ok, {Enum.uniq(keys), Enum.uniq(exact), Enum.uniq(ids)}}
@@ -548,7 +551,7 @@ defmodule VoxelRegion.World.Casting do
     %{actor: actor, request: request, program: %Program{groups: [group]} = program} = pending
     seq = state.seq + 1
 
-    case Structures.launch(state, actor, request, group, checked.effect.target, state.magic) do
+    case Structures.launch(state, actor, request, group, checked.effect.target, quote, state.magic) do
       {:ok, launch, state} ->
         s = Structure.new({seq, 0}, group, quote, Structures.commit_tick(state))
         body =
@@ -856,20 +859,39 @@ defmodule VoxelRegion.World.Casting do
   # 施放处读数（`Cost.site/0`）：环境温度取施法者所在格的空气温度（气候区，设计 §4.2：只按施法者所在格，不含邻近干扰），
   # 形成距离来自作用面，发射率与换热系数是 World 热环境参数（设计 v2.9 A2，不进目录）。
   defp spell_quote(state, actor, program, effect) do
+    program
+    |> Cost.quote_structure(state.magic, site(state, actor, effect.formation_distance_m))
+    |> basic_windup(state, program)
+  end
+
+  defp site(state, actor, formation_distance_m) do
     config = state.thermal.config
     {fx, fy, fz} = actor.feet
 
-    site = %{
+    %{
       ambient_k: ambient_at(state, {floor(fx), floor(fy), floor(fz)}) * 1.0,
-      formation_distance_m: effect.formation_distance_m,
+      formation_distance_m: formation_distance_m,
       emissivity: config["emissivity"],
       exchange_w_per_m2_k: config["environment_w_per_m2_k"]
     }
-
-    program
-    |> Cost.quote_structure(state.magic, site)
-    |> basic_windup(state, program)
   end
+
+  @doc """
+  待施放的飞行走廊页键（魔法 v2 切片 5b；`World.Closure` 的出手 / 第 k 步检查与 `residency_dependencies/1` 共用）：
+  带〈投〉的结构程序按此刻 actor 与方向求 `Structures.flight_plan/5`，走廊覆盖到报价推导的预计飞行时长
+  （`Structures.flight_horizon_s/4`，与出手时的弹道预测同一上界）；其余程序为空。预计寿命只取决于程序与施法者所在格的
+  气候温度（`Cost` 的 life_s 不读形成距离），所以这里以形成距离 0 报价，与结算时的报价给出同一 life_s。
+  """
+  def flight_keys(state, %{program: %Program{kind: :structure, groups: [group]} = program}, actor, request) do
+    quote = Cost.quote_structure(program, state.magic, site(state, actor, 0.0))
+
+    case Structures.flight_plan(actor, request, group, quote, state.magic) do
+      nil -> []
+      plan -> VoxelRegion.World.Projectiles.corridor_keys(plan)
+    end
+  end
+
+  def flight_keys(_state, _pending, _actor, _request), do: []
 
   @doc """
   持物普攻法术的固定前摇（Voxim 交互设计"2026-11-20 修订"，用户 2026-11-20 定）：程序与已发布属性目录某持物的
