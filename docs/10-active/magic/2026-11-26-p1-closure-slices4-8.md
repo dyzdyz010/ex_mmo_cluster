@@ -518,3 +518,13 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
   - Q5-1 法杖光弹改为不写质量，保持无重力直飞。依据是设计 §2.4 的 v1→v2 迁移规则："没有〈热〉的结构丢弃 `mass_kg`"。〈蓄〉同样按该规则改为 (glow_w + 0.3 kW) × 旧 lifetime_s = 0.4 kJ，原程序写的 2 kJ 不符合迁移规则。改程序会改 hex，所以客户端要重新发布物品目录，放在切片 5 一并做。
   - §11.2 的设计方问题由用户代答，统筹会话整理后提交。切片 8 的完整规模负载（Q8-1）在本机 WSL 里进程内跑：不建套接字、限定时长、跑完清理。
 - 2026-11-26：切片 3 收尾已提交。法杖 `basic_spell` 迁到 IR v2，物品目录夹具改用客户端真实发布物 `08bb766b…`（Voxim `magic-v2-online` `62042c84`），客户端同步到 Hello 46。WSL 全量测试结果：mmo_contracts 209、voxel_region 1002（排除 53）、scene_server 308、gate_server 110、npc_server 807，全部通过。
+- 2026-11-26：分支变基到 master `62d9a5a5`（合并基原为 `3c4d0048`，master 新增 82 个提交；本次用 `git rebase master`，逐条解决冲突）。冲突与处理：
+  - `gate_server/test/.../voxim_spell_dispatch_test.exs`（3a）、`npc_server/test/.../npc_cast_world_test.exs`（3d）：master 只改了 v1 用例（期望改取 `Cost.quote/2`、v1 JSON 程序）。这些用例分支已按 v2 重写，所以取分支版本，不恢复 v1 断言。合入后自动带进来的 `windup_ms()` 调用改回分支的 `@windup_ms`。
+  - `voxel_region/lib/voxel_region/world.ex`（3c）：master 的 `5e9b0049` 把 14 个 World 子模块 import 改成了显式 alias。冲突处保留分支的施法逻辑（报价也求射线、`caster_status/2`、`refresh_pending/3`、`settle_cast/3`、第 k 步检查 `check_cast`），调用按 master 风格写成 `Casting.` / `Tools.` 限定。
+  - `npc_server/lib/npc_server/{body,brain}.ex`（3d）：两边都是新增，全部保留。Body 的 alias 同时含 `Route` 与 `Spells`；状态同时有 `landing` 与 `spell_check`；`apply_command` 同时保留传送回出生点子句与被拒法术就地回 `spell_rejected` 子句（后者在通用世界意图子句之前）。brain 文档同时保留 `find_route` 行，`cast_spell` 行写 IR v2。
+  - 自动合并的文件已逐个核对：`dispatch.ex`、`session/codec.ex`（Hello 46）、`actions.ex`、`player.ex`（master 抽出的 `PlayerWire` 不涉及分支对前摇检查的改动）、`access.ex`、`closure.ex`、两份 README。master 新增代码里没有走 v1 施法的地方（JSON 程序、`semblance`、`:coherence`、`out_of_domain`），也没有写 45 的版本断言；deploy 的 NPC 登记数据不带法术。
+  - 变基后单独提交 `a15238ab`：master 的 `8ac22da8` 新增了 NPC 工具 `find_route` 和 `teleport_to_spawn`，但 `npc_brain_llm_test` 的工具表全等断言没有同步。现在补齐期望表，断言仍是全等比较。这个缺陷来自 master，与魔法改动无关，master 上也应修。
+  - WSL 全量测试：mmo_contracts 209；voxel_region 1006（排除 53）；scene_server 346（排除 1）；gate_server 48（排除 68）；npc_server 827（排除 20）；world_server 13（排除 1，`--sname`）。全部通过。另有三点说明：
+    - gate_server 排除的 68 项都是 `@moduletag :quic_transport` 的 `T1TransportTest`。它会起真实 QUIC 监听，按本机 UDP 约束没有跑。
+    - scene_server 首轮有 3 项失败，都在 `P0BodyLifecycleTest`，原因是 `:stale_owner`：该测试的 cid 取 `System.unique_integer + 500_000`，每次运行都会重复，而本地测试库保留了上一轮写下的 `character_bodies` 行（owner_epoch 2/3）。单跑该文件 5/5 通过。删掉这 6 行测试残留后全量通过。CI 每次用新库，不受影响。
+    - `mix format --check-formatted` 通过；mmo_contracts、gate_server、npc_server、world_server、auth_server、data_service 的 `mix compile --force --warnings-as-errors --no-optional-deps` 全部通过。
