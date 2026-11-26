@@ -5,7 +5,7 @@ defmodule VoxelRegion.MagicIrTest do
   - 契约：设计 v2.6 §11.4（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md`）的字节布局、
     §11.4.2 的 B1 槽检查顺序与 K1 `dec` 规范判据、§11.4.3 的拒绝清单与 K4 分层；目录 schema 见
     `docs/10-active/magic/2026-11-19-catalog-v5-schema.md`。
-  - 夹具：目录是唯一作者源 `priv/magic/e337873b….json`（按 schema 手写的 P1 内容：14 个符号与 47 个预留下标，
+  - 夹具：目录是唯一作者源 `priv/magic/22c459f0….json`（按 schema 手写的 P1 内容：14 个符号与 47 个预留下标，
     按 §2.3 表序冻结全部 61 个下标；姿态照抄 §2.6），测试直接读发布物，不另存副本；`fixtures/magic/ir-v2-samples.json` 是从设计
     §11.4.4 逐字抽取的 9 组冻结字节（服务端持有的唯一判据）。
   - 判定：冻结样本的期望语义值抄自设计 §11.4.4 的逐字节注释；反例字节在样本上按注释偏移手工改写，期望原因与偏移手算。
@@ -17,7 +17,7 @@ defmodule VoxelRegion.MagicIrTest do
   alias VoxelRegion.Magic.{Catalog, Program}
   alias VoxelRegion.Magic.Program.{Glyph, Group, Rule}
 
-  @digest "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264"
+  @digest "22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc"
   @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
   @preset_ids ~w(draw_1mj draw_2mj lamp fireball hot_throw scorch dispel_pulse timed_ember guarded_fireball)

@@ -37,7 +37,7 @@
   "quotas": {
     "structures_per_caster": 6,
     "folded_per_caster": 3,
-    "flights_per_caster": 2,
+    "flights_per_caster": 3,
     "region_budget_units": 256,
     "region_reserve_units": 32,
     "fair_share_ratio": 0.75,

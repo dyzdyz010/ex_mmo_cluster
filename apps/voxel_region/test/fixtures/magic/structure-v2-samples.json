@@ -1,5 +1,5 @@
 {
-  "catalog_digest": "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264",
+  "catalog_digest": "22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc",
   "generator": "apps/voxel_region/test/magic_structure_wire_samples_test.exs；重新生成（仅 Linux）：cd apps/voxel_region && WRITE_STRUCTURE_WIRE_SAMPLES=1 mix test --no-start test/magic_structure_wire_samples_test.exs；之后重跑 apps/mmo_contracts/test/fixtures/gen_wire_v2_samples.py 生成线字节",
   "ir_samples": "ir-v2-samples.json（程序字节的唯一来源）",
   "note": "fields 是结构记录 v2 的字段值（MmoContracts.Voxel.Codec.encode_structures/1 的输入形状）：coupling、status 为位名列表（按线上位序），anchor_ref 为 12 B 的十六进制，坐标与速度为 [x, y, z]；浮点为原值。state 是状态增量对应结构在该拍的动态字段（温度、发光未量化；量化在线字节生成器与 codec 各自实现）。",

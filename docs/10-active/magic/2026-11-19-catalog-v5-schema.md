@@ -54,7 +54,7 @@ flowchart LR
 |---|---|---|
 | `structures_per_caster` | 每人每分区运行结构 | 6 |
 | `folded_per_caster` | 每人每分区折叠核（P2） | 3 |
-| `flights_per_caster` | 每人每分区飞行中 | 2 |
+| `flights_per_caster` | 每人每分区飞行中 | 3（魔法 v2 切片 7 由 2 改为 3，Q7-5 按推荐暂行，待设计确认；法杖连发节奏） |
 | `region_budget_units` / `region_reserve_units` | 分区算力预算 B / 在场保底预留 | 256 / 32 |
 | `fair_share_ratio` | 公平准入阈值 | 0.75 |
 | `structure_weight_base` / `_awake_thermal_node` / `_per_rule` / `_per_sensing_coupling` | 结构权重各项 | 1 / 2 / 0.5 / 0.5 |
@@ -149,7 +149,7 @@ P2 开放〈纳〉〈印〉前，按设计 v2.10 E1（§4.2、§11.4.5）加入�
 
 ## 6. P1 发布物
 
-- 文件：`apps/voxel_region/priv/magic/e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264.json`（切片 3 版；依次取代 Test-only 夹具 `ce77caac…`、`64834aa5…`、`c6f60cdb…`、`77036cbc…`、`fcc1002a…`，旧文件已删除）。测试经 `Application.app_dir(:voxel_region, "priv/magic/<sha256>.json")` 读它。
+- 文件：`apps/voxel_region/priv/magic/22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc.json`（切片 7 版：`flights_per_caster` 2 → 3；取代切片 3 版 `e337873b…`；更早依次取代 Test-only 夹具 `ce77caac…`、`64834aa5…`、`c6f60cdb…`、`77036cbc…`、`fcc1002a…`，旧文件已删除）。测试经 `Application.app_dir(:voxel_region, "priv/magic/<sha256>.json")` 读它。
 - 切片 3 相对 `fcc1002a…` 只加一个字段：〈取〉0 `numeric_checks: ["domain"]`（设计 v2.10 E4）。程序字节不变；`ir-v2-samples.json` 与 `quote-v2-samples.json` 只更新 `catalog_digest`，报价数值与两个取能预设的 `rejects`（空，样本 site 的形成距离 3 m）不变。
 - v2.10 相对 `77036cbc…` 只加三个字段：〈遇〉34 `reading_source = "external"`，〈时〉35、〈满〉36 `reading_source = "self"`（E2）。程序字节不变；`ir-v2-samples.json` 与 `quote-v2-samples.json` 只更新 `catalog_digest`，报价数值不变。
 - v2.9 相对 `c6f60cdb…` 只改三处：〈热〉`phi_grade` 区间 [1, 3] → [1, 1]（A3）；〈热〉〈辉〉加 `property_class`；`runtime` 加 `scratch_unit_step`、`scratch_precision_step`。程序字节与 `ir-v2-samples.json` 的样本不变，只更新其 `catalog_digest`。

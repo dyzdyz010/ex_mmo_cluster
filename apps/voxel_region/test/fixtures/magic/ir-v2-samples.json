@@ -1,6 +1,6 @@
 {
   "source": "TheWorldBook docs/2026-11-19-glyph-composition-game-design.md v2.6 §11.4.4（逐字抽取，未改字节）；staff_bolt_massless 由 ex_mmo_cluster 魔法 v2 切片 5 增补（见其 design）",
-  "catalog_digest": "e337873b1daaafeb55397bd0ef8e01fda4572dd549d34cd6e268ec54ec638264",
+  "catalog_digest": "22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc",
   "note": "IR v2 冻结样本：服务端持有的唯一判据；客户端测试读同一份字节。下标按目录 v5 夹具（= 设计 §2.3 表序，K3 冻结）。",
   "samples": [
     {
