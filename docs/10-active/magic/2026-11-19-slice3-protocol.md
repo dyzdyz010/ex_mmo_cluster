@@ -422,3 +422,9 @@ UE 作者资产 `DA_MagicCatalogV1` Publish → `Voxim/Content/Voxel/Magic/Publi
 - 2026-11-22：3d 完成（NPC 迁移，P10）：NPC `profile.spells` 改存 IR v2 小写十六进制，`NpcServer.Spells.decode!/1` 在登记时解码一次；唯一真实旧法术 v1 `ignite_near` → v2 `scorch`。N1 仓库内盘点：config、priv、seeds、npc_specs 迁移、deploy、scripts 均无 v1 法术；生产库 `npc_specs.params` 未查，若有 v1 `spells` 会在 `start_all` 显式登记失败，需一次性迁移。进入场景报价校验：InputStart 后起链接校验进程，digest 变化时逐个 action 0 报价，`rejects` 非空或 `:invalid_program` 即剔除（日志 `npc_spell_rejected`），之后 Body 就地回 `{:spell_rejected, 原因}`；`:quote_rate` 等 1 s 重试一次。0x82 请求删 semblance；`:coherence` → `resolution_eff`。删除无引用的 v4 夹具 `19c513f9….json`。npc_server 全量 357/357（另有一次 356/357 为偶发时序用例，未复现），voxel_region 魔法 69、Gate 施法 7 通过。
   - 未做、交 NPC 会话：被拒法术仍出现在 LLM 工具枚举（需改 `runtime.ex` / `brain/llm.ex`，两个 NPC 分支各改该文件数百行）。NPC 配额属切片 7；NPC 驱散避开己方属切片 6。
   - 残余：World 结算回复不含 k，NPC Outcome 拿不到 fail_step；`:quote_rate` 重试无测试。
+- 2026-11-26：分支变基到 master `3c4d0048`，Hello 顺延为 46（master 的 45 已被法杖去重力 flags 占用）。golden 重生成时字节布局不变，只改了版本号。收尾工作：
+  - 持物普攻 `basic_spell` 改为 IR v2 小写十六进制，在加载边界一次解码，不保留 v1 JSON 分支。
+  - 施放记录的 `t0_us` 改用 `ServerTime.server_us`。
+  - 法杖夹具改用客户端真实发布物 `08bb766b…`（Voxim `magic-v2-online` `62042c84`，客户端同时顺延到 Hello 46，Automation 159/159）。
+  - WSL 全量测试：mmo_contracts 209、voxel_region 1002、scene_server 308、gate_server 110、npc_server 807，全部通过。
+  - 后续切片 4–8 见 [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-closure-slices4-8.md)。

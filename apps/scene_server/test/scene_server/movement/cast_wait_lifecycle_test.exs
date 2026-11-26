@@ -458,44 +458,22 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
   # 法杖光弹不受战斗范围限制：本夹具的 Scene 配置没有 test_combat_bounds_m，`Scene.load_config!` 给出
   # combat_scope = nil，即战斗处处关闭（工具 22/23 的候选在 Scene.tool_candidates 被拒、人物受击在
   # Player.receive_effect 被拒）。施法链路 Player.cast_spell → World 没有战斗范围判定，所以同一个 Player
-  # 照常前摇、结算并扣整数 cost_mj。光弹命中人物仍归投射物链路的 Harm 判定，不在本例范围。
-  @bolt_magic "71ca543b42db5ca5b1b8fea62771aa0c256399b2fa00c0525eccb4d9953860a7"
-  @tag magic: @bolt_magic
-  test "战斗范围关闭（combat_scope nil）时法杖光弹照常施放：真实 Player 前摇后 World 结算并扣 cost_mj", c do
+  # 照常前摇并交 World 结算（切片 3 下结构建成回 :structure_runtime_pending，取能回 :ok 并按整数 mJ 入账）。
+  @bolt_hex "02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00"
+  test "战斗范围关闭（combat_scope nil）时法杖光弹与取能照常前摇：真实 Player 按成本模型前摇并交 World 结算", c do
     assert c.config.combat_scope == nil
     refute SceneServer.Movement.Harm.open?(c.config.combat_scope)
     # 开户（玩家接纳同一出口）：497 084 850 mJ。
     assert {:ok, %{energy_j: 497_084.85}} =
              World.send_caster_state(c.world, 1001, 0, {self(), c.identity})
 
-    program =
-      Jason.encode!(%{
-        v: 1,
-        target: %{kind: "aim"},
-        emit: "hand",
-        steps: [
-          %{
-            sym: "form.semblance",
-            args: %{
-              shape: 0,
-              radius_m: 0.05,
-              mass_kg: 0.01,
-              temperature_k: 293.15,
-              glow_w: 100,
-              lifetime_s: 1
-            }
-          },
-          %{sym: "act.throw", args: %{speed_mps: 30}},
-          %{sym: "act.break_on_hit", args: %{}}
-        ]
-      })
+    bolt_bytes = Base.decode16!(@bolt_hex, case: :lower)
 
-    # 朝下投向脚下地面石（准星方向与客户端同一表示）。
+    # 朝下投向脚下地面石（准星方向与客户端同一表示）；无 holdables 表，前摇按成本模型 1.1846 s。
     request = %{
       request()
-      | catalog_digest: Base.decode16!(@bolt_magic, case: :lower),
-        direction: {0.0, -1.0, 0.0},
-        program: program
+      | direction: {0.0, -1.0, 0.0},
+        program: bolt_bytes
     }
 
     ingress = %{
@@ -508,57 +486,34 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
 
-    # 本夹具没有持物表：前摇按成本模型 1.9299 s（独立复算）由 Player 的真实定时器推进。
-    assert_receive {^tag, {:ok, %{outcome: nil, caster: caster}}}, 10_000
-    assert System.monotonic_time(:millisecond) - started >= 1_930
-    # 独立复算的光弹扣款 9 941 697 mJ：497 084 850 − 9 941 697 = 487 143 153 mJ。
-    assert caster.spent_j == 9941.697
-    assert caster.energy_j == 487_143.153
+    # 本夹具没有持物表：前摇按 v2 成本模型 1.1846 s 由 Player 真实定时器推进；切片 3 结构建成显式回 :structure_runtime_pending。
+    assert_receive {^tag, {:error, :structure_runtime_pending}}, 10_000
+    assert System.monotonic_time(:millisecond) - started >= 1_180
   end
 
-  # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户定）：属性目录持物表声明光弹为 basic_spell、
-  # basic_windup_s 0.3，同一程序经真实 Player 施放时 World 给 0.3 s，Player 定时器 ceil(0.3 × 1000) = 300 ms 后结算；
-  # 扣款仍是成本模型的 9 941 697 mJ。上界 1 500 ms 远低于成本模型前摇 1 930 ms，旧规则会红。
-  @tag magic: @bolt_magic
+  # 法杖普攻固定前摇（Voxim 交互设计"2026-11-20 修订"，用户定；魔法 v2 切片 3 迁至 IR v2）：属性目录持物表声明
+  # IR v2 光弹为 basic_spell、basic_windup_s 0.3，同一程序经真实 Player 施放时 World 给 0.3 s，Player 定时器
+  # ceil(0.3 × 1000) = 300 ms 后交 World 结算。上界 1 000 ms 低于成本模型前摇 1 185 ms，旧规则会红。
   @tag holdables: [
          %{
            "id" => "staff",
            "display_name" => "法杖",
            "basic_windup_s" => 0.3,
            "skill_tool_ids" => [],
-           "basic_spell" => %{
-             "v" => 1,
-             "target" => %{"kind" => "aim"},
-             "emit" => "hand",
-             "steps" => [
-               %{
-                 "sym" => "form.semblance",
-                 "args" => %{
-                   "shape" => 0,
-                   "radius_m" => 0.05,
-                   "mass_kg" => 0.01,
-                   "temperature_k" => 293.15,
-                   "glow_w" => 100,
-                   "lifetime_s" => 1
-                 }
-               },
-               %{"sym" => "act.throw", "args" => %{"speed_mps" => 30}},
-               %{"sym" => "act.break_on_hit", "args" => %{}}
-             ]
-           }
+           "basic_spell" =>
+             "02010100070001000200003200000000000a010010006401001b07d001001e7530010001002201002c00"
          }
        ]
-  test "法杖普攻固定前摇：真实 Player 按 basic_windup_s 0.3 s 结算光弹，扣款仍 cost_mj", c do
+  test "法杖普攻固定前摇：真实 Player 按 basic_windup_s 0.3 s 完成 IR v2 光弹前摇", c do
     assert {:ok, %{energy_j: 497_084.85}} =
              World.send_caster_state(c.world, 1001, 0, {self(), c.identity})
 
-    [%{"basic_spell" => spell}] = c.holdables
+    [%{"basic_spell" => hex}] = c.holdables
 
     request = %{
       request()
-      | catalog_digest: Base.decode16!(@bolt_magic, case: :lower),
-        direction: {0.0, -1.0, 0.0},
-        program: Jason.encode!(spell)
+      | direction: {0.0, -1.0, 0.0},
+        program: Base.decode16!(hex, case: :lower)
     }
 
     ingress = %{
@@ -570,10 +525,8 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     tag = make_ref()
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
-    assert_receive {^tag, {:ok, %{outcome: nil, caster: caster}}}, 10_000
+    assert_receive {^tag, {:error, :structure_runtime_pending}}, 10_000
     elapsed = System.monotonic_time(:millisecond) - started
-    assert elapsed >= 300 and elapsed < 1_500
-    assert caster.spent_j == 9941.697
-    assert caster.energy_j == 487_143.153
+    assert elapsed >= 300 and elapsed < 1_000
   end
 end

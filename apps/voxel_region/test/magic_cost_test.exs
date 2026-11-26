@@ -406,4 +406,18 @@ defmodule VoxelRegion.MagicCostTest do
     # 驱散脉冲：求积值即真实存续 τ = (E₀ − E_min) / P_act = 0.595 s。
     assert_in_delta quote!(c, c.bytes["dispel_pulse"]).life_s, 0.595, 0.003
   end
+
+  test "draw/4 整数 mJ 分账：石减 taken = gained + loss，非整除半数远离零且上限受石与容量制约", c do
+    # 1 234 567 × 0.9 = 1 111 110.3 → round = 1 111 110，loss = 123 457（两端同一整数 taken）。
+    assert %{taken_mj: 1_234_567, gained_mj: 1_111_110, loss_mj: 123_457} =
+             Cost.draw(1_234_567, 10_000_000_000, 0, c.catalog)
+
+    # 受容量余量限制：容量 5e9 mJ，余额 4.9e9 mJ → 最多取 1e8 mJ。
+    assert %{taken_mj: 100_000_000, gained_mj: 90_000_000, loss_mj: 10_000_000} =
+             Cost.draw(2_000_000_000, 10_000_000_000, 4_900_000_000, c.catalog)
+
+    # 受石储能限制。
+    assert %{taken_mj: 500_000, gained_mj: 450_000, loss_mj: 50_000} =
+             Cost.draw(2_000_000, 500_000, 0, c.catalog)
+  end
 end

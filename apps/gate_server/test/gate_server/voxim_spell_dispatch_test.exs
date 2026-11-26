@@ -391,9 +391,9 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert {:ok, _} = Dispatch.handle(request, c.state)
 
     assert_receive {:mmo_voxel_bytes, :session,
-                    <<0x83, 0::64, ^seq::64, ^granted_j::float-64, 5.0e6::float-64, 16.0::float-64,
-                      +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
-                      0::size(88)-unit(8)>>}
+                    <<0x83, 0::64, ^seq::64, ^granted_j::float-64, 5.0e6::float-64,
+                      16.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64,
+                      +0.0::float-64, 0::size(88)-unit(8)>>}
 
     assert {:ok, _} = Dispatch.handle(request, c.state)
 

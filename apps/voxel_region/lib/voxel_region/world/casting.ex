@@ -374,7 +374,7 @@ defmodule VoxelRegion.World.Casting do
 
     record = %{
       live: 1,
-      t0_us: MmoContracts.ServerTime.now_us(state.server_clock),
+      t0_us: MmoContracts.ServerTime.server_us(state.server_clock),
       program: request.program,
       steps: Enum.map(quote.steps, &Map.take(&1, [:part_index, :adjust_s, :inject_s])),
       origin: hand_point(actor, request)
