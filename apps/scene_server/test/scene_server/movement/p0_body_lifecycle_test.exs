@@ -7,7 +7,12 @@ defmodule SceneServer.Movement.P0BodyLifecycleTest do
 
   setup do
     MmoTest.Database.start!()
-    cid = System.unique_integer([:positive]) + 500_000
+
+    # 身体经 DataService.BodyStore 落到 character_bodies（主键 cid，bigint）。测试库可由 MMO_TEST_DB_NAME 显式跨次共用，
+    # 而 System.unique_integer 每个 VM 从头计数，跨次会撞上上一轮留下的行（:stale_owner 或读到旧身体）。
+    # 取微秒系统时间（同 config/test.exs 默认测试库名的跨次唯一做法）：每次运行、每个用例各有自己的角色，
+    # VM 内不回退且用例串行（async: false）；约 1.8e15，在 bigint 与 u64 线协议 / NIF 位宽之内。
+    cid = System.system_time(:microsecond)
     replication = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]})
 
     profile =
