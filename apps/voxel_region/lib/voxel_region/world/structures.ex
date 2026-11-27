@@ -1142,23 +1142,37 @@ defmodule VoxelRegion.World.Structures do
     %{state | thermal: thermal}
   end
 
-  # 邻居（设计 §5.3 第 1 步、§5.3.2）：拍首建 8 m 网格；P_leak 取邻居拍首的运行损耗（待设计确认，见 moduledoc）。
-  defp neighbor_index(ordered, catalog) do
-    for {id, %{structure: s, body: body}} <- ordered, into: %{} do
-      position = position(body)
-      leak_w = Structure.running_loss_w(s, s.e_op_mj + abs(s.e_th_mj), catalog)
-      {id, %{position: position, leak_w: leak_w, bucket: bucket(position)}}
-    end
+  @doc """
+  拍首邻居索引（设计 §5.3 第 1 步“本拍开始时建一次 8 m 空间网格”、§5.3.2）：`ordered` 是本拍步进的 `[{id, 条目}]`。
+
+  返回 `%{sites: %{id => site}, buckets: %{网格桶 => [{id, site}]}}`，`site = %{position, leak_w, bucket}`：位置取拍首，
+  P_leak 取拍首的运行损耗（待设计确认，见 moduledoc），`bucket` 是边长 #{@grid_m} m 的网格桶。`sites` 供干预场按 id 取位置，
+  `buckets` 供 `neighbors_of/4` 只看相邻 27 个桶，使每拍邻居查找的工作量与结构数成线性而不是平方。
+  """
+  def neighbor_index(ordered, catalog) do
+    sites =
+      for {id, %{structure: s, body: body}} <- ordered, into: %{} do
+        position = position(body)
+        leak_w = Structure.running_loss_w(s, s.e_op_mj + abs(s.e_th_mj), catalog)
+        {id, %{position: position, leak_w: leak_w, bucket: bucket(position)}}
+      end
+
+    %{sites: sites, buckets: Enum.group_by(sites, fn {_, site} -> site.bucket end)}
   end
 
   defp bucket({x, y, z}), do: {floor(x / @grid_m), floor(y / @grid_m), floor(z / @grid_m)}
 
-  defp neighbors_of(index, id, position, %Catalog{runtime: rt}) do
+  @doc """
+  结构 `id`（位于 `position`）本拍的邻居项（`Structure.step/4` 输入的 `neighbors`）：`position` 所在网格桶及相邻共 27 个桶里、
+  距离 < 目录 `env_neighbor_radius_m` 的其他结构，按贡献 P_leak·(1 − d/r_N) 降序、并列按 id 升序，取前 `env_neighbor_max`
+  个（设计 §5.3.2“只计贡献最大的 16 个邻居，并列按 id”）。排序键含唯一的 id，是全序，所以结果与桶内、桶间的遍历顺序无关。
+  """
+  def neighbors_of(%{buckets: buckets}, id, position, %Catalog{runtime: rt}) do
     {bx, by, bz} = bucket(position)
     r = rt.env_neighbor_radius_m
 
-    for({other, n} <- index, other != id, {nx, ny, nz} = n.bucket, abs(nx - bx) <= 1 and abs(ny - by) <= 1 and abs(nz - bz) <= 1,
-        d = distance(position, n.position), d < r, do: {other, %{leak_w: n.leak_w, distance_m: d}})
+    for(dx <- -1..1, dy <- -1..1, dz <- -1..1, {other, n} <- Map.get(buckets, {bx + dx, by + dy, bz + dz}, []),
+        other != id, d = distance(position, n.position), d < r, do: {other, %{leak_w: n.leak_w, distance_m: d}})
     |> Enum.sort_by(fn {other, n} -> {-n.leak_w * (1 - n.distance_m / r), other} end)
     |> Enum.take(rt.env_neighbor_max)
     |> Enum.map(&elem(&1, 1))
@@ -1175,7 +1189,7 @@ defmodule VoxelRegion.World.Structures do
         probe = Structure.disruption_field(s, 0.0, tick, catalog),
         probe != nil do
       %{id: id, structure: s, caster: body.caster, scope: body.combat_scope, radius_m: radius, t_eff_s: probe.seconds}
-      |> Map.merge(Map.take(neighbors[id], [:position, :bucket]))
+      |> Map.merge(Map.take(neighbors.sites[id], [:position, :bucket]))
     end
   end
 
@@ -1188,7 +1202,7 @@ defmodule VoxelRegion.World.Structures do
       hits =
         for {id, %{body: body}} <- ordered,
             id != e.id,
-            n = neighbors[id],
+            n = neighbors.sites[id],
             near_bucket?(e, n.bucket),
             d = distance(e.position, n.position),
             field = Structure.disruption_field(e.structure, d, tick, catalog),
