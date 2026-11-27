@@ -24,7 +24,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
 
   - 前摇中按 +x 走开 0.25 m 以上：Player 发 `{:cancel_cast, key, :interrupted_moved, k}`，k 按已流逝时间对照各步时长求出；
     不自己回等待方，World 的结账回复经它原样转交一次。
-  - 受到工具冲击（Body 新增创伤）即以 `interrupted_wounded` 打断；投射物热（不改创伤）不打断（Q6-5 按推荐暂行）。
+  - 受到工具冲击（Body 新增创伤）即以 `interrupted_wounded` 打断；投射物热（不改创伤）不打断（Q6-5 手感项，8b 实跑请用户确认，见决策稿 §11.3 #30）。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Scene, Player}

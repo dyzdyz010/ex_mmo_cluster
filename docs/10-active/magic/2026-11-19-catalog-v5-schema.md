@@ -54,7 +54,7 @@ flowchart LR
 |---|---|---|
 | `structures_per_caster` | 每人每分区运行结构 | 6 |
 | `folded_per_caster` | 每人每分区折叠核（P2） | 3 |
-| `flights_per_caster` | 每人每分区飞行中 | 3（魔法 v2 切片 7 由 2 改为 3，Q7-5 按推荐暂行，待设计确认；法杖连发节奏） |
+| `flights_per_caster` | 每人每分区飞行中 | 3（魔法 v2 切片 7 由 2 改为 3，Q7-5 用户已定、待回写设计稿，见 P1 收口决策稿 §11.3 #25；法杖连发节奏） |
 | `region_budget_units` / `region_reserve_units` | 分区算力预算 B / 在场保底预留 | 256 / 32 |
 | `fair_share_ratio` | 公平准入阈值 | 0.75 |
 | `structure_weight_base` / `_awake_thermal_node` / `_per_rule` / `_per_sensing_coupling` | 结构权重各项 | 1 / 2 / 0.5 / 0.5 |

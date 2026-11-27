@@ -42,13 +42,13 @@ defmodule VoxelRegion.World.Structures do
   此刻对它可写（执行时复核持有者，`Access.writable?/3`）。否则（手边悬空、飞行中、接触格已变、他人保护区）全部计入灵炁
   辐射账，不写任何格。热份额按端口温度上限沉积：每格至多加热到 T_port，余下计入辐射账（§5.2）。
 
-  ## 待设计确认（决策稿未覆盖，取最保守的可逆做法，§14 有记录）
+  ## 实现决策（决策稿 §11.3 收口，理由见该表）
 
   - 所在格温度：落地且有接触格时取接触格温度，否则取中心所在格（实占用格取其温度，空气取气候区温度）；
-    泄漏沉积阈值用接触格热容，没有接触格时为 0（每拍沉积，热半落不进格即计入辐射）。
-  - 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3`（与处理顺序无关）。
-  - 邻近终止释放剂量：按 id 升序，本拍已终止结构的释放作用于其后处理的结构。
-  - 〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。
+    泄漏沉积阈值用接触格热容，没有接触格时为 0（每拍沉积，热半落不进格即计入辐射）。（§11.3 #4）
+  - 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3`（与处理顺序无关）。（§11.3 #5）
+  - 邻近终止释放剂量：按 id 升序，本拍已终止结构的释放作用于其后处理的结构。（§11.3 #6）
+  - 〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。（§11.3 #10）
 
   ## 触发预算与热节点休眠（切片 7，规则在 `World.MagicAdmission`）
 
@@ -75,8 +75,9 @@ defmodule VoxelRegion.World.Structures do
     终态快照的落点即该位置，释放落不进格、计入辐射账。
   - 投射物提交点（`land/5`、`hit_body/5`、`deliver/3`、`dissipate/3`）：动能经 `settle_kinetic/1` 在命中格沉积，〈遇〉按
     `last_tick + 1` 求值（含读数丢失），〈散〉在同一提交点 `respond/3` 结算；人物命中冻结交付，等 Player 接纳后终止。
-  - **待设计确认**：Q5-3 命中时不补记不足一拍的维持费（差额随释放入账）；人物命中读数丢失时停在命中点而不是穿过；
-    离开 World 能读出 canonical 的范围时以 live 3 散解（`World.Projectiles` moduledoc）。
+  - 已定（决策稿 §11.3）：Q5-3 命中时不补记不足一拍的维持费（差额随释放入账；实现决策 #13）；离开 World 能读出
+    canonical 的范围时以 live 3 散解（实现决策 #14，`World.Projectiles` moduledoc）；人物命中读数丢失时停在命中点而不是
+    穿过（手感项，8b 实跑请用户确认，#28）。
   """
   require Logger
   alias MmoContracts.Voxel.Codec
@@ -151,7 +152,7 @@ defmodule VoxelRegion.World.Structures do
         case Semblance.segment(eye, far, half, state, &cast/4) do
           {{_fraction, point, hit}, state} ->
             if Damage.key(hit) == Damage.key(target) do
-              # 〈附〉上的〈投〉自格面点抛出（待设计确认）；无〈投〉时静止在格面上，接触即目标格。
+              # 〈附〉上的〈投〉自格面点抛出（已定：实现决策，见决策稿 §11.3 #8）；无〈投〉时静止在格面上，接触即目标格。
               {trace, state} =
                 Semblance.trace(point, point, velocity, half, horizon.(point), state, &predict_cast/4, massless)
 
@@ -765,7 +766,7 @@ defmodule VoxelRegion.World.Structures do
   3. 〈遇〉：按 `last_tick + 1` 调 `Structure.evaluate_rules/4`（含读数丢失）。触发〈散〉即 `respond/3` 就地终止，读〈遇〉的
      规则记 live 2（终态快照的落点即命中点）；丢失时接触保持待决，结构作为静止结构留下，下一热拍重判（设计 §5.4 R5）。
 
-  Q5-3（暂行，**待设计确认**）：从上一拍到命中这段不足一拍的维持费不补记，差额随释放入账（账目仍闭合）。
+  Q5-3（已定：实现决策，见决策稿 §11.3 #13）：从上一拍到命中这段不足一拍的维持费不补记，差额随释放入账（账目仍闭合）。
   返回 `{state, extra}`，`extra` 是这笔投射物提交事务随附下发的结构记录。
   """
   def land(state, id, age_s, point, target) do
@@ -784,7 +785,8 @@ defmodule VoxelRegion.World.Structures do
     停在求值后、不再步进，等目标 Player 接纳（Player 复核会话、生命与战斗范围，Harm 的第二个判定点）。本次提交只下发
     “停在命中点”的存在记录（live 1，不再飞行），终止记录在接纳结果的提交点下发（沿 v1 合同 `cast-phases-2026-10-05.md`）。
   - 读数丢失：接触保持待决，结构停在命中点（空气中，无接触格），动能与之后的释放落不进格，计入辐射账；下一热拍重判
-    （**待设计确认**：丢失时也可以选择穿过人物继续飞，本实现取“命中即飞行终点”，与设计 §5.1 飞行终点定义一致）。
+    （手感项，8b 实跑请用户确认，见决策稿 §11.3 #28：丢失时也可以选择穿过人物继续飞，本实现取“命中即飞行终点”，与设计
+    §5.1 飞行终点定义一致）。
 
   进入组织的部分按 Q5-2（用户以设计方身份答复）：E_op 的热半 + 热份额（至多把组织块加热到 T_port）+ 动能；E_op 的辐射半
   与热份额中超出部分只记灵炁辐射账。`target` 是采样后端给的命中上下文（含组织块温度 `tissue_k` 与热容 `tissue_c_j_per_k`）。
@@ -1146,7 +1148,7 @@ defmodule VoxelRegion.World.Structures do
   拍首邻居索引（设计 §5.3 第 1 步“本拍开始时建一次 8 m 空间网格”、§5.3.2）：`ordered` 是本拍步进的 `[{id, 条目}]`。
 
   返回 `%{sites: %{id => site}, buckets: %{网格桶 => [{id, site}]}}`，`site = %{position, leak_w, bucket}`：位置取拍首，
-  P_leak 取拍首的运行损耗（待设计确认，见 moduledoc），`bucket` 是边长 #{@grid_m} m 的网格桶。`sites` 供干预场按 id 取位置，
+  P_leak 取拍首的运行损耗（已定：实现决策，见决策稿 §11.3 #5），`bucket` 是边长 #{@grid_m} m 的网格桶。`sites` 供干预场按 id 取位置，
   `buckets` 供 `neighbors_of/4` 只看相邻 27 个桶，使每拍邻居查找的工作量与结构数成线性而不是平方。
   """
   def neighbor_index(ordered, catalog) do

@@ -232,7 +232,8 @@ sequenceDiagram
 - 可观测：`voxel_structure_field emitter cid tick t_eff_s radius_m targets doses=[{sid, 单位剂量, permitted}]`（每个有场的发出者
   每拍一行）、`voxel_cast_dose cid key tick dose total threshold notify`、`voxel_cast_disrupted cid key tick dose`、
   `voxel_cast_cancel seq cid request_id reason k charged_mj outcome windup_dose`；终止仍由 `voxel_structure_end … type=dispelled` 记。
-- 待用户确认（按推荐暂行）：Q6-1 取消按进行中的步 k 扣第 1–k 步；Q6-5 只有 Body 新增创伤算伤口事件。
+- 手感项（已按推荐实现，8b 实跑请用户确认，见决策稿 §11.3 #29、#30）：Q6-1 取消按进行中的步 k 扣第 1–k 步；
+  Q6-5 只有 Body 新增创伤算伤口事件。
 
 ## 必须守住的不变量
 

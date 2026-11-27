@@ -530,8 +530,8 @@ defmodule SceneServer.Movement.Player do
           %{next | effect_receipts: Map.put(receipts, effect.key, receipt)}
           |> persist_body()
 
-        # 伤口事件（设计 §5.5 打断行；Q6-5 按推荐暂行，待用户确认）：只有 Body 新增创伤（traumas 改变）才打断前摇，
-        # 投射物热等不改 traumas 的作用不算。
+        # 伤口事件（设计 §5.5 打断行；Q6-5 手感项，8b 实跑请用户确认，见 `2026-11-26-p1-closure-slices4-8.md` §11.3 #30）：
+        # 只有 Body 新增创伤（traumas 改变）才打断前摇，投射物热等不改 traumas 的作用不算。
         next =
           if next.body.traumas != state.body.traumas,
             do: interrupt_spell(next, :interrupted_wounded),

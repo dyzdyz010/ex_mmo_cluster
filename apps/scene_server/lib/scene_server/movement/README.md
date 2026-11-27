@@ -322,7 +322,7 @@ Global system：Player 是前摇打断的唯一 owner（落地稿 D7）。施法
 |---|---|---|
 | 主动取消 | 0x82 action 2（与 NPC `cancel_cast` 同一入口） | `interrupted_cancelled` |
 | 移动 | 前摇中（`:windup` / `:checking`）离开起点超过 0.25 m（与信标、分选同一 `@channel_interrupt_m`） | `interrupted_moved` |
-| 伤口事件 | `receive_effect` 后 Body 的 `traumas` 改变（工具冲击新增创伤；投射物热不改创伤、不算；Q6-5 按推荐暂行，待用户确认） | `interrupted_wounded` |
+| 伤口事件 | `receive_effect` 后 Body 的 `traumas` 改变（工具冲击新增创伤；投射物热不改创伤、不算；Q6-5 手感项，8b 实跑请用户确认，见 `docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md` §11.3 #30） | `interrupted_wounded` |
 | 干预剂量 | World 报来 `{:windup_disrupted, key, dose}`（施法者处累计扰乱量首次 ≥ 0.3），且仍在前摇 | `interrupted_disrupted` |
 
 前摇中（World 已接纳）打断时，`step_in_progress/2` 按已流逝时间对照 `steps` 求进行中的步 k（仍在第 1 步调整段即第一笔注能前，

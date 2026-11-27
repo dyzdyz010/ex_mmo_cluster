@@ -35,7 +35,7 @@ defmodule VoxelRegion.World.Projectiles do
     不发事务：客户端在飞行位置位时按 t0、初速自行外推。
   - 积压达 mid/hard 或模拟装页失败时不开始新的拍（与热、液体同一冻结语义）。
 
-  ## 离开可读范围（显式终止规则，**待设计确认**）
+  ## 离开可读范围（显式终止规则；已定：实现决策，见决策稿 §11.3 #14）
 
   投掷结构没有射程终点，理论上可以飞很远。每段求交前，World 先确认这段弦两端所在的全部 L0 region 都能从权威 canonical 来源读出
   （`Canonical.decoded/3`：区域基底或 baseline 源）；读不出（`:missing` 等）就在这段起点以 live 3 就地散解（释放落不进格，

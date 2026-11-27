@@ -24,6 +24,7 @@
   `docs/10-active/magic/2026-11-26-anima-field-design.md`、`magic/{catalog,cost,program}.ex`、`world.ex`、`casting.ex` 等，
   另有用户的天气与时钟设计稿（未跟踪）。这些不属于本任务，不要动。但它们改的是魔法与 World 文件，
   魔法分支合入 master 时会冲突，合入前要先问用户这批改动归谁、怎么处理。
+  （2026-11-26 用户答复：灵炁场归另外的会话，本任务不管。合入时若这批未提交改动挡住合并，停下来告诉用户，不动它们。）
 - 已废弃的分支 `magic-v2-p1-throttle`（4b，已合入）、工作树 `D:\hemifuture\ex_mmo_cluster-magic-v2-throttle`，可在合入后清理。
 
 ## 3. 交接时仍在后台跑的子代理（由旧会话启动，结果不会通知新会话）

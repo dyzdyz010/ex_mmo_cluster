@@ -50,7 +50,7 @@ Global system。决策稿 [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-c
 - **线上记录（客户端须改插值）**：飞行中的结构记录带 `flying` 状态位，`flight_s`/`rest` 是施放时到预计飞行时长为止的预测；客户端在 `flying` 位置位时按 `p(τ) = origin + v·τ（有质量者 − ½gτ²ŷ）`、`τ = (服务端时钟 − t0_us)/1e6` 外推，**不再按 `flight_s` 截断**。飞行结束一定有一条新记录：停住的 live 1（无 `flying`）或 live 2–6 终态快照，其 `flight_s` 是真实飞行时长、`rest` 是真实落点。
 - **人物采样**：只对 `ends_on_contact` 结构（Q5-4），且施法者是 Player（带生命代次，沿 v1）。命中时按 `last_tick + 1` 求值〈遇〉：触发则冻结交付（先广播停在命中点的 live 1），Player 接纳后发 live 2 与 kind14；`q_j` 改为 Q5-2 口径——E_op 热半 + 热份额（至多把组织块加热到 T_port）+ 动能，辐射半只记账（`Player.hit_context` 新增组织块温度与热容供 World 求上限）。
 - **账目**：接纳的 q 记 `structure_body_mj`（并沿 v1 记分项 `projectile_body_j` 与 `body_exchange_j`），未接纳散入空气记 `projectile_rejected_j`。
-- **恢复与越界**：冷重启时仍在飞行的结构以 live 3 散解，不采样；冻结交付照常重投。飞进 World 读不出 canonical 的 region（`Canonical.decoded/3` 失败）时在该弦段起点以 live 3 散解，日志 `voxel_structure_out_of_domain`（显式终止规则，待设计确认）。
+- **恢复与越界**：冷重启时仍在飞行的结构以 live 3 散解，不采样；冻结交付照常重投。飞进 World 读不出 canonical 的 region（`Canonical.decoded/3` 失败）时在该弦段起点以 live 3 散解，日志 `voxel_structure_out_of_domain`（显式终止规则；已定：实现决策，见 P1 收口决策稿 §11.3 #14）。
 - **法杖光弹**（切片 5b 改〈蓄〉，用户选“保证够到 30 m”）：程序无质量（`mass_g` 0000）、〈蓄〉1742 J，hex `020101000700010002000032000000000000010010006401001b06ce01001e7530010001002201002c00`；以 30 m/s 射出，在第 3 个热拍于飞行中衰竭。第一个热拍在出生后墙钟 (0, 0.5] s 内到来，所以实际飞行 (1.0, 1.5] s、路程 (30, 45] m；报价 10 235.708 J，前摇仍 0.3 s。命中人物进组织：第一拍前 871 J（组织块升温约 4.16 K），第 2 拍后 573.94 J（约 2.74 K），近大远小来自维持出账，没有距离衰减规则。客户端须改 `author_holdable.py` 的 `basic_spell` 并重新发布物品目录。（切片 5 的 1444 J、hex `…001b05a4…` 作废。）
 - 验证：`apps/voxel_region/test/magic_structure_world_test.exs`（W5-1–W5-5、越界、W4-6、W4-7、A1、A3、A5）；`apps/world_server/test/world_server/movement/p0_body_world_test.exs`（后端按 v2 飞行体形状采样）。
 
@@ -62,7 +62,7 @@ Global system。决策稿 [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-c
 - **前摇打断（Player 唯一 owner，落地稿 D7）**：主动取消、离开前摇起点 > 0.25 m、Body 新增创伤、World 报来施法者处扰乱量
   ≥ 0.3，原因依次为 `interrupted_cancelled / moved / wounded / disrupted`（Q6-4）。Player 按已流逝时间对照 World 广播的各步
   {调整, 注能} 求进行中的步 k（第 1 步调整段内为 0），发 `{:cancel_cast, key, reason, k}`。
-- **取消结账（Q6-1，待用户确认）**：k = 0（第一笔注能前）免费，施放记录 outcome 2，0x68 rejected `":interrupted_*"`；
+- **取消结账（Q6-1，手感项，8b 实跑请用户确认，见 P1 收口决策稿 §11.3 #29）**：k = 0（第一笔注能前）免费，施放记录 outcome 2，0x68 rejected `":interrupted_*"`；
   k ≥ 1 与分阶段失败同一结算：扣第 1..k 步累计支出（付到余额为止），支出落在形成位置（W7，`cast_interrupt_heat_j` /
   `cast_interrupt_radiation_j`），施放记录 outcome 1、`fail_step = k`，先 0x83（`spent_j` = 实际扣除）后 0x68 accepted
   `"interrupted_*"`（result_ref = seq）。系统撤销（下线、移交、等待者退出）照旧 `cast_cancelled`、免费。

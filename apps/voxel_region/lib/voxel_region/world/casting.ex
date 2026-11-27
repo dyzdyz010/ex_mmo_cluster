@@ -472,7 +472,8 @@ defmodule VoxelRegion.World.Casting do
     调用方与连接收到 `{:ok, %{seq, outcome: reason, fail_step: k, caster}}`（0x83 带实际扣除、0x68 accepted 原因串即 reason）。
     报价按此刻施法者所在格的气候温度重算（Q6-1 的“用当时的 site”），作用面沿用前摇开始时的 `checked`（取消不再求射线）。
 
-  **待用户确认**（Q6-1 按推荐暂行）：取消按进行中的步 k 扣第 1–k 步，而不是只扣已完成的步。
+  Q6-1（手感项，已按推荐实现，8b 实跑请用户确认，见 `2026-11-26-p1-closure-slices4-8.md` §11.3 #29）：取消按进行中的
+  步 k 扣第 1–k 步，而不是只扣已完成的步。
   """
   def cancel_pending_cast(state, key, reason, k \\ 0) do
     case Enum.find(state.pending_casts, fn {_, pending} -> pending.actor.action_key == key end) do

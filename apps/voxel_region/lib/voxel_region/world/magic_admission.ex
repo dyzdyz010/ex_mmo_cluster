@@ -15,7 +15,7 @@ defmodule VoxelRegion.World.MagicAdmission do
       w = structure_weight_base + structure_weight_awake_thermal_node·[醒着的热节点]
           + structure_weight_per_rule·规则数 + structure_weight_per_sensing_coupling·感知耦合数
 
-  - **感知耦合数在 P1 恒为 0**（Q7-6，按推荐暂行，**待设计确认**）：〈遇〉〈时〉〈满〉只按规则计入。
+  - **感知耦合数在 P1 恒为 0**（Q7-6；已定：实现决策，见决策稿 §11.3 #21）：〈遇〉〈时〉〈满〉只按规则计入。
   - “醒着的热节点”：带〈热〉（C_th 非空）且不在休眠的结构。飞行中的热结构也算醒着：它落地即成为热内核节点，飞行中
     不参与休眠判定（设计 §5.3 C1-15 跳过第 11 步），按将要占用的算力计。休眠由 `World.Structures` 每拍判定
     （设计 §5.3 第 11 步，切片 7-3）；本模块只读结果。
@@ -82,7 +82,7 @@ defmodule VoxelRegion.World.MagicAdmission do
   alias VoxelRegion.Magic.Program.Group
 
   @controllers [:player, :npc]
-  # 热节点休眠的滞回（Q7-W2，按推荐暂行，**待设计确认**）：连续 2 拍满足平静条件才休眠，即比设计 §5.3.2 多等 1 拍。
+  # 热节点休眠的滞回（Q7-W2；已定：实现决策，见决策稿 §11.3 #22）：连续 2 拍满足平静条件才休眠，即比设计 §5.3.2 多等 1 拍。
   # 对照 Box2D `b2_timeToSleep`、PhysX 唤醒计数器（决策稿 §10）：都要求持续低于阈值一段时间，避免边界附近逐拍来回切换。
   @sleep_after 2
 
@@ -233,12 +233,12 @@ defmodule VoxelRegion.World.MagicAdmission do
   defp flights(%{candidate: %{flight: false}}, _q), do: :ok
   defp flights(%{mine: mine}, q), do: below(mine.flights, q.flights_per_caster, :flight_quota)
 
-  # Q7-3（按推荐暂行，**待设计确认**）：醒着的热节点已达上限时拒绝新的热结构，不强制最早的休眠。
+  # Q7-3（手感项，8b 实跑请用户确认，见决策稿 §11.3 #31）：醒着的热节点已达上限时拒绝新的热结构，不强制最早的休眠。
   defp awake_nodes(%{candidate: %{thermal: false}}, _q), do: :ok
   defp awake_nodes(%{usage: usage}, q), do: below(usage.awake_nodes, q.awake_thermal_nodes_per_region, :region_budget)
 
   # 分区飞行名额（设计 §5.6）：共 base + 在场人数 × per_present。在场玩家各有 per_present 个保底名额；其余（= base）是
-  # 共享部分。Q7-4（按推荐暂行，**待设计确认**）：设计写的“按施法者轮转分配、不按先到先得”在即时准入下没有可轮转的
+  # 共享部分。Q7-4（手感项，8b 实跑请用户确认，见决策稿 §11.3 #32）：设计写的“按施法者轮转分配、不按先到先得”在即时准入下没有可轮转的
   # 队列，取“保底以外先到先得”；NPC 与不在场者只用共享部分。
   defp flight_slots(%{candidate: %{flight: false}}, _q), do: :ok
 
