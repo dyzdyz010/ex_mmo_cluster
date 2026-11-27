@@ -21,6 +21,8 @@ defmodule AuthServerWeb.IngameController do
   @doc """
   Demo JSON auto-login. Upserts account+character then returns a signed token.
 
+  响应 `%{token, cid, username}`；`cid` 是十进制字符串（与正式票据同一契约）。`/playtest/login` 共用同一响应。
+
   Gated by `config :auth_server, :dev_auto_login`. Responds 403 when disabled.
   """
   def auto_login(conn, params) do
@@ -81,7 +83,9 @@ defmodule AuthServerWeb.IngameController do
               )
               |> AuthServer.AuthWorker.issue_token()
 
-            json(conn, %{token: token, cid: character.id, username: username})
+            # cid 与正式票据（Identity.game_ticket/3）同一契约：十进制字符串。雪花 id 超过 2^53，
+            # 发 JSON 数字会被客户端读成 double 舍入，入场时 Gate 报 cid_mismatch。
+            json(conn, %{token: token, cid: Integer.to_string(character.id), username: username})
 
           {:error, reason} ->
             Logger.warning("auto_login failed for #{username}: #{inspect(reason)}")
