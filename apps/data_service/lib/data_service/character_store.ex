@@ -42,25 +42,26 @@ defmodule DataService.CharacterStore do
   @doc """
   按名字取或建 NPC 角色行。名字是 NPC 的永久身份：同名永远得到同一个 cid，cid 不复用；
   该名字已属于玩家角色时不匹配（崩溃，不返回玩家的 cid）。
+  新建时 cid 生成失败（`DataService.UidGenerator.generate/1`，如时钟回拨）或插入失败 → `{:error, reason}`。
   """
-  @spec ensure_npc(String.t()) :: {:ok, Character.t()}
+  @spec ensure_npc(String.t()) :: {:ok, Character.t()} | {:error, term()}
   def ensure_npc(name) when is_binary(name) do
     case Repo.get_by(Character, name: name) do
       %Character{kind: "npc"} = character ->
         {:ok, character}
 
       nil ->
-        <<cid::64>> = DataService.UidGenerator.generate()
-
-        %Character{}
-        |> Character.changeset(%{
-          id: cid,
-          kind: "npc",
-          name: name,
-          base_attrs: %{},
-          battle_attrs: %{}
-        })
-        |> Repo.insert()
+        with {:ok, cid} <- DataService.UidGenerator.generate() do
+          %Character{}
+          |> Character.changeset(%{
+            id: cid,
+            kind: "npc",
+            name: name,
+            base_attrs: %{},
+            battle_attrs: %{}
+          })
+          |> Repo.insert()
+        end
     end
   end
 

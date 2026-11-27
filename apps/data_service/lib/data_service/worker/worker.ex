@@ -57,71 +57,73 @@ defmodule DataService.Worker do
     end
   end
 
+  # id 生成失败（如时钟回拨）原样返回 `{:error, reason}`，由 upsert_dev_account/1 的 else 传出。
   defp insert_dev_account(username) do
-    <<uid::64>> = DataService.UidGenerator.generate()
-    {:ok, hashed, salt} = hash_password("dev_auto_login")
+    with {:ok, uid} <- DataService.UidGenerator.generate() do
+      {:ok, hashed, salt} = hash_password("dev_auto_login")
 
-    case Repo.insert(%Account{
-           id: uid,
-           username: username,
-           password: hashed,
-           salt: salt,
-           email: "#{username}@dev.local",
-           phone: "dev-#{uid}"
-         }) do
-      {:ok, account} -> account
-      {:error, changeset} -> {:error, {:insert_account_failed, changeset}}
+      case Repo.insert(%Account{
+             id: uid,
+             username: username,
+             password: hashed,
+             salt: salt,
+             email: "#{username}@dev.local",
+             phone: "dev-#{uid}"
+           }) do
+        {:ok, account} -> account
+        {:error, changeset} -> {:error, {:insert_account_failed, changeset}}
+      end
     end
   end
 
+  # id 生成失败（如时钟回拨）原样返回 `{:error, reason}`，由 upsert_dev_account/1 的 else 传出。
   defp insert_dev_character(account_id, username) do
-    <<cid::64>> = DataService.UidGenerator.generate()
-
-    %Character{}
-    |> Character.changeset(%{
-      id: cid,
-      account: account_id,
-      name: "#{username}_char",
-      title: "dev",
-      base_attrs: %{},
-      battle_attrs: %{},
-      # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
-      # Movement world coords use server Z as vertical. The browser maps this
-      # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered
-      # at x/z = 750 in renderer units.
-      position: %{"x" => 750.0, "y" => 750.0, "z" => 185.0},
-      hp: 500,
-      sp: 100,
-      mp: 100
-    })
-    |> Repo.insert()
-    |> case do
-      {:ok, character} -> character
-      {:error, changeset} -> {:error, {:insert_character_failed, changeset}}
+    with {:ok, cid} <- DataService.UidGenerator.generate() do
+      %Character{}
+      |> Character.changeset(%{
+        id: cid,
+        account: account_id,
+        name: "#{username}_char",
+        title: "dev",
+        base_attrs: %{},
+        battle_attrs: %{},
+        # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
+        # Movement world coords use server Z as vertical. The browser maps this
+        # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered
+        # at x/z = 750 in renderer units.
+        position: %{"x" => 750.0, "y" => 750.0, "z" => 185.0},
+        hp: 500,
+        sp: 100,
+        mp: 100
+      })
+      |> Repo.insert()
+      |> case do
+        {:ok, character} -> character
+        {:error, changeset} -> {:error, {:insert_character_failed, changeset}}
+      end
     end
   end
 
+  # 失败沿本路径既有的 `{:err, reason}` 返回：重复 → `{:duplicate, 字段}`，id 生成失败（如时钟回拨）→ 生成器的原因。
   defp register_account(username, password, email, phone) do
-    <<uid::64>> = DataService.UidGenerator.generate()
+    with {:ok, uid} <- DataService.UidGenerator.generate(),
+         :ok <- DataService.DbOps.UserAccount.check_duplicate_ecto(username, email, phone) do
+      {:ok, hashed_password, salt} = hash_password(password)
 
-    case DataService.DbOps.UserAccount.check_duplicate_ecto(username, email, phone) do
-      {:duplicate, duplicate_list} ->
-        {:err, {:duplicate, duplicate_list}}
-
-      :ok ->
-        {:ok, hashed_password, salt} = hash_password(password)
-
-        case Repo.insert(%Account{
-               id: uid,
-               username: username,
-               password: hashed_password,
-               salt: salt,
-               email: email,
-               phone: phone
-             }) do
-          {:ok, account} -> account
-          {:error, changeset} -> {:err, {:insert_failed, changeset}}
-        end
+      case Repo.insert(%Account{
+             id: uid,
+             username: username,
+             password: hashed_password,
+             salt: salt,
+             email: email,
+             phone: phone
+           }) do
+        {:ok, account} -> account
+        {:error, changeset} -> {:err, {:insert_failed, changeset}}
+      end
+    else
+      {:duplicate, duplicate_list} -> {:err, {:duplicate, duplicate_list}}
+      {:error, reason} -> {:err, reason}
     end
   end
 

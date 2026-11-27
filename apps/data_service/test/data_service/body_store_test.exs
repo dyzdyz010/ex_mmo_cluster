@@ -10,8 +10,11 @@ defmodule DataService.BodyStoreTest do
   end
 
   setup do
-    # 每例独占角色，不清空其它测试或其它角色的存档。
-    %{cid: System.unique_integer([:positive, :monotonic])}
+    # 每例独占角色，不清空其它测试或其它角色的存档。测试库可由 MMO_TEST_DB_NAME 显式跨次共用，而
+    # System.unique_integer 每个 VM 从头计数，跨次会撞上上一轮留下的 character_bodies 行（:stale_owner 或读到旧快照）。
+    # 取微秒系统时间（同 scene_server P0BodyLifecycleTest 与 config/test.exs 默认测试库名的跨次唯一做法）：
+    # 用例串行（async: false）且各自耗时远超 1 µs，下一例的 cid 远大于本例的 cid + 1；约 1.8e15，在 bigint 之内。
+    %{cid: System.system_time(:microsecond)}
   end
 
   test "首次取得写入权没有快照，同一会话再次取得时保留完整字节", %{cid: cid} do
@@ -37,7 +40,8 @@ defmodule DataService.BodyStoreTest do
   end
 
   test "一个角色的接管与写入不改变另一个角色", %{cid: cid} do
-    other = System.unique_integer([:positive, :monotonic])
+    # 再取一次微秒时间可能与 cid 相同；cid + 1 同样只属于本例（见 setup）。
+    other = cid + 1
     assert {:ok, nil} = BodyStore.claim(cid, 100)
     assert {:ok, nil} = BodyStore.claim(other, 100)
     assert :ok = BodyStore.save(cid, 100, "first-body")
