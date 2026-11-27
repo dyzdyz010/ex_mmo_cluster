@@ -873,14 +873,15 @@ defmodule VoxelRegion.World.Structures do
       {:terminated, type} ->
         # 终止类型即线上事件（Codec 唯一定义编号）。在飞行中终止（衰竭、〈满〉〈时〉触发的〈散〉等）的结构就地释放：
         # 终态快照的落点与飞行终点取飞行驱动已推进到的位置（释放落不进格，全部计入辐射账，见 `site/3`）。
-        live = Codec.structure_end_live(if(contact?, do: :contact, else: type))
+        ending = if contact?, do: :contact, else: type
+        live = Codec.structure_end_live(ending)
         released_mj = Enum.sum(for {:terminated, _, %{released_mj: mj}} <- out.events ++ if(responded, do: responded.events, else: []), do: mj)
         state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
         state = release(state, id, site.position, released_mj, body)
         {body, flight} = settle_flight(body)
 
         Logger.info(
-          "voxel_structure_end seq=#{state.seq + 1} sid=#{inspect(id)} cid=#{body.caster} live=#{live} type=#{type} tick=#{tick} " <>
+          "voxel_structure_end seq=#{state.seq + 1} sid=#{inspect(id)} cid=#{body.caster} live=#{live} type=#{ending} tick=#{tick} " <>
             "released_mj=#{released_mj} heat_mj=#{deposit.heat_mj} radiation_mj=#{deposit.radiation_mj} " <>
             "thermal_mj=#{deposit.thermal_mj} cell=#{inspect(site.deposit && Damage.macro(site.deposit))} protected=#{site.protected}" <>
             if(flight, do: " in_flight=true flight_s=#{body.flight_s} path_m=#{path_m(body)}", else: "")
@@ -952,7 +953,7 @@ defmodule VoxelRegion.World.Structures do
           target: Map.take(hit.target, [:id, :identity, :life_generation, :position, :velocity]),
           q_mj: q_mj,
           tick: tick,
-          live: Codec.structure_end_live(if(contact?, do: :contact, else: :released)),
+          live: Codec.structure_end_live(release_end(contact?)),
           position: point,
           sampled_us: hit.sampled_us
         }
@@ -976,14 +977,15 @@ defmodule VoxelRegion.World.Structures do
 
   # 地形落地与人物命中（丢失）的共同收尾：执行动能与（触发时）释放请求、记账，产出终止记录或停住的存在记录。
   defp finish_contact(state, id, entry, s, outputs, triggered, site, hit) do
-    {final, outputs, live} =
+    # `ending` 是终止事件（未触发时为 nil，结构停住）；线上 live 与日志 type 都由它求出。
+    {final, outputs, ending} =
       case release_trigger(triggered) do
         {release, contact?} ->
           {ended, out} = Structure.respond(s, release, state.magic)
-          {ended, outputs ++ [out], Codec.structure_end_live(if(contact?, do: :contact, else: :released))}
+          {ended, outputs ++ [out], release_end(contact?)}
 
         nil ->
-          {s, outputs, 1}
+          {s, outputs, nil}
       end
 
     {state, deposit} = execute(state, site, Enum.flat_map(outputs, & &1.requests))
@@ -993,18 +995,18 @@ defmodule VoxelRegion.World.Structures do
 
     Logger.info(
       "voxel_structure_flight sid=#{inspect(id)} cid=#{body.caster} phase=#{if body.ends_on_contact, do: "contact", else: "landed"} " <>
-        "target=#{hit} t_s=#{body.flight_s} path_m=#{path_m(body)} reading_lost=#{body.ends_on_contact and live == 1} " <>
+        "target=#{hit} t_s=#{body.flight_s} path_m=#{path_m(body)} reading_lost=#{body.ends_on_contact and ending == nil} " <>
         "cell=#{inspect(site.deposit && Damage.macro(site.deposit))} kinetic_mj=#{Enum.sum(for o <- outputs, do: o.ledger.out.kinetic_mj)}"
     )
 
-    if live == 1 do
+    if ending == nil do
       {put_entry(state, id, %{entry | structure: final, wire: wire}), %{structures: %{id => record(body, wire, 1)}}}
     else
       released_mj = Enum.sum(for o <- outputs, {:terminated, _, %{released_mj: mj}} <- o.events, do: mj)
       state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
       state = release(state, id, body.rest, released_mj, body)
-      log_end(state, id, body, live, :released, s.last_tick + 1, released_mj, deposit, site, "hit=#{hit}")
-      {state, %{structures: %{id => record(body, wire, live)}}}
+      log_end(state, id, body, ending, s.last_tick + 1, released_mj, deposit, site, "hit=#{hit}")
+      {state, %{structures: %{id => record(body, wire, Codec.structure_end_live(ending))}}}
     end
   end
 
@@ -1017,7 +1019,7 @@ defmodule VoxelRegion.World.Structures do
   def deliver(state, id, result) do
     %{structure: s, body: body, delivery: delivery} = entry = Map.fetch!(all(state), id)
     accepted = match?({:ok, _}, result)
-    {release, _contact?} = fired_release(s, delivery.tick)
+    {release, contact?} = fired_release(s, delivery.tick)
     {requests, ledgers, events} = body_release(s, release, state.magic)
     total = Enum.sum(for request <- requests, do: elem(request, 1))
     into_body = if accepted, do: delivery.q_mj, else: 0
@@ -1038,7 +1040,8 @@ defmodule VoxelRegion.World.Structures do
     state = release(state, id, delivery.position, released_mj, body)
     site = %{deposit: nil, protected: false}
 
-    log_end(state, id, body, delivery.live, :released, delivery.tick, released_mj, deposit, site,
+    # 日志的终止事件由冻结规则重放求出，与收据的 live 出自同一规则（`hit_body/5`），线上记录仍按收据。
+    log_end(state, id, body, release_end(contact?), delivery.tick, released_mj, deposit, site,
       "hit=body accepted=#{accepted} body_mj=#{into_body} target_id=#{delivery.target.id} result=#{inspect(result)}")
 
     {state, %{structures: %{id => record(body, entry.wire, delivery.live)}}, accepted}
@@ -1067,7 +1070,7 @@ defmodule VoxelRegion.World.Structures do
         "path_m=#{path_m(body)} rest=#{inspect(body.rest)}"
     )
 
-    log_end(state, id, body, live, type, s.last_tick, released_mj, deposit, site, "reason=#{reason}")
+    log_end(state, id, body, type, s.last_tick, released_mj, deposit, site, "reason=#{reason}")
     {state, %{structures: %{id => record(body, with_flight(entry.wire, false), live)}}}
   end
 
@@ -1096,14 +1099,19 @@ defmodule VoxelRegion.World.Structures do
     end)
   end
 
-  defp log_end(state, id, body, live, type, tick, released_mj, deposit, site, extra) do
+  # 终止日志：`live` 与 `type` 出自同一个终止事件 `ending`（Codec `structure_end_live/1` 的名字，决策稿 §3.2、§4.2）。
+  defp log_end(state, id, body, ending, tick, released_mj, deposit, site, extra) do
     Logger.info(
-      "voxel_structure_end seq=#{state.seq + 1} sid=#{inspect(id)} cid=#{body.caster} live=#{live} type=#{type} tick=#{tick} " <>
+      "voxel_structure_end seq=#{state.seq + 1} sid=#{inspect(id)} cid=#{body.caster} live=#{Codec.structure_end_live(ending)} type=#{ending} tick=#{tick} " <>
         "released_mj=#{released_mj} heat_mj=#{deposit.heat_mj} radiation_mj=#{deposit.radiation_mj} " <>
         "thermal_mj=#{deposit.thermal_mj} cell=#{inspect(site.deposit && Damage.macro(site.deposit))} protected=#{site.protected} " <>
         "rest=#{inspect(body.rest)} flight_s=#{body.flight_s} " <> extra
     )
   end
+
+  # 〈散〉触发的终止事件：读〈遇〉的规则为接触终止（live 2），其余为主动终止（live 6，决策稿 §3.2、Q4-W3）。
+  defp release_end(true), do: :contact
+  defp release_end(false), do: :released
 
   # 第一个带〈散〉的触发：{响应符号, 该规则是否读〈遇〉}，没有时为 nil。
   # 触发执行（设计 §5.4）：`candidates` 为 `[{:paid | :new, 触发或推迟项}]`，已预占的在前。新触发向预算取一份，取不到就推迟

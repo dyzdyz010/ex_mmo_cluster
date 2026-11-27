@@ -659,7 +659,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
     sid = Regex.escape(inspect(id))
     assert log =~ ~r/voxel_structure_flight sid=#{sid} .*phase=contact target=terrain .*reading_lost=false/
-    assert log =~ ~r/voxel_structure_end .*sid=#{sid} .*live=2 type=released .*cell=\{2, 2, 4\} .*hit=terrain/
+    # 日志的 type 是终止事件，与 live 同一原子（决策稿 §3.2、§4.2）：接触终止记 type=contact，不是〈散〉的结构终止类型。
+    assert log =~ ~r/voxel_structure_end .*sid=#{sid} .*live=2 type=contact .*cell=\{2, 2, 4\} .*hit=terrain/
 
     s = observe(c.w)
     # 运转储能热半、热份额（至多到 T_port）与动能（0.5 kg × 12² / 2 = 36 J）都进墙格；墙格得到有限热源。
@@ -751,12 +752,13 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
     # 下一拍交付：Q5-2 进入组织的是 E_op 热半——命中在第一个热拍之前，E_op = 〈蓄〉1742 J，不补记维持费（Q5-3 暂行），
     # 所以 q = ½ × 1742 J = 871 J；无〈热〉、无质量，没有热份额与动能；辐射半 871 J 只记账。
-    fly(c, 0.05)
+    log = info_log(fn -> fly(c, 0.05) end)
     assert_received {:backend_delivered, ^id, %{q_j: q_j, target: %{id: 2002, life_generation: 7}}}
     assert q_j == 871.0
     assert_received {:backend_notified, %{q_j: 871.0}, seq}
     ended = ended_record(id)
     assert ended.live == Codec.structure_end_live(:contact) and ended.rest == frozen.rest
+    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*hit=body accepted=true/
 
     s = observe(c.w)
     assert s.seq == seq
@@ -1098,7 +1100,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert [{tick, "cell", "false"}] = contact_events(log, id)
     assert tick == born + 1 and tick(c) == born + 1
     # 释放只落进接触格（设计 §5.2，决策稿 §11.3 #9）。
-    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 .*cell=\{2, 2, 4\}/
+    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*cell=\{2, 2, 4\}/
     s = observe(c.w)
     assert s.structures == %{} and s.thermal.structure_released_mj > 0
     assert_accounts_closed(s.thermal)
