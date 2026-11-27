@@ -132,6 +132,17 @@
     规划按当时世界避开残留。清单“新世界副本与新数据库”应理解为每个模式一个新库，此前未做到。
   - 为 presets 新建库 `magic8b_20261127_presets`（同容器 `magic-v2-pg-20261126`，已迁移），`service.json`／`version.json` 已指向新库
     （原文件备份 `service.json.magic8b_20261126`、`version.json.d4d678f6`）。旧库保留。下一步 `magic_presets-03`（需占桌面）。
+- 切片 8b 第四轮：每个模式一个新库（2026-11-27 09:07–09:54，release `49d0d349`，客户端 `671fcbc2`，UDP 开始 88、结束 86，无新 Tcpip 4266）：
+  - `magic_presets-03`（库 `magic8b_20261127_presets`，`runs/live-06`）**通过 8/8**：新角色，七个预设建成、扣费与报价一致，
+    双端与服务端 7 个结构生命周期一致（接触终止 `live=2 type=contact`，定时火种 `live=6 type=released`），账目闭合，上行 47 条全是 IR v2。
+  - `magic_dispel-06`（库 `magic8b_20261127_dispel`，`live-07`）**通过 8/8**：d 0.314／0.563／1.535 m，剂量 0.8015／0.6601／0.2386 与手算一致。
+  - `magic_overline-04`（库 `magic8b_20261127_overline`，`live-08`）**通过 6/6**：施放时热格 492.9 K，首拍 T 498.04 K、env 1.9902、
+    x* 0.2531（手算一致）、装载 0.332；保温 37 段、结构出现即停、已放完。新世界上 `supplied_j` 9 258 420.404 J，段和 9 250 000 J，
+    余 8 420.404 J（小数与施放扣费相同，推测来自灼点本身，未核实）。
+  - 录屏（全程）：`live/magic_presets-03.rec.mkv`、`magic_dispel-06.rec.mkv`、`magic_overline-04.rec.mkv`。画面待用户看。
+  - 未覆盖：`magic_migration`（验收第 7 条）从未实跑；`magic_interrupt-01` 是旧 release `d4d678f6` 与旧客户端上的结果，
+    此后客户端改了越肩过渡与回执，按 AGENTS §3-10 须在当前构建上重跑；`structure.end.collapsed`（live 4）没有场景能触发，录屏里看不到。
+  - 库与夹具：`magic8b_20261126` 与三个新库都保留到验收结束；`service.json`／`version.json` 现指向 `magic8b_20261127_overline`。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
 - 残余（#16）：休眠的〈遇〉结构只按休眠判定的粗候选唤醒，细分构件贴上时不唤醒；人物碰到休眠结构约 1 个身体报告间隔加一拍后才触发。
