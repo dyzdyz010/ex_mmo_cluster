@@ -100,6 +100,9 @@ flowchart LR
   T -->|tick = commit_tick + 1| ST[Structures.tick/3<br/>按 id 升序 step → respond]
   ST -->|沉积请求 → 有限热源 / 辐射账| S
   ST -->|structures（live 0、2–6）+ structure_states| TX[同一笔热事务 → PropertyBatch]
+  ST -->|终止 → 释放事件| RQ[(thermal.structure_releases)]
+  PJ[投射物提交点 land / deliver / dissipate] -->|终止 → 释放事件| RQ
+  RQ -->|下一热拍拍首取走，第 6 步剂量| ST
   TX -->|persisted_thermal：显式字段 map| LOG[(日志 / 分页全局行)]
   LOG -->|restore/1 一次校验| S
 ```
@@ -109,6 +112,12 @@ flowchart LR
 - 热节点：带〈热〉且本拍开始时已落地的结构；节点温度 T_port = T_ref + (E_th + 本拍已累计净热)/C_th，限流参数取自结构；
   多次内核调用的计数汇总成 `voxel_thermal_throttle`。飞行中的结构不进内核。
 - 沉积：请求里的热只落进接触格（执行时复核施法者对它可写，设计 §12.1 更正 3），否则计入灵炁辐射账。
+- 终止释放剂量（设计 §5.5；决策稿 §11.3 #6，用户 2026-11-26 裁定下一热拍生效）：每次终止（热拍内、投射物提交点、交付、
+  散解、恢复散解）追加一条释放事件到 World 唯一的待生效队列 `thermal.structure_releases`；下一次结构热拍第 6 步按拍首位置
+  对释放时已存在的全部运行中结构（不含冻结交付）取剂量、用完清空，作用于他人结构先过 Harm（同干预场）。连锁每拍一跳，
+  结果与施放先后无关；结构全部移出时队列一并删除；为空时不写进 `thermal`，恢复时 `restore/1` 校验。日志
+  `voxel_structure_release sid cid tick energy_mj targets doses`。依据见 `Structures` moduledoc（Nystrom Double Buffer、
+  Box2D v3 事件在步后缓冲）。
 - 线上：出生记录随施放事务；每拍终止的结构发 live 2–6 终态快照并移出；运行中的结构按固定分箱（Q4-4）比较步进前后，
   变了才发状态增量（随事务运输完整记录，编码时投影成 20 B）。`Replica` 与 `PropertyObservation` 按位置投影、按 §3.2 物化。
 - 持久化：条目随每笔带 `thermal` 的事务写出，写出前 `Structures.persisted_thermal/1` 换成显式字段 map（`Log` 的事务元数据与

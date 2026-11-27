@@ -67,10 +67,10 @@ sequenceDiagram
   W->>W: 重新报价 → staged_failure → 准入（切片 7）
   W->>B: 施放记录 live 0 + 结构记录 v2 live 1（同一笔事务）
   loop 每拍 tick = commit_tick + 1
-    T->>T: 拍首：干预场 disruption_field、8 m 空间网格
+    T->>T: 拍首：干预场 disruption_field、8 m 空间网格、取走上一拍以来的终止释放事件（§11.3 #6）
     T->>K: 结构节点（T_port, Φ_cap, t_lo, t_hi）×多段
     K-->>T: 已限流净热（累加到本拍）
-    T->>T: Structure.step（按 id 升序）→ 请求、事件、触发
+    T->>T: Structure.step（按 id 升序）→ 请求、事件、触发；本拍终止 → 释放事件入队（下一拍生效）
     T->>B: 热事务：thermal.structures + 终止记录 + 状态增量
     T-->>P: 施法者处剂量 ≥ 0.3 → windup_disrupted（切片 6）
   end
@@ -167,7 +167,7 @@ sequenceDiagram
 | 模块 | 改动 |
 |---|---|
 | `world/casting.ex` | `:493-494` 改为 `settle_structure/…`：扣 `quote.total_mj`；`Structure.new({seq, 0}, group, quote, commit_tick)`；物理体（形状、尺寸、质量、锚、〈投〉初速）沿用 `Magic.Semblance` 几何；施放记录 live 0 与结构记录 live 1 放在**同一笔**事务；构型损耗照旧记 `cast_waste_j`。删除 `:structure_runtime_pending` 及其文档、日志和测试 W-6 |
-| `world/thermal.ex` | `semblances/1` → `structures/1`；`continues?` 改判结构；新增整数 `thermal.commit_tick`，每完成一次提交 +1（Q4-9）；每段 NIF 调用时结构节点温度取 T_port = T_ref + (E_th + 本拍已累计净热)/C_th，净热累加到 `run.structure_heat`；`settle_run` 末尾按 id 升序调用 `Structure.step/4`（输入：所在格温度与热容、是否嵌在固体内、8 m 网格中贡献最大的 ≤ 16 个邻居、3 m 内终止释放剂量、本拍接触），执行请求（`deposit_heat` → 有限热源；`release_thermal` 每格至多到 T_port；`caster_heat` → 施法者脚下 `cast_waste_j`），再求值触发、调用 `respond/3`（切片 4 不设触发预算）。`release_cell` 改为在执行时复核持有者（设计 §12.1 更正 3、Q7） |
+| `world/thermal.ex` | `semblances/1` → `structures/1`；`continues?` 改判结构；新增整数 `thermal.commit_tick`，每完成一次提交 +1（Q4-9）；每段 NIF 调用时结构节点温度取 T_port = T_ref + (E_th + 本拍已累计净热)/C_th，净热累加到 `run.structure_heat`；`settle_run` 末尾按 id 升序调用 `Structure.step/4`（输入：所在格温度与热容、是否嵌在固体内、8 m 网格中贡献最大的 ≤ 16 个邻居、上一热拍以来终止的结构在 3 m 内的释放剂量（拍首取齐，下一热拍生效，§11.3 #6）、本拍接触），执行请求（`deposit_heat` → 有限热源；`release_thermal` 每格至多到 T_port；`caster_heat` → 施法者脚下 `cast_waste_j`），再求值触发、调用 `respond/3`（切片 4 不设触发预算）。`release_cell` 改为在执行时复核持有者（设计 §12.1 更正 3、Q7） |
 | `native/voxim_thermal`（若 Q4-1 采纳） | 外部节点加 `phi_w, t_lo, t_hi`；子步先算后缩放（吞吐 s_i、边取两端 min、温度钳制 k），默认值 +∞ 时数值逐位不变；`ThermalDomain.step` 的 extra 节点参数随之扩展 |
 | `magic/structure.ex` | 新增 `to_record/1`、`from_record/2`（显式字段 map，Q4-7）、`wire/1`（量化为 §3.1、§3.3 字段）；`@tick_ms` 作为唯一拍长，`thermal.ex:201,244` 改为引用它（R9） |
 | `magic/semblance.ex` | 删除能量部分（`expired?`、`glow_j`、`stored_j`、`step`、`cap`、`spent?`、`break_on_hit?`），保留几何、弹道与热节点项（切片 3 稿 §6）；模块头注删掉“迁移期” |
@@ -459,7 +459,7 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
 | 3 | 热内核限流：节点已高于 t_hi（拍间 E_op 变化使上限下移）时 k = 0，挡住流入、流出照常，不主动泄放到边界 | §14 切片 4b ③；`native/voxim_thermal/README.md` | A | 实现决策：维持 | 限流只缩放已有热流、不造新出口，守恒不变（Zalesak 骨架，§10）；主动泄放等于另设一条散热路径（AGENTS §2.2-7）。流出照常，节点自然回落：W4-3 测得炽热投掷落地后 T_port ≤ min(t_hi, 2500 K)、E_th 单调下降。不涉及字节 |
 | 4 | 结构所在格温度与泄漏沉积阈值：落地且有接触格时取接触格温度，否则取中心所在格（实占用格取其温度，空气取气候区温度）；阈值用接触格热容，无接触格时为 0 | §14 切片 4c ①；`world/structures.ex` moduledoc“实现决策”节 | A | 实现决策：维持 | 接触格是结构与世界接触的唯一几何，热内核接触边与释放格（#9）都用它（AGENTS §2.2-3）；无接触格时直接读中心所在格，不另造插值。阈值 0 使落不进格的热半当拍计入辐射账，账目逐项整数闭合（W4-2）；W4-7 灼点贴 500 K 墙面测得 x* = 0.25，与手算一致。只影响服务端读数，不涉及字节 |
 | 5 | 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3` | §14 切片 4c ②；`world/structures.ex` `neighbor_index/2` @doc | A | 实现决策：维持 | 与设计 §5.3 第 1 步“本拍开始时建一次 8 m 空间网格”同一时刻；结果与处理顺序无关，同拍各结构读到同一份邻居数据（AGENTS §2.2-9）。切片 8a 跟进的网格分桶改造用 `magic_structure_neighbors_test` 逐位核对了这一口径；A.4 对拍偏高约 0.001 即来自此项（§14 切片 6）。不涉及字节 |
-| 6 | 邻近终止释放剂量：按 id 升序处理，本拍已终止结构的释放作用于其后处理的结构 | §14 切片 4c ③；`world/structures.ex` moduledoc“实现决策”节 | A | 实现决策：维持 | 步进按 id 升序（§2、§4.1）；同拍生效使终止释放不被推迟一拍，W5-2（定时火种第 60 拍释放，过热保险同拍 live 6）依赖它；顺序确定，不需要额外状态。不涉及字节。与 #19 同源 |
+| 6 | 邻近终止释放剂量的生效时刻与收件范围（原实现：按 id 升序，本拍已终止结构的释放只作用于其后处理的结构） | §14 切片 4c ③；§14“§11.3 #6 下一热拍生效”条；`world/structures.ex` moduledoc“终止释放剂量：下一热拍生效”节 | A | **已改**（用户 2026-11-26 裁定下一热拍生效、过 Harm；收件人与距离口径由统筹定）。每次终止（热拍内、投射物提交点、冻结交付的接纳结果、飞行散解、冷重启恢复时的散解）产生一条释放事件，追加到 World 唯一的待生效队列 `thermal.structure_releases`（`World.Structures` 拥有，不给每个目标各存收件箱）；下一次结构热拍第 6 步按拍首位置（与邻居项、干预场同一快照）对全部运行中结构计算剂量，用完清空；连锁每拍一跳；结构全部移出时队列一并删除。作用于他人结构先过 `MmoContracts.Harm`（与驱散场同一判定）。收件人只限释放时已经存在的结构（id 的创建事务序号 ≤ 释放时的事务序号），冻结交付中的结构不受剂量。队列随 `thermal` 持久化（可选键，为空时不写），`restore/1` 校验 | 原实现有两处与设计 §5.5“对 3 m 内每个其他结构施加剂量”不符：① 剂量只在热拍内传给 id 更大、尚未步进的结构（`acc.ended` 每拍从空开始、拍末丢弃），id 更小、已步进的结构收不到也不顺延，同样布置的结果取决于施放先后（驱散脉冲自身衰竭的释放同样如此）；② 投射物提交点上的终止（`finish_contact`、`deliver`、`dissipate`，含恢复散解）完全不产生剂量。依据（已核对原文）：Nystrom《Game Programming Patterns》Double Buffer 一章——就地更新时 “an actor may respond to being slapped in either the same frame as the slap or in the next frame based entirely on how the two actors happen to be ordered on the stage”，缓冲后 “an actor will only see a slap in the frame after it was actually slapped”“the actors will behave the same no matter their order in the stage’s array”；Box2D v3 文档 Simulation 页——事件在时间步之后给出（“Sensor events are available after every call to b2World_Step()”），用户改动 “are processed the next time step”。“恰好延迟一个热拍”（0.5 s）是本项目取舍：同拍生效只能依赖某种处理顺序。W5-2 照常通过（过热保险晚一拍触发，用例容许 10 拍）。`Structure.step/4` 契约不变；不涉及对外字节、golden 与目录。退出条件：设计方要求同拍连锁（一拍内多跳）时，改为拍内迭代到不动点，并重新定义处理顺序无关性 |
 | 7 | 物理体与世界轴对齐；板的半厚轴 | §14 切片 4c ④；§14“§11.3 #7 板半厚轴修正”条；`magic/semblance.ex` moduledoc；`world/structures.ex` `half/1` 注释 | A | 实现决策：P1 结构局部系取世界轴（+Y 朝上），板面法线 = 世界 +Y，与客户端 `HalfExtentsM` 一致——块 `{size1, size2, size3}`、板 `{size1, size3, size2}`、球 `{r, r, r}`；设计 §11.4.2 的〈握〉朝视线、〈附〉朝进入面法线的局部系 P1 两端都未实现（结构记录 v2 没有朝向字段，`anchor_ref` 全 0）。2026-11-26 修正了服务端板的半厚轴（原按 size1–3 → x、y、z，板的半厚落在 z 上，服务端物理是竖墙而客户端显示是水平薄片） | 两端一致：客户端 `Voxim-magic-v2` `VoxelStructure.cpp` `FVoxelStructure::HalfExtentsM`（块 `(size1, size2, size3)`、板 `(size1, size3, size2)`，世界轴对齐、Y 朝上）；设计 §11.4.2 表“2 板”：size2 = 局部 Z 半边长、size3 = 局部 Y 半厚、板面法线 +Y。P1 的〈形〉没有朝向参数、记录没有朝向字段，取世界轴是双端不需额外约定的唯一解释。不改字节与 golden（线上仍发 size1–3 原值，`HalfExtentsM` 自取半尺寸）；体积、表面积、接触上限与朝向无关，报价不变。退出条件：后续 Hello 给结构记录加朝向字段（同时加 IR 参数），按设计 §11.4.2 的局部系实现 |
 | 8 | 〈附〉上的〈投〉自格面点抛出 | §14 切片 4c ④；`world/structures.ex` `launch/7` 注释 | A | 实现决策：维持 | 〈附〉的形成锚就是格面点（设计 §11.1 `anchor_type` 1），〈投〉初速从形成点起算是两者的直接组合，不另造出发规则；读取闭包的飞行走廊按同一出发点推导（§14 切片 5b，`flight_plan/5`）。用既有 `origin` 字段，不涉及字节 |
 | 9 | 释放格只认接触格（施放时射线命中的未细分宏格，落地后须仍是同一热节点，执行时复核持有者） | §14 切片 4c ⑤；`world/structures.ex` moduledoc“沉积去向与保护区”节 | A | 实现决策：维持 | 设计 §12.1 更正 3（执行时复核持有者，`Access.writable?/3`）；只写一个确定的格，不发明多格分摊；落不进格的热计入辐射账，账目闭合。证据：定时火种贴叶把热释放进叶格；他人保护区用例进格为 0、`protected=true`（§14 切片 4c）。不涉及字节 |
@@ -472,7 +472,7 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
 | 16 | 静止结构在热拍里首次出现导热边时置接触（§5.1） | §5.1；§14 切片 5 取舍 6；§14“§11.3 #16 实现”条；`world/structures.ex` moduledoc“〈遇〉：静止结构的首次导热边”节 | A | **已实现**（用户 2026-11-26 定发版前补上；语义 ①②③ 由用户 2026-11-26 裁定）。导热边 = 热内核接触边，对端是世界节点或人物组织块，辐射与对流不算；一生只算一次（条目 `conducted` 随持久化，断开再出现、换对端都不算）；读数丢失按 R5 由读数待决保持。① 接触开始即唤醒：只对还在等首次导热边的〈遇〉结构，休眠中此刻有世界接触候选或人物碰到即唤醒，当拍连上边并求值；其余结构的休眠规则不变。② 出生时就有的边也算首次（〈附〉贴墙的〈热〉〈遇〉〈散〉第 1 拍释放）。③ 落地 / 命中与之后的首次导热边各算一次，`land/5`、`hit_body/5` 不改 | 原文：设计 §5.4〈遇〉行“热拍中本节点首次出现导热边 / 事件发生时，一次性”，§2.3 `cond.contact` 与 §13 #10“以导热起始或轨迹终点代理接触”，§5.3.1 接触边是内核第一类热流，§5.1“碰到地形或人物”都是接触，§5.4 R5 丢失不消费读数。原文没答的三点由用户裁定：①（不加这条时，休眠中的同温新接触 < 5 K 不唤醒、人物从不唤醒，近环境温度的“触碰感应器”永不触发；依据 Box2D v2.4.1 `src/dynamics/b2_contact.cpp` `b2Contact::Update`，非传感器接触 `touching != wasTouching` 时 `bodyA->SetAwake(true); bodyB->SetAwake(true);`，已核对原文）；②、③ 照字面。触发走热拍既有路径（计入每拍触发预算，〈散〉记 live 2，释放只落进接触格）；不涉及对外字节、golden 与目录 |
 | 17 | 预计飞行时长 T 的公式与 D 的取法（T_life = (⌊life_s/Δ⌋ + 1)·Δ；有质量者再取 t_fall，D 为出发点高出脚下支撑格底面的高度，至少 1 m） | §14 切片 5b；`world/structures.ex` `flight_horizon_s/4` | A | 实现决策：维持 | 依据见 §14 切片 5b（离散扣费不晚于连续积分耗尽；t_fall 是抛体标准解），法杖一族 2862 个取值实算的衰竭拍号都不超过该界。T 只限定施放时的预测与读取闭包走廊，不截断飞行；T 之后由页闸按段装入（另有 1 s 预取），取值偏差只影响装页量，不影响正确性。`flight_s` 在飞行中的含义已写进 codec moduledoc，字节与 4a golden 不变 |
 | 18 | 0x83 没有衰竭拍号：报价面板“预计有效距离”只能给名义值与上界 | §14 切片 5b | A | 实现决策：本版不加字段 | 0x83 v2 字节随 Hello 46 冻结，加字段要改协议与双端解码；该读数只是参考，不参与判定；客户端 `7affe19e` 已按名义值与上界实现。需要下界时在后续 Hello 给 0x83 增加字段 |
-| 19 | 触发名额顺序：本拍新触发按结构 id 升序、结构内按优先级取预算，不是设计 §5.8 的全局（优先级, id） | §14 切片 7 取舍 1；`world/magic_admission.ex` moduledoc“触发预算”节 | A | 实现决策：维持；推迟队列仍按设计的（首次推迟拍号, id） | 终止释放剂量要在同一拍作用于其后处理的结构（#6，W5-2 依赖）；全局排序须先步进全部结构再统一执行响应，会把同拍释放推迟一拍。W7-4 已测推迟次序与冷重启后的次序。不涉及字节 |
+| 19 | 触发名额顺序：本拍新触发按结构 id 升序、结构内按优先级取预算，不是设计 §5.8 的全局（优先级, id） | §14 切片 7 取舍 1；`world/magic_admission.ex` moduledoc“触发预算”节 | A | 实现决策：维持；推迟队列仍按设计的（首次推迟拍号, id） | 原理由（“全局排序会把同拍释放推迟一拍”）随 #6 改为下一热拍生效（2026-11-26）已不成立。现理由：同一拍里结构之间不再互相影响（邻居项、干预场、终止释放剂量都取拍首快照），处理顺序只决定超预算时哪些新触发先得名额；推迟项不丢、下一拍按（首次推迟拍号, id）先执行，长期公平由推迟队列保证。全局（优先级, id）排序要把第 12 步拆成“全部结构求值完、再统一执行响应”两遍，多出一份“已步进、响应待定”的跨结构暂存（AGENTS §2.2-1、§2.2-9），没有对应的玩法收益。W7-4 已测推迟次序与冷重启后的次序。不涉及字节 |
 | 20 | 投射物提交点上〈遇〉触发的〈散〉不计入每拍触发预算 | §14 切片 7 取舍 2；`world/magic_admission.ex` moduledoc“触发预算”节 | A | 实现决策：维持 | 它在 50 ms 投射物拍上事件驱动地发生，不在热拍里；每个飞行体至多终止一次，总量已受每人 3 个飞行与分区飞行名额约束。计入会让墙钟事件挤占热拍预算，或使命中的〈散〉被推迟、结构停在命中点，引入新语义。不涉及字节 |
 | 21 | Q7-6：P1 的感知耦合数恒为 0，〈遇〉〈时〉〈满〉只按规则计权 | §11.2 Q7-6；`world/magic_admission.ex` moduledoc | A | 实现决策：维持 | P1 目录 phase 1 的符号里没有感知耦合类，〈遇〉〈时〉〈满〉属于 `rule.reading`，已按每条规则 0.5 计权（设计 §5.6 权重式）；目录保留 `structure_weight_per_sensing_coupling`（0.5），P2 引入感知耦合时直接生效。8a 负载在该权重下测得热内核有充足余量（§14 切片 8a 结论 1）。不改目录与字节 |
 | 22 | Q7-W2：热节点休眠加 1 拍滞回（连续 2 拍平静才休眠） | §10 休眠行、§11.2 Q7-W2；`world/magic_admission.ex` `@sleep_after` 注释 | A | 实现决策：维持 | Box2D、PhysX 都要求持续低于阈值一段时间才休眠（§10），无滞回时边界附近逐拍来回切换；去掉滞回的变异使 W7-6/7 变红（§14 切片 7）。代价只是多醒一拍、多换一拍热，偏保守。status 位 5 的定义不变，不涉及字节 |
@@ -984,3 +984,82 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
   - 改法：固定纪元 2021-01-01T00:00:00Z（早于仓库首次提交，新 id 必大于全部旧 id；41 位时间可用到 2090 年）；纯函数 `next/2` 同毫秒递增、用尽等下一毫秒、回拨返回 `{:error, {:clock_moved_backwards, _}}` 并打日志；`generate/0` 改为 `{:ok, id} | {:error, reason}`，4 个调用方沿既有错误路径传出。依据：Twitter `snowflake` 仓库 `IdWorker.scala`（tag `snowflake-2010`）、Erlang 文档“Time and Time Correction in Erlang”（OTP 26 起默认 multi-time-warp，系统时间可前后跳）。
   - 测试：新增 `uid_generator_test.exs`；只跑 `uid_generator`、`character_store`、`worker`、`npc_specs`、`body_store` 五个文件，`Result: 35 passed`；`body_store_test` 的 cid 按 `094ce125` 同一做法改为跨次唯一。
   - 连带：新 id 约 7.8e17，超过 double 精确整数 2^53。客户端 dev 自动登录把 dev 接口的 `cid` 读成 double，建 dev 账号时账号 uid 与角色 cid 常在同一毫秒连续生成，cid 会被舍入、gate 报 `cid_mismatch`，挡住切片 8b。正在两端改为与正式票据相同的字符串 cid（结果另记）。
+- 2026-11-26：**§11.3 #6 终止释放剂量改为下一热拍生效**（用户裁定；收件人与距离口径由统筹定）。提交：记录本条的提交；设计回写为 TheWorldBook 单独一个提交。
+  - 问题（只读分析核实）：`step_one` 调 `release_doses(acc.ended, …)`，`acc.ended` 每拍从空开始、拍末丢弃，剂量只传给本拍 id 更大、尚未步进的
+    结构：① id 更小、已步进的结构收不到也不顺延，同样布置的结果取决于施放先后（驱散脉冲自身衰竭的释放同样如此）；② 投射物提交点上的终止
+    （`finish_contact`、`deliver`、`dissipate`，含恢复散解）完全不产生剂量。设计 §5.5 要求“对 3 m 内每个其他结构施加剂量”。
+  - 语义（用户 2026-11-26 裁定 + 统筹定，§11.3 #6）：每次终止产生一条释放事件，追加到 World 唯一的待生效队列 `thermal.structure_releases`
+    （`World.Structures` 拥有）；下一次结构热拍第 6 步按拍首位置（与邻居项、干预场同一快照）对全部运行中结构计算剂量，用完清空；连锁每拍
+    一跳；结构全部移出时队列一并删除。剂量过 Harm（与驱散场同一判定：同一施法者不判，他人按释放者施放时的战斗范围）。收件人只限释放时已经
+    存在的结构（id 的创建事务序号 ≤ 事件记下的释放时事务序号）；距离按生效拍拍首位置；冻结交付中的结构不受剂量。§11.3 #19 维持现有名额顺序，
+    只换理由。依据（已核对原文）：Nystrom《Game Programming Patterns》Double Buffer、Box2D v3 文档 Simulation 页（引文见 #6 行与
+    `world/structures.ex` moduledoc）；“恰好延迟一个热拍”是本项目取舍。
+  - 改法（只改 World 的编排，`Structure.step/4` 契约不变；不改对外字节、golden、目录）：
+    - `world/structures.ex`：`release/5` 在全部四处终止出口（`step_one/9` 终止分支、`finish_contact/8`、`deliver/3`、`dissipate/3`；
+      后者同时服务飞出可读范围与 `Projectiles.settle_restored/1` 的恢复散解）把 `%{id, position, energy_mj, caster, scope, seq}` 追加进队列，须在结构移出之后调用，
+      结构表已空时改为删除该键。`tick/4` 拍首 `take_releases/1` 取走队列，`release_doses/5` 用邻居索引的拍首 `sites` 与网格桶（半径
+      ≤ 8 m 时 27 桶）求每个目标的剂量，每条事件一行 `voxel_structure_release sid cid tick energy_mj targets doses=[{目标, 距离, 是否准许}]`；
+      每个目标的剂量按（距离, 能量）排序，使浮点和与释放先后无关。`step_one/9` 的第 8 个参数改为拍首取齐的 `imposed = %{fields,
+      release_doses}`。`acc.ended` 改为计数。`restore/1` 校验队列一次：可选键，出现时为非空列表、有运行中结构、每条事件形状合法且
+      `seq` 早于恢复时的事务序号；没有 `structures` 却带队列同样拒绝；`voxel_structure_restored` 行尾加 `releases=`。
+    - 持久化：队列是普通 map 的列表，随 `thermal` 经 `persisted_thermal/1` 原样落盘（事务元数据与分页全局行两处）；为空时不写，没有
+      魔法的世界 `thermal` 与改前逐位相同。
+    - 文档：本稿 §2 时序图、§4.1 `world/thermal.ex` 行、§11.3 #6 与 #19 行；`world/structures.ex` moduledoc（新节“终止释放剂量：下一热拍
+      生效”、持久化节、mermaid、实现决策节）与 `tick/4` @doc；`magic/structure.ex` 的 `inputs` typedoc；`world/magic_admission.ex`
+      触发预算节（#19 新理由）；`world/README.md` 结构运行时图与条目。交接页未改（统筹维护）。
+  - 测试（WSL，先红后绿）。新增 6 个 World 集成用例（`magic_structure_world_test.exs` 末节），经 `World.spell_intent/3` 施放发布预设或其改槽
+    （定时灯 = “灯”末尾换成“定时火种”的规则字节，经真实 `Program.decode_ir/2` 接纳），手动时钟逐次投递热提交与投射物拍；期望按设计 §5.5
+    Δdebt = D0·P·(1 + κx²)·a_X·k_rel·(E/1 kJ)·(1 − d/3 m)² 手算（常数取目录 `runtime`，E 取终止日志的 `released_mj`，x 取收件结构生效拍
+    拍首的持久化值，d 取记录位置），不调用产品的剂量函数：
+    1. 交换施放先后：两对同样布置（定时灯在收件灯 −x 方向 2 m，两对相距 > 8 m 互不为邻居），一对先施放定时灯、另一对先施放收件灯；两盏
+       定时灯第 2 拍 live 6 后，第 2 拍末两盏收件灯欠账都为 0，第 3 拍两者 `debt_micro`、`debt_int_micro`、`e_op_mj` 逐位相同，且与手算
+       相差 ≤ 1e-6、`debt_int` 为 0。
+    2. 地形命中〈散〉：火球撞墙（投射物提交点 live 2）后，2.4 m 外的静止灯在下一热拍（第 1 拍）欠账等于手算值，日志
+       `voxel_structure_release … tick=1 … targets=1`；再走一拍没有 `voxel_structure_release`、欠账只降不升（用完清空）。
+    3. 连锁每拍一跳：火球撞墙；0.8 m 外的灯 B 在第 1 拍相干跌破终止（live 3 或 4，不是驱散——剂量不计入 `debt_int`）；离火球 > 3 m、离
+       B 2.5 m 的灯 C 第 1 拍末欠账为 0，第 2 拍等于按 B 的释放手算的值。
+    4. 冷重启在释放与生效之间：撞墙那笔投射物提交事务的 `thermal.structure_releases` 恰为一条（id、位置 = 落点、能量 = `released_mj`、
+       caster、scope nil）；重启后下一热拍灯欠账等于手算值，之后的 `thermal` 不再带该键。故障注入（只测试，持久化加载边界）：把那份
+       `thermal` 的释放能量改成 −1、作为最新一笔事务追加，World 启动显式失败 `voxel_structure_restore_failed releases`。
+    5. 收件人只限释放时已存在：撞墙之后才建成、离落点 < 3 m 的灯欠账为 0；之前建成的灯 > 0，日志 `targets=1` 且只列前者。
+    6. Harm（对照 W6-3）：施法时没有战斗范围的火球，他人（cid 2002）的灯欠账 0、日志 `permitted=false` 一项，自己的灯 > 0；带覆盖双方
+       战斗范围的第二个火球撞墙后，他人的灯 > 0。
+  - 改动的现有用例（只改夹具或时序，断言未放宽）：W5-4 在火种终止那次提交之后多推进一拍再找丢失拍（“欠账 > 0”现在在下一拍成立）；
+    W7-4 两个用例的定时灯原在同一手边点（距离 0，新语义下同一施法者的释放会互相打掉），改由新 helper `build_at/5` 经会话替身的
+    `{:pose, eye, feet}` 把施法者移到 x = 0.5 / 4.0 / 7.5 / 11.0 m、面朝 +z 施放（相距 3.5 m）；〈握〉不用目标，工具射线改瞄脚下地面格
+    （11 m 处叶已超出射程，首轮 `{:error, :no_target}`，见下）。W6 的 `pulse_center/1` 注释改为“A.4 读第 2 拍末欠账，脉冲第 2 拍衰竭的
+    释放下一热拍才生效”。W5-2 不改，照常通过（容许晚 10 拍）。测试 helper：`start/2` 拆出 `world_spec/2`（故障注入用例要看启动失败），
+    `hand_lamp/4` 改为调用新 `hand_cast/5`。
+  - 先红（改前 lib，`~/magic-v2-20261126/logs/voxel_region-194334.log`）：`magic_structure_world_test.exs` + `magic_admission_world_test.exs`
+    `Result: 38/45 passed`。新 6 项全部行为红：1 号第 2 拍末 r1 已有 39 381 µ欠账而 r2 为 0（旧实现同拍、按 id）；2、5、6 号灯欠账 0；3 号
+    B 没有终止；4 号持久化的 `thermal` 没有队列键。另 1 项是 W7-4 区域预算用例的夹具错（11 m 处工具射线 `:no_target`），改瞄脚下地面后对改前
+    lib 重跑 `magic_admission_world_test.exs` `Result: 9 passed`（`voxel_region-194535.log`），证明夹具改动本身不改结论。
+  - 再绿（`voxel_region-195122.log`）：L1 `magic_structure_world_test`、`magic_admission_world_test`、`magic_staff_bolt_test`、
+    `magic_structure_migration_test`（改到持久化），L0 `magic_structure_wire_samples_test`（golden 逐字段不变）、`magic_structure_test`：
+    `Result: 80 passed`。警告只有两条既有的（`magic_structure_world_test` 的 `spell/4` 缺省参数、`magic_staff_bolt_test` 未用 `require Logger`）。
+  - 测量：档 b 跑一次（`--only load test/magic_load_test.exs:841`，`voxel_region-195301.log`，摘要 `/tmp/magic_load_out_1795751584/tier_b.json`），
+    判定仍为不通过（`Result: 0/1 passed, 2 excluded`；FAIL 三项同已接纳的性能例外：每结构平均、单结构最坏、持久化 p95；阈值未改）。与
+    “§11.3 #16 实现”条的档 b 对比（同口径，ms 除另注）：
+
+    | 项 | §11.3 #16 那次 | 本次 |
+    |---|---|---|
+    | 结构步进每结构平均（µs） | 76.15 | 74.81 |
+    | 单结构单拍最坏 p50 / 窗口 max（µs） | 2266 / 4260 | 2257 / 3906 |
+    | 每分区每拍结构步进 p50 / p95 / max | 17.2 / 19.8 / 25.7 | 16.9 / 19.4 / 22.1 |
+    | 每拍 World 时间 p50 / p95 / max | 39.4 / 48.1 / 627.5 | 39.4 / 47.9 / 72.4 |
+    | 热事务持久化 p95（B） | 28 620 | 28 455 |
+    | 组成 p50（结构 / 热节点 / 规则 / 灯）；窗口施放 | 224 / 16 / 64 / 144；436 | 224 / 16 / 64 / 144；433 |
+
+    没有回退：各项持平或略低。负载里结构多为同一站位叠放（64 个站位 224 个结构），改后释放作用于站位上全部结构而不只 id 更大的那些，
+    施放与补施数几乎不变（灯 432 / 432，灼点 178 → 175），说明没有引发连锁终止；每拍新增的只是拍首一次按桶查找。
+  - 跑了什么、为什么够（§13.1，不跑 voxel_region 全量、不跑其他 app）：改动只在 `world/structures.ex` 的编排与持久化校验，`Structure.step/4`
+    契约不变（L0 `magic_structure_test` 与 golden 仍绿即证明）；释放的五个出口、生效时刻、收件范围、Harm、持久化与恢复都由上面 6 个
+    World 用例直接证伪；受新语义影响的既有用例按 grep 全部在 `magic_structure_world_test`（W5-2、W5-4、W6）与 `magic_admission_world_test`
+    （W7-4）；`magic_staff_bolt_test` 覆盖飞行中衰竭与连发；`magic_structure_migration_test` 覆盖改到的 `restore/1`（无队列的旧存档恢复）。
+    收尾：仓库根 `mix format --check-formatted` 通过；voxel_region `mix compile --force --warnings-as-errors --no-optional-deps` 通过（92 个
+    文件，唯一警告 `slope` 来自 Rust NIF 构建；`finish-200607.log`）。
+  - 残余与说明：
+    1. 本分支开发期存档没有队列键，按“空队列”恢复：升级前一拍已终止、尚未生效的释放不会补发（分支未发布，生产没有结构存档）。
+    2. 释放到生效之间相隔至多一个热拍（0.5 s）；积压冻结时热拍不开始，队列随 `thermal` 保留到冻结解除后的第一拍。
+    3. 剂量的距离用生效拍拍首位置：释放之后到下一拍之间飞走或飞来的结构按新位置判（统筹定）。
+    4. 未启动任何服务，未建 UDP / QUIC（只有进程内测试与负载）；主机 UDP 端点开始与结束：Windows 106 → 100，WSL 36 → 36。

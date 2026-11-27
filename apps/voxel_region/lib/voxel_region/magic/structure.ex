@@ -133,7 +133,9 @@ defmodule VoxelRegion.Magic.Structure do
   - `neighbors`：World 在目录 `env_neighbor_radius_m` 内选出的贡献最大的 ≤ `env_neighbor_max` 个邻近结构
     `%{leak_w, distance_m}`（§5.3 第 1 步、§5.3.2）。
   - `fields`：本拍存续中的干预场（`disruption_field/4`）；不含结构自身发出的场（§7.3 R2：发出者不受自身场）。
-  - `release_doses`：3 m 内本拍终止的结构 `%{energy_mj, distance_m}`（终止事件的 `released_mj`）。
+  - `release_doses`：邻近终止释放 `%{energy_mj, distance_m}`（终止事件的 `released_mj` 与 < `release_dose_radius_m` 的
+    距离）。由 World 给出：上一热拍以来终止的结构，按本拍拍首位置作用于释放时已存在的结构（决策稿 §11.3 #6，下一热拍生效，
+    与处理顺序无关）；本模块只按 §5.5 逐项求和、不计入 `debt_int`。World 按（距离, 能量）排序给出，浮点和与释放先后无关。
   - `contact`：本拍是否发生〈遇〉接触（热拍中首次出现导热边，或投射物命中）。
   """
   @type inputs :: %{

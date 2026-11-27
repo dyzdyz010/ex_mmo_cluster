@@ -28,13 +28,44 @@ defmodule VoxelRegion.World.Structures do
     S -->|step/4 → respond/3| E
     S -->|沉积请求 → 有限热源 / 辐射账| T
     S -->|structures + structure_states| B[热事务 → PropertyBatch]
+    S -->|本拍终止 → 释放事件| Q[thermal.structure_releases]
+    P[投射物提交点<br/>land / hit_body / deliver / dissipate] -->|终止 → 释放事件| Q
+    Q -->|下一热拍拍首取走：第 6 步剂量| S
   ```
 
   ## 持久化（Q4-7）
 
   条目随每笔带 `thermal` 的事务落盘；写出前 `persisted_thermal/1` 把条目换成显式字段 map（`Structure.to_record/1` 与物理体、
   动态字段的普通 map），World 启动恢复后 `restore/1` 一次校验并换回运行值（`Structure.from_record/2`），同时核对
-  `last_tick = commit_tick`（每次提交都步进全部结构，所以这是恢复时必须成立的不变量）。
+  `last_tick = commit_tick`（每次提交都步进全部结构，所以这是恢复时必须成立的不变量）。待生效的终止释放队列
+  `thermal.structure_releases`（下节）是普通 map 的列表，随同一份 `thermal` 落盘；为空时不写这个键，所以没有魔法的世界
+  `thermal` 与引入它之前逐位相同；恢复时 `restore/1` 一并校验一次。
+
+  ## 终止释放剂量：下一热拍生效（决策稿 §11.3 #6，用户 2026-11-26 裁定；设计 §5.5 P3-9）
+
+  设计 §5.5：任何结构终止时，对 3 m 内每个其他结构施加剂量 Δdebt = D0·P·(1 + κx²)·a_X·k_rel·(E/1 kJ)·(1 − d/3 m)²
+  （`Structure.step/4` 第 6 步，不计入 `debt_int`）。World 的编排：
+
+  - 每次终止——热拍内（`step_one/9`）、投射物提交点的〈遇〉→〈散〉（`land/5`；`hit_body/5` 触发时先冻结交付，读数丢失时
+    停住，都不是终止）、冻结交付的接纳结果（`deliver/3`）、飞行散解（`dissipate/3`，含冷重启恢复时的散解）——产生一条
+    释放事件，追加到 World 唯一的待生效队列 `thermal.structure_releases`（本模块拥有；不给每个目标各存一份收件箱）。
+  - 下一次结构热拍的第 6 步，按拍首位置（与邻居项、干预场同一快照）对**全部**运行中结构计算剂量，用完清空。连锁因此在
+    下一拍发生，每拍一跳；结果与施放先后、结构 id 无关。
+  - 收件人只限释放时已经存在的结构（id 的创建事务序号 ≤ 释放时的事务序号）；冻结交付中的结构不受剂量（与冻结语义、
+    干预场一致）；作用于他人结构先过 `MmoContracts.Harm`（释放者施放时的战斗范围，与干预场同一判定）。
+  - 结构全部移出时队列一并删除，不留残余；可观测：生效那一拍每条事件一行 `voxel_structure_release sid cid tick energy_mj
+    targets doses=[{目标, 距离, 是否准许}]`。
+
+  依据（已核对原文）：Robert Nystrom《Game Programming Patterns》Double Buffer 一章
+  （<https://gameprogrammingpatterns.com/double-buffer.html>）——就地更新时 “an actor may respond to being slapped in either
+  the same frame as the slap or in the next frame based entirely on how the two actors happen to be ordered on the stage”，
+  双缓冲后 “an actor will only see a slap in the frame after it was actually slapped”、“the actors will behave the same no
+  matter their order in the stage’s array”；Box2D v3 文档 Simulation 页（<https://box2d.org/documentation/md_simulation.html>）
+  ——事件在时间步之后缓冲给出（“Sensor events are available after every call to b2World_Step()”），用户改动在下一步处理
+  （“User operations may cause overlaps to begin or end. These are processed the next time step.”）。这里只用一个队列而不是
+  整份状态双缓冲：拍内其余输入（邻居项、干预场）本来就取拍首快照，只有释放是拍内新产生、要跨结构传播的量。“恰好延迟一个
+  热拍”（0.5 s）是本项目的取舍：同拍生效只能按某种处理顺序，结果取决于施放先后（原实现即如此）。退出条件：设计方要求同拍
+  连锁（例如需要在一拍内传多跳）时，改为拍内迭代到不动点，并重新定义处理顺序无关性。
 
   ## 沉积去向与保护区（设计 §5.5 释放形态、§12.1 更正 3、Q4-8）
 
@@ -47,7 +78,7 @@ defmodule VoxelRegion.World.Structures do
   - 所在格温度：落地且有接触格时取接触格温度，否则取中心所在格（实占用格取其温度，空气取气候区温度）；
     泄漏沉积阈值用接触格热容，没有接触格时为 0（每拍沉积，热半落不进格即计入辐射）。（§11.3 #4）
   - 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3`（与处理顺序无关）。（§11.3 #5）
-  - 邻近终止释放剂量：按 id 升序，本拍已终止结构的释放作用于其后处理的结构。（§11.3 #6）
+  - 邻近终止释放剂量：下一热拍按拍首位置作用于释放时已存在的全部运行中结构（见上节）。（§11.3 #6）
   - 〈散〉的线上事件按触发它的规则：读〈遇〉的记 live 2，其余记 live 6（Q4-W3）。（§11.3 #10）
 
   ## 触发预算与热节点休眠（切片 7，规则在 `World.MagicAdmission`）
@@ -466,6 +497,10 @@ defmodule VoxelRegion.World.Structures do
   World 恢复后一次校验持久化的结构记录并换成运行值（持久化加载是信任边界，AGENTS §2.2-6）。记录损坏、物理体或动态字段
   不合法、或 `last_tick ≠ commit_tick` 时抛出带原因的错误：恢复出一个与提交拍号不一致的结构就不能“从下一拍继续”。
   已冻结人物命中交付的结构（条目带 `delivery`）不再步进，拍号停在冻结时，不按这条核对。
+
+  待生效的终止释放队列 `structure_releases`（决策稿 §11.3 #6）同在这里校验一次：可选键，出现时必须是非空列表且有运行中
+  结构（没有收件人的队列在释放时就已删除），每条事件形状合法、`seq` 早于恢复时的事务序号（事件随它自己的终止事务或其后的
+  事务落盘）。不合法时抛出 `voxel_structure_restore_failed releases reason=…`。
   """
   def restore(%{thermal: %{structures: records} = thermal, magic: magic} = state) do
     commit_tick = Map.get(thermal, :commit_tick, 0)
@@ -478,11 +513,37 @@ defmodule VoxelRegion.World.Structures do
         end
       end)
 
-    Logger.info("voxel_structure_restored structures=#{map_size(structures)} commit_tick=#{commit_tick}")
+    case releases?(Map.get(thermal, :structure_releases), structures, state.seq) do
+      :ok -> :ok
+      {:error, reason} -> raise "voxel_structure_restore_failed releases reason=#{inspect(reason)}"
+    end
+
+    Logger.info(
+      "voxel_structure_restored structures=#{map_size(structures)} commit_tick=#{commit_tick} " <>
+        "releases=#{length(Map.get(thermal, :structure_releases, []))}"
+    )
+
     %{state | thermal: %{thermal | structures: structures}}
   end
 
+  def restore(%{thermal: %{structure_releases: _}}),
+    do: raise("voxel_structure_restore_failed releases reason=:no_structures")
+
   def restore(state), do: state
+
+  defp releases?(nil, _structures, _seq), do: :ok
+  defp releases?([_ | _], structures, _seq) when structures == %{}, do: {:error, :no_structures}
+
+  defp releases?([_ | _] = releases, _structures, seq),
+    do: if(Enum.all?(releases, &release?(&1, seq)), do: :ok, else: {:error, :event})
+
+  defp releases?(_, _structures, _seq), do: {:error, :shape}
+
+  defp release?(%{id: {s, n}, position: p, energy_mj: e, caster: c, scope: scope, seq: at} = r, seq) when map_size(r) == 6,
+    do: is_integer(s) and is_integer(n) and vector?(p) and is_integer(e) and e >= 0 and is_integer(c) and scope?(scope) and
+          is_integer(at) and at < seq
+
+  defp release?(_, _seq), do: false
 
   # 条目的可选键：冻结交付（切片 5）、触发推迟队列与连续平静拍数（切片 7）、〈遇〉结构已出现过首次导热边（决策稿 §11.3
   # #16；只在为 true 时出现，冷重启后不再把仍在的边当作首次）。
@@ -635,8 +696,9 @@ defmodule VoxelRegion.World.Structures do
   # ---------------------------------------------------------------------------
 
   @doc """
-  热提交拍 `tick`（= `commit_tick + 1`）的结构步进：按 id 升序对每个运行中结构取读数、调用 `Structure.step/4`，对触发的
-  〈散〉调用 `respond/3`，执行沉积请求并记账；终止的结构移除并产出终止记录（live 2–6），其余按 Q4-4 分箱比较决定是否
+  热提交拍 `tick`（= `commit_tick + 1`）的结构步进：拍首取齐干预场与上一热拍以来的终止释放剂量（取走待生效队列，决策稿
+  §11.3 #6），按 id 升序对每个运行中结构取读数、调用 `Structure.step/4`，对触发的〈散〉调用 `respond/3`，执行沉积请求并
+  记账；终止的结构移除、产出终止记录（live 2–6）并把释放事件追加进新的队列（下一热拍生效），其余按 Q4-4 分箱比较决定是否
   发状态增量。`heat` 是本拍内核给各结构节点的净热（J，`World.Thermal` 按调用累计）；`edges` 是本拍连上过导热边的结构
   及对端种类（`%{id => [:cell | :body]}`，同样按调用累计），用于〈遇〉的首次导热边（`step_one/9`）。
 
@@ -659,23 +721,27 @@ defmodule VoxelRegion.World.Structures do
       emitters = emitters(ordered, neighbors, tick, catalog)
       fields = fields(emitters, ordered, neighbors, tick, catalog)
       state = windup_doses(state, emitters, tick, catalog)
+      # 第 6 步的邻近终止释放剂量（设计 §5.5；决策稿 §11.3 #6）：上一热拍以来的全部释放按拍首位置取齐、用完清空；
+      # 本拍的终止追加进新的队列，下一热拍生效。
+      {releases, state} = take_releases(state)
+      doses = release_doses(releases, ordered, neighbors, tick, catalog)
       # 触发预算（设计 §5.4，规则在 `MagicAdmission`）：拍首先按（首次推迟拍号, id）为推迟队列预占，余下的给本拍新触发。
       queued = for {id, e} <- ordered, item <- Map.get(e, :deferred, []), do: {id, e.body.caster, item}
       {claimed, budget} = MagicAdmission.claim_deferred(queued, MagicAdmission.trigger_budget(catalog))
 
-      acc = %{state: state, ended: [], records: %{}, states: %{}, step_us: [], rounding: 0.0, budget: budget,
+      acc = %{state: state, ended: 0, records: %{}, states: %{}, step_us: [], rounding: 0.0, budget: budget,
         claimed: claimed, fired: 0, sleep: %{asleep: 0, woke: 0, slept: 0}}
 
       acc =
         Enum.reduce(ordered, acc, fn {id, entry}, acc ->
           step_started = System.monotonic_time(:microsecond)
-          acc =
-            step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), Map.get(edges, id), neighbors, Map.get(fields, id, []), catalog)
+          imposed = %{fields: Map.get(fields, id, []), release_doses: Map.get(doses, id, [])}
+          acc = step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), Map.get(edges, id), neighbors, imposed, catalog)
           %{acc | step_us: [System.monotonic_time(:microsecond) - step_started | acc.step_us]}
         end)
 
       state = acc.state
-      ended = length(acc.ended)
+      ended = acc.ended
       log_triggers(state, tick, acc)
       log_sleep(tick, acc.sleep)
 
@@ -710,8 +776,9 @@ defmodule VoxelRegion.World.Structures do
   defp log_sleep(tick, sleep),
     do: Logger.info("voxel_structure_sleep tick=#{tick} asleep=#{sleep.asleep} woke=#{sleep.woke} slept=#{sleep.slept}")
 
-  # `peers`：本拍该结构连上过的导热边对端种类（没有为 nil）。
-  defp step_one(acc, id, entry, tick, heat_j, peers, neighbors, fields, catalog) do
+  # `peers`：本拍该结构连上过的导热边对端种类（没有为 nil）。`imposed`：拍首为它取齐的外来扰乱——干预场 `fields` 与
+  # 邻近终止释放剂量 `release_doses`（都只依赖拍首状态与上一拍以来的释放，与处理顺序无关）。
+  defp step_one(acc, id, entry, tick, heat_j, peers, neighbors, imposed, catalog) do
     %{structure: s, body: body} = entry
     state = acc.state
     site = site(state, entry, tick)
@@ -734,8 +801,8 @@ defmodule VoxelRegion.World.Structures do
       cell_heat_capacity_j_per_k: site.cell_c,
       embedded: site.embedded,
       neighbors: neighbors_of(neighbors, id, site.position, catalog),
-      fields: fields,
-      release_doses: release_doses(acc.ended, site.position, catalog),
+      fields: imposed.fields,
+      release_doses: imposed.release_doses,
       contact: first_edge
     }
 
@@ -809,6 +876,7 @@ defmodule VoxelRegion.World.Structures do
         live = Codec.structure_end_live(if(contact?, do: :contact, else: type))
         released_mj = Enum.sum(for {:terminated, _, %{released_mj: mj}} <- out.events ++ if(responded, do: responded.events, else: []), do: mj)
         state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
+        state = release(state, id, site.position, released_mj, body)
         {body, flight} = settle_flight(body)
 
         Logger.info(
@@ -822,7 +890,7 @@ defmodule VoxelRegion.World.Structures do
           acc
           | state: state,
             records: Map.put(acc.records, id, record(body, with_flight(wire, false), live)),
-            ended: [{site.position, released_mj} | acc.ended],
+            ended: acc.ended + 1,
             rounding: acc.rounding + rounding
         }
     end
@@ -934,6 +1002,7 @@ defmodule VoxelRegion.World.Structures do
     else
       released_mj = Enum.sum(for o <- outputs, {:terminated, _, %{released_mj: mj}} <- o.events, do: mj)
       state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
+      state = release(state, id, body.rest, released_mj, body)
       log_end(state, id, body, live, :released, s.last_tick + 1, released_mj, deposit, site, "hit=#{hit}")
       {state, %{structures: %{id => record(body, wire, live)}}}
     end
@@ -966,6 +1035,7 @@ defmodule VoxelRegion.World.Structures do
 
     state = %{state | thermal: Map.update!(thermal, :structures, &Map.delete(&1, id))}
     released_mj = Enum.sum(for {:terminated, _, %{released_mj: mj}} <- events, do: mj)
+    state = release(state, id, delivery.position, released_mj, body)
     site = %{deposit: nil, protected: false}
 
     log_end(state, id, body, delivery.live, :released, delivery.tick, released_mj, deposit, site,
@@ -990,6 +1060,7 @@ defmodule VoxelRegion.World.Structures do
     {:terminated, type} = ended.status
     live = Codec.structure_end_live(type)
     released_mj = Enum.sum(for {:terminated, _, %{released_mj: mj}} <- out.events, do: mj)
+    state = release(state, id, body.rest, released_mj, body)
 
     Logger.info(
       "voxel_structure_flight sid=#{inspect(id)} cid=#{body.caster} phase=#{reason} target=none t_s=#{body.flight_s} " <>
@@ -1350,9 +1421,67 @@ defmodule VoxelRegion.World.Structures do
     abs(x - ex) <= reach and abs(y - ey) <= reach and abs(z - ez) <= reach
   end
 
-  defp release_doses(ended, position, %Catalog{runtime: rt}) do
-    for {at, released_mj} <- ended, d = distance(position, at), d < rt.release_dose_radius_m,
-        do: %{energy_mj: released_mj, distance_m: d}
+  # ---------------------------------------------------------------------------
+  # 终止释放剂量（设计 §5.5 P3-9；决策稿 §11.3 #6，用户 2026-11-26 裁定“下一热拍生效”）
+  # ---------------------------------------------------------------------------
+
+  # 终止释放事件：每次终止（热拍内、投射物提交点、交付、散解、恢复散解）在 World 唯一的待生效队列
+  # `thermal.structure_releases` 末尾追加一条 `%{id, position, energy_mj, caster, scope, seq}`——释放者 id、释放位置、
+  # 释放能量 E（终止事件的 `released_mj`）、施法者与施放时的战斗范围（作用于他人结构时判 Harm），以及释放时 World 最后一笔
+  # 已提交事务的序号（收件人只取创建事务序号不大于它的结构，即释放时已经存在的）。须在终止的结构移出之后调用：结构已全部
+  # 移出时没有收件人，队列一并删除，不留残余（没有魔法的世界 `thermal` 因此不出现这个键）。
+  defp release(state, id, position, released_mj, body) do
+    event = %{id: id, position: position, energy_mj: released_mj, caster: body.caster, scope: body.combat_scope, seq: state.seq}
+    thermal = state.thermal
+
+    thermal =
+      if thermal.structures == %{},
+        do: Map.delete(thermal, :structure_releases),
+        else: Map.update(thermal, :structure_releases, [event], &(&1 ++ [event]))
+
+    %{state | thermal: thermal}
+  end
+
+  # 热拍拍首取走待生效队列（用完清空：键随之删除）。
+  defp take_releases(%{thermal: thermal} = state) do
+    {releases, thermal} = Map.pop(thermal, :structure_releases, [])
+    {releases, %{state | thermal: thermal}}
+  end
+
+  # 第 6 步的剂量输入（`Structure.step/4` 的 `release_doses`）：`releases` 是上一热拍以来的全部释放事件（按终止先后），
+  # `ordered` 是本拍步进的结构（不含冻结交付：冻结期不受剂量，与干预场一致）。距离按拍首位置（邻居索引的 `sites`，与邻居项、
+  # 干预场同一快照）；候选只看释放位置所在网格桶及其相邻桶（半径不超过网格边长时即 27 桶）。收件人只限释放时已经存在的
+  # 结构（id 的创建事务序号 ≤ 事件的 `seq`）；作用于他人结构先过 `MmoContracts.Harm`（释放者施放时的战斗范围、释放位置、
+  # 目标位置），同一施法者的结构不判——与干预场 `fields/5` 同一条判定。每个事件记一行 `voxel_structure_release`
+  # （`doses=[{目标 id, 距离 m, 是否准许}]`）。返回 %{目标 id => [%{energy_mj, distance_m}]}；每个目标的剂量按（距离, 能量）
+  # 排序，使 `Structure.step/4` 里的浮点求和与释放的先后无关。
+  defp release_doses([], _ordered, _neighbors, _tick, _catalog), do: %{}
+
+  defp release_doses(releases, ordered, neighbors, tick, %Catalog{runtime: rt}) do
+    radius = rt.release_dose_radius_m
+    reach = max(1, ceil(radius / @grid_m))
+    casters = Map.new(ordered, fn {id, %{body: body}} -> {id, body.caster} end)
+
+    releases
+    |> Enum.flat_map(fn r ->
+      {bx, by, bz} = bucket(r.position)
+
+      targets =
+        for(dx <- -reach..reach, dy <- -reach..reach, dz <- -reach..reach,
+            {id, site} <- Map.get(neighbors.buckets, {bx + dx, by + dy, bz + dz}, []),
+            elem(id, 0) <= r.seq, d = distance(r.position, site.position), d < radius,
+            do: {id, d, casters[id] == r.caster or MmoContracts.Harm.permitted?(r.scope, r.position, site.position)})
+        |> Enum.sort()
+
+      Logger.info(
+        "voxel_structure_release sid=#{inspect(r.id)} cid=#{r.caster} tick=#{tick} energy_mj=#{r.energy_mj} " <>
+          "targets=#{Enum.count(targets, &elem(&1, 2))} doses=#{inspect(targets)}"
+      )
+
+      for {id, d, true} <- targets, do: {id, %{energy_mj: r.energy_mj, distance_m: d}}
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {id, doses} -> {id, Enum.sort_by(doses, &{&1.distance_m, &1.energy_mj})} end)
   end
 
   defp distance({ax, ay, az}, {bx, by, bz}), do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)

@@ -15,7 +15,11 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   - 切片 5（飞行与〈遇〉，决策稿 §5、§13 W5-1–W5-5 与 §14 用户答复）：带〈投〉的结构由墙钟飞行驱动（`World.Projectiles`）
     逐段飞行；测试注入服务器时间线时钟 `FlightClock`（施放记录 t0 与飞行时长同源），推进它并直接投递 `:projectile_tick`
     （与 50 ms 定时拍同一入口）。墙：石格 (2, 2, 4)、(2, 1, 4)，火球自手边瞄向它。飞行中唯一的欠账来源（P1 无〈乱〉接线）
-    是邻近终止释放剂量：定时火种贴叶 (0, 2, 3)，第 60 拍〈散〉释放约 187 kJ，作用于 3 m 内其后处理的结构（4c 已接线）。
+    是邻近终止释放剂量：定时火种贴叶 (0, 2, 3)，第 60 拍〈散〉释放约 187 kJ，下一热拍作用于 3 m 内的运行中结构（§11.3 #6）。
+  - 决策稿 §11.3 #6（终止释放剂量下一热拍生效，用户 2026-11-26 裁定；设计 §5.5）：每次终止（热拍内、投射物提交点）的释放
+    在下一热拍按拍首位置作用于释放时已存在的全部运行中结构，与施放先后无关、每拍一跳、冷重启保留，作用于他人结构先过 Harm。
+    程序都是发布预设或其改槽（定时灯 = “灯”加“定时火种”的规则字节），经正式施放入口建成；期望按设计 §5.5 公式
+    Δdebt = D0·P·(1 + κx²)·a_X·k_rel·(E / 1 kJ)·(1 − d / 3 m)² 手算，E 取终止日志的 `released_mj`、x 取收件结构拍首的装载比。
   - 决策稿 §11.3 #16（静止结构的首次导热边，设计 §5.4〈遇〉行；用户 2026-11-26 裁定 ①②③）：不带〈投〉的〈热〉〈遇〉程序由
     发布预设改槽、经真实解码器接纳；导热边的出现经公共入口产生——〈附〉出生即贴墙、运维编辑 `World.apply_edits/2` 放上或拆掉
     石格、Scene 的身体报告 `{:body_contact, …}`。期望取设计与裁定（第 1 拍、live 2、一生一次、接触开始即唤醒），不复制算法。
@@ -177,7 +181,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
   # `opts`：`clock`（服务器时间线 Agent，缺省用生产单调时钟）与直接透传给 World 的 `projectile_backend`、`log`、`source`、
   # `persist_backlog`。
-  defp start(root, opts \\ []) do
+  defp start(root, opts \\ []), do: start_supervised!(world_spec(root, opts), id: :world)
+
+  defp world_spec(root, opts) do
     {clock, opts} = Keyword.pop(opts, :clock)
 
     world_opts =
@@ -195,7 +201,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
       |> Keyword.merge(if(clock, do: [server_clock: {FlightClock, clock}], else: []))
       |> Keyword.merge(opts)
 
-    start_supervised!({World, world_opts}, id: :world)
+    {World, world_opts}
   end
 
   defp restart(c, opts \\ []) do
@@ -804,6 +810,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     # 停在距火种 1.55–1.7 m 处：火种的终止释放给它约 0.3–0.45 的欠账（相干仍高于 0.3），读数丢失概率 0.5。
     hover(c, record, ember_record.rest, 1.55, 1.7)
     {_, %{live: 6}} = commit_until_end(c, ember, 70)
+    # 火种的终止释放在下一热拍生效（决策稿 §11.3 #6）：再推进一拍，火球才带上欠账。
+    commit(c)
     catalog = Catalog.load(@catalog)
 
     # 找一拍：纯值层判定在下一拍号求值〈遇〉会丢失（丢失判定按 mix64(id, tick) 由纯值用例对冻结向量证明）。
@@ -1196,9 +1204,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # ---------------------------------------------------------------------------
 
   # 驱散脉冲〈附 准星格面〉〈形 球 0.2 m〉〈乱 100 kW，3 m〉〈蓄 60 kJ〉自默认眼位瞄向墙石 (2, 2, 4) 的中心微格：眼射线
-  # 命中 z = 4 面，球心沿该面法向外移半径 0.2 m（`Structures.launch/7` 的〈附〉），即 z = 3.8。先按几何预测球心，好让灯
-  # 先于脉冲建成（id 更小、同拍先步进）：脉冲第 2 拍衰竭的终止释放剂量只作用于其后处理的结构，这样不混进 A.4 的对拍。
-  # 脉冲建成后再核对球心与预测一致。
+  # 命中 z = 4 面，球心沿该面法向外移半径 0.2 m（`Structures.launch/7` 的〈附〉），即 z = 3.8。先按几何预测球心，好在脉冲
+  # 之前把灯放到相对球心的位置；脉冲建成后再核对球心与预测一致。A.4 的对拍读脉冲结束（第 2 拍）时的欠账：脉冲第 2 拍衰竭
+  # 的终止释放剂量在下一热拍才生效（决策稿 §11.3 #6），不混进对拍。
   defp pulse_center(c) do
     {ex, ey, ez} = c.a.eye
     {dx, dy, dz} = aim(c.a, @wall_micro)
@@ -1218,9 +1226,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
   # 〈握〉的灯放在 `point`：施法者面朝 +z、眼在 point 后 0.5 m（手边 = 眼 + 0.5 m），脚踩 y = 0 的地面（脚 = 眼 − 1.5 m）。
   # `extra` 可换施法者 cid 与战斗范围。灯不求射线，请求的目标字段只按 0x82 形状给零值。
-  defp hand_lamp(c, {x, y, z} = point, at, extra \\ %{}) do
+  defp hand_lamp(c, point, at, extra \\ %{}), do: hand_cast(c, point, program("lamp"), at, extra)
+
+  # 同上，施放任意〈握〉程序（不带〈投〉，静止在手边）。
+  defp hand_cast(c, {x, y, z} = point, bytes, at, extra \\ %{}) do
     a = actor(Map.merge(%{eye: {x, y, z - 0.5}, feet: {x, y - 1.5, z - 0.5}}, extra))
-    assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, program("lamp"), {0.0, 0.0, 1.0}, at)
+    assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, bytes, {0.0, 0.0, 1.0}, at)
     {records, _} = drain()
     assert [{^seq, id, %{live: 1, rest: rest}}] = records
     assert distance(rest, point) < 1.0e-9
@@ -1367,5 +1378,204 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
     send(c.w, {:cancel_cast, {a.identity, seq}, :interrupted_cancelled, 0})
     assert Task.await(task) == {:error, :interrupted_cancelled}
+  end
+
+  # ---------------------------------------------------------------------------
+  # 决策稿 §11.3 #6：终止释放剂量在下一热拍生效（用户 2026-11-26 裁定；设计 §5.5 P3-9“对 3 m 内每个其他结构施加剂量”）
+  # ---------------------------------------------------------------------------
+
+  # 定时灯：发布预设“灯”末尾的“无运动、无规则”（00 00）换成“无运动 + 一条规则”（优先级 0，〈时〉duration_cs、自出生起，
+  # 〈散〉），规则字节同发布预设“定时火种”（与 `magic_admission_world_test.exs` 同一构造），经真实 `Program.decode_ir/2` 接纳。
+  defp timed_lamp(duration_cs) do
+    lamp = program("lamp")
+    n = byte_size(lamp) - 2
+    <<0, 0>> = binary_part(lamp, n, 2)
+    legal!(binary_part(lamp, 0, n) <> <<0, 1, 0, 1, 0x23::16, duration_cs::16, 0xFF, 1, 0x2C::16, 0>>)
+  end
+
+  # 终止日志里的释放能量 E（`voxel_structure_end … released_mj`，整数 mJ）。
+  defp released_mj(log, id) do
+    assert [_, mj] = Regex.run(~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*released_mj=(\d+)/, log)
+    String.to_integer(mj)
+  end
+
+  # 设计 §5.5 的终止释放剂量（手算口径；常数取目录 `runtime`：D0 = disruption_rate_per_s、κ = disruption_load_gain、
+  # a_X = disruption_dose_gain、k_rel = release_dose_ratio、半径 release_dose_radius_m）：
+  #   Δdebt = D0·P·(1 + κ·x²)·a_X·k_rel·(E / 1 kJ)·(1 − d / 3 m)²
+  # `s` 是收件结构生效拍拍首的持久化值（x = (E_op + |E_th|) / E_cap；灯、无供能、无热、无活动，拍首即第 5 步的装载）。
+  defp release_dose(s, energy_mj, d) do
+    rt = Catalog.load(@catalog).runtime
+    x = (s.e_op_mj + abs(s.e_th_mj)) / s.e_cap_mj
+
+    rt.disruption_rate_per_s * s.precision * (1 + rt.disruption_load_gain * x * x) * rt.disruption_dose_gain *
+      rt.release_dose_ratio * (energy_mj / 1.0e6) * (1 - d / rt.release_dose_radius_m) ** 2
+  end
+
+  # 日志里最后一份持久化的 `thermal`。
+  defp last_thermal(c),
+    do: Path.join(c.root, "overlay.log") |> OverlayLog.File.replay() |> Enum.filter(&Map.has_key?(&1, :thermal)) |> List.last()
+
+  # 火球自默认手边瞄向墙石 (2, 2, 4)：返回 {结构 id, 施放时预测的落点}。预测落点即施放时弹道求交的命中点（z = 4 面外一个
+  # 半径）；真实飞行按 50 ms 弦段求交，与预测相差毫米级（W5-1）。施放后飞行不推进，直到 `fly_into_wall/2`。
+  defp fireball(c, at) do
+    {id, record} = build_program(c, @wall_micro, program("fireball"), at)
+    {id, record.rest}
+  end
+
+  defp fly_into_wall(c, id) do
+    log = info_log(fn -> fly_until(c, 1.0, fn -> not Map.has_key?(observe(c.w).structures, id) end) end)
+    hit = ended_record(id)
+    assert hit.live == Codec.structure_end_live(:contact)
+    {hit, log}
+  end
+
+  test "§11.3 #6 释放剂量与施放先后无关：两对同样布置、施放先后相反的“定时灯 → 2 m 外的灯”，收件灯在下一热拍得到逐位相同的欠账（设计 §5.5 手算）", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    # 两对相距 > 8 m（互不在邻居项半径内），几何相同：定时灯在收件灯 −x 方向 2 m。−x 一对先施放定时灯（id 更小），
+    # +x 一对先施放收件灯（id 更小）——旧实现里只有前者在定时灯终止的同一拍收到剂量。
+    e1 = hand_cast(c, {-5.5, 2.5, 1.0}, timed_lamp(100), 2_000_000)
+    r1 = hand_lamp(c, {-3.5, 2.5, 1.0}, 3_000_000)
+    r2 = hand_lamp(c, {8.5, 2.5, 1.0}, 4_000_000)
+    e2 = hand_cast(c, {6.5, 2.5, 1.0}, timed_lamp(100), 5_000_000)
+    assert e1 < r1 and r2 < e2
+
+    # 〈时 1 s〉的到期拍 = 出生拍 + ⌈1 s ÷ 0.5 s⌉ = 第 2 拍：两盏定时灯都以 live 6 终止；这一拍的释放还没有作用于任何结构。
+    log = info_log(fn -> commit(c); commit(c) end)
+    {records, _} = drain()
+    assert Enum.sort(for {_, id, %{live: 6}} <- records, do: id) == Enum.sort([e1, e2])
+    assert {persisted(c, r1).debt_micro, persisted(c, r2).debt_micro} == {0, 0}
+    before = persisted(c, r1)
+
+    # 第 3 拍（下一热拍）第 6 步：两盏收件灯各收到自己那一对的释放剂量，逐位相同，且不计入 debt_int（§5.5 R4）。
+    commit(c)
+    {s1, s2} = {persisted(c, r1), persisted(c, r2)}
+    assert s1.debt_micro > 0
+    assert {s1.debt_micro, s1.debt_int_micro, s1.e_op_mj} == {s2.debt_micro, s2.debt_int_micro, s2.e_op_mj}
+    assert s1.debt_int_micro == 0
+    assert released_mj(log, e1) == released_mj(log, e2)
+    assert_in_delta debt(s1), release_dose(before, released_mj(log, e1), 2.0), 1.0e-6
+  end
+
+  test "§11.3 #6 地形命中〈散〉：火球在投射物提交点终止的释放，在下一热拍作用于附近的静止灯（设计 §5.5 手算）；用完清空", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    {ball, predicted} = fireball(c, 2_000_000)
+    # 灯在火球飞行之前建成（释放时已经存在），离预测落点 2.4 m。
+    lamp = hand_lamp(c, offset(predicted, {2.4, 0.0, 0.0}), 3_000_000)
+    {hit, log} = fly_into_wall(c, ball)
+    d = distance(hit.rest, offset(predicted, {2.4, 0.0, 0.0}))
+    assert d < 3.0
+    # 撞墙那笔投射物提交事务不改别的结构：灯还没有走过热拍，欠账为 0。
+    before = persisted(c, lamp)
+    assert {before.last_tick, before.debt_micro} == {0, 0}
+
+    tick_log = info_log(fn -> commit(c) end)
+    after_hit = persisted(c, lamp)
+    assert_in_delta debt(after_hit), release_dose(before, released_mj(log, ball), d), 1.0e-6
+    assert after_hit.debt_int_micro == 0
+    assert tick_log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} cid=#{@cid} tick=1 .*targets=1 /
+
+    # 队列用完即清空：再走一拍不重复施加，灯在线内只偿还，欠账下降。
+    log = info_log(fn -> commit(c) end)
+    refute log =~ "voxel_structure_release "
+    assert persisted(c, lamp).debt_micro < after_hit.debt_micro
+  end
+
+  test "§11.3 #6 连锁每拍一跳：火球撞墙的释放在第 1 拍打掉 0.8 m 外的灯 B；B 的释放在第 2 拍才作用于离火球 > 3 m、离 B 2.5 m 的灯 C", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    {ball, predicted} = fireball(c, 2_000_000)
+    {b_at, c_at} = {offset(predicted, {0.8, 0.0, 0.0}), offset(predicted, {3.3, 0.0, 0.0})}
+    b = hand_lamp(c, b_at, 3_000_000)
+    lamp_c = hand_lamp(c, c_at, 4_000_000)
+    {hit, _log} = fly_into_wall(c, ball)
+    assert distance(hit.rest, b_at) < 1.0 and distance(hit.rest, c_at) > 3.0
+    assert Map.has_key?(observe(c.w).structures, b)
+
+    # 第 1 拍：B 的欠账 ≈ 3.2 × (1 − 0.8/3)² ≈ 1.7 > 0.7，相干跌破即终止；剂量不计入 debt_int，所以不是驱散（live 3 或 4）。
+    # C 离火球落点 > 3 m，不受这次剂量。
+    log = info_log(fn -> commit(c) end)
+    b_end = ended_record(b)
+    assert b_end.live in [Codec.structure_end_live(:exhausted), Codec.structure_end_live(:collapsed)]
+    before = persisted(c, lamp_c)
+    assert before.debt_micro == 0
+
+    # 第 2 拍：B 的释放作用于 C。
+    commit(c)
+    assert_in_delta debt(persisted(c, lamp_c)), release_dose(before, released_mj(log, b), 2.5), 1.0e-6
+  end
+
+  test "§11.3 #6 冷重启在释放与生效之间：待生效队列随 thermal 落盘，恢复后下一热拍照常生效；损坏的队列在恢复时显式拒绝", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    {ball, predicted} = fireball(c, 2_000_000)
+    lamp = hand_lamp(c, offset(predicted, {2.4, 0.0, 0.0}), 3_000_000)
+    {hit, log} = fly_into_wall(c, ball)
+    # 撞墙那笔投射物提交事务的 thermal 带一条释放事件（可选键，为空时不写）。
+    stored = last_thermal(c)
+    assert [%{id: ^ball, position: position, energy_mj: energy, caster: @cid, scope: nil}] = stored.thermal.structure_releases
+    assert position == hit.rest and energy == released_mj(log, ball)
+    before = persisted(c, lamp)
+
+    c = restart(c)
+    commit(c)
+    d = distance(hit.rest, offset(predicted, {2.4, 0.0, 0.0}))
+    assert_in_delta debt(persisted(c, lamp)), release_dose(before, energy, d), 1.0e-6
+    refute Map.has_key?(last_thermal(c).thermal, :structure_releases)
+
+    # 故障注入（只测试，持久化加载边界 AGENTS §2.2-6）：把撞墙后那份 thermal 的释放能量改成负数，作为最新一笔事务追加，
+    # World 启动时 `Structures.restore/1` 显式拒绝，不带着非法队列继续。
+    :ok = stop_supervised(:world)
+    [event] = stored.thermal.structure_releases
+    thermal = %{stored.thermal | structure_releases: [%{event | energy_mj: -1}]}
+    path = Path.join(c.root, "overlay.log")
+    seq = path |> OverlayLog.File.replay() |> List.last() |> Map.fetch!(:seq)
+    OverlayLog.File.append(path, %{seq: seq + 1, entries: [], coarse: [], property_states: [], thermal: thermal})
+    capture_log(fn ->
+      assert {:error, reason} = start_supervised(world_spec(c.root, clock: c.clock), id: :world)
+      assert inspect(reason) =~ "voxel_structure_restore_failed releases"
+    end)
+  end
+
+  test "§11.3 #6 收件人只限释放时已经存在的结构：火球撞墙之后才建成的灯即使在 3 m 内也不受这次剂量，之前建成的灯照常受", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    {ball, predicted} = fireball(c, 2_000_000)
+    older = hand_lamp(c, offset(predicted, {2.4, 0.0, 0.0}), 3_000_000)
+    {hit, _log} = fly_into_wall(c, ball)
+    newer_at = offset(hit.rest, {2.2, 0.0, -1.2})
+    newer = hand_lamp(c, newer_at, 4_000_000)
+    assert distance(hit.rest, newer_at) < 3.0
+
+    log = info_log(fn -> commit(c) end)
+    assert persisted(c, older).debt_micro > 0
+    assert persisted(c, newer).debt_micro == 0
+    assert log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} .*targets=1 doses=\[\{#{Regex.escape(inspect(older))}, /
+  end
+
+  test "§11.3 #6 释放剂量作用于他人结构前过 Harm（与驱散场同一判定，对照 W6-3）：施法时没有战斗范围的火球不伤他人的灯、照常伤自己的灯；带战斗范围时伤及范围内他人的灯", c do
+    other = actor(%{cid: 2002})
+    fund(%{c | a: other}, 1_000_000, 1_000_000)
+    fund(c, 2_000_000, 1_500_000)
+    subscribe(c)
+    {first, predicted} = fireball(c, 2_000_000)
+    mine = hand_lamp(c, offset(predicted, {2.4, 0.0, 0.0}), 3_000_000)
+    theirs = hand_lamp(c, offset(predicted, {2.0, 0.0, -1.2}), 3_000_000, %{cid: 2002})
+    {hit, _log} = fly_into_wall(c, first)
+    assert distance(hit.rest, offset(predicted, {2.0, 0.0, -1.2})) < 3.0
+
+    # 施法者没有战斗范围（本场禁伤，Scene 配置缺省）：他人的灯不受剂量；自己的灯不过 Harm，照常受（误伤己方）。
+    log = info_log(fn -> commit(c) end)
+    assert debt(persisted(c, theirs)) == 0
+    assert debt(persisted(c, mine)) > 0
+    assert log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(first))} .*targets=1 doses=.*\{#{Regex.escape(inspect(theirs))}, [\d.e-]+, false\}/
+
+    # 对照：施放时带覆盖双方的战斗范围，同一处撞墙的第二个火球的释放作用于他人的灯。
+    scoped = actor(%{combat_scope: {{-20.0, -20.0, -20.0}, {20.0, 20.0, 20.0}}})
+    {second, _} = fireball(%{c | a: scoped}, 4_000_000)
+    fly_into_wall(c, second)
+    commit(c)
+    assert debt(persisted(c, theirs)) > 0
   end
 end

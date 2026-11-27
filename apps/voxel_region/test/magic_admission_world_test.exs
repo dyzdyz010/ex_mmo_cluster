@@ -354,12 +354,22 @@ defmodule VoxelRegion.MagicAdmissionWorldTest do
   end
 
   # 施放并取出建成的结构 id（施放记录 live 0 与结构记录 live 1 同一笔事务）。
-  defp build(c, a, micro, bytes, at) do
-    assert {:ok, %{outcome: nil}} = spell(c, a, micro, bytes, at)
+  defp build(c, a, micro, bytes, at, direction \\ nil) do
+    assert {:ok, %{outcome: nil}} = spell(c, a, micro, bytes, at, direction)
     cid = a.cid
     assert_receive {:canonical_delta, %{transaction: %{casts: %{^cid => %{live: 0, outcome: 0}}, structures: structures}}}, 5_000
     assert [{id, %{live: 1}}] = Map.to_list(structures)
     id
+  end
+
+  # 同 `build/6`，先把施法者移到地面上 x 处（眼 (x, 2.5, 0.5)、脚 (x, 1.0, 0.5)，经会话替身的姿态更新，授权快照随之刷新），
+  # 面朝 +z 施放，手边 = (x, 2.5, 1.0)。定时灯按 3.5 m 间距放开：同一施法者的结构终止时，释放在下一热拍作用于 3 m 内全部
+  # 运行中结构（决策稿 §11.3 #6，`runtime.release_dose_radius_m`），放在同一手边点会互相打掉，与本用例要证伪的预算无关。
+  # 〈握〉不用准星目标；请求的目标字段取脚下地面格（工具射线必须命中，叶在远处站位已超出射程）。
+  defp build_at(c, a, x, bytes, at) do
+    {eye, feet} = {{x, 2.5, 0.5}, {x, 1.0, 0.5}}
+    :ok = GenServer.call(a.player, {:pose, eye, feet})
+    build(c, %{a | eye: eye, feet: feet}, {floor(x) * 8 + 4, 7, 4}, bytes, at, {0.0, 0.0, 1.0})
   end
 
   # 邮箱里已到的结构增量：{终止或删除记录 %{id => live}, 状态增量 %{id => record}}。
@@ -405,10 +415,10 @@ defmodule VoxelRegion.MagicAdmissionWorldTest do
     fund(c, a, 1_000_000)
     subscribe(c)
     # 全部在第一次热提交前施放：出生拍 0。Z 的〈时〉1.5 s → 第 3 拍到期；X1、X2、Y 1.0 s → 第 2 拍到期。id 按施放顺序递增。
-    z = build(c, a, @leaf_micro, timed_lamp(150), 2_000_000)
-    x1 = build(c, a, @leaf_micro, timed_lamp(100), 3_000_000)
-    x2 = build(c, a, @leaf_micro, timed_lamp(100), 4_000_000)
-    y = build(c, a, @leaf_micro, timed_lamp(100), 5_000_000)
+    z = build_at(c, a, 0.5, timed_lamp(150), 2_000_000)
+    x1 = build_at(c, a, 4.0, timed_lamp(100), 3_000_000)
+    x2 = build_at(c, a, 7.5, timed_lamp(100), 4_000_000)
+    y = build_at(c, a, 11.0, timed_lamp(100), 5_000_000)
     assert z < x1 and x1 < x2 and x2 < y
 
     assert tick_released(c) == MapSet.new()
@@ -432,9 +442,9 @@ defmodule VoxelRegion.MagicAdmissionWorldTest do
     [a, b] = for cid <- [1001, 1002], do: caster(%{cid: cid, controller: :player})
     for {x, k} <- Enum.with_index([a, b]), do: fund(c, x, 1_000_000 + k)
     subscribe(c)
-    a1 = build(c, a, @leaf_micro, timed_lamp(100), 2_000_000)
-    a2 = build(c, a, @leaf_micro, timed_lamp(100), 3_000_000)
-    b1 = build(c, b, @leaf_micro, timed_lamp(100), 2_000_000)
+    a1 = build_at(c, a, 0.5, timed_lamp(100), 2_000_000)
+    a2 = build_at(c, a, 4.0, timed_lamp(100), 3_000_000)
+    b1 = build_at(c, b, 7.5, timed_lamp(100), 2_000_000)
 
     assert tick_released(c) == MapSet.new()
     assert tick_released(c) == MapSet.new([a1, b1])
