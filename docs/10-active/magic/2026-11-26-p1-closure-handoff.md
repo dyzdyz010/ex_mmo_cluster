@@ -99,6 +99,23 @@
     本测试几何下最大约 0.37°，过渡结束归零；接受，不再处理。三处都未实跑。
     实跑时请用户看：近处（约 2 m）的墙前进出越肩，过渡要转约 17°，手感是否可接受。服务端不改。
   - 录屏：两窗口并排 1920×800 区域，脚本见统筹 scratchpad `run_mode.sh`（ffmpeg 须 `-nostdin`，按本次进程号停止）。
+    脚本录屏上限 25 min；presets 充能约 25 min，须在客户端启动前另起一段录屏（`magic_presets-01.rec2.mkv`）。
+- 切片 8b 第二轮实跑（2026-11-27 05:06–06:22，服务端 `runs/live-02`、`live-03`，release `d4d678f6`；UDP 开始 84、结束 84）：
+  - `magic_dispel-05` **通过 8/8**：剂量与手算一致，正中熄灭、1.52 m 变暗存活、账目闭合；无 `stale_target`，晚到方向更新回执 1 次按 Log 记。
+  - `magic_overline-01`：环境故障。`native_lifecycle.py` 读写 drvfs 部署目录得一次 `[Errno 61] ENODATA` 即停服（1151 s）。
+    已改为 drvfs 的 OSError 只跳过本拍、连续 30 拍才判失败（原文件备份 `native_lifecycle.py.orig-20261127`），live-03 全程 0 次。
+  - `magic_overline-02`：准备阶段失败，热面 900 s 后只有 304.2 K。只读调查结论：Test-only 驱动按孤立格绝热算能量，
+    实际热格与 4 个石邻格导热、2 面散热，耗尽时峰值约 460 K；判据又要求“耗尽且在 480–520 K”，耗尽后只降不升。产品无缺陷；
+    W4-7 能过是停机时直接写 500 K。建议修法：驱动分段保温（每 5 s 补 50 kW×5 s 有限热源、逐段记账、灼点首拍后停），
+    热格避开出生点 (67,418,-518) 正下方；偏离清单“一次安装并记账”，**待用户拍板**（2026-11-27 已问，用户要求解释）。
+  - `magic_presets-01` 6/8：七个预设建成、扣费、双端生命周期与前摇一致，上行 47 条全是 IR v2。失败两项：
+    `server_agrees`：服务端 `voxel_structure_end` 把接触终止写成 `live=2 type=released` → 服务端 `49d0d349` 修
+    （`type` 与 `live` 出自同一终止事件，另修热拍静止〈遇〉同类路径；`magic_structure_world_test` 36/36、`magic_staff_bolt_test` 11/11），
+    release 已换为 `49d0d349`（旧 `rel.d4d678f6`），`version.json` 已更新；
+    `ledger`：判定器取不出负指数 → 客户端 `56f8e25d`（166 个判定器单测通过），离线复判 `recheck-20261127-ledger.json` 中 `ledger` 通过、
+    结构账精确闭合。`server_agrees` 须在 `49d0d349` 服务端上重跑 presets 判定，原失败保留。
+  - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
+    `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
 - 残余（#16）：休眠的〈遇〉结构只按休眠判定的粗候选唤醒，细分构件贴上时不唤醒；人物碰到休眠结构约 1 个身体报告间隔加一拍后才触发。
 
 ## 6. 测试分级方案（用户要求：严格按 AGENTS §3-14 与 Testing.md，不要动不动就跑全量）
