@@ -979,3 +979,8 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
     `mix compile --force --warnings-as-errors --no-optional-deps` 通过（唯一警告 `slope` 来自 Rust NIF 构建）。
   - 残余：本分支开发期存档里若有板结构，物理体 `half` 是旧轴向（施放时求出、随持久化），恢复后照旧值运行；分支未发布、P1 预设
     不用板，生产没有这类存档。未启动任何服务，未建 UDP / QUIC。
+- 2026-11-26：**`DataService.UidGenerator` 改为标准雪花算法**（不属魔法，用户定在本分支修、随这版发；提交 `b81ff28f`）。
+  - 根因：基准时间取进程启动时刻，重启后 id 重复；同毫秒序号判断写反且未截断（同毫秒 3 次调用即重复）；`last_time` 绝对 / 相对毫秒混用使回拨判断失效。改前探针连续 2 万次调用出现 19 825 个重复 id。
+  - 改法：固定纪元 2021-01-01T00:00:00Z（早于仓库首次提交，新 id 必大于全部旧 id；41 位时间可用到 2090 年）；纯函数 `next/2` 同毫秒递增、用尽等下一毫秒、回拨返回 `{:error, {:clock_moved_backwards, _}}` 并打日志；`generate/0` 改为 `{:ok, id} | {:error, reason}`，4 个调用方沿既有错误路径传出。依据：Twitter `snowflake` 仓库 `IdWorker.scala`（tag `snowflake-2010`）、Erlang 文档“Time and Time Correction in Erlang”（OTP 26 起默认 multi-time-warp，系统时间可前后跳）。
+  - 测试：新增 `uid_generator_test.exs`；只跑 `uid_generator`、`character_store`、`worker`、`npc_specs`、`body_store` 五个文件，`Result: 35 passed`；`body_store_test` 的 cid 按 `094ce125` 同一做法改为跨次唯一。
+  - 连带：新 id 约 7.8e17，超过 double 精确整数 2^53。客户端 dev 自动登录把 dev 接口的 `cid` 读成 double，建 dev 账号时账号 uid 与角色 cid 常在同一毫秒连续生成，cid 会被舍入、gate 报 `cid_mismatch`，挡住切片 8b。正在两端改为与正式票据相同的字符串 cid（结果另记）。
