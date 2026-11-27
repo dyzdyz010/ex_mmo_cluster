@@ -1166,6 +1166,32 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   end
 
   # ---------------------------------------------------------------------------
+  # 决策稿 §11.3 #7：P1 结构局部系取世界轴（+Y 朝上），板面法线 = 世界 +Y（设计 §11.4.2 表“2 板”；客户端 `HalfExtentsM`）
+  # ---------------------------------------------------------------------------
+
+  # 〈附〉〈形 板 size1 400 mm、size2 600 mm、size3 50 mm〉〈蓄 200 kJ〉｜当〈时 30 s〉则〈散〉：发布预设“定时火种”只改〈形〉的
+  # shape（偏移 10：1 块 → 2 板）与三个尺寸槽（偏移 11–16，设计 §11.4.4 逐字节注释），经真实 `Program.decode_ir/2` 接纳。
+  defp plate do
+    <<head::binary-size(10), 1, _sizes::binary-size(6), tail::binary>> = program("timed_ember")
+    head <> <<2, 400::16, 600::16, 50::16>> <> tail
+  end
+
+  test "§11.3 #7 板的半厚在世界 y 轴：〈附〉贴地面顶面时中心高出顶面 size3（50 mm），贴墙的 z 面时离墙 size2（600 mm）", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    bytes = legal!(plate())
+    # 地面石 (2, 0, 2) 的顶面 y = 1：〈附〉的中心沿进入面法线外移该轴半尺寸（`Semblance` 落点规则）；板面法线为世界 +Y、
+    # 半厚 = size3（设计 §11.4.2），所以中心 y = 1 + 0.05。
+    {_, flat} = build_program(c, @ground_micro, bytes, 2_000_000)
+    # 线上字段照旧是 size1–3 原值（字节不变）；客户端 `HalfExtentsM` 自己按 (size1, size3, size2) 取三轴半尺寸。
+    assert %{shape: 2, size1_m: 0.4, size2_mm: 600, size3_mm: 50, anchor_type: 1} = flat
+    assert_in_delta elem(flat.rest, 1), 1.05, 1.0e-9
+    # 墙石 (2, 2, 4) 的 z = 4 面：法向沿 z，该轴半尺寸 = size2（局部 Z 半边长）→ 中心 z = 4 − 0.6。
+    {_, wall} = build_program(c, @wall_micro, bytes, 3_000_000)
+    assert_in_delta elem(wall.rest, 2), 3.4, 1.0e-9
+  end
+
+  # ---------------------------------------------------------------------------
   # 切片 6：驱散脉冲（决策稿 §6、§13 W6-1–W6-4；设计 §7.3、附录 A.4、§12.2 切片 1 验收第 4 条）
   # ---------------------------------------------------------------------------
 

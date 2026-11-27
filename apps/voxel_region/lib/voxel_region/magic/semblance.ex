@@ -5,10 +5,11 @@ defmodule VoxelRegion.Magic.Semblance do
   `VoxelRegion.Magic.Structure`（符号组合魔法 v2；拟态的能量运行时已随切片 4c 删除，旧存档由
   `VoxelRegion.World.SemblanceMigration` 一次散解）。
 
-  物理体（World 的 `World.Structures` 持有）用到的字段：形状 `shape`（0 球 / 1 块 / 2 板）、三轴半尺寸 `half`
-  （`{a, b, c}` m；球为 `{r, r, r}`，块与板为〈形〉的 size1–3 半边长，板的第三轴为半厚，设计 §2.3）、落点 `rest`。
-  物理体与世界轴对齐（第一轴 x、第二轴 y、第三轴 z；P1 没有朝向。已定：实现决策，见
-  `docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md` §11.3 #7）。
+  物理体（World 的 `World.Structures` 持有）用到的字段：形状 `shape`（0 球 / 1 块 / 2 板）、世界轴 {x, y, z} 上的三轴半尺寸
+  `half`（m）、落点 `rest`。`half` 由〈形〉的尺寸按设计 §11.4.2 得出：球 `{r, r, r}`；块 `{size1, size2, size3}`；板
+  `{size1, size3, size2}`（size3 是半厚，落在 y 上，板面法线为世界 +Y）。P1 的结构局部系取世界轴（+Y 朝上，没有朝向），
+  与客户端 `FVoxelStructure::HalfExtentsM` 一致（已定：实现决策，见 `docs/10-active/magic/2026-11-26-p1-closure-slices4-8.md`
+  §11.3 #7）；本模块只按 `half` 的世界轴计算，不再解释尺寸槽。
 
   - 弹道：先走眼 → 手直线段，再自手边按 p(t) = hand + v·t − ½·g·t²·ŷ（g = 9.81 m/s²，Y-up；无质量时 g = 0）以 0.05 s
     弦段求交；命中面精确解出穿越时刻（x/z 面线性、y 面二次），物理体中心停在命中点沿面法线外移该轴半尺寸处。`trace/8` 是

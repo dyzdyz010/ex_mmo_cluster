@@ -460,7 +460,7 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
 | 4 | 结构所在格温度与泄漏沉积阈值：落地且有接触格时取接触格温度，否则取中心所在格（实占用格取其温度，空气取气候区温度）；阈值用接触格热容，无接触格时为 0 | §14 切片 4c ①；`world/structures.ex` moduledoc“实现决策”节 | A | 实现决策：维持 | 接触格是结构与世界接触的唯一几何，热内核接触边与释放格（#9）都用它（AGENTS §2.2-3）；无接触格时直接读中心所在格，不另造插值。阈值 0 使落不进格的热半当拍计入辐射账，账目逐项整数闭合（W4-2）；W4-7 灼点贴 500 K 墙面测得 x* = 0.25，与手算一致。只影响服务端读数，不涉及字节 |
 | 5 | 邻居项的 P_leak 取邻居拍首的运行损耗 `Structure.running_loss_w/3` | §14 切片 4c ②；`world/structures.ex` `neighbor_index/2` @doc | A | 实现决策：维持 | 与设计 §5.3 第 1 步“本拍开始时建一次 8 m 空间网格”同一时刻；结果与处理顺序无关，同拍各结构读到同一份邻居数据（AGENTS §2.2-9）。切片 8a 跟进的网格分桶改造用 `magic_structure_neighbors_test` 逐位核对了这一口径；A.4 对拍偏高约 0.001 即来自此项（§14 切片 6）。不涉及字节 |
 | 6 | 邻近终止释放剂量：按 id 升序处理，本拍已终止结构的释放作用于其后处理的结构 | §14 切片 4c ③；`world/structures.ex` moduledoc“实现决策”节 | A | 实现决策：维持 | 步进按 id 升序（§2、§4.1）；同拍生效使终止释放不被推迟一拍，W5-2（定时火种第 60 拍释放，过热保险同拍 live 6）依赖它；顺序确定，不需要额外状态。不涉及字节。与 #19 同源 |
-| 7 | 物理体与世界轴对齐（size1–3 对应 x、y、z） | §14 切片 4c ④；`magic/semblance.ex` moduledoc | A | 实现决策：维持（P1 没有朝向） | P1 的〈形〉只有 size1–3，没有朝向参数（设计 §2.3）；结构记录 v2 没有朝向字段（§3.1，`anchor_ref` P1 全 0），轴对齐是双端不需要额外约定的唯一解释。保持则字节与 golden 不变；P2 加朝向须同时加 IR 参数与记录字段 |
+| 7 | 物理体与世界轴对齐；板的半厚轴 | §14 切片 4c ④；§14“§11.3 #7 板半厚轴修正”条；`magic/semblance.ex` moduledoc；`world/structures.ex` `half/1` 注释 | A | 实现决策：P1 结构局部系取世界轴（+Y 朝上），板面法线 = 世界 +Y，与客户端 `HalfExtentsM` 一致——块 `{size1, size2, size3}`、板 `{size1, size3, size2}`、球 `{r, r, r}`；设计 §11.4.2 的〈握〉朝视线、〈附〉朝进入面法线的局部系 P1 两端都未实现（结构记录 v2 没有朝向字段，`anchor_ref` 全 0）。2026-11-26 修正了服务端板的半厚轴（原按 size1–3 → x、y、z，板的半厚落在 z 上，服务端物理是竖墙而客户端显示是水平薄片） | 两端一致：客户端 `Voxim-magic-v2` `VoxelStructure.cpp` `FVoxelStructure::HalfExtentsM`（块 `(size1, size2, size3)`、板 `(size1, size3, size2)`，世界轴对齐、Y 朝上）；设计 §11.4.2 表“2 板”：size2 = 局部 Z 半边长、size3 = 局部 Y 半厚、板面法线 +Y。P1 的〈形〉没有朝向参数、记录没有朝向字段，取世界轴是双端不需额外约定的唯一解释。不改字节与 golden（线上仍发 size1–3 原值，`HalfExtentsM` 自取半尺寸）；体积、表面积、接触上限与朝向无关，报价不变。退出条件：后续 Hello 给结构记录加朝向字段（同时加 IR 参数），按设计 §11.4.2 的局部系实现 |
 | 8 | 〈附〉上的〈投〉自格面点抛出 | §14 切片 4c ④；`world/structures.ex` `launch/7` 注释 | A | 实现决策：维持 | 〈附〉的形成锚就是格面点（设计 §11.1 `anchor_type` 1），〈投〉初速从形成点起算是两者的直接组合，不另造出发规则；读取闭包的飞行走廊按同一出发点推导（§14 切片 5b，`flight_plan/5`）。用既有 `origin` 字段，不涉及字节 |
 | 9 | 释放格只认接触格（施放时射线命中的未细分宏格，落地后须仍是同一热节点，执行时复核持有者） | §14 切片 4c ⑤；`world/structures.ex` moduledoc“沉积去向与保护区”节 | A | 实现决策：维持 | 设计 §12.1 更正 3（执行时复核持有者，`Access.writable?/3`）；只写一个确定的格，不发明多格分摊；落不进格的热计入辐射账，账目闭合。证据：定时火种贴叶把热释放进叶格；他人保护区用例进格为 0、`protected=true`（§14 切片 4c）。不涉及字节 |
 | 10 | 〈散〉的线上事件按触发它的规则判：读〈遇〉记 live 2，其余记 live 6 | §14 切片 5 取舍 4；`world/structures.ex` moduledoc“实现决策”节 | A | 实现决策：维持 | Q4-W3 已由用户代答（2026-11-26：碰撞触发一律 live 2，live 6 只给非接触读数）；按规则判而不是按触发场合判，投射物提交点与热拍得出同一结论。golden 已冻结（`structure-v2-samples.json` 的 `fireball_contact` live 2、`timed_ember_released` live 6），W5-2 的过热保险 live 6 已测 |
@@ -957,3 +957,25 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
     3. 本分支开发期存档里已有的〈遇〉结构没有 `conducted`，升级后若仍贴着，第一拍按首次算；分支未发布，生产没有结构存档。
     4. 测试文件原有的 `spell/4` 缺省参数未用警告早于本改动，未动。
     5. 未启动任何服务，未建 UDP / QUIC（只有进程内测试）。
+- 2026-11-26：**§11.3 #7 板半厚轴修正**（服务端的问题，统筹交办）。提交：记录本条的提交。
+  - 问题：设计 §11.4.2 表“2 板”规定 size1 = 局部 X 半边长、size2 = 局部 Z 半边长、size3 = 局部 Y 半厚、板面法线 +Y；客户端
+    `FVoxelStructure::HalfExtentsM`（`Voxim-magic-v2` `Source/Voxim/Voxel/Net/VoxelStructure.cpp:26-31`）块取 `(size1, size2, size3)`、
+    板取 `(size1, size3, size2)`，世界轴对齐、Y 朝上。服务端 `Structures.half/1` 对块和板都取 `{size1, size2, size3}`，板的半厚落在
+    z 上：服务端物理（落点、接触格、热内核接触边、包围盒）里的板是竖墙，客户端显示是水平薄片。
+  - 改法：`half/1` 的板子句改为 `{size1, size3, size2}`，块与球不变。全仓核对按 size1–3 → x/y/z 解释朝向的地方：只有 `half/1`；
+    `Magic.Semblance`（落点、接触、辐射、包围盒）、`World.Projectiles` 与 `BodyContact`（取最大半尺寸）都只读 `body.half`；
+    `Magic.Cost` 的体积、表面积与接触上限 k_s·max(4bc/a, 4ac/b, 4ab/c) 对三轴置换对称，与朝向无关，报价不变；读取走廊与飞行
+    计划不读尺寸。不改字节、golden 与目录（线上仍发 size1–3 原值）。文档：本稿 §11.3 #7 行、`magic/semblance.ex` moduledoc、
+    `half/1` 注释。`magic_semblance_test.exs` 的板用例直接给世界轴 `half`、不经尺寸映射，未改。
+  - 测试（`magic_structure_world_test.exs` 新增 1 个 World 用例）：程序由发布预设“定时火种”只改〈形〉的 shape（偏移 10：块 → 板）与
+    三个尺寸槽（偏移 11–16：400 / 600 / 50 mm，按设计 §11.4.4 逐字节注释），先经真实 `Program.decode_ir/2` 接纳，再经
+    `World.spell_intent/3` 施放两次〈附〉。期望取设计 §11.4.2 与 `Semblance` 的落点规则（中心沿进入面法线外移该轴半尺寸）手算：
+    贴地面石 (2, 0, 2) 顶面时中心 y = 1 + size3 = 1.05；贴墙石 (2, 2, 4) 的 z 面时中心 z = 4 − size2 = 3.4；出生记录的
+    shape 2、size1 0.4 m、size2 600 mm、size3 50 mm 照原值。
+  - 先红（改前 lib，`voxel_region-191808.log`）：`Result: 29/30 passed`，新用例行为红——板已建成，中心 y = 1.6（服务端把 size2 当成
+    y 轴半尺寸），期望 1.05。再绿：L1 `magic_structure_world_test`、`magic_staff_bolt_test` 与 L0 `magic_structure_wire_samples_test`
+    （golden 逐字段不变）、`magic_structure_test`：`Result: 63 passed`（`voxel_region-192018.log`）。按统筹要求这一项不跑负载；
+    只改 `half/1` 的板子句，P1 发布预设与负载组成都不用板。仓库根 `mix format --check-formatted` 通过；voxel_region
+    `mix compile --force --warnings-as-errors --no-optional-deps` 通过（唯一警告 `slope` 来自 Rust NIF 构建）。
+  - 残余：本分支开发期存档里若有板结构，物理体 `half` 是旧轴向（施放时求出、随持久化），恢复后照旧值运行；分支未发布、P1 预设
+    不用板，生产没有这类存档。未启动任何服务，未建 UDP / QUIC。

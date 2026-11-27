@@ -387,8 +387,12 @@ defmodule VoxelRegion.World.Structures do
     index
   end
 
-  # 三轴半尺寸（m）：球 {r, r, r}；块与板为 size1–3 半边长（板的第三轴为半厚，设计 §2.3、`Magic.Cost` 同一几何）。
+  # 世界轴 {x, y, z} 上的三轴半尺寸（m）。设计 §11.4.2：块 size1/2/3 = 局部 X/Y/Z 半边长；板 size1 = 局部 X 半边长、
+  # size2 = 局部 Z 半边长、size3 = 局部 Y 半厚（板面法线 +Y）。P1 的局部系取世界轴（+Y 朝上；已定：实现决策，见决策稿
+  # §11.3 #7），与客户端 `FVoxelStructure::HalfExtentsM` 一致：球 {r, r, r}，块 {size1, size2, size3}，板 {size1, size3, size2}。
+  # 体积、表面积、接触上限与朝向无关（`Magic.Cost` 按 size1–3 原值算，不受影响）。
   defp half(%{"shape" => "sphere", "size1_mm" => r}), do: {r / 1000, r / 1000, r / 1000}
+  defp half(%{"shape" => "plate", "size1_mm" => a, "size2_mm" => b, "size3_mm" => c}), do: {a / 1000, c / 1000, b / 1000}
   defp half(%{"size1_mm" => a, "size2_mm" => b, "size3_mm" => c}), do: {a / 1000, b / 1000, c / 1000}
 
   @doc "新结构的条目：结构值、物理体与出生时的动态字段（`Structure.wire/1` 的出生子句，加飞行位）。"
