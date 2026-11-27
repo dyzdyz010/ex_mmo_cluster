@@ -68,6 +68,11 @@ defmodule VoxelRegion.World.MagicAdmission do
   外部节点（不参与换热，误差上界见设计 §5.3.2），也不计入醒着的热节点（准入权重少 2、不占 16 个上限）。每次组装内核节点时
   按当前温度复核（`wakes?/3`），任一接触节点温差 ≥ 5 K 即在本次调用重新加入；拍末不平静即连续计数归零。
 
+  唯一的另一条唤醒（决策稿 §11.3 #16，用户 2026-11-26 裁定）：还在等首次导热边的〈遇〉结构接触开始即唤醒——此刻有世界接触
+  候选或有人物碰到，就在本次调用加入、连上导热边，〈遇〉当拍求值（同温的新接触不过 5 K 阈值，不这样它就永远感知不到）。
+  这条判定在 `World.Structures.heat_nodes/1`（人物可触碰集合在 `touchable/1`），依据 Box2D v2.4.1 `b2Contact::Update`
+  接触由无到有时唤醒两端。其余结构的休眠规则不变；平静判定与滞回仍只在本模块。
+
   ## 可观测面
 
   - 每次判定一行 `voxel_magic_admission cid controller decision reason usage_units budget reserve present own_units
@@ -355,7 +360,10 @@ defmodule VoxelRegion.World.MagicAdmission do
   def calm?(port_k, contact_k, net_heat_w, %Catalog{runtime: rt}),
     do: abs(net_heat_w) < rt.thermal_sleep_power_w and not wakes?(port_k, contact_k, rt)
 
-  @doc "休眠中的结构是否被唤醒：任一接触节点与端口温差 ≥ 5 K（设计 §5.3.2 “每拍按当前温度复核，越过阈值即唤醒”）。"
+  @doc """
+  休眠中的结构是否被温差唤醒：任一接触节点与端口温差 ≥ 5 K（设计 §5.3.2 “每拍按当前温度复核，越过阈值即唤醒”）。
+  等首次导热边的〈遇〉结构另有“接触开始即唤醒”，在 `World.Structures.heat_nodes/1`（决策稿 §11.3 #16）。
+  """
   def wakes?(port_k, contact_k, %Catalog{runtime: rt}), do: wakes?(port_k, contact_k, rt)
   def wakes?(port_k, contact_k, rt), do: Enum.any?(contact_k, &(abs(&1 - port_k) >= rt.thermal_sleep_delta_k))
 

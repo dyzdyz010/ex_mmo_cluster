@@ -132,9 +132,10 @@ flowchart LR
   PR --> A
   S[(thermal.structures<br/>body.controller、calm、deferred)] -->|usage/1 现算| A
   A -->|:ok / :structure_quota / :flight_quota / :region_budget| C
-  ST[Structures.tick/3] -->|claim_deferred / take_trigger| A
+  ST[Structures.tick/4] -->|claim_deferred / take_trigger| A
   ST -->|calm?/4、next_calm/2| A
   TH[Thermal 内核组装<br/>Structures.heat_nodes/1] -->|asleep? / wakes?| A
+  BC[身体报告 Thermal.body_contacts/2<br/>可触碰集合 Structures.touchable/1] -.->|人物碰到等首次导热边的〈遇〉结构：<br/>接触开始即唤醒（§11.3 #16）| TH
 ```
 
 - 准入顺序与原因：每施法者结构（玩家 6、NPC 4）→ `:structure_quota`；每施法者飞行 3（Q7-5）→ `:flight_quota`；醒着的热节点
@@ -147,6 +148,8 @@ flowchart LR
   取预算；取不到的写进条目 `deferred`（同一规则至多一项，随持久化）。投射物提交点的〈遇〉触发不计入每拍预算。
 - 热节点休眠：落地热结构拍末判平静（与接触节点温差 < 5 K 且净热流 < 100 W），条目 `calm` 连续 2 拍即休眠（Q7-W2 1 拍
   滞回）：不进热内核、线上 status `:asleep`、不计入醒着的热节点。每次组装内核节点按当前接触温度复核，温差 ≥ 5 K 即唤醒。
+  唯一的另一条唤醒（决策稿 §11.3 #16）：还在等首次导热边的〈遇〉结构，此刻有世界接触候选或有人物碰到（`Structures.touchable/1`
+  供 `Thermal.body_contacts/2` 取用）即唤醒；依据 Box2D v2.4.1 `b2Contact::Update` 接触由无到有时唤醒两端。
 - 可观测：`voxel_magic_admission`（每次判定：原因、用量、预算、在场、NPC 合计、飞行、醒着的热节点）、`voxel_magic_presence`、
   `voxel_structure_triggers`、`voxel_structure_sleep`；`World.stats/1` 的 `magic_admission`。
 
@@ -185,6 +188,11 @@ flowchart LR
   （停住的 live 1 不带 `flying`，或 live 2–6 终态快照，`flight_s` 为真实飞行时长、`rest` 为真实落点）。
 - 〈遇〉：命中地形时按 `last_tick + 1` 求值（含 mix64 读数丢失），触发即在投射物提交点 `respond/3`，读〈遇〉的规则记 live 2；
   丢失时结构作为静止结构留下、接触待决，之后的热拍重判。动能经 `settle_kinetic/1` 在命中格沉积。
+- 〈遇〉的另一个求值点：静止结构在热拍里首次出现导热边（设计 §5.4，决策稿 §11.3 #16，用户 2026-11-26 裁定）。导热边是热内核的
+  接触边，对端是世界节点或人物组织块（辐射、对流不算）；`Thermal` 每次内核调用记下连上边的结构，`Structures.tick/4` 判首次。
+  一生只算一次（条目 `conducted` 随持久化，断开再出现不算）；出生时就贴着的边在第 1 拍算首次（〈附〉贴墙的〈热〉〈遇〉〈散〉
+  第 1 拍释放）；落地或命中与之后的首次导热边各算一次。触发走热拍既有路径（计入触发预算，〈散〉记 live 2），日志
+  `voxel_structure_contact sid cid tick peers woke`。
 - 人物命中（只对 `ends_on_contact`，Q5-4）：进入组织 `q = E_op 热半 + 热份额（至多到 T_port）+ 动能`（Q5-2），辐射半只记账；
   冻结交付随 `thermal` 持久化，Player 接纳后终止并记 `structure_body_mj`（分项 `projectile_body_j`、`body_exchange_j`），
   未接纳散入空气记 `projectile_rejected_j`。kind14 回执照旧由后端在终止事务之后下发。

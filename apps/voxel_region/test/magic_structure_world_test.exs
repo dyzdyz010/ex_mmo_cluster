@@ -16,6 +16,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     逐段飞行；测试注入服务器时间线时钟 `FlightClock`（施放记录 t0 与飞行时长同源），推进它并直接投递 `:projectile_tick`
     （与 50 ms 定时拍同一入口）。墙：石格 (2, 2, 4)、(2, 1, 4)，火球自手边瞄向它。飞行中唯一的欠账来源（P1 无〈乱〉接线）
     是邻近终止释放剂量：定时火种贴叶 (0, 2, 3)，第 60 拍〈散〉释放约 187 kJ，作用于 3 m 内其后处理的结构（4c 已接线）。
+  - 决策稿 §11.3 #16（静止结构的首次导热边，设计 §5.4〈遇〉行；用户 2026-11-26 裁定 ①②③）：不带〈投〉的〈热〉〈遇〉程序由
+    发布预设改槽、经真实解码器接纳；导热边的出现经公共入口产生——〈附〉出生即贴墙、运维编辑 `World.apply_edits/2` 放上或拆掉
+    石格、Scene 的身体报告 `{:body_contact, …}`。期望取设计与裁定（第 1 拍、live 2、一生一次、接触开始即唤醒），不复制算法。
   - 不覆盖：驱散与打断（切片 6）、准入与触发预算（切片 7）。
   """
   use ExUnit.Case, async: false
@@ -1008,6 +1011,158 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_in_delta String.to_float(env), 2.0, 0.01
     assert_in_delta String.to_float(x_star), 0.25, 0.005
     assert hot_state.load / 255 > String.to_float(x_star)
+  end
+
+  # ---------------------------------------------------------------------------
+  # 决策稿 §11.3 #16：静止结构在热拍里首次出现导热边时置〈遇〉接触（设计 §5.4〈遇〉行、§2.3 `cond.contact`、§13 #10）
+  # ---------------------------------------------------------------------------
+
+  # 程序都由发布预设“灼点”〈附〉〈形 球 0.25 m，0.66 kg〉〈热 1500 K〉〈蓄 15 kJ〉改槽得到（偏移按设计 §11.4.4 的逐字节注释：
+  # 末字节 n_rule = 0 换成规则段），经真实 `Program.decode_ir/2` 接纳——玩家能写出的、签名合法的不带〈投〉的〈遇〉程序。
+  # 规则段 = n_rule 1、priority 0、n_read、读数、n_resp 1〈散〉、backup 0（同火球）。
+  @contact_rule <<1, 0, 1, 0x22::16, 1, 0x2C::16, 0>>
+  # 〈遇〉且〈时 2 s〉→〈散〉：两个读数按下标升序（〈遇〉0x22；〈时〉0x23，duration_cs 200，from 0xFF = 出生）。
+  @contact_timer_rule <<1, 0, 2, 0x22::16, 0x23::16, 200::16, 0xFF, 1, 0x2C::16, 0>>
+  # 悬空感应器的位置：包围盒 z ∈ [1.5, 2.0]，四周是空气；石格 (5, 2, 2) 的 z = 2 面恰与盒面相贴。
+  @sensor_point {5.5, 2.5, 1.75}
+  # 碰到感应器的人物（角色 2002）的身体报告，形状同 `body_contact_world_test.exs`（Scene 每秒一次的 `{:body_contact, …}`）。
+  @toucher %{height: 1.8, radius: 0.3, skin_k: 307.15, capacity: 24_430.0, area: 1.8, tissue_k: 307.15,
+    tissue_capacity: 209.4, tissue_g: 0.378207}
+
+  defp scorch_with(rule) do
+    scorch = program("scorch")
+    binary_part(scorch, 0, byte_size(scorch) - 1) <> rule
+  end
+
+  # 近环境温度的悬空感应器：“灼点”的形成锚〈附〉（00 08 FF）换成〈握〉（00 07），〈热〉t0 由 15000 dK 改为 2940 dK
+  # （294.0 K，同 `magic_admission_world_test.exs` 的温石），末尾加〈遇〉→〈散〉。
+  defp warm_sensor do
+    <<head::binary-size(3), 0, 8, 0xFF, mid::binary-size(16), 0x3A98::16, rest::binary-size(7), 0>> = program("scorch")
+    head <> <<0, 7>> <> mid <> <<2940::16>> <> rest <> @contact_rule
+  end
+
+  defp legal!(bytes) do
+    assert {:ok, %Program{kind: :structure}} = Program.decode_ir(bytes, Catalog.load(@catalog))
+    bytes
+  end
+
+  # 感应器悬在 `point`：施法者面朝 +z、眼在 point 后 0.5 m（同 `hand_lamp/4`）；返回结构 id。
+  defp hand_sensor(c, {x, y, z} = point, at) do
+    a = actor(%{eye: {x, y, z - 0.5}, feet: {x, y - 1.5, z - 0.5}})
+    assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, legal!(warm_sensor()), {0.0, 0.0, 1.0}, at)
+    {records, _} = drain()
+    assert [{^seq, id, %{live: 1, rest: rest, ends_on_contact: true, status: []}}] = records
+    assert distance(rest, point) < 1.0e-9
+    id
+  end
+
+  # 逐拍提交，直到 `id` 的状态增量带上 :asleep；返回提交次数（期间不得终止）。
+  defp commit_until_asleep(c, id, max) do
+    Enum.reduce_while(1..max, nil, fn n, _ ->
+      commit(c)
+      {records, states} = drain()
+      assert for({_, ^id, r} <- records, r.live != 1, do: r.live) == []
+      if Enum.any?(states, fn {_, sid, r} -> sid == id and :asleep in r.status end), do: {:halt, n}, else: {:cont, nil}
+    end)
+    |> tap(&assert(&1, "#{max} 次提交内 #{inspect(id)} 未休眠"))
+  end
+
+  # 日志里 `id` 的首次导热边接触：[{拍号, 对端种类, 是否从休眠中唤醒}]。
+  defp contact_events(log, id) do
+    for [_, tick, peers, woke] <-
+          Regex.scan(~r/voxel_structure_contact sid=#{Regex.escape(inspect(id))} cid=\d+ tick=(\d+) peers=(\S+) woke=(\w+)/, log),
+        do: {String.to_integer(tick), peers, woke}
+  end
+
+  test "§11.3 #16 静止〈附〉〈热〉〈遇〉〈散〉贴在墙面：出生时就有的导热边在第 1 拍算首次出现，当拍以 live 2 终止、释放进墙格，账目闭合", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    born = tick(c)
+    {id, record} = build_program(c, @wall_micro, legal!(scorch_with(@contact_rule)), 2_000_000)
+    # 不带〈投〉：出生即静止在墙面上（接触格 = 准星命中的墙石 (2, 2, 4)），出生记录 ends_on_contact 置位。
+    assert %{ends_on_contact: true, anchor_type: 1, flight_s: +0.0, status: []} = record
+
+    log = info_log(fn -> commit(c) end)
+    ended = ended_record(id)
+    # 用户 2026-11-26 裁定 ②：出生前没有热拍，第 1 拍就是导热边首次出现；读〈遇〉的规则触发记 live 2（Q4-W3）。
+    assert ended.live == Codec.structure_end_live(:contact)
+    assert ended.rest == record.rest
+    assert [{tick, "cell", "false"}] = contact_events(log, id)
+    assert tick == born + 1 and tick(c) == born + 1
+    # 释放只落进接触格（设计 §5.2，决策稿 §11.3 #9）。
+    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 .*cell=\{2, 2, 4\}/
+    s = observe(c.w)
+    assert s.structures == %{} and s.thermal.structure_released_mj > 0
+    assert_accounts_closed(s.thermal)
+  end
+
+  test "§11.3 #16 反例：首次导热边一生只算一次——〈遇〉且〈时 2 s〉在第 1 拍被未满足的求值消费；一直贴着到〈时〉到期不触发，拆掉墙格再放回也不算新的接触", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    born = tick(c)
+    {id, _record} = build_program(c, @wall_micro, legal!(scorch_with(@contact_timer_rule)), 2_000_000)
+
+    log =
+      info_log(fn ->
+        # 第 1 拍首次导热边：〈时〉未到期，规则未满足，接触被消费（设计 §5.4）。〈时〉到期拍 = 出生拍 + ⌈2 s ÷ 0.5 s⌉ = 第 4 拍：
+        # 此时仍贴着墙，但接触是“事件发生时，一次性”，不是持续成立的状态，规则仍未满足。
+        for _ <- 1..5, do: commit(c)
+        # 第 6 拍墙格已拆（没有导热边）；第 7、8 拍同一位置放回石格，导热边再次出现，但不是“首次”。
+        {:ok, _} = World.apply_edits(c.w, [{{2, 2, 4}, 0}])
+        commit(c)
+        {:ok, _} = World.apply_edits(c.w, [{{2, 2, 4}, @stone}])
+        for _ <- 1..2, do: commit(c)
+      end)
+
+    {records, _} = drain()
+    assert for({_, ^id, r} <- records, r.live != 1, do: r.live) == []
+    assert Map.has_key?(observe(c.w).structures, id)
+    assert tick(c) == born + 8
+    assert [{tick, "cell", "false"}] = contact_events(log, id)
+    assert tick == born + 1
+  end
+
+  test "§11.3 #16 休眠后被人碰到：近环境温度的悬空〈握〉〈热 294 K〉〈遇〉〈散〉无接触 2 拍即休眠；人物碰到它的那一拍唤醒、首次出现导热边，以 live 2 终止", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    id = hand_sensor(c, @sensor_point, 2_000_000)
+    # 设计 §5.3.2 与 Q7-W2：没有接触节点时只看净热流（< 100 W），连续 2 拍平静即休眠。
+    assert commit_until_asleep(c, id, 4) == 2
+    # 再过一拍：没有接触就没有导热边，不触发、不唤醒。
+    commit(c)
+    assert {[], _} = drain()
+    assert :asleep in observe(c.w).structures[id].status
+
+    # 人物身体轴（半径 0.3 m）距球心 0.4 m < 0.25 + 0.3 m（`BodyContact.touching?/5`）。用户 2026-11-26 裁定 ①：接触开始即唤醒。
+    {x, _, z} = @sensor_point
+    send(c.w, {:body_contact, 2002, self(), Map.put(@toucher, :feet, {x + 0.4, 1.0, z})})
+    log = info_log(fn -> commit(c) end)
+    ended = ended_record(id)
+    assert ended.live == Codec.structure_end_live(:contact)
+    assert [{_, "body", "true"}] = contact_events(log, id)
+    s = observe(c.w)
+    assert s.structures == %{}
+    assert_accounts_closed(s.thermal)
+  end
+
+  test "§11.3 #16 休眠后被同温方块贴上：近环境温度的悬空感应器休眠后，旁边放上一块气温的石（温差 < 5 K，原唤醒规则不唤醒），当拍唤醒并以 live 2 终止", c do
+    fund(c, 1_000_000, 1_000_000)
+    subscribe(c)
+    id = hand_sensor(c, @sensor_point, 2_000_000)
+    assert commit_until_asleep(c, id, 4) == 2
+    commit(c)
+    assert {[], _} = drain()
+
+    # 石格 (5, 2, 2) 的 z = 2 面与感应器包围盒的 z = 2.0 面相贴（`Semblance.contact/2`：贴面即接触）。新放的石格没有属性行，
+    # 取气温 293.15 K，与端口 294.0 K 相差 0.85 K < 5 K（`MagicAdmission.wakes?/3` 不唤醒）。
+    {:ok, _} = World.apply_edits(c.w, [{{5, 2, 2}, @stone}])
+    log = info_log(fn -> commit(c) end)
+    ended = ended_record(id)
+    assert ended.live == Codec.structure_end_live(:contact)
+    assert [{_, "cell", "true"}] = contact_events(log, id)
+    s = observe(c.w)
+    assert s.structures == %{}
+    assert_accounts_closed(s.thermal)
   end
 
   # ---------------------------------------------------------------------------

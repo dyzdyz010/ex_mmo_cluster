@@ -3,9 +3,10 @@ defmodule VoxelRegion.World.Thermal do
   全局系统功能：World 的热模拟编排——定时热提交、内核步、电路段、结构与身体节点、辐射视线与受保护区域边界。
 
   魔法 v2 切片 4c：带〈热〉且已落地的结构是内核的受限外部节点（`{Φ_cap, t_lo, t_hi}`，设计 §5.3.1），每次内核调用按
-  T_port = T_ref + (E_th + 本拍已累计净热)/C_th 取节点温度，调用后的净热累加到 `thermal_run.structure_heat`；一次提交的
-  全部内核调用走完后（`settle_run/2`），`World.Structures.tick/3` 按 id 升序步进全部结构，热提交拍号 `thermal.commit_tick`
-  加 1（Q4-9）。限流计数按调用汇总成 `voxel_thermal_throttle`（子步数相加、节点数取最大、最小缩放比取最小）。
+  T_port = T_ref + (E_th + 本拍已累计净热)/C_th 取节点温度，调用后的净热累加到 `thermal_run.structure_heat`，连上过导热边
+  （接触边，对端是世界节点或身体组织块）的结构累计到 `thermal_run.structure_edges`（〈遇〉的首次导热边，决策稿 §11.3 #16）；
+  一次提交的全部内核调用走完后（`settle_run/2`），`World.Structures.tick/4` 按 id 升序步进全部结构，热提交拍号
+  `thermal.commit_tick` 加 1（Q4-9）。限流计数按调用汇总成 `voxel_thermal_throttle`（子步数相加、节点数取最大、最小缩放比取最小）。
 
   温度、HP、燃料等真值仍是 World 的稀疏属性记录；本模块在 World 状态上推进模拟，只经
   `VoxelRegion.World.Canonical` 读取 canonical 占用，派生工作集在 `VoxelRegion.ThermalWork`。
@@ -209,8 +210,8 @@ defmodule VoxelRegion.World.Thermal do
 
     if continues?(state) do
       run = %{ref: make_ref(), scheduled_due: scheduled_due, damage: state.damage, visited: MapSet.new(),
-        remaining: @tick_s, segment: nil, seq: state.seq, busy_us: 0, steps: 0, structure_heat: %{}, kernel: nil,
-        started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
+        remaining: @tick_s, segment: nil, seq: state.seq, busy_us: 0, steps: 0, structure_heat: %{}, structure_edges: %{},
+        kernel: nil, started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
       work = state.thermal_work
       %{state | thermal_run: run, thermal_work: %{work | builds: 0, burning: ThermalWork.live_burning(work.burning, state.damage)}}
@@ -247,9 +248,9 @@ defmodule VoxelRegion.World.Thermal do
   defp finish_tick(state, run, started) do
     # 电路段与点燃可直接产生属性行；返回消息循环前，让同一页索引反映这些 canonical 写入。
     state = Pages.index_live_damage(state, run.visited)
-    # 结构净热与内核计数在 `thermal_step/3` 里随 state.thermal_run 累计（本函数的 run 是步前取出的副本）。
+    # 结构净热、导热边与内核计数在 `thermal_step/3` 里随 state.thermal_run 累计（本函数的 run 是步前取出的副本）。
     run = %{run | seq: state.seq, steps: run.steps + 1, structure_heat: state.thermal_run.structure_heat,
-      kernel: state.thermal_run.kernel,
+      structure_edges: state.thermal_run.structure_edges, kernel: state.thermal_run.kernel,
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
 
     if run.remaining < 1.0e-12 do
@@ -370,7 +371,7 @@ defmodule VoxelRegion.World.Thermal do
     # 拍号只在有结构时推进（拍号的唯一读者是结构；没有结构的世界热状态与引入结构前逐位相同）。
     tick = Structures.commit_tick(state) + 1
     log_throttle(tick, run.kernel)
-    {state, extra} = Structures.tick(state, tick, run.structure_heat)
+    {state, extra} = Structures.tick(state, tick, run.structure_heat, run.structure_edges)
     state = if Structures.all(state) != %{} or extra != %{},
       do: %{state | thermal: Map.put(state.thermal, :commit_tick, tick)}, else: state
     {state, %{rows: rows, phase_changes: phase_changes, settled: settled,
@@ -668,6 +669,7 @@ defmodule VoxelRegion.World.Thermal do
           circuit: work.circuit}}
 
     state = accumulate_structures(state, structures, extra, structure_result, step.kernel)
+    state = accumulate_edges(state, structures, count, edges, body_edges)
     temperatures = Map.new(Enum.zip(requested, step.temperatures) ++
       Enum.with_index(Enum.map(structure_result, &elem(&1, 0)), &{&2 + count, &1}))
     state = exchange_bodies(state, bodies, body_edges, body_result, count + length(structures), temperatures, positions, done)
@@ -815,6 +817,28 @@ defmodule VoxelRegion.World.Thermal do
     %{state | thermal_run: %{state.thermal_run | structure_heat: heat, kernel: total}}
   end
 
+  # 〈遇〉的“热拍中本节点首次出现导热边”（设计 §5.4，决策稿 §11.3 #16）：本次内核调用里连上接触边的结构及对端种类，
+  # 按提交累计到 `thermal_run.structure_edges`（id => [:cell | :body]），提交末交给 `Structures.tick/4` 判“首次”。
+  # 导热边即内核的接触边（§5.3.1 第一类热流）：结构与世界节点的边（`structure_terms/6`，下标 i 是结构），以及身体组织块
+  # 触碰结构的边（`body_terms/4`，结构下标在 [count, count + 结构数)）；互见辐射、对天空与对流不是导热边。
+  defp accumulate_edges(state, [], _count, _edges, _body_edges), do: state
+
+  defp accumulate_edges(state, structures, count, edges, body_edges) do
+    ids = structures |> Enum.map(&elem(&1, 0)) |> List.to_tuple()
+    last = count + tuple_size(ids)
+
+    peers =
+      for({_j, i, _g} <- edges, do: {i, :cell}) ++
+        for({j, _node, _g} <- body_edges, j >= count and j < last, do: {j, :body})
+
+    acc =
+      Enum.reduce(peers, state.thermal_run.structure_edges, fn {i, kind}, acc ->
+        Map.update(acc, elem(ids, i - count), [kind], &Enum.uniq([kind | &1]))
+      end)
+
+    put_in(state.thermal_run.structure_edges, acc)
+  end
+
   # ---- 魔法增量 4：身体皮肤与局部接触组织块作为热内核外部节点（接触规则在 BodyContact；身体真值在 Scene）
   # 每个身体两节点接在结构之后：皮肤 {T_skin, 1, 1, C_skin, 0, 1e6, 暴露 0, 0, 0, true} 与组织块 {T_tissue, …, C_tissue, …}，
   # 两者之间一条内部边（Scene 报的 G = 组织块面积 × 核心-皮肤导热）。鞋底与触碰结构接组织块，浸没（大面积分布接触）接皮肤；
@@ -859,9 +883,10 @@ defmodule VoxelRegion.World.Thermal do
         end
       end)
 
-    # 结构按包围盒的最大半尺寸当作球处理（`BodyContact` 的接触判据与导热都按半径）。
+    # 结构按包围盒的最大半尺寸当作球处理（`BodyContact` 的接触判据与导热都按半径）。可触碰的除热内核节点外，还有仍在等
+    # 首次导热边的休眠〈遇〉结构：碰到即接触开始，下一次组装内核节点时被唤醒（`Structures.touchable/1`，决策稿 §11.3 #16）。
     touched =
-      for {id, %{body: body}} <- Structures.heat_nodes(state), r = body.half |> Tuple.to_list() |> Enum.max(),
+      for {id, %{body: body}} <- Structures.touchable(state), r = body.half |> Tuple.to_list() |> Enum.max(),
           VoxelRegion.BodyContact.touching?(body.rest, r, feet, height, radius),
           do: {:structure, id, VoxelRegion.BodyContact.touch(r, state.magic.semblance.thermal_conductivity_w_per_m_k)}
 

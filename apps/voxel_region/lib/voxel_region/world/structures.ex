@@ -23,8 +23,8 @@ defmodule VoxelRegion.World.Structures do
   flowchart LR
     C[World.Casting 结算] -->|new/4 + 物理体| E[thermal.structures]
     T[World.Thermal 热提交] -->|落地的热结构 = 受限外部节点| K[voxim_thermal]
-    K -->|本拍净热| T
-    T -->|settle：按 id 升序| S[Structures.tick/3]
+    K -->|本拍净热、连上的导热边| T
+    T -->|settle：按 id 升序| S[Structures.tick/4]
     S -->|step/4 → respond/3| E
     S -->|沉积请求 → 有限热源 / 辐射账| T
     S -->|structures + structure_states| B[热事务 → PropertyBatch]
@@ -55,7 +55,23 @@ defmodule VoxelRegion.World.Structures do
   - 每拍拍首按（首次推迟拍号, id）为推迟队列预占预算，步进时先执行本结构的预占项，再为新触发取预算，取不到的写进条目
     `deferred`（随持久化）。投射物提交点上的〈遇〉触发不计入每拍预算。
   - 已落地的热结构拍末判平静，条目 `calm` 记连续平静拍数，达到 2 拍即休眠：不进热内核（`heat_nodes/1` 按当前接触温度
-    复核唤醒）、线上 status 位 `:asleep`。
+    复核唤醒）、线上 status 位 `:asleep`。还在等首次导热边的〈遇〉结构另有一条唤醒：接触开始即唤醒（见下节）。
+
+  ## 〈遇〉：静止结构的首次导热边（决策稿 §11.3 #16；设计 §5.4〈遇〉行、§2.3 `cond.contact`、§13 #10）
+
+  〈遇〉有两个求值点：投射物提交点的命中端点（`land/5`、`hit_body/5`），以及热拍中本节点首次出现导热边。后者的语义
+  （用户 2026-11-26 裁定 ①②③）：
+
+  - 导热边即热内核的接触边：与世界节点（实体、液体、细分构件；受保护区或气候区边界不连边的不算）或人物组织块
+    （身体报告触碰结构）相连的边；互见辐射、对天空与对流不算。`World.Thermal` 每次内核调用记下连上边的结构与对端种类，
+    提交末交给 `tick/4`。
+  - 一生只算一次：条目 `conducted` 记“已出现过”，随持久化；之后边断开再出现、换了对端都不算。出生时就贴着的边（〈附〉贴在
+    格面上）在第 1 拍算首次（②）。投射物落地或命中与之后的首次导热边各算一次（③），`land/5`、`hit_body/5` 不因此改变。
+  - 读数丢失不消费接触（设计 §5.4 R5）：由 `Structure` 的读数待决保持到下一拍，这里只在首次那一拍给 `contact: true`。
+  - 接触开始即唤醒（①）：还在等首次导热边的休眠〈遇〉结构，此刻有世界接触候选或有人物碰到（`touchable/1`）就唤醒，当拍连上
+    边。依据 Box2D v2.4.1 `src/dynamics/b2_contact.cpp` `b2Contact::Update`（接触由无到有时 `SetAwake(true)` 两端）。
+  - 触发后走热拍既有路径：计入每拍触发预算，〈散〉以 live 2 终止，释放只落进接触格（无接触格时计入辐射账）。
+  - 可观测：`voxel_structure_contact sid cid tick peers=cell|body|body,cell woke`（首次导热边那一拍一行）。
 
   ## 干预场与施法者处剂量（切片 6，决策稿 §6.1；设计 §5.3 第 0′ 步、§7.3）
 
@@ -75,6 +91,7 @@ defmodule VoxelRegion.World.Structures do
     终态快照的落点即该位置，释放落不进格、计入辐射账。
   - 投射物提交点（`land/5`、`hit_body/5`、`deliver/3`、`dissipate/3`）：动能经 `settle_kinetic/1` 在命中格沉积，〈遇〉按
     `last_tick + 1` 求值（含读数丢失），〈散〉在同一提交点 `respond/3` 结算；人物命中冻结交付，等 Player 接纳后终止。
+    落地留下的热结构之后在热拍里出现首次导热边时，〈遇〉再求值一次（见上节，裁定 ③）。
   - 已定（决策稿 §11.3）：Q5-3 命中时不补记不足一拍的维持费（差额随释放入账；实现决策 #13）；离开 World 能读出
     canonical 的范围时以 live 3 散解（实现决策 #14，`World.Projectiles` moduledoc）；人物命中读数丢失时停在命中点而不是
     穿过（手感项，8b 实跑请用户确认，#28）。
@@ -463,8 +480,9 @@ defmodule VoxelRegion.World.Structures do
 
   def restore(state), do: state
 
-  # 条目的可选键：冻结交付（切片 5）、触发推迟队列与连续平静拍数（切片 7）。
-  @optional_keys [:delivery, :deferred, :calm]
+  # 条目的可选键：冻结交付（切片 5）、触发推迟队列与连续平静拍数（切片 7）、〈遇〉结构已出现过首次导热边（决策稿 §11.3
+  # #16；只在为 true 时出现，冷重启后不再把仍在的边当作首次）。
+  @optional_keys [:delivery, :deferred, :calm, :conducted]
 
   defp from_record(id, %{structure: s, body: body, wire: wire} = record, magic, commit_tick) do
     delivery = Map.get(record, :delivery)
@@ -476,7 +494,8 @@ defmodule VoxelRegion.World.Structures do
          true <- wire?(wire) or {:error, :wire},
          true <- delivery == nil or delivery?(delivery) or {:error, :delivery},
          true <- deferred?(Map.get(record, :deferred, []), s, commit_tick) or {:error, :deferred},
-         true <- Map.get(record, :calm, 0) in 0..MagicAdmission.sleep_after() or {:error, :calm} do
+         true <- Map.get(record, :calm, 0) in 0..MagicAdmission.sleep_after() or {:error, :calm},
+         true <- Map.get(record, :conducted, true) == true or {:error, :conducted} do
       {:ok, Map.put(record, :structure, s)}
     else
       {:ok, %Structure{}} -> {:error, :tick_or_id}
@@ -541,18 +560,51 @@ defmodule VoxelRegion.World.Structures do
   @doc """
   本次热提交作为内核外部节点的结构（按 id 升序）：带〈热〉（C_th 非空）且已落地。飞行中的结构不进热内核
   （设计 §5.3 C1-15 跳过第 0、2、11 步），已冻结人物命中交付的结构也不进（冻结期间不换热，沿 v1 合同）。
-  休眠中的结构不进（设计 §5.3.2、切片 7），除非此刻任一接触节点与端口温差已 ≥ 5 K（`MagicAdmission.wakes?/3`）：
-  每次组装都按当前温度复核，被唤醒的结构在本次调用就重新参与换热。
+  休眠中的结构不进（设计 §5.3.2、切片 7），除非此刻被唤醒（`woken?/3`），每次组装都复核，被唤醒的结构在本次调用就
+  重新参与换热：
+
+  - 任一接触节点与端口温差已 ≥ 5 K（`MagicAdmission.wakes?/3`）；
+  - 接触开始（决策稿 §11.3 #16，用户 2026-11-26 裁定 ①）：只对还在等首次导热边的〈遇〉结构（`awaiting_contact?/1`），
+    此刻有世界接触候选（休眠判定用的接触节点格，`contact_temperatures/2`），或有人物报告碰到它（`Thermal.body_contacts/2`
+    经 `touchable/1` 记下的接触）。依据：Box2D v2.4.1 `src/dynamics/b2_contact.cpp` 的 `b2Contact::Update`，非传感器接触
+    `touching != wasTouching` 时 `SetAwake(true)` 两端（接触由无到有即唤醒休眠的刚体）。其余结构的休眠规则不变。
   """
   def heat_nodes(state) do
     all(state)
-    |> Enum.filter(fn {_, %{structure: s, body: body} = e} ->
-      s.c_th_j_per_k != nil and body.flight == nil and not Map.has_key?(e, :delivery) and
-        (not MagicAdmission.asleep?(e) or
-           MagicAdmission.wakes?(elem(port(s, 0.0, state.magic), 0), contact_temperatures(state, body), state.magic))
+    |> Enum.filter(fn {id, e} -> thermal_node?(e) and (not MagicAdmission.asleep?(e) or woken?(state, id, e)) end)
+    |> Enum.sort()
+  end
+
+  @doc """
+  人物可触碰的结构（`World.Thermal.body_contacts/2` 每次身体报告时取用，按 id 升序）：热内核节点，加上仍在等首次导热边的
+  休眠〈遇〉结构——人物碰到它就是接触开始，下一次组装内核节点时 `heat_nodes/1` 据这条接触唤醒它（决策稿 §11.3 #16）。
+  """
+  def touchable(state) do
+    all(state)
+    |> Enum.filter(fn {id, e} ->
+      thermal_node?(e) and (not MagicAdmission.asleep?(e) or awaiting_contact?(e) or woken?(state, id, e))
     end)
     |> Enum.sort()
   end
+
+  # 能作为热内核外部节点的结构：带〈热〉（C_th 非空）、已落地、不在冻结交付中。
+  defp thermal_node?(%{structure: s, body: body} = e),
+    do: s.c_th_j_per_k != nil and body.flight == nil and not Map.has_key?(e, :delivery)
+
+  defp woken?(state, id, %{structure: s, body: body} = e) do
+    temperatures = contact_temperatures(state, body)
+
+    MagicAdmission.wakes?(elem(port(s, 0.0, state.magic), 0), temperatures, state.magic) or
+      (awaiting_contact?(e) and (temperatures != [] or touched_by_body?(state, id)))
+  end
+
+  # 还在等首次导热边的结构：有读〈遇〉的规则，且一生中还没出现过导热边（条目 `conducted`，随持久化）。
+  defp awaiting_contact?(%{structure: s} = e),
+    do: not Map.get(e, :conducted, false) and Enum.any?(s.rules, fn rule -> Enum.any?(rule.readings, &(&1.kind == :contact)) end)
+
+  # 最近一次身体报告记下了与该结构的触碰（`Thermal.body_contacts/2` 的 `{:structure, id, G}`，留到下一次热提交使用）。
+  defp touched_by_body?(state, id),
+    do: Enum.any?(state.bodies, fn {_, b} -> Enum.any?(b.contacts, &match?({:structure, ^id, _}, &1)) end)
 
   # 休眠判定用的接触节点温度：物理体候选宏格里与其包围盒接触、且是未细分热节点的实占用格（与热内核接触边同一候选集；
   # 细分格不计，近似）。温度取属性记录（提交末已写回原生热域）。
@@ -581,12 +633,13 @@ defmodule VoxelRegion.World.Structures do
   @doc """
   热提交拍 `tick`（= `commit_tick + 1`）的结构步进：按 id 升序对每个运行中结构取读数、调用 `Structure.step/4`，对触发的
   〈散〉调用 `respond/3`，执行沉积请求并记账；终止的结构移除并产出终止记录（live 2–6），其余按 Q4-4 分箱比较决定是否
-  发状态增量。`heat` 是本拍内核给各结构节点的净热（J，`World.Thermal` 按调用累计）。
+  发状态增量。`heat` 是本拍内核给各结构节点的净热（J，`World.Thermal` 按调用累计）；`edges` 是本拍连上过导热边的结构
+  及对端种类（`%{id => [:cell | :body]}`，同样按调用累计），用于〈遇〉的首次导热边（`step_one/9`）。
 
   返回 `{state, extra}`，`extra` 是随本次热事务下发的 `%{structures: 删除或终止记录, structure_states: 完整记录}`
   （没有变化的键省略）。调用方负责把 `thermal.commit_tick` 置为 `tick`。
   """
-  def tick(state, tick, heat) do
+  def tick(state, tick, heat, edges) do
     structures = all(state)
 
     if structures == %{} do
@@ -612,7 +665,8 @@ defmodule VoxelRegion.World.Structures do
       acc =
         Enum.reduce(ordered, acc, fn {id, entry}, acc ->
           step_started = System.monotonic_time(:microsecond)
-          acc = step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), neighbors, Map.get(fields, id, []), catalog)
+          acc =
+            step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), Map.get(edges, id), neighbors, Map.get(fields, id, []), catalog)
           %{acc | step_us: [System.monotonic_time(:microsecond) - step_started | acc.step_us]}
         end)
 
@@ -652,10 +706,22 @@ defmodule VoxelRegion.World.Structures do
   defp log_sleep(tick, sleep),
     do: Logger.info("voxel_structure_sleep tick=#{tick} asleep=#{sleep.asleep} woke=#{sleep.woke} slept=#{sleep.slept}")
 
-  defp step_one(acc, id, entry, tick, heat_j, neighbors, fields, catalog) do
+  # `peers`：本拍该结构连上过的导热边对端种类（没有为 nil）。
+  defp step_one(acc, id, entry, tick, heat_j, peers, neighbors, fields, catalog) do
     %{structure: s, body: body} = entry
     state = acc.state
     site = site(state, entry, tick)
+    # 〈遇〉（设计 §5.4“热拍中本节点首次出现导热边”，决策稿 §11.3 #16）：一生只有一次，出生时就贴着的边在第 1 拍算首次
+    # （用户 2026-11-26 裁定 ②）；投射物命中 / 落地是另一个求值点，之后的首次导热边照样再算一次（裁定 ③）。读数丢失时
+    # 接触由 `Structure` 的读数待决保持到下一拍（R5），这里不重复给。
+    first_edge = peers != nil and awaiting_contact?(entry)
+
+    if first_edge,
+      do:
+        Logger.info(
+          "voxel_structure_contact sid=#{inspect(id)} cid=#{body.caster} tick=#{tick} peers=#{peers |> Enum.sort() |> Enum.join(",")} " <>
+            "woke=#{MagicAdmission.asleep?(entry)}"
+        )
 
     inputs = %{
       net_heat_j: heat_j,
@@ -666,7 +732,7 @@ defmodule VoxelRegion.World.Structures do
       neighbors: neighbors_of(neighbors, id, site.position, catalog),
       fields: fields,
       release_doses: release_doses(acc.ended, site.position, catalog),
-      contact: false
+      contact: first_edge
     }
 
     {stepped, out} = Structure.step(s, inputs, tick, catalog)
@@ -725,7 +791,11 @@ defmodule VoxelRegion.World.Structures do
                 "env=#{out.metrics.env} coherence=#{out.metrics.coherence} status=#{inspect(wire.status)} temperature_k=#{site.temperature_k}"
             )
 
-        entry = %{entry | structure: final, wire: wire} |> optional(:deferred, queue, []) |> optional(:calm, calm, 0)
+        entry =
+          %{entry | structure: final, wire: wire}
+          |> optional(:deferred, queue, [])
+          |> optional(:calm, calm, 0)
+          |> optional(:conducted, Map.get(entry, :conducted, false) or first_edge, false)
         state = put_entry(state, id, entry)
         %{acc | state: state, states: states, rounding: acc.rounding + rounding}
 
