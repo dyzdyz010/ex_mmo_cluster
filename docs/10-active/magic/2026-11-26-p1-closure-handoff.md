@@ -1,0 +1,93 @@
+# 魔法 v2 P1 收口：统筹会话交接（2026-11-26 17:20 PST）
+
+> 用途：上一个统筹会话因为上下文过长而换新会话，本页给接手的统筹会话用。阶段事实以决策稿
+> [`2026-11-26-p1-closure-slices4-8.md`](2026-11-26-p1-closure-slices4-8.md)（下称“决策稿”）§14 为准，本页只记交接时的现场与待办。
+> 开工前先读工作树 `AGENTS.md`，测试规则以 `D:\hemifuture\Voxim\Docs\Testing.md` 为准。
+
+## 1. 用户目标
+
+用户要求：对接客户端，把魔法设计 v2 的改动统一，前后端一致，全部落地，达到能发版的程度。发版门槛是设计
+（TheWorldBook `docs/2026-11-19-glyph-composition-game-design.md` v2.11）§12.2 切片 1 的验收第 1–8 条，也就是本分支切片 8 的验收。
+在 P1 闭环之后，服务端与 Voxim 同版本合入主分支（Hello 46）。**推送与发版必须先得到用户确认。**
+
+## 2. 仓库与工作树
+
+| 端 | 工作树 | 分支 | 交接时 HEAD | 说明 |
+|---|---|---|---|---|
+| 服务端 | `D:\hemifuture\ex_mmo_cluster-magic-v2-p1` | `magic-v2-p1` | `d3a95e89` | 已在 master `62d9a5a5` 之上；master 之后没有新提交 |
+| 客户端 | `D:\hemifuture\Voxim-magic-v2` | `magic-v2-online` | `20414ae8` | 已变基到 Voxim main `f28b972f`；备份分支 `magic-v2-online-prerebase-3b9f9632` |
+| 服务端 master | `D:\hemifuture\ex_mmo_cluster` | `master` | `62d9a5a5` | 本地领先 origin 约 83 个提交，未推送 |
+
+- 客户端工作树里 `Plugins/VoximMovement/.../voxim_movement.h` 的换行改动是开工前就有的，**不要提交**。
+- 不要碰 `D:\hemifuture\Voxim` 主工作树：那里有用户未提交的改动。
+- **master 主工作树 `D:\hemifuture\ex_mmo_cluster` 里有别的会话留下的未提交改动**（约 04:26 最后修改）：灵炁场 `anima_field.ex`、
+  `docs/10-active/magic/2026-11-26-anima-field-design.md`、`magic/{catalog,cost,program}.ex`、`world.ex`、`casting.ex` 等，
+  另有用户的天气与时钟设计稿（未跟踪）。这些不属于本任务，不要动。但它们改的是魔法与 World 文件，
+  魔法分支合入 master 时会冲突，合入前要先问用户这批改动归谁、怎么处理。
+- 已废弃的分支 `magic-v2-p1-throttle`（4b，已合入）、工作树 `D:\hemifuture\ex_mmo_cluster-magic-v2-throttle`，可在合入后清理。
+
+## 3. 交接时仍在后台跑的子代理（由旧会话启动，结果不会通知新会话）
+
+用 git 状态判断它们是否完成。若新会话开始后 30 分钟仍无新提交、文件也不再变化，就视为中断，按下面的说明另开代理接着做。
+
+> 接手会话核对（2026-11-26 18:05）：两项都已完成并提交，均未推送。服务端 `c384c130`（记录见决策稿 §14 末条），
+> 客户端 `ca1c5c7e`（`Voxim.Presentation.+Voxim.Magic.` 53/53）。
+
+1. **服务端：结构邻居查找 O(N²) → 网格分桶**（服务端工作树，未提交：`world/structures.ex`、新 `test/magic_structure_neighbors_test.exs`）。
+   要求结果与旧实现逐位相同（golden 字节不变）。只跑等价性测试、`magic_structure_world_test`、`magic_structure_wire_samples_test`
+   和修复后的负载测试一轮（`--only load`），**不跑 voxel_region 全量**。完成后应在决策稿 §14 追加记录并提交。
+2. **客户端：5 个缺失特效挂占位资产**（客户端工作树，未提交：`Docs/Magic/author_presentation.py`、`VoxelPresentationCatalogTests.cpp`）。
+   涉及的键：`structure.end.{exhausted,collapsed,released,dispelled}`、`structure.overline`。用现有 Niagara 资产，四种终止要能互相区分，
+   经作者脚本重新发布，作者脚本里标“占位，待美术替换”。只跑 `Voxim.Presentation.+Voxim.Magic.`。
+
+## 4. 进度总览
+
+- 已完成且两端闭合：切片 3（协议 Hello 46、IR v2）、4（结构运行时、热内核限流、结构记录 v2）、5/5b（飞行无射程终点、〈遇〉、命中伤害、
+  法杖无质量光弹〈蓄〉1742 J）、6（驱散脉冲、前摇打断、取消结账；持物普攻免除移动打断）、7（准入 `World.MagicAdmission`、
+  目录 `22c459f0…`，`flights_per_caster` 改为 3）。
+- 客户端（`magic-v2-online`）：已覆盖全部上述内容。已修复正式关卡目录（`DA_MagicCatalogV5` 接入 10 个关卡，v1 资产已删）；
+  “我的法术”迁移对话框；验收脚本改为 v2；验收清单 `Docs/Magic/Slice8-acceptance-checklist.md`。最近一次 Automation 173/173。
+- 切片 8a 负载实测（已提交，三档 `--only load` 均为判定失败，没有改成通过）：热内核余量充足；**结构步进超预算**
+  （主因是邻居 O(N²)，见 §3-1）；**持久化超出 16 KB/拍**，正确修法是 S1a A2 `stream_row`。S1a 尚未开始，
+  统筹建议这一版先发，**尚待用户拍板**。
+
+## 5. 待办（按顺序）
+
+1. 收第 3 节两个子代理的结果并核对（看提交、测试日志）。
+2. 把第 6 节的测试分级方案写进决策稿 §13，作为本分支剩余工作的测试规则。
+3. 决策稿里约 25 条工程类“待设计确认”改写为“实现决策 + 理由”，去掉标记。分类见第 7 节。
+   把已定的设计改动回写到 TheWorldBook 设计稿（另一个仓库，单独提交）。
+4. 修测试隔离：scene_server `P0BodyLifecycleTest` 每次运行都复用同一批角色 id，会被测试库残留行打红（违反 Testing.md §3）；
+   npc_server `NpcSpeakTest` 有计时偶发失败。
+5. 切片 8b 双客户端实跑验收（Testing.md §2.3）：先拿世界副本干跑驱动，判定器先过含反例的单测，实跑按阶段门控、首个失败即停。
+   每个短场景约 10 分钟内跑完，双端整场保持同一会话在线。实跑中请用户看手感项（第 7 节）、
+   整串字形与碎裂效果、5 个占位特效，以及“按住普攻被受伤或驱散打断后继续连发”是否可接受。
+   清单里有两条偏离设计：第 2 条改用热墙灼点、第 3 条改用取消到第 k 步；第 3 条先试把储能耗低来触发真正的中途失败。
+   UDP 看护按全局 CLAUDE.md 的放宽规则：开始和结束各记一次端点数。
+6. 合入准备：CI 的 `.github/actions/voxim-fixtures/action.yml` 固定的客户端提交号改为客户端发布提交；
+   确认 master 上的 `npc_brain_llm_test` 修复（分支 `a15238ab`）随合入带过去；L3 合入门禁跑一次；
+   处理第 2 节 master 工作树的灵炁场改动；生产 NPC 登记行若有 v1 `spells`，需要一次性迁移（N1/R4，合入前查）。
+7. 合入与发版（推送、镜像、分发）——**每一步都先问用户**。
+
+## 6. 测试分级方案（用户要求：严格按 AGENTS §3-14 与 Testing.md，不要动不动就跑全量）
+
+已写入决策稿 §13.1（唯一正文，含逐层文件清单与“简报范围是硬性要求”）。
+
+## 7. 待确认项的分类（用户已同意：工程细节由统筹自己定）
+
+- 统筹自定、写成实现决策：决策稿汇总的第 1–7、10–12、14、16–18、21、22、27–33 条（温度取格、邻居泄漏、限流边界、
+  触发名额顺序、越界终止、预计飞行时长 T、负载两档等）。
+- 用户已定、只差回写设计：〈取〉从取得的能量付费；`flights_per_caster` = 3。
+- 手感类，已按推荐实现，在实跑时请用户看：〈附〉形成距离（8）、命中细节（13、15）、取消扣费（19）、受伤打断定义（20）、
+  拥挤时拒绝策略（23、24、26）。
+
+## 8. 环境（WSL 测试）
+
+- 服务端测试只在 WSL 里跑。工作区 `/home/dyz/magic-v2-20261126`（`env.sh`、`sync.sh` 把服务端工作树 rsync 过去，`src/Voxim` 链接到客户端魔法工作树）。
+  工具链在 `~/toolchains/hex/usr/local/lib`（OTP 29 / Elixir 1.20.5），asdf 里的版本不对。
+- 入口：Git Bash 里执行 `MSYS_NO_PATHCONV=1 wsl.exe bash /home/dyz/magic-v2-20261126/mt.sh <app> [参数/文件…]`，
+  只打印 `Result:` 与失败，完整日志在 `~/magic-v2-20261126/logs/`。临时命令先写成脚本文件再 `wsl.exe bash <文件>`：`wsl.exe bash -c` 会被二次展开。
+- 测试库：docker 容器 `magic-v2-pg-20261126`（127.0.0.1:55501），本任务所建，验收结束后可删。
+  WSL 里 `/home/dyz/voxim-toolchains/...` 和 devsrv 的 beam 进程属于别的会话，不要动。
+- 客户端构建：`RUSTUP_TOOLCHAIN=1.98.0 powershell -ExecutionPolicy Bypass -File Docs/M0/tools/build.ps1`；
+  Automation：`python Docs/R5/tools/run_tests.py "filter=..."`。

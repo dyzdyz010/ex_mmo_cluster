@@ -511,6 +511,26 @@ P1 功能完整（设计 §12.2 切片 1 的服务端行全部落地）。`probe
 
 运行：WSL Linux 下，`cd apps/mmo_contracts && mix test test/mmo_contracts/magic_wire_test.exs`；`cd apps/voxel_region && mix test --no-start test/magic_*.exs`；Rust 用 `cargo test`（`native/voxim_thermal`）；scene_server 与 gate_server 只跑上表文件；L8 用 `mix test --only load`，只在 §8.1 指定的主机上跑。
 
+### 13.1 收口期测试分级（2026-11-26 起，切片 8a 跟进之后的全部工作适用）
+
+依据 AGENTS §3-14 与 Voxim `Docs/Testing.md` §1、§6：测试范围由本次改动的契约与直接影响边界推导，不按“跑得越多越安全”推导。
+下表是本分支收口期间（待确认项收尾、测试隔离修复、切片 8b、合入准备）的执行规则。扩大范围必须在验收说明里写明理由和它能抓住的具体破坏。
+服务端命令都在 WSL 下跑。
+
+| 层 | 跑什么 | 何时跑 |
+|---|---|---|
+| L0 算法与协议 | voxel_region 带 `:t0` 的魔法文件：`magic_{ir,signature,cost,quote_samples,semblance,structure,structure_neighbors,structure_wire_samples}_test.exs`、`catalog_holdables_test.exs`；mmo_contracts `magic_wire_test.exs` | 改纯值模块（IR、签名、报价、Structure、邻居、持物）或 codec |
+| L1 World 集成 | 按改动模块选文件：`world/structures.ex`、`projectiles.ex` → `magic_structure_world_test`、`magic_staff_bolt_test`；`casting.ex`、前摇、打断 → `magic_world_test`、`magic_windup_world_test`；`magic_admission.ex` → `magic_admission_world_test`；迁移与持久化 → `magic_structure_migration_test` | 改 World 侧魔法代码 |
+| L1b 跨 app 消费方 | scene_server `cast_action_test`、`cast_wait_lifecycle_test`；gate_server `voxim_spell_dispatch_test`（0x68）；npc_server `npc_body_cast_test`、`npc_cast_world_test` | 只在 Player↔World 消息、原因串或回复字段变化时 |
+| L2 单 app 默认层 | `.github/test-scope.py` 按改动路径选出的 app，`mix test --no-start` | 只在改到共享契约（codec/session、`world.ex` 公共 API、共享测试夹具）时，并写明理由 |
+| L3 合入门禁 | CI 等价集合 + `--warnings-as-errors` 严格编译 + `mix format --check-formatted` + `cargo test`；P1 属于阶段验收，另跑一次 `--include slow` | 整个分支合入前只跑一次 |
+| 测量 | voxel_region `--only load test/magic_load_test.exs` | 只在改到结构步进、热内核、持久化时，以及发版验收时 |
+
+- 客户端平时按区域过滤（`Voxim.Magic.`、`Voxim.Presentation.` 等）；13 个前缀的完整过滤串只在合入前跑一次。
+- 每份子代理简报写明层与文件，范围是硬性要求：代理不得自行扩大，确需扩大先报统筹。报告写“跑了什么、为什么够”。
+  （切片 8a 跟进的代理在等价性证据已足时仍跑了 voxel_region 全量，见 §14；此后的简报按本条收紧。）
+- 只改文档或低影响配置时只做相称检查（Testing.md §6），不跑测试套件。
+
 ## 14. 进度日志
 
 - 2026-11-26：起草。只读核对 `magic-v2-p1`（`f0605411`，Hello 46）与 master（`62d9a5a5`）。未改代码、测试或夹具，未启动任何服务或网络连接。联网检索 §10 的外部依据（Zalesak PDF 是扫描件，式号未核；书目类未联网核对页码）。待用户拍板 §11.1，待 worldbook 回答 §11.2，待客户端确认 §9 的 golden 清单。
