@@ -10,7 +10,7 @@ runs:
     - uses: actions/checkout@v4
       with:
         repository: dyzdyz010/Voxim
-        ref: 4a016fc1f7ed1d3dfe0f9591bfc4fb335cfd7887
+        ref: 9b41cfc6fd89922a69d0068da4064c49ae6d4845
         path: .ci-voxim
         ssh-key: ${{ inputs.ssh-key }}
         persist-credentials: false

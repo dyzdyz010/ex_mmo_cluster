@@ -207,8 +207,15 @@
     `:564` 即失败。诊断副本在开关前强制插一笔定时提交，master 与本分支都同样失败、储能同为 121145.6192 → 121143.7086 J。
     **结论：用例自身计时竞态，master 既有，非本分支、非客户端内容**（用例只读仓库内夹具，编译期读的客户端常量在 `4a016fc1` 与魔法工作树相同）。
     CI 默认排除 `:slow`，不跑这条，换 CI 固定客户端提交不受影响。未修。
-  - 客户端 `nightly.py`：**未执行**。护栏被别的会话的 WSL 节点挡住（PID 3335389，tmux `npc-m2b` 的 `iex -S mix`，目录
+  - 客户端 `nightly.py`（2026-11-27 首次）：**未执行**。护栏被别的会话的 WSL 节点挡住（PID 3335389，tmux `npc-m2b` 的 `iex -S mix`，目录
     `ex_mmo_cluster-npc`），等满 60 min 后跑一次得 `skipped`，rc=3（`Saved/Tests/nightly/20261127/summary.txt`）。跳过不算通过，待处理。
+  - 客户端 `nightly.py`（2026-11-28 01:15–02:14，用户授权关闭阻断的 WSL `devsrv-20261120` 与 `npcm2b` 进程后运行）：**通过**，
+    `2026-11-28 passed selected=711 completed=711 failed=0 missing=0 rc=0 m0_restored=no udp=95->93 free_gib_at_start=30.5`
+    （客户端提交 `9b41cfc6`，摘要 `Voxim-magic-v2/Saved/Tests/nightly/20261128/summary.txt`）。
+  - 特性分支推送（2026-11-28，用户确认）：CI `.github/actions/voxim-fixtures/action.yml` 固定客户端提交由 `4a016fc1…` 更新为
+    `9b41cfc6fd89922a69d0068da4064c49ae6d4845`；先推 `Voxim` 的 `magic-v2-online`、再推本仓 `magic-v2-p1` 供审阅。两个主工作树
+    （`ex_mmo_cluster` master 灵炁场未提交改动、`Voxim` main 用户未提交改动）均未触碰；生产库 `npc_specs.params` v1 `spells`
+    按用户决定暂不检查，留待合并/发版前由用户安排。
   - Tcpip 4266：新记录号 130240，2026-11-27 22:35:39（furnace A1 运行期间）；当时未留快照，23:56 补按进程快照；本任务检查时 UDP 总数 88–90。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
