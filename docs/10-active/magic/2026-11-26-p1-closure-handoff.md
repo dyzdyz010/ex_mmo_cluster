@@ -193,8 +193,14 @@
   - 未格式化：voxel_region 没有 `.formatter.exs`，CI 根目录格式检查不覆盖它；其中 33 个本分支改过的文件在 master 上就不合格，
     格式化会重写数千行、增加合入冲突，留待 master 侧单独处理并补 `.formatter.exs`。
   - 残留竞争（未改）：`commit/1`、`fly` 之后的 `drain()` 走同一条 `CanonicalFeed` 中转，理论上同样会竞争。
-  - 下一步：重新签发测试证书（放本任务自己的目录）后只重跑 `quic_connection_test.exs`；`furnace_generator_world_test` 单文件跑一次判定是否偶发；
-    之后跑客户端 13 个前缀的完整过滤串。
+  - 跟进（2026-11-27 22:10–22:14）：
+    - gate：新证书 `/home/dyz/magic-v2-20261126/certs-20261127/`（有效至 2026-11-30 06:10 UTC），只重跑 `quic_connection_test.exs`
+      **79 passed**（含 `for old_version <- 1..45` 的 45 条旧 Hello 拒绝）；`github.env` 已恢复原值。gate 项通过。
+    - furnace：空载单独跑 `furnace_generator_world_test.exs:551` 一次，**仍失败**（同一断言 `:564`，loadavg 0.33），与 master 文档
+      “高负载下偶发、单独连跑全过”不符，判不了偶发。读代码未找到本分支在无结构世界里改变提交时机或储能读数之处（`heat_commit.ex`、
+      `thermal.ex`、`structures.ex:838-842`、`sim.rs` 空限流表），但未经对照证实。下一步：同环境下 master 服务端对照，并核对客户端内容
+      （测试若读 `../Voxim` 资产，则对比 CI 固定的 `4a016fc1` 与魔法工作树）。
+    - 客户端合入前范围：按 `Docs/Running.md` 分级跑 `nightly.py`（`local+slow+soak`），决策稿 §13.1 已更正。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。

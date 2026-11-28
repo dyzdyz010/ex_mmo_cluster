@@ -577,7 +577,9 @@ Q6-1 #29、Q6-5 #30、Q7-3 #31、Q7-4 #32。
 | L3 合入门禁 | CI 等价集合 + `--warnings-as-errors` 严格编译 + `mix format --check-formatted` + `cargo test`；P1 属于阶段验收，另跑一次 `--include slow` | 整个分支合入前只跑一次 |
 | 测量 | voxel_region `--only load test/magic_load_test.exs` | 只在改到结构步进、热内核、持久化时，以及发版验收时 |
 
-- 客户端平时按区域过滤（`Voxim.Magic.`、`Voxim.Presentation.` 等）；13 个前缀的完整过滤串只在合入前跑一次。
+- 客户端平时按区域过滤（`Voxim.Magic.`、`Voxim.Presentation.` 等）。合入前按客户端 `Docs/Running.md`“客户端测试分级”跑一次：
+  本分支触及 `Voxel/Net` 与 `VoxelWorldActor`，且 P1 是阶段验收，`slow`、`soak` 都须全跑，即 `python Docs/R5/tools/nightly.py`
+  （`scope=local+slow+soak`）；`transport` 需真实服务端，另行说明。（2026-11-27 更正：此前写的“13 个前缀的完整过滤串”从未定义，作废。）
 - 每份子代理简报写明层与文件，范围是硬性要求：代理不得自行扩大，确需扩大先报统筹。报告写“跑了什么、为什么够”。
   （切片 8a 跟进的代理在等价性证据已足时仍跑了 voxel_region 全量，见 §14；此后的简报按本条收紧。）
 - 只改文档或低影响配置时只做相称检查（Testing.md §6），不跑测试套件。
