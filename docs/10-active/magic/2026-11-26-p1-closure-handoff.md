@@ -143,6 +143,16 @@
   - 未覆盖：`magic_migration`（验收第 7 条）从未实跑；`magic_interrupt-01` 是旧 release `d4d678f6` 与旧客户端上的结果，
     此后客户端改了越肩过渡与回执，按 AGENTS §3-10 须在当前构建上重跑；`structure.end.collapsed`（live 4）没有场景能触发，录屏里看不到。
   - 库与夹具：`magic8b_20261126` 与三个新库都保留到验收结束；`service.json`／`version.json` 现指向 `magic8b_20261127_overline`。
+- 切片 8b 第五轮（2026-11-27 18:09–18:21，每模式新库，release `49d0d349`，客户端 `671fcbc2`，UDP 开始 90、结束 88）：
+  - `magic_interrupt-02`（库 `magic8b_20261127_interrupt`，`live-09`）**通过 6/6**：取消在第 3 步扣 1 521.539 J、第 4 步扣 53 612.968 J
+    （与冻结报价样本一致），k = 0 免费（rejected `:interrupted_cancelled`，A 端唯一一条告警即此，清单规定的形式）；B 看到两次碎裂；账目闭合。
+    录屏 `live/magic_interrupt-02.rec.mkv`（碎裂画面待用户看）。取代旧构建上的 `magic_interrupt-01`。
+  - `magic_migration-01`（库 `magic8b_20261127_migration`，`live-10`）**失败**（phase1 回放失败，首个失败即停，phase2 未跑）：
+    对话框按预置 v1 书正常出现（8 条，转写 6、无法转写 2，截图 `phase1/shots/a-migration-dialog.png`），但 ① `@slate Enter` 后对话框仍开着、
+    未写 v2 书与 `.v1.json` 备份：第 1 帧 `InputMode:UIOnly - Attempting to focus Non-Focusable widget`，对话框不可聚焦，Enter 到不了
+    `NativeOnKeyDown`（真实玩家按 Enter 同样失败）；② 登录时的 `spell.migration.found`／`dialog` 两条事件不在日志里（第 1 帧经 `MMO_LOG`
+    入队，日志第一条 VoxelEvent 在 02.15.35）。两项已交子代理查根因并修（客户端），之后在新库上重跑 migration。
+  - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
 - 残余（#16）：休眠的〈遇〉结构只按休眠判定的粗候选唤醒，细分构件贴上时不唤醒；人物碰到休眠结构约 1 个身体报告间隔加一拍后才触发。
