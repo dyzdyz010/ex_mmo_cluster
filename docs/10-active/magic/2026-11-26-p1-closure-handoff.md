@@ -164,7 +164,15 @@
     判定 5 项失败，原因在判定器取证范围：每段进程有两次同角色登录（开场自动登录 + 回放 `M1.Reconnect`），`character_identity` 默认 1 个会话；
     `session_rows` 只取最后一个会话，而对话框、发现、重登读书都在第一个会话第 1 帧。已交子代理改 migration 判定的取证范围（判据不放宽，
     补反例），之后对 migration-03 原始证据离线复判（另记，原 `acceptance.json` 不覆盖）。
+    → 客户端 `7e9fcc6b`（Test-only）：迁移发现、对话框开／关与确认、重登读书读整段进程日志，`clean` 对 migration 要求恰 2 个本角色会话，
+    其余条目范围与全部判据不变；反例（登录事件只在开场会话、回放会话里再发现一次、会话数 1／3、会话角色不符、epoch 相同、缺 found／
+    缺 dialog 开／缺 spell.book）改前改后都核对，判定器与驱动单测 194 个通过。**复判 `recheck-20261127-window.json` 9/9 通过**
+    （原 `acceptance.json` sha256 `51328855…` 前后不变，统筹另跑一次复判同样通过）。不收紧为“发现须早于 `M1.Reconnect`”：重连也是登录，
+    设计只要求登录时出现；整段范围已要求恰一次发现、恰一次确认、无推迟。
   - 教训：实跑开始前用户最后一次输入须早于闸门 200 s 以上；用户回复后应等约 4 min 再开跑。
+  - **切片 8b 当前状态**：五个模式都在当前构建上实跑过且判定通过（migration 为修正判定后的复判）；客户端验收清单状态行已更新（`0b054619`）。
+    剩下：用户看画面（录屏 `presets-03`、`dispel-06`、`overline-04`、`interrupt-02`、`migration-03`）；`structure.end.collapsed` 没有场景能触发；
+    然后是 §5 第 6、7 步合入准备与发版（每步先问用户）。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
