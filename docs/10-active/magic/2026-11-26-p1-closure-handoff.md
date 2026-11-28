@@ -151,7 +151,12 @@
     对话框按预置 v1 书正常出现（8 条，转写 6、无法转写 2，截图 `phase1/shots/a-migration-dialog.png`），但 ① `@slate Enter` 后对话框仍开着、
     未写 v2 书与 `.v1.json` 备份：第 1 帧 `InputMode:UIOnly - Attempting to focus Non-Focusable widget`，对话框不可聚焦，Enter 到不了
     `NativeOnKeyDown`（真实玩家按 Enter 同样失败）；② 登录时的 `spell.migration.found`／`dialog` 两条事件不在日志里（第 1 帧经 `MMO_LOG`
-    入队，日志第一条 VoxelEvent 在 02.15.35）。两项已交子代理查根因并修（客户端），之后在新库上重跑 migration。
+    入队，日志第一条 VoxelEvent 在 02.15.35）。
+    根因与修法：① 产品缺陷，`UUserWidget` 默认不可聚焦，焦点落到游戏视口 → 客户端 `c88d4b2b`（`NativeOnInitialized` 里
+    `SetIsFocusable(true)`；新回归 `Voxim.Magic.SpellMigration.DialogKeys` 经 Slate 平台按键入口按 Esc／Enter，改前 6 项失败，过滤器 83/83）。
+    ② 不是产品缺陷：Demo 关卡 `BP_GameplayController` 开场把 `LogVoxim` 降到 Warning（试玩默认），回放第一步才恢复，`MMO_LOG` 在调用处按级别
+    过滤，第 1 帧的事件被丢；telemetry 本身不丢。→ 客户端 `84a173d8`（Test-only）：migration 两段 `-ExecCmds` 最前面加 `log LogVoxim Log`
+    （仓库内已有多个场景同法），其余模式不改；单测 191 个通过。下一步在新库上重跑 `magic_migration-02`（需占桌面）。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
