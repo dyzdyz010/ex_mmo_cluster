@@ -117,11 +117,12 @@ fn step(
 ) -> thermal_kernel::Outcome {
     let exchange = number(environment, "environment_w_per_m2_k");
     let tolerance = number(environment, "tolerance_kelvin");
+    // 气候初始化不涉及结构节点：限流表为空即全部不限（切片 4b 内核契约），数值与加限流参数前逐位相同。
     assert!(thermal_kernel::valid(
-        input, events, contacts, ambient, exchange, tolerance, 0.5, radiation
+        input, events, &[], contacts, ambient, exchange, tolerance, 0.5, radiation
     ));
     thermal_kernel::advance(
-        input, events, contacts, ambient, exchange, tolerance, 0.5, radiation,
+        input, events, &[], contacts, ambient, exchange, tolerance, 0.5, radiation,
     )
 }
 
@@ -233,8 +234,8 @@ fn published_patch_cold_snow_gradient_and_finite_heat() {
     let radiation = (vec![],vec![]);
     let exchange = number(&environment,"environment_w_per_m2_k");
     let tolerance = number(&environment,"tolerance_kelvin");
-    assert!(thermal_kernel::valid(&inputs,&events,&contacts,&ambient,exchange,tolerance,0.05,&radiation));
-    let first = thermal_kernel::advance(&inputs,&events,&contacts,&ambient,exchange,tolerance,0.05,&radiation);
+    assert!(thermal_kernel::valid(&inputs,&events,&[],&contacts,&ambient,exchange,tolerance,0.05,&radiation));
+    let first = thermal_kernel::advance(&inputs,&events,&[],&contacts,&ambient,exchange,tolerance,0.05,&radiation);
     let central_delta = inputs[0].3*(first.state[0].0-ambient[0]);
     assert!(central_delta.abs()>1e-8, "中心完整六邻首步仍须存在真实非零初始通量");
     println!("FULL_SIX_NEIGHBOR cell={lower:?} material={stencil_ids:?} initial_k={} after_k={} delta_j={central_delta} elapsed_s={}",
