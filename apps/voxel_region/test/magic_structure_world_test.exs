@@ -1484,11 +1484,18 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   defp hand_lamp(c, point, at, extra \\ %{}), do: hand_cast(c, point, program("lamp"), at, extra)
 
   # 同上，施放任意〈握〉程序（不带〈投〉，静止在手边）。
+  # 等这次施放自己的结算事务（同 `build/4`，按回复的事务序号与施法者匹配）：增量由订阅者的 `CanonicalFeed` 进程转发，
+  # 施放回复由 `TestSupport.spell/3` 的 Task 转交，两条路径互不排序，回复先到时邮箱里可能还没有这笔增量。
   defp hand_cast(c, {x, y, z} = point, bytes, at, extra \\ %{}) do
     a = actor(Map.merge(%{eye: {x, y, z - 0.5}, feet: {x, y - 1.5, z - 0.5}}, extra))
+    cid = a.cid
     assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, bytes, {0.0, 0.0, 1.0}, at)
-    {records, _} = drain()
-    assert [{^seq, id, %{live: 1, rest: rest}}] = records
+
+    assert_receive {:canonical_delta,
+                    %{transaction: %{seq: ^seq, casts: %{^cid => %{live: 0, outcome: 0}}} = txn}},
+                   5_000
+
+    assert [{id, %{live: 1, rest: rest}}] = Map.to_list(Map.fetch!(txn, :structures))
     assert distance(rest, point) < 1.0e-9
     id
   end
