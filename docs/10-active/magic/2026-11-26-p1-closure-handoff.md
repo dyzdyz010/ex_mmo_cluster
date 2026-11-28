@@ -201,6 +201,15 @@
       `thermal.ex`、`structures.ex:838-842`、`sim.rs` 空限流表），但未经对照证实。下一步：同环境下 master 服务端对照，并核对客户端内容
       （测试若读 `../Voxim` 资产，则对比 CI 固定的 `4a016fc1` 与魔法工作树）。
     - 客户端合入前范围：按 `Docs/Running.md` 分级跑 `nightly.py`（`local+slow+soak`），决策稿 §13.1 已更正。
+  - furnace 对照（2026-11-27 22:30–22:50，日志 `/home/dyz/magic-v2-20261126/logs/furnace-ab/`）：交错 B1 A1 B2 A2 B3（B = master `62d9a5a5`），
+    新跑 5 次全过，结果逐位相同；累计单跑本分支 1/3 失败、master 0/3（样本太少无意义）。机制：充电停在 Σε 47.888 V < 48 V、S_c 仍闭合，
+    蓄能石已反向放电约 3.3 W；World 的 500 ms 墙钟定时热提交若落在 `charged` 采样与开关之间（准入让到期热步先于开关，`admission.ex:47-57`），
+    `:564` 即失败。诊断副本在开关前强制插一笔定时提交，master 与本分支都同样失败、储能同为 121145.6192 → 121143.7086 J。
+    **结论：用例自身计时竞态，master 既有，非本分支、非客户端内容**（用例只读仓库内夹具，编译期读的客户端常量在 `4a016fc1` 与魔法工作树相同）。
+    CI 默认排除 `:slow`，不跑这条，换 CI 固定客户端提交不受影响。未修。
+  - 客户端 `nightly.py`：**未执行**。护栏被别的会话的 WSL 节点挡住（PID 3335389，tmux `npc-m2b` 的 `iex -S mix`，目录
+    `ex_mmo_cluster-npc`），等满 60 min 后跑一次得 `skipped`，rc=3（`Saved/Tests/nightly/20261127/summary.txt`）。跳过不算通过，待处理。
+  - Tcpip 4266：新记录号 130240，2026-11-27 22:35:39（furnace A1 运行期间）；当时未留快照，23:56 补按进程快照；本任务检查时 UDP 总数 88–90。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
