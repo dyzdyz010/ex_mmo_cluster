@@ -173,6 +173,9 @@
   - 录屏位置（2026-11-27 按客户端 AGENTS“视频与截图存放”从 `Saved/Tests/…/live/` 移出）：`D:\hemifuture\Voxim-magic-v2\Captures\magic-v2-slice8b-20261127\`，
     上层 5 段待用户看（文件名末尾为原运行名），其余轮次在 `其它轮次（含失败，可不看）\`；3 个 0 字节空录屏留在原处。上文的 `live/*.rec.mkv`
     路径只表示当时输出位置。以后实跑的 `run_mode.sh` 录屏输出应直接指向 `Captures/`。
+  - **画面验收**：2026-11-27 用户看完上述五段录屏，答复“没有问题”。切片 8b 验收完成（`structure.end.collapsed` 无场景可触发，未看）。
+  - 合入准备只读核对（2026-11-27）：master 仍为 `62d9a5a5`，本分支领先 67 个提交、可快进；master 主工作树另一会话的灵炁场未提交改动
+    与本分支重叠（`magic/{catalog,cost,program}.ex`、`world.ex`、`world/{casting,observation}.ex` 等），在该工作树合入会被拒绝，届时停下问用户。
   - **切片 8b 当前状态**：五个模式都在当前构建上实跑过且判定通过（migration 为修正判定后的复判）；客户端验收清单状态行已更新（`0b054619`）。
     剩下：用户看画面（录屏 `presets-03`、`dispel-06`、`overline-04`、`interrupt-02`、`migration-03`）；`structure.end.collapsed` 没有场景能触发；
     然后是 §5 第 6、7 步合入准备与发版（每步先问用户）。
