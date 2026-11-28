@@ -179,6 +179,22 @@
   - **切片 8b 当前状态**：五个模式都在当前构建上实跑过且判定通过（migration 为修正判定后的复判）；客户端验收清单状态行已更新（`0b054619`）。
     剩下：用户看画面（录屏 `presets-03`、`dispel-06`、`overline-04`、`interrupt-02`、`migration-03`）；`structure.end.collapsed` 没有场景能触发；
     然后是 §5 第 6、7 步合入准备与发版（每步先问用户）。
+- **L3 合入门禁**（2026-11-27 21:08–21:44，WSL，HEAD `67e85c88`，第 3 步中途加 `c751e45b`；日志 `/home/dyz/magic-v2-20261126/logs/l3-*`）：
+  - CI 等价集合：本分支改了 `ci.yml` 与 `config/runtime.exs`，`test-scope.py` 选中全部 11 个 job。本地差异：客户端源码用魔法工作树
+    （非 CI 固定的 `4a016fc1`），世界夹具来自 `staff-bolt-merge-20261125` 工作区（其 `.ci-voxim` 正是 `4a016fc1`）；同一个库顺序跑。
+  - 新提交：`841d08f2`（21 个本分支新增或改坏格式的文件，纯格式）；`67e85c88`（`hand_cast/5` 改为按事务 seq 与 `casts` 等结算增量，
+    消除与施放回复的竞争，L1 36/36）；`c751e45b`（**本分支缺陷**：worldgen `tests/climate_initialization.rs` 经 `#[path]` 编入热内核，
+    切片 4b 加 `limits` 参数后 4 处调用没跟上，CI 的 `cargo test` 会编译失败；传 `&[]`，修后 11 passed）。
+  - 通过：scope 自检、6 个 app 严格编译、thermal 25、worldgen（修后）、mmo_contracts 217、data 70、auth 61、world 13、scene 354、
+    npc 828、voxel_region 1068；慢测试 scene 1、world 1。
+  - 未通过：① gate_server 49/117，68 个失败都在 `T1TransportTest` setup：`VOXIM_TEST_CERTS` 的 2 天证书 2026-11-27 11:05 UTC 已过期（环境）；
+    真实 QUIC 上 Hello 45 拒绝等用例因此没执行。② voxel_region 慢测试 14/15：`furnace_generator_world_test.exs:564` 用真实 500 ms 热拍，
+    定时提交插进采样与开关之间（master 既有，`2026-10-24-world-region-paging.md:503` 已记偶发）。③ 格式：只剩 master 既有的 2 个 npc 文件。
+  - 未格式化：voxel_region 没有 `.formatter.exs`，CI 根目录格式检查不覆盖它；其中 33 个本分支改过的文件在 master 上就不合格，
+    格式化会重写数千行、增加合入冲突，留待 master 侧单独处理并补 `.formatter.exs`。
+  - 残留竞争（未改）：`commit/1`、`fly` 之后的 `drain()` 走同一条 `CanonicalFeed` 中转，理论上同样会竞争。
+  - 下一步：重新签发测试证书（放本任务自己的目录）后只重跑 `quic_connection_test.exs`；`furnace_generator_world_test` 单文件跑一次判定是否偶发；
+    之后跑客户端 13 个前缀的完整过滤串。
   - 运行期间另有别的会话在 `orca/workspaces/Voxim/economy-e1` 跑无头 `UnrealEditor-Cmd` 自动化（`-nullrhi`，无窗口），未干预。
   - 已知：`magic_structure_world_test` 的 `hand_cast/5` 用 `drain/0` 取结果有竞争（§11.3 #6 两条曾偶发失败，未修）；
     `structures.ex` 与该测试在 HEAD 时就不符合 `mix format`，L3 门禁的格式检查会报。
