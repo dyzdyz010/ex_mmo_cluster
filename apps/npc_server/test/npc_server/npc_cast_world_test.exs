@@ -318,7 +318,9 @@ defmodule NpcServer.NpcCastWorldTest do
     assert %{status: :rejected, reason: :cast_too_soon} = outcome(:again)
 
     # 结算回复带 fail_step（魔法 v2 切片 6，决策稿 §3.4 / R2）：建成为 0。
-    assert %{status: :done, data: %{seq: seq, outcome: nil, fail_step: 0, caster: caster}} = outcome(:cast)
+    assert %{status: :done, data: %{seq: seq, outcome: nil, fail_step: 0, caster: caster}} =
+             outcome(:cast)
+
     assert System.monotonic_time(:millisecond) - started >= @windup_ms
     assert is_integer(seq) and caster.seq == seq
     assert caster.capacity_j == 5.0e6 and caster.resolution_eff == 16.0 and caster.quote_s == 1.0
@@ -341,7 +343,10 @@ defmodule NpcServer.NpcCastWorldTest do
        %{world: world, body: body} do
     handle = probe(body)
     cast(body, :lamp, handle, "lamp")
-    assert %{status: :done, data: %{outcome: :interrupted_energy, fail_step: 1, caster: caster}} = outcome(:lamp)
+
+    assert %{status: :done, data: %{outcome: :interrupted_energy, fail_step: 1, caster: caster}} =
+             outcome(:lamp)
+
     assert caster.spent_j == 0.0
     assert {:ok, %{energy_j: +0.0}} = World.caster_state(world, @npc)
   end

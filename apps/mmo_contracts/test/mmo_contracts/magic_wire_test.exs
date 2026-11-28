@@ -154,14 +154,13 @@ defmodule MmoContracts.MagicWireTest do
     # 偏移 21 shape、22 flags、23 size1、31 temperature、39 glow；135 起 size2/size3/proto/coupling（u16），
     # 143 load、144 coherence、145 status、146 failed_segments、147 anchor_type、148 anchor_ref。
     assert <<_::binary-size(21), 0, 0x02, _::binary-size(8), lamp_t::float-64, 100.0::float-64,
-             _::binary-size(88), 0::16, 0::16, 0::16, 0x0002::16, 56, 255, 0, 0, 0,
-             0::96>> = lamp
+             _::binary-size(88), 0::16, 0::16, 0::16, 0x0002::16, 56, 255, 0, 0, 0, 0::96>> = lamp
 
     assert lamp_t == 0.0
 
     assert <<_::binary-size(21), 0, 0x01, 0.25::float-64, temperature::float-64,
-             _::binary-size(96), 0::16, 0::16, 0::16, 0x0001::16, _load, 255, 0x10, 0, 0,
-             0::96>> = flight
+             _::binary-size(96), 0::16, 0::16, 0::16, 0x0001::16, _load, 255, 0x10, 0, 0, 0::96>> =
+             flight
 
     assert_in_delta temperature, 2000.0, 1.0e-9
   end
@@ -473,6 +472,7 @@ defmodule MmoContracts.MagicWireTest do
 
     {:ok, frame} = Codec.encode_m1(batch.(0, casts))
     size = byte_size(casts)
+
     # 帧尾：区域段、结构段各 0 长度，随后施放段 u32 长度与样本，最后是 0 长度的结构状态增量段。
     assert binary_part(frame, byte_size(frame) - size - 16, size + 16) ==
              <<0::32, 0::32, size::32>> <> casts <> <<0::32>>

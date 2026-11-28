@@ -798,7 +798,12 @@ defmodule SceneServer.Movement.Player do
   # （用户 2026-11-26 裁定），受伤、驱散剂量与主动取消照样打断。
   def handle_info(
         {:cast_prepared, key,
-         %{windup_s: windup_s, checkpoint_s: checkpoint_s, steps: steps, basic_attack: basic_attack}},
+         %{
+           windup_s: windup_s,
+           checkpoint_s: checkpoint_s,
+           steps: steps,
+           basic_attack: basic_attack
+         }},
         %{action: %{key: key, phase: :preparing} = action} = state
       ) do
     {message, delay_ms} =

@@ -95,8 +95,13 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
 
   defp launch(group, half, massless, {:thrown, quote}, _catalog) do
     velocity = {0.0, 0.0, glyph(group.motion, "act.throw").params["speed_mmps"] / 1000}
-    horizon = Structures.flight_horizon_s(quote, velocity, massless, elem(@hand, 1) - (@floor_y - 1))
-    {trace, nil} = Semblance.trace(@hand, @hand, velocity, half, horizon, nil, &ground_cast/4, massless)
+
+    horizon =
+      Structures.flight_horizon_s(quote, velocity, massless, elem(@hand, 1) - (@floor_y - 1))
+
+    {trace, nil} =
+      Semblance.trace(@hand, @hand, velocity, half, horizon, nil, &ground_cast/4, massless)
+
     assert {:hit, _, _, %{granularity: 0}} = trace
     Structures.launch(trace, @hand, velocity, massless)
   end
@@ -106,7 +111,9 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     if ay >= @floor_y and dy < 0 and ay + dy * length < @floor_y do
       s = (ay - @floor_y) / -dy
       micro = {floor((ax + dx * s) * 8), 7, floor((az + dz * s) * 8)}
-      {{%{micro: micro, granularity: 0, owner: {0, 0}, incarnation: 0, material: 11}, micro}, state}
+
+      {{%{micro: micro, granularity: 0, owner: {0, 0}, incarnation: 0, material: 11}, micro},
+       state}
     else
       {nil, state}
     end
@@ -115,9 +122,28 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
   # 一条完整记录：World 的生产者（物理体 + `Structure.wire/1` 的动态字段 + 样本场景给出的状态位与 live）。
   defp record(c, group, live, place, wire, world_status \\ []) do
     # 物理体的半尺寸与无质量位只取决于程序；先以静止发射求一次，再按样本场景的发射求真实物理体。
-    probe = Structures.body(group, c.catalog, %{cid: @caster, controller: :player}, launch(group, nil, true, {:at, @hand}, c.catalog), @t0_us, nil)
+    probe =
+      Structures.body(
+        group,
+        c.catalog,
+        %{cid: @caster, controller: :player},
+        launch(group, nil, true, {:at, @hand}, c.catalog),
+        @t0_us,
+        nil
+      )
+
     place = if match?({:thrown, _}, place), do: place, else: {:at, place}
-    body = Structures.body(group, c.catalog, %{cid: @caster, controller: :player}, launch(group, probe.half, probe.massless, place, c.catalog), @t0_us, nil)
+
+    body =
+      Structures.body(
+        group,
+        c.catalog,
+        %{cid: @caster, controller: :player},
+        launch(group, probe.half, probe.massless, place, c.catalog),
+        @t0_us,
+        nil
+      )
+
     Structures.record(body, %{wire | status: wire.status ++ world_status}, live)
   end
 
@@ -131,7 +157,14 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     {fireball, fireball_group, fireball_quote} = born(c, "fireball", {102, 0})
 
     fireball_flight =
-      record(c, fireball_group, 1, {:thrown, fireball_quote}, Structure.wire({fireball, fireball_quote}), [:flying])
+      record(
+        c,
+        fireball_group,
+        1,
+        {:thrown, fireball_quote},
+        Structure.wire({fireball, fireball_quote}),
+        [:flying]
+      )
 
     # 火球接触：第 1 拍带接触步进，〈遇〉→〈散〉触发，respond 主动终止 → live 2，快照取同拍步进结果。
     {hit, hit_group, hit_quote} = born(c, "fireball", {103, 0})
@@ -172,7 +205,13 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     assert elem(hot_result, 0).status == {:terminated, :collapsed}
 
     lamp_collapsed =
-      record(c, hot_group, Codec.structure_end_live(:collapsed), @hand, Structure.wire(hot_result))
+      record(
+        c,
+        hot_group,
+        Codec.structure_end_live(:collapsed),
+        @hand,
+        Structure.wire(hot_result)
+      )
 
     # 灯在驱散脉冲中心（d = 0，附录 A.4）：第 1 拍驱散 → live 5。场取发出者的拍首状态。
     {pulse, _, _} = born(c, "dispel_pulse", {99, 0})
@@ -213,17 +252,18 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     [
       {"deleted", {100, 0}, nil, "无事件删除（live 0）：id 之外全 0", 0, nil, nil},
       {"lamp_born", {101, 0}, "lamp", "灯刚出生（未步进）：无质量、静止在手边，发光取〈辉〉标称 100 W", 0, nil, lamp_born},
-      {"fireball_flight", {102, 0}, "fireball", "火球刚出生、飞行中（World 补 flying 位）：有质量弹道，落点为测试地面命中点",
-       0, nil, fireball_flight},
+      {"fireball_flight", {102, 0}, "fireball", "火球刚出生、飞行中（World 补 flying 位）：有质量弹道，落点为测试地面命中点", 0,
+       nil, fireball_flight},
       {"fireball_contact", {103, 0}, "fireball", "火球第 1 拍接触：〈遇〉→〈散〉触发，live 2 终态快照（同拍步进结果）", 1,
        "contact", fireball_contact},
-      {"lamp_exhausted", {104, 0}, "lamp", "灯无供能逐拍出账至 E_op < E_min：断供衰竭 live 3", spent_tick, "exhausted",
-       lamp_exhausted},
-      {"lamp_collapsed", {105, 0}, "lamp", "灯举在 800 K 火场格：相干跌破 0.3 且 x ≥ 0.8·x*，过载崩解 live 4", hot_tick,
-       "collapsed", lamp_collapsed},
-      {"lamp_dispelled", {106, 0}, "lamp", "灯在驱散脉冲中心（d = 0）：第 1 拍驱散 live 5", 1, "dispelled", lamp_dispelled},
-      {"timed_ember_released", {107, 0}, "timed_ember", "定时火种（〈附〉块）：〈时〉30 s 到期 → 〈散〉，live 6", ember_tick,
-       "released", ember_released}
+      {"lamp_exhausted", {104, 0}, "lamp", "灯无供能逐拍出账至 E_op < E_min：断供衰竭 live 3", spent_tick,
+       "exhausted", lamp_exhausted},
+      {"lamp_collapsed", {105, 0}, "lamp", "灯举在 800 K 火场格：相干跌破 0.3 且 x ≥ 0.8·x*，过载崩解 live 4",
+       hot_tick, "collapsed", lamp_collapsed},
+      {"lamp_dispelled", {106, 0}, "lamp", "灯在驱散脉冲中心（d = 0）：第 1 拍驱散 live 5", 1, "dispelled",
+       lamp_dispelled},
+      {"timed_ember_released", {107, 0}, "timed_ember", "定时火种（〈附〉块）：〈时〉30 s 到期 → 〈散〉，live 6",
+       ember_tick, "released", ember_released}
     ]
   end
 
@@ -294,7 +334,9 @@ defmodule VoxelRegion.MagicStructureWireSamplesTest do
     if System.get_env("WRITE_STRUCTURE_WIRE_SAMPLES") == "1" do
       File.write!(
         @path,
-        Jason.encode_to_iodata!(expected, pretty: true) |> IO.iodata_to_binary() |> Kernel.<>("\n")
+        Jason.encode_to_iodata!(expected, pretty: true)
+        |> IO.iodata_to_binary()
+        |> Kernel.<>("\n")
       )
     end
 

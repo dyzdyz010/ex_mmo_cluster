@@ -125,7 +125,13 @@ defmodule VoxelRegion.World.MagicAdmission do
     case Map.get(state.magic_presence, cid) do
       %{pid: ^pid, monitor: monitor} ->
         Process.demonitor(monitor, [:flush])
-        log_presence(%{state | magic_presence: Map.delete(state.magic_presence, cid)}, cid, pid, :absent)
+
+        log_presence(
+          %{state | magic_presence: Map.delete(state.magic_presence, cid)},
+          cid,
+          pid,
+          :absent
+        )
 
       _ ->
         state
@@ -137,12 +143,20 @@ defmodule VoxelRegion.World.MagicAdmission do
     state.magic_presence
     |> Enum.filter(fn {_, p} -> p.pid == pid end)
     |> Enum.reduce(state, fn {cid, _}, state ->
-      log_presence(%{state | magic_presence: Map.delete(state.magic_presence, cid)}, cid, pid, :down)
+      log_presence(
+        %{state | magic_presence: Map.delete(state.magic_presence, cid)},
+        cid,
+        pid,
+        :down
+      )
     end)
   end
 
   defp log_presence(state, cid, pid, status) do
-    Logger.info("voxel_magic_presence cid=#{cid} pid=#{inspect(pid)} status=#{status} present=#{map_size(state.magic_presence)}")
+    Logger.info(
+      "voxel_magic_presence cid=#{cid} pid=#{inspect(pid)} status=#{status} present=#{map_size(state.magic_presence)}"
+    )
+
     state
   end
 
@@ -192,7 +206,8 @@ defmodule VoxelRegion.World.MagicAdmission do
 
   defp weight(quotas, awake, rules),
     do:
-      quotas.structure_weight_base + quotas.structure_weight_awake_thermal_node * if(awake, do: 1, else: 0) +
+      quotas.structure_weight_base +
+        quotas.structure_weight_awake_thermal_node * if(awake, do: 1, else: 0) +
         quotas.structure_weight_per_rule * rules
 
   # 候选（待施放程序）的权重与类别：P1 一次施放一个组（决策稿 §3.1 `id_n` 恒为 0）。
@@ -212,16 +227,28 @@ defmodule VoxelRegion.World.MagicAdmission do
   """
   def admit(_state, _actor, %Program{kind: :caster_action}), do: :ok
 
-  def admit(%{magic: %Catalog{quotas: quotas}} = state, %{cid: cid, controller: controller}, %Program{
-        kind: :structure,
-        groups: [group]
-      })
+  def admit(
+        %{magic: %Catalog{quotas: quotas}} = state,
+        %{cid: cid, controller: controller},
+        %Program{
+          kind: :structure,
+          groups: [group]
+        }
+      )
       when controller in @controllers do
     usage = usage(state)
     candidate = candidate(group, quotas)
     present = present(state)
     mine = Map.get(usage.casters, cid, %{units: 0.0, structures: 0, flights: 0})
-    facts = %{cid: cid, controller: controller, present: present, mine: mine, usage: usage, candidate: candidate}
+
+    facts = %{
+      cid: cid,
+      controller: controller,
+      present: present,
+      mine: mine,
+      usage: usage,
+      candidate: candidate
+    }
 
     decision =
       with :ok <- structures(facts, quotas),
@@ -235,28 +262,40 @@ defmodule VoxelRegion.World.MagicAdmission do
     decision
   end
 
-  defp structures(%{controller: :player, mine: mine}, q), do: below(mine.structures, q.structures_per_caster, :structure_quota)
-  defp structures(%{controller: :npc, mine: mine}, q), do: below(mine.structures, q.structures_per_npc, :structure_quota)
+  defp structures(%{controller: :player, mine: mine}, q),
+    do: below(mine.structures, q.structures_per_caster, :structure_quota)
+
+  defp structures(%{controller: :npc, mine: mine}, q),
+    do: below(mine.structures, q.structures_per_npc, :structure_quota)
 
   defp flights(%{candidate: %{flight: false}}, _q), do: :ok
   defp flights(%{mine: mine}, q), do: below(mine.flights, q.flights_per_caster, :flight_quota)
 
   # Q7-3（手感项，8b 实跑请用户确认，见决策稿 §11.3 #31）：醒着的热节点已达上限时拒绝新的热结构，不强制最早的休眠。
   defp awake_nodes(%{candidate: %{thermal: false}}, _q), do: :ok
-  defp awake_nodes(%{usage: usage}, q), do: below(usage.awake_nodes, q.awake_thermal_nodes_per_region, :region_budget)
+
+  defp awake_nodes(%{usage: usage}, q),
+    do: below(usage.awake_nodes, q.awake_thermal_nodes_per_region, :region_budget)
 
   # 分区飞行名额（设计 §5.6）：共 base + 在场人数 × per_present。在场玩家各有 per_present 个保底名额；其余（= base）是
   # 共享部分。Q7-4（手感项，8b 实跑请用户确认，见决策稿 §11.3 #32）：设计写的“按施法者轮转分配、不按先到先得”在即时准入下没有可轮转的
   # 队列，取“保底以外先到先得”；NPC 与不在场者只用共享部分。
   defp flight_slots(%{candidate: %{flight: false}}, _q), do: :ok
 
-  defp flight_slots(%{cid: cid, controller: controller, present: present, mine: mine, usage: usage}, q) do
+  defp flight_slots(
+         %{cid: cid, controller: controller, present: present, mine: mine, usage: usage},
+         q
+       ) do
     guaranteed = q.region_flight_slots_per_present
 
     if controller == :player and cid in present and mine.flights < guaranteed do
       :ok
     else
-      below(shared_flights(usage, present, guaranteed), q.region_flight_slots_base, :region_budget)
+      below(
+        shared_flights(usage, present, guaranteed),
+        q.region_flight_slots_base,
+        :region_budget
+      )
     end
   end
 
@@ -268,7 +307,17 @@ defmodule VoxelRegion.World.MagicAdmission do
     )
   end
 
-  defp region(%{controller: controller, cid: cid, present: present, mine: mine, usage: usage, candidate: c}, q) do
+  defp region(
+         %{
+           controller: controller,
+           cid: cid,
+           present: present,
+           mine: mine,
+           usage: usage,
+           candidate: c
+         },
+         q
+       ) do
     budget = q.region_budget_units
     total = usage.units + c.units
 
@@ -287,7 +336,8 @@ defmodule VoxelRegion.World.MagicAdmission do
       cid in present and mine.structures < q.present_floor_structures ->
         :ok
 
-      cid in present and mine.units < q.fair_share_ratio * budget / length(present) and total <= budget ->
+      cid in present and mine.units < q.fair_share_ratio * budget / length(present) and
+          total <= budget ->
         :ok
 
       true ->
@@ -298,7 +348,8 @@ defmodule VoxelRegion.World.MagicAdmission do
   defp below(value, limit, reason), do: if(value < limit, do: :ok, else: {:error, reason})
 
   defp log(facts, q, decision) do
-    %{cid: cid, controller: controller, present: present, mine: mine, usage: usage, candidate: c} = facts
+    %{cid: cid, controller: controller, present: present, mine: mine, usage: usage, candidate: c} =
+      facts
 
     {verdict, reason} =
       case decision do
@@ -329,7 +380,10 @@ defmodule VoxelRegion.World.MagicAdmission do
   @doc "为施法者 `caster` 取一份预算：`{:ok, 新预算}` 或 `:exhausted`（分区或本人已用完）。"
   def take_trigger(%{region: region, per_caster: per, used: used} = budget, caster) do
     mine = Map.get(used, caster, 0)
-    if region > 0 and mine < per, do: {:ok, %{budget | region: region - 1, used: Map.put(used, caster, mine + 1)}}, else: :exhausted
+
+    if region > 0 and mine < per,
+      do: {:ok, %{budget | region: region - 1, used: Map.put(used, caster, mine + 1)}},
+      else: :exhausted
   end
 
   @doc "退回一份未执行的预算（预占的推迟项所属结构在本拍先行终止时）。"
@@ -368,7 +422,9 @@ defmodule VoxelRegion.World.MagicAdmission do
   等首次导热边的〈遇〉结构另有“接触开始即唤醒”，在 `World.Structures.heat_nodes/1`（决策稿 §11.3 #16）。
   """
   def wakes?(port_k, contact_k, %Catalog{runtime: rt}), do: wakes?(port_k, contact_k, rt)
-  def wakes?(port_k, contact_k, rt), do: Enum.any?(contact_k, &(abs(&1 - port_k) >= rt.thermal_sleep_delta_k))
+
+  def wakes?(port_k, contact_k, rt),
+    do: Enum.any?(contact_k, &(abs(&1 - port_k) >= rt.thermal_sleep_delta_k))
 
   @doc "下一拍的连续平静拍数：平静则 +1（封顶 `sleep_after/0`），否则归零。"
   def next_calm(previous, true), do: min(previous + 1, @sleep_after)
@@ -392,7 +448,8 @@ defmodule VoxelRegion.World.MagicAdmission do
       npc_units: usage.npc_units,
       npc_budget_units: q.npc_budget_ratio * q.region_budget_units,
       flights: usage.flights,
-      flight_slots: q.region_flight_slots_base + q.region_flight_slots_per_present * length(present),
+      flight_slots:
+        q.region_flight_slots_base + q.region_flight_slots_per_present * length(present),
       awake_nodes: usage.awake_nodes,
       casters: usage.casters
     }

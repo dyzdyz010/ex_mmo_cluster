@@ -315,21 +315,45 @@ defmodule VoxelRegion.Magic.Structure do
   欠账非负且 `debt_int ≤ debt`；读数是三种已知形态之一；响应符号的下标与 id 在目录 `catalog` 中一致。
   通过后的结构由内部链路直接消费，不再复核。
   """
-  @spec from_record(term(), Catalog.t()) :: {:ok, t()} | {:error, {:invalid_structure_record, atom()}}
+  @spec from_record(term(), Catalog.t()) ::
+          {:ok, t()} | {:error, {:invalid_structure_record, atom()}}
   def from_record(%{} = record, %Catalog{} = catalog) do
     with :ok <- check(Map.keys(record) |> Enum.sort() == Enum.sort(@record_keys), :keys),
          %{id: {seq, n}} when is_integer(seq) and seq >= 0 and is_integer(n) and n >= 0 <- record,
          :ok <- check(tick_pair?(record.born_tick, record.last_tick), :ticks),
-         :ok <- check(Enum.all?([record.units, record.precision, record.volume_m3, record.t_ref_k], &positive?/1), :quote),
-         :ok <- check(Enum.all?([record.e_cap_mj, record.e_min_mj], &(is_integer(&1) and &1 > 0)), :capacity),
-         :ok <- check(Enum.all?([record.phi_cap_w, record.r_base_per_s], &non_negative?/1), :capacity),
+         :ok <-
+           check(
+             Enum.all?(
+               [record.units, record.precision, record.volume_m3, record.t_ref_k],
+               &positive?/1
+             ),
+             :quote
+           ),
+         :ok <-
+           check(
+             Enum.all?([record.e_cap_mj, record.e_min_mj], &(is_integer(&1) and &1 > 0)),
+             :capacity
+           ),
+         :ok <-
+           check(Enum.all?([record.phi_cap_w, record.r_base_per_s], &non_negative?/1), :capacity),
          :ok <- check(record.c_th_j_per_k == nil or positive?(record.c_th_j_per_k), :c_th_j_per_k),
-         :ok <- check(Enum.all?([record.e_op_mj, record.kinetic_mj, record.pending_leak_mj, record.glow_w],
-                  &(is_integer(&1) and &1 >= 0)), :energy),
+         :ok <-
+           check(
+             Enum.all?(
+               [record.e_op_mj, record.kinetic_mj, record.pending_leak_mj, record.glow_w],
+               &(is_integer(&1) and &1 >= 0)
+             ),
+             :energy
+           ),
          :ok <- check(is_integer(record.e_th_mj), :e_th_mj),
          :ok <- check(activity?(record.activity), :activity),
-         :ok <- check(is_integer(record.debt_micro) and record.debt_micro >= 0 and is_integer(record.debt_int_micro) and
-                  record.debt_int_micro >= 0 and record.debt_int_micro <= record.debt_micro, :debt),
+         :ok <-
+           check(
+             is_integer(record.debt_micro) and record.debt_micro >= 0 and
+               is_integer(record.debt_int_micro) and
+               record.debt_int_micro >= 0 and record.debt_int_micro <= record.debt_micro,
+             :debt
+           ),
          :ok <- check(record.status == :running, :status),
          {:ok, rules} <- rules_from_record(record.rules, catalog) do
       {:ok, struct!(__MODULE__, %{record | rules: rules})}
@@ -403,7 +427,9 @@ defmodule VoxelRegion.Magic.Structure do
 
   defp reading?(%{kind: :load, quantity: q, dir: dir, threshold: t, last_q: last} = r)
        when map_size(r) == 5,
-       do: q in [:load, :coherence] and dir in [:above, :below] and is_number(t) and (last == nil or is_integer(last))
+       do:
+         q in [:load, :coherence] and dir in [:above, :below] and is_number(t) and
+           (last == nil or is_integer(last))
 
   defp reading?(_), do: false
 
@@ -1090,7 +1116,8 @@ defmodule VoxelRegion.Magic.Structure do
   预算把超额的触发推迟到之后的拍（设计 §5.4），推迟项只记规则下标与结果，执行时由这里取回响应，不另存字形。
   """
   @spec trigger_responses(t(), non_neg_integer(), :met | :unmet | :undecidable) :: [Glyph.t()]
-  def trigger_responses(%__MODULE__{rules: rules}, index, outcome), do: responses(Enum.at(rules, index), outcome)
+  def trigger_responses(%__MODULE__{rules: rules}, index, outcome),
+    do: responses(Enum.at(rules, index), outcome)
 
   defp responses(rule, :met), do: rule.responses
   defp responses(%{backup: outcome, backup_response: response}, outcome), do: [response]

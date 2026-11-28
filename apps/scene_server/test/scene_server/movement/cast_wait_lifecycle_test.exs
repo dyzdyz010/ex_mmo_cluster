@@ -392,6 +392,7 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     assert_receive {:simulation_io_read, reader, @cold}, 2_000
     ref = Process.monitor(reader)
     assert {:ok, :controlled} = Player.spell(c.player, c.identity, request(2), %{})
+
     # 主动取消的原因串（魔法 v2 切片 6，决策稿 Q6-4）；World 尚未接纳前摇，k = 0 免费。
     assert_receive {^tag, {:error, :interrupted_cancelled}}, 1_000
     assert_receive {:DOWN, ^ref, :process, ^reader, _}, 1_000
@@ -492,8 +493,11 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     tag = make_ref()
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
+
     # 同一程序、本夹具没有持物表：World 判定不是持物普攻，Player 的前摇仍受移动打断（用户 2026-11-26 裁定只豁免持物普攻）。
-    await(fn -> match?(%{phase: :windup, basic_attack: false}, :sys.get_state(c.player).action) end)
+    await(fn ->
+      match?(%{phase: :windup, basic_attack: false}, :sys.get_state(c.player).action)
+    end)
 
     # 本夹具没有持物表：前摇按 v2 成本模型 1.1840 s 由 Player 真实定时器推进；切片 4c 起结构建成。
     assert_receive {^tag, {:ok, %{outcome: nil}}}, 10_000
@@ -535,8 +539,12 @@ defmodule SceneServer.Movement.CastWaitLifecycleTest do
     tag = make_ref()
     started = System.monotonic_time(:millisecond)
     Player.cast_spell(c.player, c.identity, request, ingress, {self(), tag})
+
     # 真实 World 按持物表判定为持物普攻，经前摇计划交给真实 Player（免除移动打断，用户 2026-11-26 裁定）。
-    await(fn -> match?(%{phase: :windup, basic_attack: true}, :sys.get_state(c.player).action) end)
+    await(fn ->
+      match?(%{phase: :windup, basic_attack: true}, :sys.get_state(c.player).action)
+    end)
+
     assert_receive {^tag, {:ok, %{outcome: nil}}}, 10_000
     elapsed = System.monotonic_time(:millisecond) - started
     assert elapsed >= 300 and elapsed < 1_000

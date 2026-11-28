@@ -68,7 +68,10 @@ defmodule VoxelRegion.MagicLoadTest do
 
   @properties "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
   @fixtures Path.expand("fixtures", __DIR__)
-  @catalog Path.expand("../priv/magic", __DIR__) |> Path.join("*.json") |> Path.wildcard() |> then(fn [path] -> path end)
+  @catalog Path.expand("../priv/magic", __DIR__)
+           |> Path.join("*.json")
+           |> Path.wildcard()
+           |> then(fn [path] -> path end)
   @external_resource @catalog
   @ir Path.join(@fixtures, "magic/ir-v2-samples.json") |> File.read!() |> Jason.decode!()
   @content_version 8_026_112_601
@@ -81,8 +84,14 @@ defmodule VoxelRegion.MagicLoadTest do
   @grant_mj VoxelRegion.World.Casting.initial_charge_mj()
 
   # 设计 §5.6 结算预算、§5.9 写入量、附录 A.7 T15（测试侧阈值）。
-  @budget %{tick_us: 500_000, step_mean_us: 30, step_max_us: 100, region_step_us: 26_000, persist_bytes: 16 * 1024,
-    steps_per_50ms: 2}
+  @budget %{
+    tick_us: 500_000,
+    step_mean_us: 30,
+    step_max_us: 100,
+    region_step_us: 26_000,
+    persist_bytes: 16 * 1024,
+    steps_per_50ms: 2
+  }
 
   # ---------------------------------------------------------------------------
   # 只测试的支撑模块
@@ -113,7 +122,8 @@ defmodule VoxelRegion.MagicLoadTest do
       end
     end
 
-    defp bytes(rows), do: Enum.reduce(rows, 0, fn row, sum -> sum + byte_size(Map.get(row, :payload, <<>>)) end)
+    defp bytes(rows),
+      do: Enum.reduce(rows, 0, fn row, sum -> sum + byte_size(Map.get(row, :payload, <<>>)) end)
 
     @impl true
     def open(dir, cv), do: Db.open(dir, cv)
@@ -123,7 +133,12 @@ defmodule VoxelRegion.MagicLoadTest do
       rows = OverlayLog.rows(txn)
       :ok = DataService.Voxel.OverlayLogStore.append(cv, rows)
       meta = Enum.find_value(rows, fn row -> if row.kind == 3, do: row.payload end)
-      meter({:persist, :append, txn.seq, bytes(rows), length(rows), meta, Map.has_key?(txn, :thermal) and txn[:entries] == []})
+
+      meter(
+        {:persist, :append, txn.seq, bytes(rows), length(rows), meta,
+         Map.has_key?(txn, :thermal) and txn[:entries] == []}
+      )
+
       :ok
     end
 
@@ -194,7 +209,9 @@ defmodule VoxelRegion.MagicLoadTest do
   # 程序
   # ---------------------------------------------------------------------------
 
-  defp sample(id), do: Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
+  defp sample(id),
+    do:
+      Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
 
   # 定时火种：〈时〉duration_cs 由 3000（30 s）改为 60000（600 s），其余字节同发布预设。
   defp ember do
@@ -204,23 +221,40 @@ defmodule VoxelRegion.MagicLoadTest do
 
   # 〈蓄〉槽：4 位十进制指数 + 12 位尾数（设计 §11.4.2）。
   defp energy(j) do
-    exp = Enum.find(0..15, fn x -> div(j, Integer.pow(10, x)) < 4096 and rem(j, Integer.pow(10, x)) == 0 end)
+    exp =
+      Enum.find(0..15, fn x ->
+        div(j, Integer.pow(10, x)) < 4096 and rem(j, Integer.pow(10, x)) == 0
+      end)
+
     <<exp::4, div(j, Integer.pow(10, exp))::12>>
   end
 
   # L8-2 反例：〈附〉〈形 球 120 mm, mass_g〉〈热 2500 K〉〈蓄 5 kJ〉（布局同发布预设“灼点”）。
   defp hot_probe(mass_g),
-    do: <<2, 1, 1, 0, 8, 0xFF, 0, 1, 0, 2, 0, 120::16, 0::32, mass_g::16, 1, 0, 15, 25_000::16, 1, 1, 0, 27>> <>
-          energy(5_000) <> <<0, 0>>
+    do:
+      <<2, 1, 1, 0, 8, 0xFF, 0, 1, 0, 2, 0, 120::16, 0::32, mass_g::16, 1, 0, 15, 25_000::16, 1,
+        1, 0, 27>> <>
+        energy(5_000) <> <<0, 0>>
 
-  @site %{ambient_k: 293.15, formation_distance_m: 2.0, emissivity: 0.9, exchange_w_per_m2_k: 10.0}
+  @site %{
+    ambient_k: 293.15,
+    formation_distance_m: 2.0,
+    emissivity: 0.9,
+    exchange_w_per_m2_k: 10.0
+  }
 
   # T15 报价不拒的最小质量：真实报价扫描（82 g 以下有 `:thermal_step`）。
   defp min_legal_mass(catalog) do
     Enum.find(1..65_535, fn m ->
       case Program.diagnose_ir(hot_probe(m), catalog) do
-        {:ok, p} -> not Enum.any?(Cost.quote_structure(p, catalog, @site).rejects, &(&1.check == :thermal_step))
-        _ -> false
+        {:ok, p} ->
+          not Enum.any?(
+            Cost.quote_structure(p, catalog, @site).rejects,
+            &(&1.check == :thermal_step)
+          )
+
+        _ ->
+          false
       end
     end)
   end
@@ -229,7 +263,12 @@ defmodule VoxelRegion.MagicLoadTest do
     catalog = Catalog.load(catalog_path)
     mass = min_legal_mass(catalog)
 
-    programs = %{scorch: sample("scorch"), ember: ember(), lamp: sample("lamp"), probe: hot_probe(mass)}
+    programs = %{
+      scorch: sample("scorch"),
+      ember: ember(),
+      lamp: sample("lamp"),
+      probe: hot_probe(mass)
+    }
 
     quotes =
       Map.new(programs, fn {kind, bytes} ->
@@ -239,9 +278,13 @@ defmodule VoxelRegion.MagicLoadTest do
         {kind, q}
       end)
 
-    %{bytes: programs, quotes: quotes, probe_mass_g: mass,
+    %{
+      bytes: programs,
+      quotes: quotes,
+      probe_mass_g: mass,
       # 本地记账：一次施放按报价总价的 1.05 倍预留（结算按当时 site 重报价，差异很小），不足就换新施法者。
-      cost: Map.new(quotes, fn {k, q} -> {k, round(q.total_mj * 1.05)} end)}
+      cost: Map.new(quotes, fn {k, q} -> {k, round(q.total_mj * 1.05)} end)
+    }
   end
 
   # ---------------------------------------------------------------------------
@@ -266,7 +309,10 @@ defmodule VoxelRegion.MagicLoadTest do
       OverlayLogStore.reset_world(@content_version)
     end)
 
-    out = System.get_env("LOAD_OUT") || Path.join(System.tmp_dir!(), "magic_load_out_#{System.os_time(:second)}")
+    out =
+      System.get_env("LOAD_OUT") ||
+        Path.join(System.tmp_dir!(), "magic_load_out_#{System.os_time(:second)}")
+
     %{root: root, sink: sink, out: out}
   end
 
@@ -277,8 +323,16 @@ defmodule VoxelRegion.MagicLoadTest do
   end
 
   defp start_world(c, quotas) do
-    File.cp!(Path.join([@fixtures, "combustion", @properties <> ".json"]), Path.join(c.root, "properties.json"))
-    File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(c.root, "environment.json"))
+    File.cp!(
+      Path.join([@fixtures, "combustion", @properties <> ".json"]),
+      Path.join(c.root, "properties.json")
+    )
+
+    File.cp!(
+      Path.join([@fixtures, "combustion", "environment-radiation.json"]),
+      Path.join(c.root, "environment.json")
+    )
+
     magic = Path.join(c.root, "magic.json")
 
     if quotas == %{} do
@@ -293,21 +347,37 @@ defmodule VoxelRegion.MagicLoadTest do
     w =
       start_supervised!(
         {World,
-         [source: LoadSource, log: MeteredLog, root: c.root, observer: c.sink, name: nil, clock: {ManualClock, nil},
-          server_clock: {ServerClock, clock}, property_catalog_path: Path.join(c.root, "properties.json"),
-          thermal_environment_path: Path.join(c.root, "environment.json"), magic_catalog_path: magic]},
+         [
+           source: LoadSource,
+           log: MeteredLog,
+           root: c.root,
+           observer: c.sink,
+           name: nil,
+           clock: {ManualClock, nil},
+           server_clock: {ServerClock, clock},
+           property_catalog_path: Path.join(c.root, "properties.json"),
+           thermal_environment_path: Path.join(c.root, "environment.json"),
+           magic_catalog_path: magic
+         ]},
         id: :world
       )
 
     {:ok, _} = World.apply_edits(w, Enum.map(@ground, &{&1, @stone}))
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     tiles = VoxelRegion.TestSupport.tiles(@simulation_box)
+
     # 一个在线玩家的两路下行：gate 式日志订阅与 canonical 订阅（丢弃进程接收）。
     :ok = World.subscribe(w, c.sink, 0, tiles, 0)
     :ok = World.canonical_snapshot_and_subscribe(w, tiles, c.sink, make_ref())
 
-    Map.merge(c, %{w: w, clock: clock, tiles: tiles, digest: :crypto.hash(:sha256, File.read!(magic)),
-      programs: programs(magic), catalog_path: magic})
+    Map.merge(c, %{
+      w: w,
+      clock: clock,
+      tiles: tiles,
+      digest: :crypto.hash(:sha256, File.read!(magic)),
+      programs: programs(magic),
+      catalog_path: magic
+    })
   end
 
   # ---------------------------------------------------------------------------
@@ -326,16 +396,30 @@ defmodule VoxelRegion.MagicLoadTest do
     station = rem(run.station_counter, @stations)
     {x, z} = station_xz(station)
 
-    a = %{cid: cid, controller: :player, gate: c.sink, identity: make_ref(), refresh: &Actor.tool_context/2,
-      eye: {x + 0.5, 2.5, z + 0.5}, feet: {x + 0.5, 1.0, z + 0.5}, tick_us: 16_667}
+    a = %{
+      cid: cid,
+      controller: :player,
+      gate: c.sink,
+      identity: make_ref(),
+      refresh: &Actor.tool_context/2,
+      eye: {x + 0.5, 2.5, z + 0.5},
+      feet: {x + 0.5, 1.0, z + 0.5},
+      tick_us: 16_667
+    }
 
     a = Map.put(a, :player, start_supervised!({Actor, a}, id: {:actor, cid}))
     :ok = GenServer.call(a.player, {:presence, c.w, :present})
     _ = World.send_caster_state(c.w, cid, 0, {c.sink, a.identity})
     caster = %{cid: cid, actor: a, kind: kind, station: {x, z}, spent_mj: 0}
 
-    {caster, %{run | next_cid: cid + 1, station_counter: run.station_counter + 1,
-      casters: Map.put(run.casters, cid, caster), pools: Map.update(run.pools, kind, [cid], &(&1 ++ [cid]))}}
+    {caster,
+     %{
+       run
+       | next_cid: cid + 1,
+         station_counter: run.station_counter + 1,
+         casters: Map.put(run.casters, cid, caster),
+         pools: Map.update(run.pools, kind, [cid], &(&1 ++ [cid]))
+     }}
   end
 
   defp aim({ex, ey, ez}, {x, y, z}) do
@@ -352,18 +436,45 @@ defmodule VoxelRegion.MagicLoadTest do
     {cx, _, cz} = target_cell(kind, caster.station)
     micro = {cx * 8 + 4, 4, cz * 8 + 4}
     a = caster.actor
-    q = %{request_id: next_id(), client_intent_seq: next_id(), logical_scene_id: 1, action: 0, tool_id: 1,
-      direction: aim(a.eye, micro), micro: micro, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
+
+    q = %{
+      request_id: next_id(),
+      client_intent_seq: next_id(),
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: aim(a.eye, micro),
+      micro: micro,
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
+
     {:ok, target} = World.tool_intent(c.w, a, q)
     seq = next_id()
 
     request =
-      %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-        direction: aim(a.eye, micro), program: c.programs.bytes[kind]}
+      %{
+        request_id: seq,
+        client_intent_seq: seq,
+        logical_scene_id: 1,
+        action: 1,
+        catalog_digest: c.digest,
+        direction: aim(a.eye, micro),
+        program: c.programs.bytes[kind]
+      }
       |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
 
     started = System.monotonic_time(:microsecond)
-    result = VoxelRegion.TestSupport.spell(c.w, Map.merge(a, %{received_us: run.at, clock_node: node()}), request)
+
+    result =
+      VoxelRegion.TestSupport.spell(
+        c.w,
+        Map.merge(a, %{received_us: run.at, clock_node: node()}),
+        request
+      )
+
     us = System.monotonic_time(:microsecond) - started
 
     outcome =
@@ -373,7 +484,12 @@ defmodule VoxelRegion.MagicLoadTest do
         {:error, reason} -> reason
       end
 
-    run = %{run | at: run.at + 1_000_000, cast_us: [us | run.cast_us], casts: Map.update(run.casts, {kind, outcome}, 1, &(&1 + 1))}
+    run = %{
+      run
+      | at: run.at + 1_000_000,
+        cast_us: [us | run.cast_us],
+        casts: Map.update(run.casts, {kind, outcome}, 1, &(&1 + 1))
+    }
 
     run =
       if outcome == :built,
@@ -430,15 +546,26 @@ defmodule VoxelRegion.MagicLoadTest do
       Enum.reduce(structures, acc, fn {_, r}, acc ->
         kind = get_in(run.casters, [r.caster, :kind]) || :other
         awake = kind in [:scorch, :probe] and :asleep not in r.status and :flying not in r.status
-        probe_k = if kind == :probe, do: max(acc.probe_k || 0.0, r.temperature_k), else: acc.probe_k
 
-        %{acc | probe_k: probe_k, kinds: Map.update(acc.kinds, kind, 1, &(&1 + 1)),
-          awake: if(awake, do: Map.update(acc.awake, kind, 1, &(&1 + 1)), else: acc.awake),
-          per_caster: Map.update(acc.per_caster, r.caster, 1, &(&1 + 1))}
+        probe_k =
+          if kind == :probe, do: max(acc.probe_k || 0.0, r.temperature_k), else: acc.probe_k
+
+        %{
+          acc
+          | probe_k: probe_k,
+            kinds: Map.update(acc.kinds, kind, 1, &(&1 + 1)),
+            awake: if(awake, do: Map.update(acc.awake, kind, 1, &(&1 + 1)), else: acc.awake),
+            per_caster: Map.update(acc.per_caster, r.caster, 1, &(&1 + 1))
+        }
       end)
 
-    Map.merge(acc, %{units: admission.usage_units, budget: admission.budget_units, reserve: admission.reserve_units,
-      awake_nodes: admission.awake_nodes, present: length(admission.present)})
+    Map.merge(acc, %{
+      units: admission.usage_units,
+      budget: admission.budget_units,
+      reserve: admission.reserve_units,
+      awake_nodes: admission.awake_nodes,
+      present: length(admission.present)
+    })
   end
 
   # 本拍补施：按优先级（热节点 → 规则 → 灯）补到目标。预热期按节奏错开（热每 4 拍至多 1 个、灯每拍至多 2 个），之后补满。
@@ -458,11 +585,21 @@ defmodule VoxelRegion.MagicLoadTest do
     {{run, per_caster, room}, ember} = place_n(c, acc, :ember, ember_need, 1.5, crowded?)
 
     hot_deficit = scorch_need - scorch + probe_need - probe
-    lamp_need = if spec.total == :fill, do: 10_000, else: spec.total - n.total - scorch - probe - ember
+
+    lamp_need =
+      if spec.total == :fill, do: 10_000, else: spec.total - n.total - scorch - probe - ember
+
     lamp_cap = if warmup?, do: 2, else: :all
 
     {{run, _, _}, _} =
-      place_n(c, {run, per_caster, room - 3 * hot_deficit}, :lamp, capped(max(lamp_need, 0), lamp_cap), 1, crowded?)
+      place_n(
+        c,
+        {run, per_caster, room - 3 * hot_deficit},
+        :lamp,
+        capped(max(lamp_need, 0), lamp_cap),
+        1,
+        crowded?
+      )
 
     run
   end
@@ -479,8 +616,19 @@ defmodule VoxelRegion.MagicLoadTest do
       {{run, per_caster, room}, built}
     else
       case place(c, run, kind, per_caster, crowded?) do
-        {:built, run, per_caster} -> place_n(c, {run, per_caster, room - weight}, kind, count - 1, weight, crowded?, built + 1)
-        {_reason, run, per_caster} -> {{run, per_caster, room}, built}
+        {:built, run, per_caster} ->
+          place_n(
+            c,
+            {run, per_caster, room - weight},
+            kind,
+            count - 1,
+            weight,
+            crowded?,
+            built + 1
+          )
+
+        {_reason, run, per_caster} ->
+          {{run, per_caster, room}, built}
       end
     end
   end
@@ -491,12 +639,16 @@ defmodule VoxelRegion.MagicLoadTest do
 
   defp fields(text) do
     [name | pairs] = String.split(text, " ")
-    {name, Map.new(for pair <- pairs, [k, v] <- [String.split(pair, "=", parts: 2)], do: {k, number(v)})}
+
+    {name,
+     Map.new(for pair <- pairs, [k, v] <- [String.split(pair, "=", parts: 2)], do: {k, number(v)})}
   end
 
   defp number(v) do
     case Integer.parse(v) do
-      {i, ""} -> i
+      {i, ""} ->
+        i
+
       _ ->
         case Float.parse(v) do
           {f, ""} -> f
@@ -506,8 +658,19 @@ defmodule VoxelRegion.MagicLoadTest do
   end
 
   defp blank_tick,
-    do: %{kernel: [], sim: nil, throttle: nil, structure: nil, commit: nil, callback: nil, appends: [], log_bytes: 0,
-      log_lines: 0, sleep: nil, triggers: nil}
+    do: %{
+      kernel: [],
+      sim: nil,
+      throttle: nil,
+      structure: nil,
+      commit: nil,
+      callback: nil,
+      appends: [],
+      log_bytes: 0,
+      log_lines: 0,
+      sleep: nil,
+      triggers: nil
+    }
 
   # 投递一次热提交并收齐本拍的日志行，直到 `voxel_thermal_callback`（整拍处理完）。30 s 内没有完成即记为未完成拍（积压暂停等）。
   defp commit_tick(c, run) do
@@ -534,7 +697,16 @@ defmodule VoxelRegion.MagicLoadTest do
         end
 
       {:persist, :append, seq, bytes, rows, meta, thermal?} ->
-        collect_tick(run, %{t | appends: [%{seq: seq, bytes: bytes, rows: rows, meta: meta, thermal: thermal?} | t.appends]}, deadline)
+        collect_tick(
+          run,
+          %{
+            t
+            | appends: [
+                %{seq: seq, bytes: bytes, rows: rows, meta: meta, thermal: thermal?} | t.appends
+              ]
+          },
+          deadline
+        )
 
       {:persist, :pages, cut, bytes, globals} ->
         collect_tick(pages(run, cut, bytes, globals), t, deadline)
@@ -544,12 +716,20 @@ defmodule VoxelRegion.MagicLoadTest do
   end
 
   # 两拍之间：页切点、积压级别变化、施放产生的追加与日志。
-  defp between(run, "voxel_persist_backlog" <> _ = name, f), do: update_in(run.backlog, &[{name, f} | &1])
+  defp between(run, "voxel_persist_backlog" <> _ = name, f),
+    do: update_in(run.backlog, &[{name, f} | &1])
+
   defp between(run, "voxel_page_cut", f), do: update_in(run.page_cuts, &[f | &1])
   defp between(run, _name, _f), do: run
 
   defp pages(run, cut, bytes, globals),
-    do: update_in(run.page_bytes, &Map.update(&1, cut, %{rows: bytes, globals: globals}, fn p -> %{rows: p.rows + bytes, globals: p.globals + globals} end))
+    do:
+      update_in(
+        run.page_bytes,
+        &Map.update(&1, cut, %{rows: bytes, globals: globals}, fn p ->
+          %{rows: p.rows + bytes, globals: p.globals + globals}
+        end)
+      )
 
   # 等到本拍墙钟节奏点，期间吸收两拍之间的消息。
   defp idle_until(run, deadline) do
@@ -560,7 +740,14 @@ defmodule VoxelRegion.MagicLoadTest do
         idle_until(between(run, name, f), deadline)
 
       {:persist, :append, _seq, bytes, _rows, _meta, _thermal} ->
-        idle_until(%{run | idle_append_bytes: run.idle_append_bytes + bytes, idle_appends: run.idle_appends + 1}, deadline)
+        idle_until(
+          %{
+            run
+            | idle_append_bytes: run.idle_append_bytes + bytes,
+              idle_appends: run.idle_appends + 1
+          },
+          deadline
+        )
 
       {:persist, :pages, cut, bytes, globals} ->
         idle_until(pages(run, cut, bytes, globals), deadline)
@@ -570,8 +757,22 @@ defmodule VoxelRegion.MagicLoadTest do
   end
 
   defp new_run,
-    do: %{next_cid: 100_001, station_counter: 0, casters: %{}, pools: %{}, at: 1_000_000, cast_us: [], casts: %{},
-      backlog: [], page_cuts: [], page_bytes: %{}, idle_log_bytes: 0, idle_append_bytes: 0, idle_appends: 0, ticks: []}
+    do: %{
+      next_cid: 100_001,
+      station_counter: 0,
+      casters: %{},
+      pools: %{},
+      at: 1_000_000,
+      cast_us: [],
+      casts: %{},
+      backlog: [],
+      page_cuts: [],
+      page_bytes: %{},
+      idle_log_bytes: 0,
+      idle_append_bytes: 0,
+      idle_appends: 0,
+      ticks: []
+    }
 
   defp drive(c, spec, warmup_s, window_s) do
     warmup = round(warmup_s * 1000 / @tick_ms)
@@ -585,7 +786,12 @@ defmodule VoxelRegion.MagicLoadTest do
     try do
       # 规则结构（寿命长于整个运行）一次建成，出生在第 0 拍之前。
       run = top_up(c, new_run(), %{spec | scorch: 0, total: 0} |> Map.put(:probe, 0), 0, false)
-      run = Enum.reduce(0..(total - 1), run, fn tick, run -> one_tick(c, run, spec, tick, tick < warmup) end)
+
+      run =
+        Enum.reduce(0..(total - 1), run, fn tick, run ->
+          one_tick(c, run, spec, tick, tick < warmup)
+        end)
+
       {run, warmup}
     after
       :logger.remove_handler(:magic_load)
@@ -602,16 +808,28 @@ defmodule VoxelRegion.MagicLoadTest do
     topped = System.monotonic_time(:millisecond)
     n = census(c, run)
     Agent.update(c.clock, &(&1 + @tick_ms * 1000))
+
     # 补施产生的追加与日志已在邮箱里：投递热提交前先吸收进“两拍之间”，不混进本拍。
     run = idle_until(run, System.monotonic_time(:millisecond))
     sent = System.monotonic_time(:millisecond)
     {t, run} = commit_tick(c, run)
     done = System.monotonic_time(:millisecond)
 
-    record = Map.merge(t, %{tick: tick, warmup: warmup?, census: Map.drop(n, [:per_caster]), top_up_ms: topped - started,
-      casts: length(run.cast_us) - before,
-      idle: %{append_bytes: run.idle_append_bytes, appends: run.idle_appends, log_bytes: run.idle_log_bytes},
-      lag_ms: max(sent - (run[:next_due] || sent), 0), commit_wall_ms: done - sent})
+    record =
+      Map.merge(t, %{
+        tick: tick,
+        warmup: warmup?,
+        census: Map.drop(n, [:per_caster]),
+        top_up_ms: topped - started,
+        casts: length(run.cast_us) - before,
+        idle: %{
+          append_bytes: run.idle_append_bytes,
+          appends: run.idle_appends,
+          log_bytes: run.idle_log_bytes
+        },
+        lag_ms: max(sent - (run[:next_due] || sent), 0),
+        commit_wall_ms: done - sent
+      })
 
     run = idle_until(%{run | ticks: [record | run.ticks]}, started + @tick_ms)
     Map.put(run, :next_due, started + @tick_ms)
@@ -628,14 +846,24 @@ defmodule VoxelRegion.MagicLoadTest do
     Enum.at(sorted, min(length(sorted) - 1, trunc(p * length(sorted))))
   end
 
-  defp dist(values), do: %{p50: pct(values, 0.5), p95: pct(values, 0.95), max: Enum.max(values, fn -> nil end),
-    mean: if(values == [], do: nil, else: Float.round(Enum.sum(values) / length(values), 1))}
+  defp dist(values),
+    do: %{
+      p50: pct(values, 0.5),
+      p95: pct(values, 0.95),
+      max: Enum.max(values, fn -> nil end),
+      mean: if(values == [], do: nil, else: Float.round(Enum.sum(values) / length(values), 1))
+    }
 
   defp get(f, key), do: (f && Map.get(f, key)) || 0
 
   # 一拍里各次内核调用的“每 50 ms 段子步数”（T15 的口径）。
   defp steps50(t),
-    do: for(k <- t.kernel, get(k, "simulated_s") > 0, do: get(k, "kernel_steps") / (get(k, "simulated_s") / 0.05))
+    do:
+      for(
+        k <- t.kernel,
+        get(k, "simulated_s") > 0,
+        do: get(k, "kernel_steps") / (get(k, "simulated_s") / 0.05)
+      )
 
   # 热事务元数据行抽样解码：`thermal.structures`（显式字段 map）单独压缩后的字节，估算其在每拍持久化里的份额。
   defp structures_share(ticks) do
@@ -644,17 +872,27 @@ defmodule VoxelRegion.MagicLoadTest do
         meta = OverlayLog.term(a.meta)
         structures = get_in(meta, [:thermal, :structures]) || %{}
         bare = put_in(meta, [:thermal, :structures], %{})
-        %{meta_bytes: byte_size(a.meta), structures: map_size(structures),
+
+        %{
+          meta_bytes: byte_size(a.meta),
+          structures: map_size(structures),
           structures_bytes: byte_size(:erlang.term_to_binary(structures, [{:compressed, 1}])),
           rest_bytes: byte_size(:erlang.term_to_binary(bare, [{:compressed, 1}])),
-          property_rows: length(Map.get(meta, :property_states, []))}
+          property_rows: length(Map.get(meta, :property_states, []))
+        }
       end
 
     per = for s <- samples, s.structures > 0, do: s.structures_bytes / s.structures
-    %{samples: length(samples), meta_bytes: dist(Enum.map(samples, & &1.meta_bytes)),
-      structures_bytes: dist(Enum.map(samples, & &1.structures_bytes)), rest_bytes: dist(Enum.map(samples, & &1.rest_bytes)),
+
+    %{
+      samples: length(samples),
+      meta_bytes: dist(Enum.map(samples, & &1.meta_bytes)),
+      structures_bytes: dist(Enum.map(samples, & &1.structures_bytes)),
+      rest_bytes: dist(Enum.map(samples, & &1.rest_bytes)),
       property_rows: dist(Enum.map(samples, & &1.property_rows)),
-      bytes_per_structure: if(per == [], do: nil, else: Float.round(Enum.sum(per) / length(per), 1))}
+      bytes_per_structure:
+        if(per == [], do: nil, else: Float.round(Enum.sum(per) / length(per), 1))
+    }
   end
 
   defp summarize(name, c, run, warmup, spec) do
@@ -672,15 +910,20 @@ defmodule VoxelRegion.MagicLoadTest do
     steps_tick = Enum.map(done, &get(&1.throttle, "kernel_steps"))
 
     steps_per_50ms = Enum.flat_map(done, &steps50/1)
+
     # L8-2：反例结构在拍首端口温度 ≥ 1500 K 的拍（刚出生、最热）与其余拍分开。
     {probe_hot, probe_cool} = Enum.split_with(done, &((&1.census.probe_k || 0.0) >= 1500.0))
 
     probe_split = fn ticks ->
-      %{ticks: length(ticks), steps_per_50ms: dist(Enum.flat_map(ticks, &steps50/1)),
+      %{
+        ticks: length(ticks),
+        steps_per_50ms: dist(Enum.flat_map(ticks, &steps50/1)),
         kernel_steps_per_tick: dist(Enum.map(ticks, &get(&1.throttle, "kernel_steps"))),
-        nif_us_per_tick: dist(Enum.map(ticks, fn t -> Enum.sum(Enum.map(t.kernel, &get(&1, "nif_us"))) end)),
+        nif_us_per_tick:
+          dist(Enum.map(ticks, fn t -> Enum.sum(Enum.map(t.kernel, &get(&1, "nif_us"))) end)),
         clamped_nodes: dist(Enum.map(ticks, &get(&1.throttle, "clamped_nodes"))),
-        throttled_nodes: dist(Enum.map(ticks, &get(&1.throttle, "throttled_nodes")))}
+        throttled_nodes: dist(Enum.map(ticks, &get(&1.throttle, "throttled_nodes")))
+      }
     end
 
     thermal_appends = for t <- done, a <- t.appends, a.thermal, do: a.bytes
@@ -695,18 +938,32 @@ defmodule VoxelRegion.MagicLoadTest do
     window_idle = for t <- window, d = idle[t.tick], d != nil, do: {t, d}
 
     interval_bytes =
-      for {t, d} <- window_idle, is_map(t.callback),
+      for {t, d} <- window_idle,
+          is_map(t.callback),
           do: d.append_bytes + Enum.sum(for a <- t.appends, do: a.bytes)
+
     window_s = length(window) * @tick_ms / 1000
 
     summary = %{
       scenario: name,
-      environment: %{otp: System.otp_release(), elixir: System.version(), schedulers: System.schedulers_online(),
-        cpu: cpu(), catalog_digest: Base.encode16(c.digest, case: :lower), content_version: @content_version,
-        probe_mass_g: c.programs.probe_mass_g},
+      environment: %{
+        otp: System.otp_release(),
+        elixir: System.version(),
+        schedulers: System.schedulers_online(),
+        cpu: cpu(),
+        catalog_digest: Base.encode16(c.digest, case: :lower),
+        content_version: @content_version,
+        probe_mass_g: c.programs.probe_mass_g
+      },
       spec: spec,
-      window: %{warmup_ticks: warmup, window_ticks: length(window), completed_ticks: length(done), simulated_s: window_s,
-        lag_ms: dist(Enum.map(window, & &1.lag_ms)), top_up_ms: dist(Enum.map(window, & &1.top_up_ms))},
+      window: %{
+        warmup_ticks: warmup,
+        window_ticks: length(window),
+        completed_ticks: length(done),
+        simulated_s: window_s,
+        lag_ms: dist(Enum.map(window, & &1.lag_ms)),
+        top_up_ms: dist(Enum.map(window, & &1.top_up_ms))
+      },
       composition: %{
         total: dist(Enum.map(window, & &1.census.total)),
         awake_scorch: dist(Enum.map(window, &Map.get(&1.census.awake, :scorch, 0))),
@@ -717,37 +974,67 @@ defmodule VoxelRegion.MagicLoadTest do
         kernel_heat_nodes: dist(Enum.map(done, &get(&1.structure, "awake_nodes"))),
         present: dist(Enum.map(window, & &1.census.present))
       },
-      world_tick_us: %{callback: dist(callback), thermal_steps: dist(Enum.map(done, &get(&1.sim, "steps_us"))),
-        structure_tick: dist(structure), structure_step_total: dist(step_total), structure_step_max: dist(step_max),
-        persist: dist(Enum.map(done, &get(&1.commit, "persist_us"))), broadcast: dist(Enum.map(done, &get(&1.commit, "broadcast_us"))),
-        commit_wall_ms: dist(Enum.map(done, & &1.commit_wall_ms))},
+      world_tick_us: %{
+        callback: dist(callback),
+        thermal_steps: dist(Enum.map(done, &get(&1.sim, "steps_us"))),
+        structure_tick: dist(structure),
+        structure_step_total: dist(step_total),
+        structure_step_max: dist(step_max),
+        persist: dist(Enum.map(done, &get(&1.commit, "persist_us"))),
+        broadcast: dist(Enum.map(done, &get(&1.commit, "broadcast_us"))),
+        commit_wall_ms: dist(Enum.map(done, & &1.commit_wall_ms))
+      },
       structure_step_mean_us:
-        if(Enum.sum(structures) > 0, do: Float.round(Enum.sum(step_total) / Enum.sum(structures), 2), else: nil),
-      active_set: %{hot: dist(Enum.map(done, &get(&1.sim, "hot"))), candidates: dist(Enum.map(done, &get(&1.sim, "candidates"))),
-        kernel_nodes: dist(Enum.map(kernel_calls, &get(&1, "nodes"))), edges: dist(Enum.map(kernel_calls, &get(&1, "edges")))},
-      kernel: %{nif_us_per_tick: dist(nif_tick), nif_us_per_call: dist(Enum.map(kernel_calls, &get(&1, "nif_us"))),
-        calls_per_tick: dist(Enum.map(done, &length(&1.kernel))), kernel_steps_per_tick: dist(steps_tick),
+        if(Enum.sum(structures) > 0,
+          do: Float.round(Enum.sum(step_total) / Enum.sum(structures), 2),
+          else: nil
+        ),
+      active_set: %{
+        hot: dist(Enum.map(done, &get(&1.sim, "hot"))),
+        candidates: dist(Enum.map(done, &get(&1.sim, "candidates"))),
+        kernel_nodes: dist(Enum.map(kernel_calls, &get(&1, "nodes"))),
+        edges: dist(Enum.map(kernel_calls, &get(&1, "edges")))
+      },
+      kernel: %{
+        nif_us_per_tick: dist(nif_tick),
+        nif_us_per_call: dist(Enum.map(kernel_calls, &get(&1, "nif_us"))),
+        calls_per_tick: dist(Enum.map(done, &length(&1.kernel))),
+        kernel_steps_per_tick: dist(steps_tick),
         kernel_steps_per_call: dist(Enum.map(kernel_calls, &get(&1, "kernel_steps"))),
         steps_per_50ms: dist(steps_per_50ms),
         throttled_nodes: dist(Enum.map(done, &get(&1.throttle, "throttled_nodes"))),
         clamped_nodes: dist(Enum.map(done, &get(&1.throttle, "clamped_nodes"))),
-        probe_k: dist(for(t <- done, t.census.probe_k != nil, do: Float.round(t.census.probe_k, 1))),
-        probe_hot: probe_split.(probe_hot), probe_cool: probe_split.(probe_cool)},
-      persistence: %{thermal_txn_bytes: dist(thermal_appends), thermal_txn_rows: dist(for(t <- done, a <- t.appends, a.thermal, do: a.rows)),
+        probe_k:
+          dist(for(t <- done, t.census.probe_k != nil, do: Float.round(t.census.probe_k, 1))),
+        probe_hot: probe_split.(probe_hot),
+        probe_cool: probe_split.(probe_cool)
+      },
+      persistence: %{
+        thermal_txn_bytes: dist(thermal_appends),
+        thermal_txn_rows: dist(for(t <- done, a <- t.appends, a.thermal, do: a.rows)),
         structures_share: structures_share(done),
         between_ticks_append_bytes: dist(Enum.map(window_idle, fn {_, d} -> d.append_bytes end)),
         between_ticks_appends: dist(Enum.map(window_idle, fn {_, d} -> d.appends end)),
         per_tick_interval_bytes: dist(interval_bytes),
-        page_cuts: length(page_cuts), page_cut_elapsed_us: dist(Enum.map(page_cuts, &get(&1, "elapsed_us"))),
+        page_cuts: length(page_cuts),
+        page_cut_elapsed_us: dist(Enum.map(page_cuts, &get(&1, "elapsed_us"))),
         page_cut_units: dist(Enum.map(page_cuts, &get(&1, "units"))),
         page_cut_bytes: dist(Enum.map(Map.values(run.page_bytes), &(&1.rows + &1.globals))),
-        page_globals_bytes: dist(Enum.map(Map.values(run.page_bytes), & &1.globals))},
-      logs: %{bytes_per_tick: dist(Enum.map(done, & &1.log_bytes)), lines_per_tick: dist(Enum.map(done, & &1.log_lines)),
-        between_ticks_bytes: dist(Enum.map(window_idle, fn {_, d} -> d.log_bytes end))},
+        page_globals_bytes: dist(Enum.map(Map.values(run.page_bytes), & &1.globals))
+      },
+      logs: %{
+        bytes_per_tick: dist(Enum.map(done, & &1.log_bytes)),
+        lines_per_tick: dist(Enum.map(done, & &1.log_lines)),
+        between_ticks_bytes: dist(Enum.map(window_idle, fn {_, d} -> d.log_bytes end))
+      },
       backlog: Enum.reverse(run.backlog) |> Enum.map(fn {n, f} -> Map.put(f, "event", n) end),
-      casts: %{by_outcome: Map.new(run.casts, fn {{k, o}, n} -> {"#{k}:#{inspect(o)}", n} end),
-        casters: map_size(run.casters), cast_us: dist(run.cast_us),
-        total_casts: Enum.sum(for {_, n} <- run.casts, do: n), window_casts: Enum.sum(Enum.map(window, & &1.casts))},
+      casts: %{
+        by_outcome: Map.new(run.casts, fn {{k, o}, n} -> {"#{k}:#{inspect(o)}", n} end),
+        casters: map_size(run.casters),
+        cast_us: dist(run.cast_us),
+        total_casts: Enum.sum(for {_, n} <- run.casts, do: n),
+        window_casts: Enum.sum(Enum.map(window, & &1.casts))
+      },
       triggers: Enum.count(done, &(&1.triggers != nil)),
       sleep_ticks: Enum.count(done, &(&1.sleep != nil))
     }
@@ -763,8 +1050,15 @@ defmodule VoxelRegion.MagicLoadTest do
 
   defp cpu do
     case File.read("/proc/cpuinfo") do
-      {:ok, text} -> text |> String.split("\n") |> Enum.find_value(&(String.starts_with?(&1, "model name") && String.trim(List.last(String.split(&1, ":")))))
-      _ -> nil
+      {:ok, text} ->
+        text
+        |> String.split("\n")
+        |> Enum.find_value(
+          &(String.starts_with?(&1, "model name") && String.trim(List.last(String.split(&1, ":"))))
+        )
+
+      _ ->
+        nil
     end
   end
 
@@ -780,27 +1074,34 @@ defmodule VoxelRegion.MagicLoadTest do
 
     probe =
       if Map.get(spec, :probe, 0) > 0,
-        do: [{:probe_observed, s.kernel.probe_hot.ticks > 0, "窗口内反例端口温度 ≥ 1500 K 的拍 #{s.kernel.probe_hot.ticks} 个"}],
+        do: [
+          {:probe_observed, s.kernel.probe_hot.ticks > 0,
+           "窗口内反例端口温度 ≥ 1500 K 的拍 #{s.kernel.probe_hot.ticks} 个"}
+        ],
         else: []
 
     ([
-      {:window_complete, s.window.completed_ticks == s.window.window_ticks,
+       {:window_complete, s.window.completed_ticks == s.window.window_ticks,
         "#{s.window.completed_ticks}/#{s.window.window_ticks} 拍完成"},
-      {:composition, s.composition.kernel_heat_nodes.p50 >= awake_target and s.composition.rules.p50 == spec.ember and
-         (spec.total == :fill or s.composition.total.p50 >= spec.total),
+       {:composition,
+        s.composition.kernel_heat_nodes.p50 >= awake_target and
+          s.composition.rules.p50 == spec.ember and
+          (spec.total == :fill or s.composition.total.p50 >= spec.total),
         "热节点 p50 #{s.composition.kernel_heat_nodes.p50}/#{awake_target}，规则 p50 #{s.composition.rules.p50}，结构 p50 #{s.composition.total.p50}"},
-      {:world_tick_p95, s.world_tick_us.callback.p95 <= @budget.tick_us, "每拍 World 时间 p95 #{s.world_tick_us.callback.p95} µs ≤ 500 ms"},
-      {:structure_step_mean, s.structure_step_mean_us <= @budget.step_mean_us, "结构步进平均 #{s.structure_step_mean_us} µs ≤ 30"},
-      {:structure_step_max, s.world_tick_us.structure_step_max.max <= @budget.step_max_us,
+       {:world_tick_p95, s.world_tick_us.callback.p95 <= @budget.tick_us,
+        "每拍 World 时间 p95 #{s.world_tick_us.callback.p95} µs ≤ 500 ms"},
+       {:structure_step_mean, s.structure_step_mean_us <= @budget.step_mean_us,
+        "结构步进平均 #{s.structure_step_mean_us} µs ≤ 30"},
+       {:structure_step_max, s.world_tick_us.structure_step_max.max <= @budget.step_max_us,
         "单结构单拍最坏 #{s.world_tick_us.structure_step_max.max} µs ≤ 100"},
-      {:region_step, s.world_tick_us.structure_step_total.max <= @budget.region_step_us,
+       {:region_step, s.world_tick_us.structure_step_total.max <= @budget.region_step_us,
         "每分区每拍结构步进最坏 #{s.world_tick_us.structure_step_total.max} µs ≤ 26 ms"},
-      {:persist_16kb, s.persistence.thermal_txn_bytes.p95 <= @budget.persist_bytes,
+       {:persist_16kb, s.persistence.thermal_txn_bytes.p95 <= @budget.persist_bytes,
         "热事务持久化 p95 #{s.persistence.thermal_txn_bytes.p95} B ≤ 16384"},
-      {:backlog, s.backlog == [], "积压分级变化 #{length(s.backlog)} 次"},
-      {:t15_steps, (s.kernel.steps_per_50ms.max || 0) <= @budget.steps_per_50ms,
+       {:backlog, s.backlog == [], "积压分级变化 #{length(s.backlog)} 次"},
+       {:t15_steps, (s.kernel.steps_per_50ms.max || 0) <= @budget.steps_per_50ms,
         "每 50 ms 段内核子步最多 #{s.kernel.steps_per_50ms.max} ≤ 2"}
-    ] ++ probe)
+     ] ++ probe)
     |> Enum.map(fn {k, ok, detail} -> %{check: k, pass: ok, detail: detail} end)
   end
 
@@ -816,7 +1117,11 @@ defmodule VoxelRegion.MagicLoadTest do
       casts #{inspect(s.casts)} lag_ms=#{inspect(s.window.lag_ms)}
     """)
 
-    for v <- s.verdicts, do: IO.puts("  VERDICT #{name} #{v.check} #{if v.pass, do: "PASS", else: "FAIL"} #{v.detail}")
+    for v <- s.verdicts,
+        do:
+          IO.puts(
+            "  VERDICT #{name} #{v.check} #{if v.pass, do: "PASS", else: "FAIL"} #{v.detail}"
+          )
   end
 
   defp assert_verdicts(summary) do
@@ -824,7 +1129,8 @@ defmodule VoxelRegion.MagicLoadTest do
     assert failed == [], "未通过的判定：\n" <> Enum.join(failed, "\n")
   end
 
-  defp seconds(env, default), do: String.to_integer(System.get_env(env, Integer.to_string(default)))
+  defp seconds(env, default),
+    do: String.to_integer(System.get_env(env, Integer.to_string(default)))
 
   # ---------------------------------------------------------------------------
   # 用例
@@ -851,7 +1157,10 @@ defmodule VoxelRegion.MagicLoadTest do
     assert c.programs.probe_mass_g == 82
     assert_in_delta c.programs.quotes.probe.c_th_j_per_k, 41.0, 1.0e-9
     spec = %{scorch: 15, probe: 1, ember: 64, total: :fill}
-    {run, warmup} = drive(c, spec, seconds("LOAD_WARMUP_S", 60), seconds("LOAD_L82_WINDOW_S", 120))
+
+    {run, warmup} =
+      drive(c, spec, seconds("LOAD_WARMUP_S", 60), seconds("LOAD_L82_WINDOW_S", 120))
+
     summary = summarize("l8_2", c, run, warmup, spec)
     assert_verdicts(summary)
   end

@@ -21,7 +21,10 @@ defmodule VoxelRegion.MagicStructureMigrationTest do
   @recorded Path.join(@dir, "world.json") |> File.read!() |> Jason.decode!()
   @external_resource Path.join(@dir, "world.json")
   @external_resource Path.join(@dir, "overlay.log")
-  @catalog Path.expand("../priv/magic", __DIR__) |> Path.join("*.json") |> Path.wildcard() |> then(fn [path] -> path end)
+  @catalog Path.expand("../priv/magic", __DIR__)
+           |> Path.join("*.json")
+           |> Path.wildcard()
+           |> then(fn [path] -> path end)
   @box {{-2, -2, -2}, {2, 2, 2}}
 
   defmodule ManualClock do
@@ -36,11 +39,22 @@ defmodule VoxelRegion.MagicStructureMigrationTest do
   end
 
   setup do
-    root = Path.join(System.tmp_dir!(), "structure_migration_#{System.unique_integer([:positive])}")
+    root =
+      Path.join(System.tmp_dir!(), "structure_migration_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
-    File.cp!(Path.join([@fixtures, @recorded["catalogs"]["properties"]["file"]]), Path.join(root, "properties.json"))
-    File.cp!(Path.join([@fixtures, @recorded["catalogs"]["thermal_environment"]["file"]]), Path.join(root, "environment.json"))
+
+    File.cp!(
+      Path.join([@fixtures, @recorded["catalogs"]["properties"]["file"]]),
+      Path.join(root, "properties.json")
+    )
+
+    File.cp!(
+      Path.join([@fixtures, @recorded["catalogs"]["thermal_environment"]["file"]]),
+      Path.join(root, "environment.json")
+    )
+
     File.cp!(@catalog, Path.join(root, "magic.json"))
     File.cp!(Path.join(@dir, "overlay.log"), Path.join(root, "overlay.log"))
     %{root: root}
@@ -77,14 +91,20 @@ defmodule VoxelRegion.MagicStructureMigrationTest do
 
   # 持久化日志里带 `thermal` 的事务（回放顺序）。
   defp thermal_txns(root),
-    do: Path.join(root, "overlay.log") |> OverlayLog.File.replay() |> Enum.filter(&Map.has_key?(&1, :thermal))
+    do:
+      Path.join(root, "overlay.log")
+      |> OverlayLog.File.replay()
+      |> Enum.filter(&Map.has_key?(&1, :thermal))
 
   test "W4-5 旧拟态恢复时一次散解：semblances 键消失、一笔迁移事务、semblance_released_j 增加存量能量；再重启不重复", c do
     final_seq = @recorded["final_seq"]
     stored = @recorded["stored_j_sum"]
     # 前提：夹具最后一份 thermal 带两个拟态，尚无释放账。
     assert %{semblances: old} = List.last(thermal_txns(c.root)).thermal
-    assert old |> Map.keys() |> Enum.sort() == Enum.sort(Enum.map(@recorded["semblances"], &List.to_tuple(&1["id"])))
+
+    assert old |> Map.keys() |> Enum.sort() ==
+             Enum.sort(Enum.map(@recorded["semblances"], &List.to_tuple(&1["id"])))
+
     assert @recorded["ledger"]["semblance_released_j"] == 0
 
     log = info_log(fn -> start(c.root) end)

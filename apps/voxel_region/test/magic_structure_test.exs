@@ -482,7 +482,10 @@ defmodule VoxelRegion.MagicStructureTest do
 
   test "wire：出生越线按报价 x₀ > x*——500 K 处施放的火球（x* ≈ 0.25，附录 A.3）置越线位，293 K 处不置", c do
     group = c.groups["fireball"]
-    hot_quote = Cost.quote_structure(c.programs["fireball"], c.catalog, %{@site | ambient_k: 500.0})
+
+    hot_quote =
+      Cost.quote_structure(c.programs["fireball"], c.catalog, %{@site | ambient_k: 500.0})
+
     assert_in_delta hot_quote.x_star, 0.25, 0.01
     hot = Structure.new({2, 0}, group, hot_quote, 0)
 
@@ -523,6 +526,7 @@ defmodule VoxelRegion.MagicStructureTest do
     [%{responses: [release]}] = out.triggered
     responded = Structure.respond(s, release, c.catalog)
     assert elem(responded, 1).metrics == %{}
+
     # 经 apply/3 调用：编译期类型检查已能静态看出这次调用不匹配（会产生编译警告），这里要证明的是运行期同样显式失败。
     assert_raise FunctionClauseError, fn -> apply(Structure, :wire, [responded]) end
   end
@@ -563,10 +567,12 @@ defmodule VoxelRegion.MagicStructureTest do
           {%{record | rules: [%{rule | responses: [bad_glyph]}]}, :rules},
           {%{record | id: {-1, 0}}, :id}
         ] do
-      assert Structure.from_record(broken, c.catalog) == {:error, {:invalid_structure_record, field}},
+      assert Structure.from_record(broken, c.catalog) ==
+               {:error, {:invalid_structure_record, field}},
              inspect(field)
     end
 
-    assert Structure.from_record(:not_a_map, c.catalog) == {:error, {:invalid_structure_record, :record}}
+    assert Structure.from_record(:not_a_map, c.catalog) ==
+             {:error, {:invalid_structure_record, :record}}
   end
 end

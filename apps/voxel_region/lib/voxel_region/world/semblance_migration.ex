@@ -23,7 +23,9 @@ defmodule VoxelRegion.World.SemblanceMigration do
   @doc "恢复后的 World 若仍带旧拟态表，就一次散解入账并写一笔热事务删除该键；否则原样返回。"
   def migrate(%{thermal: %{semblances: semblances} = thermal} = state) do
     ambient = thermal.config["ambient_kelvin"]
-    released = semblances |> Enum.sort() |> Enum.map(fn {_id, s} -> stored_j(s, ambient) end) |> Enum.sum()
+
+    released =
+      semblances |> Enum.sort() |> Enum.map(fn {_id, s} -> stored_j(s, ambient) end) |> Enum.sum()
 
     thermal =
       thermal
@@ -44,6 +46,7 @@ defmodule VoxelRegion.World.SemblanceMigration do
 
   # 旧规则的剩余能量（J）：显热 + 飞行中动能 + 发光余量（旧 `Magic.Semblance.stored_j/2`，切片 4c 随拟态运行时删除）。
   defp stored_j(s, ambient) do
-    s.capacity * (s.temperature_k - ambient) + s.kinetic_j + s.glow_w * max(s.lifetime_s - s.age_s, 0.0)
+    s.capacity * (s.temperature_k - ambient) + s.kinetic_j +
+      s.glow_w * max(s.lifetime_s - s.age_s, 0.0)
   end
 end

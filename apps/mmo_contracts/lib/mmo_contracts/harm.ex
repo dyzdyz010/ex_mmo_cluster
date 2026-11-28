@@ -22,7 +22,8 @@ defmodule MmoContracts.Harm do
   def open?(scope), do: scope != nil
 
   @doc "一次角色来源作用：来源与目标中心均在显式战斗范围内才允许。"
-  @spec permitted?(scope(), {number(), number(), number()}, {number(), number(), number()}) :: boolean()
+  @spec permitted?(scope(), {number(), number(), number()}, {number(), number(), number()}) ::
+          boolean()
   def permitted?(nil, _, _), do: false
 
   def permitted?({low, high}, source, target),

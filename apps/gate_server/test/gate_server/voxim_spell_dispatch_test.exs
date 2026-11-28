@@ -501,28 +501,63 @@ defmodule GateServer.VoximSpellDispatchTest do
     alias GateServer.Session.QuicConnection
     {:ok, conn} = QuicConnection.init(conn: :test, listener: self(), hello: nil)
     request = %{request_id: 7, client_intent_seq: 8, logical_scene_id: 1, action: 1}
-    caster = %{seq: 9, energy_j: 1.0, capacity_j: 5.0e6, resolution_eff: 16.0, quote_j: 0.0, quote_s: 0.0, spent_j: 870.689,
-      quote_windup_s: 0.0, x0: 0.0, x_star: 0.0, e_min_j: 0.0, p_maint_w: 0.0, life_s: 0.0, detect_w: 0.0, fail_step: 0,
-      rejects: [], entries_charge: 0, entries_spoof: 0, first_tick_min_j: 0.0}
 
-    for reason <- [:interrupted_cancelled, :interrupted_moved, :interrupted_disrupted, :interrupted_wounded] do
+    caster = %{
+      seq: 9,
+      energy_j: 1.0,
+      capacity_j: 5.0e6,
+      resolution_eff: 16.0,
+      quote_j: 0.0,
+      quote_s: 0.0,
+      spent_j: 870.689,
+      quote_windup_s: 0.0,
+      x0: 0.0,
+      x_star: 0.0,
+      e_min_j: 0.0,
+      p_maint_w: 0.0,
+      life_s: 0.0,
+      detect_w: 0.0,
+      fail_step: 0,
+      rejects: [],
+      entries_charge: 0,
+      entries_spoof: 0,
+      first_tick_min_j: 0.0
+    }
+
+    for reason <- [
+          :interrupted_cancelled,
+          :interrupted_moved,
+          :interrupted_disrupted,
+          :interrupted_wounded
+        ] do
       text = Atom.to_string(reason)
       size = byte_size(text)
       reply = %{seq: 9, outcome: reason, fail_step: 2, caster: caster}
-      assert {:noreply, sent} = QuicConnection.handle_info({:mmo_spell_reply, conn.edit_ref, request, reply}, conn)
+
+      assert {:noreply, sent} =
+               QuicConnection.handle_info({:mmo_spell_reply, conn.edit_ref, request, reply}, conn)
+
       assert [{<<0x83, _::binary>>, _, _}, {receipt, _, _}] = :queue.to_list(sent.reliable[2])
       assert <<0x68, 7::64, 8::32, 1::64, 0, 9::64, 0::16, ^size::16, ^text::binary>> = receipt
 
       {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, reason) |> Codec.encode()
       text = ":" <> text
       size = byte_size(text)
-      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> = IO.iodata_to_binary(frame)
+
+      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> =
+               IO.iodata_to_binary(frame)
     end
 
-    for {reason, text} <- [structure_quota: ":structure_quota", flight_quota: ":flight_quota", region_budget: ":region_budget"] do
+    for {reason, text} <- [
+          structure_quota: ":structure_quota",
+          flight_quota: ":flight_quota",
+          region_budget: ":region_budget"
+        ] do
       {:ok, frame} = GateServer.Voxel.ResultFrame.error(request, reason) |> Codec.encode()
       size = byte_size(text)
-      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> = IO.iodata_to_binary(frame)
+
+      assert <<0x68, 7::64, 8::32, 1::64, 2, 0::64, 0::16, ^size::16, ^text::binary>> =
+               IO.iodata_to_binary(frame)
     end
   end
 end

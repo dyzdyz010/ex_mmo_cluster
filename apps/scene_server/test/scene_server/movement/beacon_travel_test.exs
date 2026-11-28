@@ -418,11 +418,36 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   # 持物普攻，这里由替身直接给出）；返回 {等待标签, 动作键, relay}。
   defp windup(p, steps, basic_attack \\ false) do
     ref = make_ref()
-    request = %{action: 1, client_intent_seq: 70, request_id: 5, logical_scene_id: 1, direction: {1.0, 0.0, 0.0}}
-    Player.cast_spell(p, identity(), request, %{caster_recipient: {self(), make_ref()}}, {self(), ref})
-    assert_receive {:authority, {:player_spell_request, _, relay, {:prepare_cast, key, actor, ^request, relay}}}, 2000
+
+    request = %{
+      action: 1,
+      client_intent_seq: 70,
+      request_id: 5,
+      logical_scene_id: 1,
+      direction: {1.0, 0.0, 0.0}
+    }
+
+    Player.cast_spell(
+      p,
+      identity(),
+      request,
+      %{caster_recipient: {self(), make_ref()}},
+      {self(), ref}
+    )
+
+    assert_receive {:authority,
+                    {:player_spell_request, _, relay,
+                     {:prepare_cast, key, actor, ^request, relay}}},
+                   2000
+
     assert actor.position == Player.observe(p).state.position
-    send(p, {:cast_prepared, key, %{windup_s: 60.3, checkpoint_s: nil, steps: steps, basic_attack: basic_attack}})
+
+    send(
+      p,
+      {:cast_prepared, key,
+       %{windup_s: 60.3, checkpoint_s: nil, steps: steps, basic_attack: basic_attack}}
+    )
+
     wait(fn -> match?(%{phase: :windup}, :sys.get_state(p).action) end)
     {ref, key, relay}
   end
@@ -479,19 +504,34 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   test "伤口事件打断前摇（持物普攻同样打断）：工具冲击新增创伤 → interrupted_wounded；投射物热不改创伤、不打断（Q6-5）" do
-    {_ctx, p, _} = enter(7, %{"test_combat_bounds_m" => [[-48.0, 464.0, -48.0], [112.0, 624.0, 112.0]]})
+    {_ctx, p, _} =
+      enter(7, %{"test_combat_bounds_m" => [[-48.0, 464.0, -48.0], [112.0, 624.0, 112.0]]})
+
     # 第 1 步调整 60 s：仍在第一笔注能前，k = 0。持物普攻只免除移动打断，受伤照样打断（用户 2026-11-26 裁定）。
     {_ref, key, _relay} = windup(p, [%{adjust_s: 60.0, inject_s: 1.0}], true)
     {:ok, target} = Player.hit_context(p)
     source = %{identity: identity(), position: target.position, cid: 999, life_generation: 1}
 
-    heat = %{key: {:projectile, 1}, q_j: 50.0, position: target.position, target: target, actor: source}
+    heat = %{
+      key: {:projectile, 1},
+      q_j: 50.0,
+      position: target.position,
+      target: target,
+      actor: source
+    }
+
     assert {:ok, _} = Player.receive_effect(p, heat)
     refute_receive {:authority, {:cancel_cast, _, _, _}}, 100
     assert %{phase: :windup} = :sys.get_state(p).action
 
-    hit = %{key: {identity(), 11}, target: target, request_id: 42, part: :torso,
-      impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0}, actor: source}
+    hit = %{
+      key: {identity(), 11},
+      target: target,
+      request_id: 42,
+      part: :torso,
+      impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0},
+      actor: source
+    }
 
     assert {:ok, _} = Player.receive_effect(p, hit)
     assert_receive {:authority, {:cancel_cast, ^key, :interrupted_wounded, 0}}, 2000

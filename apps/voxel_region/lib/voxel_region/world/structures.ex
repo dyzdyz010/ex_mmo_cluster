@@ -190,24 +190,56 @@ defmodule VoxelRegion.World.Structures do
     case group.form_anchor.id do
       "anchor.hand" ->
         hand = hand_point(actor, direction)
-        {trace, state} = Semblance.trace(eye, hand, velocity, half, horizon.(hand), state, &predict_cast/4, massless)
+
+        {trace, state} =
+          Semblance.trace(
+            eye,
+            hand,
+            velocity,
+            half,
+            horizon.(hand),
+            state,
+            &predict_cast/4,
+            massless
+          )
+
         {:ok, launch(trace, hand, velocity, massless), state}
 
       "anchor.surface" ->
         # 施法域：〈附〉的准星格面只在 `limits.range_m` 内找（与 `World.Casting` 的眼睛射线同一射程）。
-        far = {ex + dx * catalog.limits.range_m, ey + dy * catalog.limits.range_m, ez + dz * catalog.limits.range_m}
+        far =
+          {ex + dx * catalog.limits.range_m, ey + dy * catalog.limits.range_m,
+           ez + dz * catalog.limits.range_m}
 
         case Semblance.segment(eye, far, half, state, &cast/4) do
           {{_fraction, point, hit}, state} ->
             if Damage.key(hit) == Damage.key(target) do
               # 〈附〉上的〈投〉自格面点抛出（已定：实现决策，见决策稿 §11.3 #8）；无〈投〉时静止在格面上，接触即目标格。
               {trace, state} =
-                Semblance.trace(point, point, velocity, half, horizon.(point), state, &predict_cast/4, massless)
+                Semblance.trace(
+                  point,
+                  point,
+                  velocity,
+                  half,
+                  horizon.(point),
+                  state,
+                  &predict_cast/4,
+                  massless
+                )
 
               launch =
                 case trace do
-                  {:free, _} -> %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: contact(hit)}
-                  trace -> launch(trace, point, velocity, massless)
+                  {:free, _} ->
+                    %{
+                      origin: point,
+                      velocity: velocity,
+                      flight_s: 0.0,
+                      rest: point,
+                      contact: contact(hit)
+                    }
+
+                  trace ->
+                    launch(trace, point, velocity, massless)
                 end
 
               {:ok, launch, state}
@@ -247,7 +279,11 @@ defmodule VoxelRegion.World.Structures do
 
     if massless,
       do: life,
-      else: min(life, (vy + :math.sqrt(vy * vy + 2 * Semblance.gravity() * drop_m)) / Semblance.gravity())
+      else:
+        min(
+          life,
+          (vy + :math.sqrt(vy * vy + 2 * Semblance.gravity() * drop_m)) / Semblance.gravity()
+        )
   end
 
   @doc """
@@ -302,7 +338,11 @@ defmodule VoxelRegion.World.Structures do
   `World.Projectiles.readable/3`），读不出返回 `:unreadable`（预测在此结束，真实飞行到这里以 live 3 散解），否则同 `cast/4`。
   """
   def predict_cast({ox, oy, oz} = origin, {dx, dy, dz} = direction, length, state) do
-    case VoxelRegion.World.Projectiles.readable(state, origin, {ox + dx * length, oy + dy * length, oz + dz * length}) do
+    case VoxelRegion.World.Projectiles.readable(
+           state,
+           origin,
+           {ox + dx * length, oy + dy * length, oz + dz * length}
+         ) do
       {:ok, state} -> cast(origin, direction, length, state)
       {:error, _reason, state} -> {:unreadable, state}
     end
@@ -324,7 +364,13 @@ defmodule VoxelRegion.World.Structures do
     do: %{origin: from, velocity: velocity, flight_s: t, rest: rest, contact: contact(target)}
 
   def launch({:miss, t}, from, velocity, massless),
-    do: %{origin: from, velocity: velocity, flight_s: t, rest: Semblance.position(from, velocity, t, massless), contact: nil}
+    do: %{
+      origin: from,
+      velocity: velocity,
+      flight_s: t,
+      rest: Semblance.position(from, velocity, t, massless),
+      contact: nil
+    }
 
   # 弹道命中的接触格：只认未细分的宏格（落点、释放与热接触都按宏格；细分构件按 g=1 节点身份）。
   defp contact(target) do
@@ -347,7 +393,14 @@ defmodule VoxelRegion.World.Structures do
   已推进到的墙钟飞行时长；`source` 是人物采样的施法者身份，由 `sampled/2` 填入）。飞行中没有接触格（接触在飞行驱动命中时
   才确定），其余为 `flight = nil`。
   """
-  def body(%Group{} = group, %Catalog{} = catalog, %{cid: caster, controller: controller}, launch, t0_us, combat_scope) do
+  def body(
+        %Group{} = group,
+        %Catalog{} = catalog,
+        %{cid: caster, controller: controller},
+        launch,
+        t0_us,
+        combat_scope
+      ) do
     shape = shape_params(group)
     flying = launch.velocity != {0.0, 0.0, 0.0} and launch.flight_s > 0
 
@@ -369,7 +422,12 @@ defmodule VoxelRegion.World.Structures do
         end),
       coupling:
         for(
-          {name, id} <- [thermal: "cpl.thermal", glow: "cpl.glow", capacity: "cpl.capacity", disrupt: "int.disrupt"],
+          {name, id} <- [
+            thermal: "cpl.thermal",
+            glow: "cpl.glow",
+            capacity: "cpl.capacity",
+            disrupt: "int.disrupt"
+          ],
           Enum.any?(group.quality, &(&1.id == id)),
           do: name
         ),
@@ -389,21 +447,36 @@ defmodule VoxelRegion.World.Structures do
   NPC 与测试施法者不采样）：飞行中的物理体记下施法者的 cid、会话身份、生命代次与施放时位置，采样后端据此找施法者的当前
   owner 并判战斗范围（`Harm`，设计 §12.1 的 World 侧判定点）。
   """
-  def sampled(%{flight: %{} = flight, ends_on_contact: true} = body, %{life_generation: _} = actor),
-    do: %{body | flight: %{flight | source: Map.take(actor, [:cid, :identity, :life_generation, :position])}}
+  def sampled(
+        %{flight: %{} = flight, ends_on_contact: true} = body,
+        %{life_generation: _} = actor
+      ),
+      do: %{
+        body
+        | flight: %{
+            flight
+            | source: Map.take(actor, [:cid, :identity, :life_generation, :position])
+          }
+      }
 
   def sampled(body, _actor), do: body
 
   @doc "物理体此刻的中心：飞行中取已推进到的飞行时长处的弹道位置，否则取落点。"
-  def position(%{flight: %{age_s: age}} = body), do: Semblance.position(body.origin, body.velocity, age, body.massless)
+  def position(%{flight: %{age_s: age}} = body),
+    do: Semblance.position(body.origin, body.velocity, age, body.massless)
+
   def position(%{rest: rest}), do: rest
 
   @doc "飞行中的结构（不含已冻结人物命中交付的），按 id 升序。"
   def flights(state),
-    do: all(state) |> Enum.filter(fn {_, e} -> e.body.flight != nil and not Map.has_key?(e, :delivery) end) |> Enum.sort()
+    do:
+      all(state)
+      |> Enum.filter(fn {_, e} -> e.body.flight != nil and not Map.has_key?(e, :delivery) end)
+      |> Enum.sort()
 
   @doc "已冻结、等待目标 Player 接纳的人物命中交付，按 id 升序。"
-  def deliveries(state), do: all(state) |> Enum.filter(fn {_, e} -> Map.has_key?(e, :delivery) end) |> Enum.sort()
+  def deliveries(state),
+    do: all(state) |> Enum.filter(fn {_, e} -> Map.has_key?(e, :delivery) end) |> Enum.sort()
 
   @doc "飞行驱动推进到墙钟飞行时长 `age_s` 且这段无接触：只改内存里的飞行进度，随下一笔带 `thermal` 的事务落盘。"
   def advance(state, id, age_s),
@@ -423,8 +496,12 @@ defmodule VoxelRegion.World.Structures do
   # §11.3 #7），与客户端 `FVoxelStructure::HalfExtentsM` 一致：球 {r, r, r}，块 {size1, size2, size3}，板 {size1, size3, size2}。
   # 体积、表面积、接触上限与朝向无关（`Magic.Cost` 按 size1–3 原值算，不受影响）。
   defp half(%{"shape" => "sphere", "size1_mm" => r}), do: {r / 1000, r / 1000, r / 1000}
-  defp half(%{"shape" => "plate", "size1_mm" => a, "size2_mm" => b, "size3_mm" => c}), do: {a / 1000, c / 1000, b / 1000}
-  defp half(%{"size1_mm" => a, "size2_mm" => b, "size3_mm" => c}), do: {a / 1000, b / 1000, c / 1000}
+
+  defp half(%{"shape" => "plate", "size1_mm" => a, "size2_mm" => b, "size3_mm" => c}),
+    do: {a / 1000, c / 1000, b / 1000}
+
+  defp half(%{"size1_mm" => a, "size2_mm" => b, "size3_mm" => c}),
+    do: {a / 1000, b / 1000, c / 1000}
 
   @doc "新结构的条目：结构值、物理体与出生时的动态字段（`Structure.wire/1` 的出生子句，加飞行位）。"
   def entry(%Structure{} = s, body, quote) do
@@ -508,14 +585,20 @@ defmodule VoxelRegion.World.Structures do
     structures =
       Map.new(records, fn {id, record} ->
         case from_record(id, record, magic, commit_tick) do
-          {:ok, entry} -> {id, entry}
-          {:error, reason} -> raise "voxel_structure_restore_failed id=#{inspect(id)} reason=#{inspect(reason)}"
+          {:ok, entry} ->
+            {id, entry}
+
+          {:error, reason} ->
+            raise "voxel_structure_restore_failed id=#{inspect(id)} reason=#{inspect(reason)}"
         end
       end)
 
     case releases?(Map.get(thermal, :structure_releases), structures, state.seq) do
-      :ok -> :ok
-      {:error, reason} -> raise "voxel_structure_restore_failed releases reason=#{inspect(reason)}"
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        raise "voxel_structure_restore_failed releases reason=#{inspect(reason)}"
     end
 
     Logger.info(
@@ -539,9 +622,15 @@ defmodule VoxelRegion.World.Structures do
 
   defp releases?(_, _structures, _seq), do: {:error, :shape}
 
-  defp release?(%{id: {s, n}, position: p, energy_mj: e, caster: c, scope: scope, seq: at} = r, seq) when map_size(r) == 6,
-    do: is_integer(s) and is_integer(n) and vector?(p) and is_integer(e) and e >= 0 and is_integer(c) and scope?(scope) and
-          is_integer(at) and at < seq
+  defp release?(
+         %{id: {s, n}, position: p, energy_mj: e, caster: c, scope: scope, seq: at} = r,
+         seq
+       )
+       when map_size(r) == 6,
+       do:
+         is_integer(s) and is_integer(n) and vector?(p) and is_integer(e) and e >= 0 and
+           is_integer(c) and scope?(scope) and
+           is_integer(at) and at < seq
 
   defp release?(_, _seq), do: false
 
@@ -552,7 +641,9 @@ defmodule VoxelRegion.World.Structures do
   defp from_record(id, %{structure: s, body: body, wire: wire} = record, magic, commit_tick) do
     delivery = Map.get(record, :delivery)
 
-    with true <- (Map.keys(record) -- [:structure, :body, :wire | @optional_keys]) == [] or {:error, :record},
+    with true <-
+           Map.keys(record) -- [:structure, :body, :wire | @optional_keys] == [] or
+             {:error, :record},
          {:ok, %Structure{id: ^id} = s} <- Structure.from_record(s, magic),
          true <- s.last_tick == commit_tick or delivery != nil or {:error, :tick_or_id},
          true <- body?(body) or {:error, :body},
@@ -574,9 +665,13 @@ defmodule VoxelRegion.World.Structures do
                origin velocity t0_us flight_s rest contact flight)a
 
   defp body?(%{shape: shape, half: {a, b, c}, flight_s: flight, caster: caster} = body) do
-    Enum.sort(Map.keys(body)) == Enum.sort(@body_keys) and shape in 0..2 and Enum.all?([a, b, c], &(is_number(&1) and &1 > 0)) and
-      is_number(flight) and flight >= 0 and is_integer(caster) and body.controller in MagicAdmission.controllers() and Enum.all?([body.origin, body.rest, body.velocity], &vector?/1) and
-      (body.contact == nil or match?(%{target: %{granularity: _}, key: _, cell: {_, _, _}}, body.contact)) and
+    Enum.sort(Map.keys(body)) == Enum.sort(@body_keys) and shape in 0..2 and
+      Enum.all?([a, b, c], &(is_number(&1) and &1 > 0)) and
+      is_number(flight) and flight >= 0 and is_integer(caster) and
+      body.controller in MagicAdmission.controllers() and
+      Enum.all?([body.origin, body.rest, body.velocity], &vector?/1) and
+      (body.contact == nil or
+         match?(%{target: %{granularity: _}, key: _, cell: {_, _, _}}, body.contact)) and
       flight?(body.flight) and scope?(body.combat_scope)
   end
 
@@ -587,19 +682,35 @@ defmodule VoxelRegion.World.Structures do
   defp scope?(_), do: false
 
   defp flight?(nil), do: true
-  defp flight?(%{age_s: age, source: source} = f) when map_size(f) == 2, do: is_number(age) and age >= 0 and (source == nil or is_map(source))
+
+  defp flight?(%{age_s: age, source: source} = f) when map_size(f) == 2,
+    do: is_number(age) and age >= 0 and (source == nil or is_map(source))
+
   defp flight?(_), do: false
 
-  defp delivery?(%{key: {_, _, _}, actor: %{}, target: %{id: _, life_generation: _}, q_mj: q, tick: tick, live: live} = d)
+  defp delivery?(
+         %{
+           key: {_, _, _},
+           actor: %{},
+           target: %{id: _, life_generation: _},
+           q_mj: q,
+           tick: tick,
+           live: live
+         } = d
+       )
        when map_size(d) == 8,
-       do: is_integer(q) and q >= 0 and is_integer(tick) and live in [2, 6] and vector?(d.position) and is_integer(d.sampled_us)
+       do:
+         is_integer(q) and q >= 0 and is_integer(tick) and live in [2, 6] and vector?(d.position) and
+           is_integer(d.sampled_us)
 
   defp delivery?(_), do: false
 
   defp deferred?(queue, s, commit_tick) when is_list(queue) do
     Enum.all?(queue, fn
-      %{since: since, rule: rule, outcome: outcome, contact: contact} = item when map_size(item) == 4 ->
-        is_integer(since) and since <= commit_tick and is_integer(rule) and rule in 0..(length(s.rules) - 1)//1 and
+      %{since: since, rule: rule, outcome: outcome, contact: contact} = item
+      when map_size(item) == 4 ->
+        is_integer(since) and since <= commit_tick and is_integer(rule) and
+          rule in 0..(length(s.rules) - 1)//1 and
           outcome in [:met, :unmet, :undecidable] and is_boolean(contact)
 
       _ ->
@@ -612,9 +723,14 @@ defmodule VoxelRegion.World.Structures do
   defp vector?({x, y, z}), do: is_number(x) and is_number(y) and is_number(z)
   defp vector?(_), do: false
 
-  defp wire?(%{load: l, coherence: c, status: status, failed_segments: f, temperature_k: t, glow_w: g} = w)
+  defp wire?(
+         %{load: l, coherence: c, status: status, failed_segments: f, temperature_k: t, glow_w: g} =
+           w
+       )
        when map_size(w) == 6,
-       do: l in 0..255 and c in 0..255 and is_list(status) and f in 0..255 and is_number(t) and is_number(g)
+       do:
+         l in 0..255 and c in 0..255 and is_list(status) and f in 0..255 and is_number(t) and
+           is_number(g)
 
   defp wire?(_), do: false
 
@@ -636,7 +752,9 @@ defmodule VoxelRegion.World.Structures do
   """
   def heat_nodes(state) do
     all(state)
-    |> Enum.filter(fn {id, e} -> thermal_node?(e) and (not MagicAdmission.asleep?(e) or woken?(state, id, e)) end)
+    |> Enum.filter(fn {id, e} ->
+      thermal_node?(e) and (not MagicAdmission.asleep?(e) or woken?(state, id, e))
+    end)
     |> Enum.sort()
   end
 
@@ -647,7 +765,8 @@ defmodule VoxelRegion.World.Structures do
   def touchable(state) do
     all(state)
     |> Enum.filter(fn {id, e} ->
-      thermal_node?(e) and (not MagicAdmission.asleep?(e) or awaiting_contact?(e) or woken?(state, id, e))
+      thermal_node?(e) and
+        (not MagicAdmission.asleep?(e) or awaiting_contact?(e) or woken?(state, id, e))
     end)
     |> Enum.sort()
   end
@@ -665,11 +784,16 @@ defmodule VoxelRegion.World.Structures do
 
   # 还在等首次导热边的结构：有读〈遇〉的规则，且一生中还没出现过导热边（条目 `conducted`，随持久化）。
   defp awaiting_contact?(%{structure: s} = e),
-    do: not Map.get(e, :conducted, false) and Enum.any?(s.rules, fn rule -> Enum.any?(rule.readings, &(&1.kind == :contact)) end)
+    do:
+      not Map.get(e, :conducted, false) and
+        Enum.any?(s.rules, fn rule -> Enum.any?(rule.readings, &(&1.kind == :contact)) end)
 
   # 最近一次身体报告记下了与该结构的触碰（`Thermal.body_contacts/2` 的 `{:structure, id, G}`，留到下一次热提交使用）。
   defp touched_by_body?(state, id),
-    do: Enum.any?(state.bodies, fn {_, b} -> Enum.any?(b.contacts, &match?({:structure, ^id, _}, &1)) end)
+    do:
+      Enum.any?(state.bodies, fn {_, b} ->
+        Enum.any?(b.contacts, &match?({:structure, ^id, _}, &1))
+      end)
 
   # 休眠判定用的接触节点温度：物理体候选宏格里与其包围盒接触、且是未细分热节点的实占用格（与热内核接触边同一候选集；
   # 细分格不计，近似）。温度取属性记录（提交末已写回原生热域）。
@@ -687,7 +811,13 @@ defmodule VoxelRegion.World.Structures do
   """
   def port(%Structure{} = s, heat_j, %Catalog{runtime: rt}) do
     temperature = s.t_ref_k + (s.e_th_mj / 1000 + heat_j) / s.c_th_j_per_k
-    t_hi = min(s.t_ref_k + (s.e_cap_mj - s.e_op_mj) / 1000 / s.c_th_j_per_k, rt.thermal_check_temperature_k * 1.0)
+
+    t_hi =
+      min(
+        s.t_ref_k + (s.e_cap_mj - s.e_op_mj) / 1000 / s.c_th_j_per_k,
+        rt.thermal_check_temperature_k * 1.0
+      )
+
     {temperature, {s.phi_cap_w * 1.0, s.t_ref_k * 1.0, t_hi * 1.0}}
   end
 
@@ -713,30 +843,62 @@ defmodule VoxelRegion.World.Structures do
     else
       started = System.monotonic_time(:microsecond)
       catalog = state.magic
+
       # 已冻结人物命中交付的结构不步进（不出账、不计时、不触发），等目标接纳结果在投射物提交点终止（沿 v1 合同）；
       # 它们也不是干预场的目标（设计 §7.3 末条“冻结期不可驱散”）。
-      ordered = structures |> Enum.reject(fn {_, e} -> Map.has_key?(e, :delivery) end) |> Enum.sort()
+      ordered =
+        structures |> Enum.reject(fn {_, e} -> Map.has_key?(e, :delivery) end) |> Enum.sort()
+
       neighbors = neighbor_index(ordered, catalog)
+
       # 第 0′ 步（设计 §5.3、§7.3）：任何结构步进之前，用拍首状态为全部目标取齐干预场，并给前摇中的施法者累计扰乱量。
       emitters = emitters(ordered, neighbors, tick, catalog)
       fields = fields(emitters, ordered, neighbors, tick, catalog)
       state = windup_doses(state, emitters, tick, catalog)
+
       # 第 6 步的邻近终止释放剂量（设计 §5.5；决策稿 §11.3 #6）：上一热拍以来的全部释放按拍首位置取齐、用完清空；
       # 本拍的终止追加进新的队列，下一热拍生效。
       {releases, state} = take_releases(state)
       doses = release_doses(releases, ordered, neighbors, tick, catalog)
-      # 触发预算（设计 §5.4，规则在 `MagicAdmission`）：拍首先按（首次推迟拍号, id）为推迟队列预占，余下的给本拍新触发。
-      queued = for {id, e} <- ordered, item <- Map.get(e, :deferred, []), do: {id, e.body.caster, item}
-      {claimed, budget} = MagicAdmission.claim_deferred(queued, MagicAdmission.trigger_budget(catalog))
 
-      acc = %{state: state, ended: 0, records: %{}, states: %{}, step_us: [], rounding: 0.0, budget: budget,
-        claimed: claimed, fired: 0, sleep: %{asleep: 0, woke: 0, slept: 0}}
+      # 触发预算（设计 §5.4，规则在 `MagicAdmission`）：拍首先按（首次推迟拍号, id）为推迟队列预占，余下的给本拍新触发。
+      queued =
+        for {id, e} <- ordered, item <- Map.get(e, :deferred, []), do: {id, e.body.caster, item}
+
+      {claimed, budget} =
+        MagicAdmission.claim_deferred(queued, MagicAdmission.trigger_budget(catalog))
+
+      acc = %{
+        state: state,
+        ended: 0,
+        records: %{},
+        states: %{},
+        step_us: [],
+        rounding: 0.0,
+        budget: budget,
+        claimed: claimed,
+        fired: 0,
+        sleep: %{asleep: 0, woke: 0, slept: 0}
+      }
 
       acc =
         Enum.reduce(ordered, acc, fn {id, entry}, acc ->
           step_started = System.monotonic_time(:microsecond)
           imposed = %{fields: Map.get(fields, id, []), release_doses: Map.get(doses, id, [])}
-          acc = step_one(acc, id, entry, tick, Map.get(heat, id, 0.0), Map.get(edges, id), neighbors, imposed, catalog)
+
+          acc =
+            step_one(
+              acc,
+              id,
+              entry,
+              tick,
+              Map.get(heat, id, 0.0),
+              Map.get(edges, id),
+              neighbors,
+              imposed,
+              catalog
+            )
+
           %{acc | step_us: [System.monotonic_time(:microsecond) - step_started | acc.step_us]}
         end)
 
@@ -774,7 +936,10 @@ defmodule VoxelRegion.World.Structures do
   defp log_sleep(_tick, %{asleep: 0, woke: 0, slept: 0}), do: :ok
 
   defp log_sleep(tick, sleep),
-    do: Logger.info("voxel_structure_sleep tick=#{tick} asleep=#{sleep.asleep} woke=#{sleep.woke} slept=#{sleep.slept}")
+    do:
+      Logger.info(
+        "voxel_structure_sleep tick=#{tick} asleep=#{sleep.asleep} woke=#{sleep.woke} slept=#{sleep.slept}"
+      )
 
   # `peers`：本拍该结构连上过的导热边对端种类（没有为 nil）。`imposed`：拍首为它取齐的外来扰乱——干预场 `fields` 与
   # 邻近终止释放剂量 `release_doses`（都只依赖拍首状态与上一拍以来的释放，与处理顺序无关）。
@@ -782,6 +947,7 @@ defmodule VoxelRegion.World.Structures do
     %{structure: s, body: body} = entry
     state = acc.state
     site = site(state, entry, tick)
+
     # 〈遇〉（设计 §5.4“热拍中本节点首次出现导热边”，决策稿 §11.3 #16）：一生只有一次，出生时就贴着的边在第 1 拍算首次
     # （用户 2026-11-26 裁定 ②）；投射物命中 / 落地是另一个求值点，之后的首次导热边照样再算一次（裁定 ③）。读数丢失时
     # 接触由 `Structure` 的读数待决保持到下一拍（R5），这里不重复给。
@@ -820,7 +986,10 @@ defmodule VoxelRegion.World.Structures do
         run_triggers(stepped, candidates, acc.budget, queue, body.caster, tick, catalog, 0)
       else
         # 本拍先行终止（衰竭等）：预占的预算退回给其后的结构，推迟队列随结构消失。
-        {stepped, nil, false, Enum.reduce(claimed, acc.budget, fn _, b -> MagicAdmission.return_trigger(b, body.caster) end), [], 0}
+        {stepped, nil, false,
+         Enum.reduce(claimed, acc.budget, fn _, b ->
+           MagicAdmission.return_trigger(b, body.caster)
+         end), [], 0}
       end
 
     acc = %{acc | budget: budget, fired: acc.fired + fired}
@@ -842,7 +1011,10 @@ defmodule VoxelRegion.World.Structures do
           if s.c_th_j_per_k != nil and body.flight == nil do
             port_k = elem(port(final, 0.0, catalog), 0)
             net_w = heat_j / (Structure.tick_ms() / 1000)
-            calm? = MagicAdmission.calm?(port_k, contact_temperatures(state, body), net_w, catalog)
+
+            calm? =
+              MagicAdmission.calm?(port_k, contact_temperatures(state, body), net_w, catalog)
+
             MagicAdmission.next_calm(Map.get(entry, :calm, 0), calm?)
           else
             0
@@ -867,6 +1039,7 @@ defmodule VoxelRegion.World.Structures do
           |> optional(:deferred, queue, [])
           |> optional(:calm, calm, 0)
           |> optional(:conducted, Map.get(entry, :conducted, false) or first_edge, false)
+
         state = put_entry(state, id, entry)
         %{acc | state: state, states: states, rounding: acc.rounding + rounding}
 
@@ -875,7 +1048,14 @@ defmodule VoxelRegion.World.Structures do
         # 终态快照的落点与飞行终点取飞行驱动已推进到的位置（释放落不进格，全部计入辐射账，见 `site/3`）。
         ending = if contact?, do: :contact, else: type
         live = Codec.structure_end_live(ending)
-        released_mj = Enum.sum(for {:terminated, _, %{released_mj: mj}} <- out.events ++ if(responded, do: responded.events, else: []), do: mj)
+
+        released_mj =
+          Enum.sum(
+            for {:terminated, _, %{released_mj: mj}} <-
+                  out.events ++ if(responded, do: responded.events, else: []),
+                do: mj
+          )
+
         state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
         state = release(state, id, site.position, released_mj, body)
         {body, flight} = settle_flight(body)
@@ -884,7 +1064,10 @@ defmodule VoxelRegion.World.Structures do
           "voxel_structure_end seq=#{state.seq + 1} sid=#{inspect(id)} cid=#{body.caster} live=#{live} type=#{ending} tick=#{tick} " <>
             "released_mj=#{released_mj} heat_mj=#{deposit.heat_mj} radiation_mj=#{deposit.radiation_mj} " <>
             "thermal_mj=#{deposit.thermal_mj} cell=#{inspect(site.deposit && Damage.macro(site.deposit))} protected=#{site.protected}" <>
-            if(flight, do: " in_flight=true flight_s=#{body.flight_s} path_m=#{path_m(body)}", else: "")
+            if(flight,
+              do: " in_flight=true flight_s=#{body.flight_s} path_m=#{path_m(body)}",
+              else: ""
+            )
         )
 
         %{
@@ -939,7 +1122,9 @@ defmodule VoxelRegion.World.Structures do
     body = %{entry.body | flight: nil, flight_s: age_s, rest: point, contact: nil}
     entry = %{entry | body: body, wire: with_flight(entry.wire, false)}
     tick = entry.structure.last_tick + 1
-    {s, triggered} = Structure.evaluate_rules(entry.structure, %{contact: true}, tick, state.magic)
+
+    {s, triggered} =
+      Structure.evaluate_rules(entry.structure, %{contact: true}, tick, state.magic)
 
     case release_trigger(triggered) do
       {release, contact?} ->
@@ -1000,9 +1185,12 @@ defmodule VoxelRegion.World.Structures do
     )
 
     if ending == nil do
-      {put_entry(state, id, %{entry | structure: final, wire: wire}), %{structures: %{id => record(body, wire, 1)}}}
+      {put_entry(state, id, %{entry | structure: final, wire: wire}),
+       %{structures: %{id => record(body, wire, 1)}}}
     else
-      released_mj = Enum.sum(for o <- outputs, {:terminated, _, %{released_mj: mj}} <- o.events, do: mj)
+      released_mj =
+        Enum.sum(for o <- outputs, {:terminated, _, %{released_mj: mj}} <- o.events, do: mj)
+
       state = %{state | thermal: Map.update!(state.thermal, :structures, &Map.delete(&1, id))}
       state = release(state, id, body.rest, released_mj, body)
       log_end(state, id, body, ending, s.last_tick + 1, released_mj, deposit, site, "hit=#{hit}")
@@ -1031,7 +1219,10 @@ defmodule VoxelRegion.World.Structures do
       |> Map.update(:structure_body_mj, into_body, &(&1 + into_body))
       |> then(fn thermal ->
         if accepted,
-          do: thermal |> Thermal.ledger(:projectile_body_j, delivery.q_mj / 1000) |> Thermal.ledger(:body_exchange_j, delivery.q_mj / 1000),
+          do:
+            thermal
+            |> Thermal.ledger(:projectile_body_j, delivery.q_mj / 1000)
+            |> Thermal.ledger(:body_exchange_j, delivery.q_mj / 1000),
           else: Thermal.ledger(thermal, :projectile_rejected_j, delivery.q_mj / 1000)
       end)
 
@@ -1041,8 +1232,17 @@ defmodule VoxelRegion.World.Structures do
     site = %{deposit: nil, protected: false}
 
     # 日志的终止事件由冻结规则重放求出，与收据的 live 出自同一规则（`hit_body/5`），线上记录仍按收据。
-    log_end(state, id, body, release_end(contact?), delivery.tick, released_mj, deposit, site,
-      "hit=body accepted=#{accepted} body_mj=#{into_body} target_id=#{delivery.target.id} result=#{inspect(result)}")
+    log_end(
+      state,
+      id,
+      body,
+      release_end(contact?),
+      delivery.tick,
+      released_mj,
+      deposit,
+      site,
+      "hit=body accepted=#{accepted} body_mj=#{into_body} target_id=#{delivery.target.id} result=#{inspect(result)}"
+    )
 
     {state, %{structures: %{id => record(body, entry.wire, delivery.live)}}, accepted}
   end
@@ -1083,7 +1283,15 @@ defmodule VoxelRegion.World.Structures do
 
   # 冻结时触发的规则（fired_tick = 求值拍号）里的〈散〉：持久化后重放用，不另存响应符号。
   defp fired_release(s, tick),
-    do: release_trigger(for rule <- s.rules, rule.fired_tick == tick, do: %{responses: rule.responses, contact: Enum.any?(rule.readings, &(&1.kind == :contact))})
+    do:
+      release_trigger(
+        for rule <- s.rules,
+            rule.fired_tick == tick,
+            do: %{
+              responses: rule.responses,
+              contact: Enum.any?(rule.readings, &(&1.kind == :contact))
+            }
+      )
 
   # Q5-2：请求 → {进入组织的 mJ, 计入辐射的 mJ}。有限热源（泄漏热半、E_op 热半、动能）整笔进组织；热份额至多把组织块
   # 加热到端口温度 C_tissue·(T_port − T_tissue)，余下计入辐射。组织块温度与热容取命中采样时的目标上下文。
@@ -1117,20 +1325,29 @@ defmodule VoxelRegion.World.Structures do
   # 触发执行（设计 §5.4）：`candidates` 为 `[{:paid | :new, 触发或推迟项}]`，已预占的在前。新触发向预算取一份，取不到就推迟
   # （`%{since, rule, outcome, contact}`，同一规则在队列里至多一项）。执行第一个带〈散〉的响应即终止，其余已预占的退回预算。
   # 返回 {结构, respond 输出 | nil, 是否接触触发, 预算, 推迟队列, 本结构执行的触发数}。
-  defp run_triggers(s, [], budget, queue, _caster, _tick, _catalog, fired), do: {s, nil, false, budget, queue, fired}
+  defp run_triggers(s, [], budget, queue, _caster, _tick, _catalog, fired),
+    do: {s, nil, false, budget, queue, fired}
 
   defp run_triggers(s, [{kind, item} | rest], budget, queue, caster, tick, catalog, fired) do
     paid = if kind == :paid, do: {:ok, budget}, else: MagicAdmission.take_trigger(budget, caster)
 
     case paid do
       {:ok, budget} ->
-        case Enum.find(Structure.trigger_responses(s, item.rule, item.outcome), &(&1.id == "resp.release")) do
+        case Enum.find(
+               Structure.trigger_responses(s, item.rule, item.outcome),
+               &(&1.id == "resp.release")
+             ) do
           nil ->
             run_triggers(s, rest, budget, queue, caster, tick, catalog, fired + 1)
 
           release ->
             {ended, response_out} = Structure.respond(s, release, catalog)
-            budget = Enum.reduce(rest, budget, fn {k, _}, b -> if k == :paid, do: MagicAdmission.return_trigger(b, caster), else: b end)
+
+            budget =
+              Enum.reduce(rest, budget, fn {k, _}, b ->
+                if k == :paid, do: MagicAdmission.return_trigger(b, caster), else: b
+              end)
+
             {ended, response_out, item.contact, budget, [], fired + 1}
         end
 
@@ -1138,7 +1355,9 @@ defmodule VoxelRegion.World.Structures do
         queue =
           if Enum.any?(queue, &(&1.rule == item.rule)),
             do: queue,
-            else: queue ++ [%{since: tick, rule: item.rule, outcome: item.outcome, contact: item.contact}]
+            else:
+              queue ++
+                [%{since: tick, rule: item.rule, outcome: item.outcome, contact: item.contact}]
 
         run_triggers(s, rest, budget, queue, caster, tick, catalog, fired)
     end
@@ -1198,7 +1417,9 @@ defmodule VoxelRegion.World.Structures do
     position = position(body)
     cell = Semblance.macro(position)
     {own, state} = target_at(micro(position), state)
-    {deposit, protected, state} = if landed, do: release_cell(state, body), else: {nil, false, state}
+
+    {deposit, protected, state} =
+      if landed, do: release_cell(state, body), else: {nil, false, state}
 
     temperature =
       cond do
@@ -1229,16 +1450,26 @@ defmodule VoxelRegion.World.Structures do
     {current, state} = target_at(target.micro, state)
 
     cond do
-      not (current != nil and same_target?(current, target) and heat_node?(state, current)) -> {nil, false, state}
-      Access.writable?({:character, caster}, state.protection, [Damage.macro(current)]) -> {current, false, state}
-      true -> {nil, true, state}
+      not (current != nil and same_target?(current, target) and heat_node?(state, current)) ->
+        {nil, false, state}
+
+      Access.writable?({:character, caster}, state.protection, [Damage.macro(current)]) ->
+        {current, false, state}
+
+      true ->
+        {nil, true, state}
     end
   end
 
   def release_cell(state, _body), do: {nil, false, state}
 
   defp temperature(state, target),
-    do: Map.get(property_state(state, target), :temperature_kelvin, ambient_at(state, Damage.macro(target)))
+    do:
+      Map.get(
+        property_state(state, target),
+        :temperature_kelvin,
+        ambient_at(state, Damage.macro(target))
+      )
 
   defp heat_capacity(state, target),
     do: Map.get(state.properties.materials[target.material], "heat_capacity_per_macro", 0.0)
@@ -1262,14 +1493,23 @@ defmodule VoxelRegion.World.Structures do
             do: min(mj, max(0, trunc(site.cell_c * (port - site.temperature_k) * 1000))),
             else: 0
 
-        {deposit(state, site.deposit, into), %{d | thermal_mj: d.thermal_mj + into, radiation_mj: d.radiation_mj + mj - into}}
+        {deposit(state, site.deposit, into),
+         %{d | thermal_mj: d.thermal_mj + into, radiation_mj: d.radiation_mj + mj - into}}
     end)
   end
 
   defp deposit(state, _target, 0), do: state
 
   defp deposit(state, target, mj),
-    do: %{state | thermal: VoxelRegion.World.Thermal.deposit_heat(%{state.thermal | active: true}, target, mj / 1000)}
+    do: %{
+      state
+      | thermal:
+          VoxelRegion.World.Thermal.deposit_heat(
+            %{state.thermal | active: true},
+            target,
+            mj / 1000
+          )
+    }
 
   # 按去向记账（Q4-8，整数 mJ）：净热、发光、灵炁辐射（泄漏与释放的辐射半、活动能、落不进格的热），
   # 沉积进格的泄漏热与终止释放（运转储能热半 + 热份额 + 动能）。
@@ -1278,7 +1518,9 @@ defmodule VoxelRegion.World.Structures do
     heat_in = Enum.sum(for l <- ledgers, do: l.in.heat_mj)
     rounding = Enum.sum(for l <- ledgers, do: l.heat_rounding_mj)
 
-    radiated = sum.(:leak_radiation_mj) + sum.(:release_radiation_mj) + sum.(:activity_mj) + deposit.radiation_mj
+    radiated =
+      sum.(:leak_radiation_mj) + sum.(:release_radiation_mj) + sum.(:activity_mj) +
+        deposit.radiation_mj
 
     thermal =
       Enum.reduce(
@@ -1326,8 +1568,16 @@ defmodule VoxelRegion.World.Structures do
     {bx, by, bz} = bucket(position)
     r = rt.env_neighbor_radius_m
 
-    for(dx <- -1..1, dy <- -1..1, dz <- -1..1, {other, n} <- Map.get(buckets, {bx + dx, by + dy, bz + dz}, []),
-        other != id, d = distance(position, n.position), d < r, do: {other, %{leak_w: n.leak_w, distance_m: d}})
+    for(
+      dx <- -1..1,
+      dy <- -1..1,
+      dz <- -1..1,
+      {other, n} <- Map.get(buckets, {bx + dx, by + dy, bz + dz}, []),
+      other != id,
+      d = distance(position, n.position),
+      d < r,
+      do: {other, %{leak_w: n.leak_w, distance_m: d}}
+    )
     |> Enum.sort_by(fn {other, n} -> {-n.leak_w * (1 - n.distance_m / r), other} end)
     |> Enum.take(rt.env_neighbor_max)
     |> Enum.map(&elem(&1, 1))
@@ -1343,7 +1593,14 @@ defmodule VoxelRegion.World.Structures do
     for {id, %{structure: %Structure{activity: %{radius_m: radius}} = s, body: body}} <- ordered,
         probe = Structure.disruption_field(s, 0.0, tick, catalog),
         probe != nil do
-      %{id: id, structure: s, caster: body.caster, scope: body.combat_scope, radius_m: radius, t_eff_s: probe.seconds}
+      %{
+        id: id,
+        structure: s,
+        caster: body.caster,
+        scope: body.combat_scope,
+        radius_m: radius,
+        t_eff_s: probe.seconds
+      }
       |> Map.merge(Map.take(neighbors.sites[id], [:position, :bucket]))
     end
   end
@@ -1362,7 +1619,10 @@ defmodule VoxelRegion.World.Structures do
             d = distance(e.position, n.position),
             field = Structure.disruption_field(e.structure, d, tick, catalog),
             field != nil,
-            do: {id, field, body.caster == e.caster or MmoContracts.Harm.permitted?(e.scope, e.position, n.position)}
+            do:
+              {id, field,
+               body.caster == e.caster or
+                 MmoContracts.Harm.permitted?(e.scope, e.position, n.position)}
 
       Logger.info(
         "voxel_structure_field emitter=#{inspect(e.id)} cid=#{e.caster} tick=#{tick} t_eff_s=#{e.t_eff_s} radius_m=#{e.radius_m} " <>
@@ -1383,7 +1643,12 @@ defmodule VoxelRegion.World.Structures do
   # 移动超过 0.25 m 已由 Player 打断，误差有界）。他人的场先过 Harm（施法者本人对自己的场不判）。
   defp windup_doses(state, [], _tick, _catalog), do: state
 
-  defp windup_doses(%{pending_casts: casts} = state, emitters, tick, %Catalog{runtime: rt} = catalog) do
+  defp windup_doses(
+         %{pending_casts: casts} = state,
+         emitters,
+         tick,
+         %Catalog{runtime: rt} = catalog
+       ) do
     casts =
       Map.new(casts, fn {cid, pending} ->
         at = pending.actor.position
@@ -1392,7 +1657,8 @@ defmodule VoxelRegion.World.Structures do
           Enum.sum(
             for e <- emitters,
                 e.caster == cid or MmoContracts.Harm.permitted?(e.scope, e.position, at),
-                field = Structure.disruption_field(e.structure, distance(e.position, at), tick, catalog),
+                field =
+                  Structure.disruption_field(e.structure, distance(e.position, at), tick, catalog),
                 field != nil,
                 do: Structure.windup_dose(field, catalog)
           )
@@ -1417,7 +1683,10 @@ defmodule VoxelRegion.World.Structures do
 
     if notify do
       send(pending.actor.player, {:windup_disrupted, key, total})
-      Logger.info("voxel_cast_disrupted cid=#{pending.actor.cid} key=#{inspect(key)} tick=#{tick} dose=#{total}")
+
+      Logger.info(
+        "voxel_cast_disrupted cid=#{pending.actor.cid} key=#{inspect(key)} tick=#{tick} dose=#{total}"
+      )
     end
 
     %{pending | windup_dose: total, disrupted: pending.disrupted or notify}
@@ -1439,7 +1708,15 @@ defmodule VoxelRegion.World.Structures do
   # 已提交事务的序号（收件人只取创建事务序号不大于它的结构，即释放时已经存在的）。须在终止的结构移出之后调用：结构已全部
   # 移出时没有收件人，队列一并删除，不留残余（没有魔法的世界 `thermal` 因此不出现这个键）。
   defp release(state, id, position, released_mj, body) do
-    event = %{id: id, position: position, energy_mj: released_mj, caster: body.caster, scope: body.combat_scope, seq: state.seq}
+    event = %{
+      id: id,
+      position: position,
+      energy_mj: released_mj,
+      caster: body.caster,
+      scope: body.combat_scope,
+      seq: state.seq
+    }
+
     thermal = state.thermal
 
     thermal =
@@ -1475,10 +1752,19 @@ defmodule VoxelRegion.World.Structures do
       {bx, by, bz} = bucket(r.position)
 
       targets =
-        for(dx <- -reach..reach, dy <- -reach..reach, dz <- -reach..reach,
-            {id, site} <- Map.get(neighbors.buckets, {bx + dx, by + dy, bz + dz}, []),
-            elem(id, 0) <= r.seq, d = distance(r.position, site.position), d < radius,
-            do: {id, d, casters[id] == r.caster or MmoContracts.Harm.permitted?(r.scope, r.position, site.position)})
+        for(
+          dx <- -reach..reach,
+          dy <- -reach..reach,
+          dz <- -reach..reach,
+          {id, site} <- Map.get(neighbors.buckets, {bx + dx, by + dy, bz + dz}, []),
+          elem(id, 0) <= r.seq,
+          d = distance(r.position, site.position),
+          d < radius,
+          do:
+            {id, d,
+             casters[id] == r.caster or
+               MmoContracts.Harm.permitted?(r.scope, r.position, site.position)}
+        )
         |> Enum.sort()
 
       Logger.info(
@@ -1492,7 +1778,8 @@ defmodule VoxelRegion.World.Structures do
     |> Map.new(fn {id, doses} -> {id, Enum.sort_by(doses, &{&1.distance_m, &1.energy_mj})} end)
   end
 
-  defp distance({ax, ay, az}, {bx, by, bz}), do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
+  defp distance({ax, ay, az}, {bx, by, bz}),
+    do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
 
   @doc """
   物理体弹道的 canonical 求交（`Magic.Semblance.trace/8`、`segment/5` 的 `cast` 回调；施放时的预测与飞行驱动共用）：

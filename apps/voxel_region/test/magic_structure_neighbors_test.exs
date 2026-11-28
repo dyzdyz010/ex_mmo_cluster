@@ -27,14 +27,21 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
   @digest "22c459f0a8beb59d2396131d935736b98f4a6d0933f77152103f25e0b6b1ecdc"
   @path Application.app_dir(:voxel_region, "priv/magic/#{@digest}.json")
   @samples Path.expand("fixtures/magic/ir-v2-samples.json", __DIR__)
-  @site %{ambient_k: 293.15, formation_distance_m: 3.0, emissivity: 0.9, exchange_w_per_m2_k: 10.0}
+  @site %{
+    ambient_k: 293.15,
+    formation_distance_m: 3.0,
+    emissivity: 0.9,
+    exchange_w_per_m2_k: 10.0
+  }
   @presets ~w(lamp fireball hot_throw scorch dispel_pulse timed_ember guarded_fireball staff_bolt_massless)
   # 改前实现的网格边长（`Structures` 的 `@grid_m`，设计 §5.3 第 1 步的 8 m）。
   @grid_m 8.0
 
   setup_all do
     catalog = Catalog.load(@path)
-    samples = Map.new(Jason.decode!(File.read!(@samples))["samples"], &{&1["id"], &1["program_hex"]})
+
+    samples =
+      Map.new(Jason.decode!(File.read!(@samples))["samples"], &{&1["id"], &1["program_hex"]})
 
     births =
       Map.new(@presets, fn name ->
@@ -55,8 +62,16 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
 
     body =
       case Keyword.get(opts, :flight) do
-        nil -> %{flight: nil, rest: at}
-        {velocity, age} -> %{flight: %{age_s: age}, origin: at, velocity: velocity, massless: name == "staff_bolt_massless"}
+        nil ->
+          %{flight: nil, rest: at}
+
+        {velocity, age} ->
+          %{
+            flight: %{age_s: age},
+            origin: at,
+            velocity: velocity,
+            massless: name == "staff_bolt_massless"
+          }
       end
 
     {id, %{structure: Structure.new(id, group, quote, 0), body: body}}
@@ -74,21 +89,31 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
     end
   end
 
-  defp reference_bucket({x, y, z}), do: {floor(x / @grid_m), floor(y / @grid_m), floor(z / @grid_m)}
+  defp reference_bucket({x, y, z}),
+    do: {floor(x / @grid_m), floor(y / @grid_m), floor(z / @grid_m)}
 
   defp reference_neighbors(index, id, position, %Catalog{runtime: rt}) do
     {bx, by, bz} = reference_bucket(position)
     r = rt.env_neighbor_radius_m
 
-    for({other, n} <- index, other != id, adjacent?(n.bucket, {bx, by, bz}), d = distance(position, n.position), d < r,
-        do: {other, %{leak_w: n.leak_w, distance_m: d}})
+    for(
+      {other, n} <- index,
+      other != id,
+      adjacent?(n.bucket, {bx, by, bz}),
+      d = distance(position, n.position),
+      d < r,
+      do: {other, %{leak_w: n.leak_w, distance_m: d}}
+    )
     |> Enum.sort_by(fn {other, n} -> {-n.leak_w * (1 - n.distance_m / r), other} end)
     |> Enum.take(rt.env_neighbor_max)
     |> Enum.map(&elem(&1, 1))
   end
 
-  defp adjacent?({nx, ny, nz}, {bx, by, bz}), do: abs(nx - bx) <= 1 and abs(ny - by) <= 1 and abs(nz - bz) <= 1
-  defp distance({ax, ay, az}, {bx, by, bz}), do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
+  defp adjacent?({nx, ny, nz}, {bx, by, bz}),
+    do: abs(nx - bx) <= 1 and abs(ny - by) <= 1 and abs(nz - bz) <= 1
+
+  defp distance({ax, ay, az}, {bx, by, bz}),
+    do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
 
   # ---------------------------------------------------------------------------
   # 判定
@@ -101,16 +126,23 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
     reference = reference_index(ordered, catalog)
     assert index.sites === reference
 
-    queries = for({id, site} <- reference, do: {id, site.position}) ++ for(p <- probes, do: {:probe, p})
+    queries =
+      for({id, site} <- reference, do: {id, site.position}) ++ for(p <- probes, do: {:probe, p})
 
     results =
       for {id, position} <- queries do
         expected = reference_neighbors(reference, id, position, catalog)
-        assert Structures.neighbors_of(index, id, position, catalog) === expected, "查询 #{inspect(id)} @ #{inspect(position)}"
+
+        assert Structures.neighbors_of(index, id, position, catalog) === expected,
+               "查询 #{inspect(id)} @ #{inspect(position)}"
+
         expected
       end
 
-    %{nonempty: Enum.count(results, &(&1 != [])), truncated: Enum.count(results, &(length(&1) == catalog.runtime.env_neighbor_max))}
+    %{
+      nonempty: Enum.count(results, &(&1 != [])),
+      truncated: Enum.count(results, &(length(&1) == catalog.runtime.env_neighbor_max))
+    }
   end
 
   defp count_distance_calls(fun) do
@@ -131,7 +163,15 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
   defp scatter(c, n, seed) do
     :rand.seed(:exsss, {seed, 7, 11})
     side = :math.pow(n * 512.0, 1 / 3)
-    for k <- 1..n, do: entry(c, k, {:rand.uniform() * side - side / 2, :rand.uniform() * side, :rand.uniform() * side - side / 2})
+
+    for k <- 1..n,
+        do:
+          entry(
+            c,
+            k,
+            {:rand.uniform() * side - side / 2, :rand.uniform() * side,
+             :rand.uniform() * side - side / 2}
+          )
   end
 
   test "手排边界情形：跨桶与负坐标、重合、恰好 r_N、贡献相同按 id、超过 16 个候选时截断，新旧逐项相等", c do
@@ -160,7 +200,15 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
       entry(c, 109, {58.0, 31.0, 59.0}, flight: {{-30.0, 0.0, 0.0}, 0.1})
     ]
 
-    probes = [{0.0, 1.0, 0.0}, {-0.0, 1.0, -0.0}, {4.0, 4.0, 4.0}, {44.5, 1.0, 0.5}, {-16.0, -8.0, 16.0}, {59.0, 30.0, 60.0}]
+    probes = [
+      {0.0, 1.0, 0.0},
+      {-0.0, 1.0, -0.0},
+      {4.0, 4.0, 4.0},
+      {44.5, 1.0, 0.5},
+      {-16.0, -8.0, 16.0},
+      {59.0, 30.0, 60.0}
+    ]
+
     result = assert_equivalent(Enum.sort(ring ++ edges), c.catalog, probes)
     assert result.truncated >= 24 and result.nonempty >= 34
   end
@@ -172,7 +220,16 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
 
     # 稠密：120 个挤在 12 m 立方体里，大多数查询有 > 16 个候选。
     :rand.seed(:exsss, {3, 7, 11})
-    dense = for k <- 1..120, do: entry(c, k, {:rand.uniform() * 12 - 6, :rand.uniform() * 12, :rand.uniform() * 12 - 6})
+
+    dense =
+      for k <- 1..120,
+          do:
+            entry(
+              c,
+              k,
+              {:rand.uniform() * 12 - 6, :rand.uniform() * 12, :rand.uniform() * 12 - 6}
+            )
+
     assert assert_equivalent(Enum.sort(dense), c.catalog).truncated > 60
   end
 
@@ -183,19 +240,37 @@ defmodule VoxelRegion.MagicStructureNeighborsTest do
         index = Structures.neighbor_index(ordered, c.catalog)
         reference = reference_index(ordered, c.catalog)
         queries = for {id, site} <- index.sites, do: {id, site.position}
-        lookup = fn -> for {id, at} <- queries, do: Structures.neighbors_of(index, id, at, c.catalog) end
+
+        lookup = fn ->
+          for {id, at} <- queries, do: Structures.neighbors_of(index, id, at, c.catalog)
+        end
 
         # 比较次数：每个候选（相邻 27 桶内的其他结构）恰好算一次距离；候选对数由测试独立数出。
         calls = count_distance_calls(lookup)
-        candidates = Enum.count(for {a, sa} <- index.sites, {b, sb} <- index.sites, a != b, adjacent?(sa.bucket, sb.bucket), do: b)
+
+        candidates =
+          Enum.count(
+            for {a, sa} <- index.sites,
+                {b, sb} <- index.sites,
+                a != b,
+                adjacent?(sa.bucket, sb.bucket),
+                do: b
+          )
+
         assert calls == candidates
 
         work = reductions(lookup)
-        reference_work = reductions(fn -> for {id, at} <- queries, do: reference_neighbors(reference, id, at, c.catalog) end)
+
+        reference_work =
+          reductions(fn ->
+            for {id, at} <- queries, do: reference_neighbors(reference, id, at, c.catalog)
+          end)
+
         {n, %{calls: calls / n, work: work / n, reference: reference_work / n}}
       end
 
     message = "每结构：256 个时 #{inspect(small)}，1024 个时 #{inspect(large)}"
+
     # 结构数 ×4：线性实现的每结构量只随边缘效应略增（< 1.5 倍）；改前的全表扫描每结构多看 3 倍的条目（> 2.5 倍），
     # 证明这个计量分辨得出平方增长（Testing.md §5 保留能证伪旧判定的反例）。
     assert large.calls < 1.5 * small.calls, message

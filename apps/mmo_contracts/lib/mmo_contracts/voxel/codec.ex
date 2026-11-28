@@ -1418,9 +1418,9 @@ defmodule MmoContracts.Voxel.Codec do
           {vx, vy, vz} = f.velocity
           {rx, ry, rz} = f.rest
 
-          <<seq::64, n::32, f.live::8, f.caster::64, f.shape::8, f.flags::8,
-            f.size1_m::float-64, f.temperature_k::float-64, f.glow_w::float-64, ox::float-64,
-            oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, f.t0_us::64,
+          <<seq::64, n::32, f.live::8, f.caster::64, f.shape::8, f.flags::8, f.size1_m::float-64,
+            f.temperature_k::float-64, f.glow_w::float-64, ox::float-64, oy::float-64,
+            oz::float-64, vx::float-64, vy::float-64, vz::float-64, f.t0_us::64,
             f.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64, f.size2_mm::16,
             f.size3_mm::16, f.proto_id::16, f.coupling_mask::16, f.load::8, f.coherence::8,
             f.status::8, f.failed_segments::8, f.anchor_type::8, f.anchor_ref::binary-size(12)>>
@@ -1489,11 +1489,15 @@ defmodule MmoContracts.Voxel.Codec do
 
   # 记录（名字与布尔）→ 线上字段（位掩码）；缺键即显式失败（KeyError）。
   defp structure_wire_fields(record) do
-    flags = for {name, true} <- [ends_on_contact: record.ends_on_contact, massless: record.massless], do: name
+    flags =
+      for {name, true} <- [ends_on_contact: record.ends_on_contact, massless: record.massless],
+          do: name
 
     record
-    |> Map.take(~w(live caster shape size1_m temperature_k glow_w origin velocity t0_us flight_s rest
-         size2_mm size3_mm proto_id load coherence failed_segments anchor_type anchor_ref)a)
+    |> Map.take(
+      ~w(live caster shape size1_m temperature_k glow_w origin velocity t0_us flight_s rest
+         size2_mm size3_mm proto_id load coherence failed_segments anchor_type anchor_ref)a
+    )
     |> Map.merge(%{
       flags: names_mask(@structure_flags, flags),
       coupling_mask: names_mask(@structure_couplings, record.coupling),
@@ -1568,8 +1572,8 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_structure_states(<<>>, _, acc), do: {:ok, acc}
 
   defp decode_structure_states(
-         <<seq::64, n::32, load::8, coherence::8, status::8, failed::8, temperature::16,
-           glow::16, rest::binary>>,
+         <<seq::64, n::32, load::8, coherence::8, status::8, failed::8, temperature::16, glow::16,
+           rest::binary>>,
          previous,
          acc
        )
@@ -1614,7 +1618,12 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp mask_names(table, mask),
-    do: for({name, bit} <- Enum.with_index(table), Bitwise.band(mask, Bitwise.bsl(1, bit)) != 0, do: name)
+    do:
+      for(
+        {name, bit} <- Enum.with_index(table),
+        Bitwise.band(mask, Bitwise.bsl(1, bit)) != 0,
+        do: name
+      )
 
   @doc """
   施放记录 v2（Hello 46，设计 §11.4.6，决策稿 slice3-protocol §3.3）：待施放增量 `%{caster => 记录}` 的线字节，

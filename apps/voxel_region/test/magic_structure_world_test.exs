@@ -35,7 +35,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
   @properties "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
   @fixtures Path.expand("fixtures", __DIR__)
-  @catalog Path.expand("../priv/magic", __DIR__) |> Path.join("*.json") |> Path.wildcard() |> then(fn [path] -> path end)
+  @catalog Path.expand("../priv/magic", __DIR__)
+           |> Path.join("*.json")
+           |> Path.wildcard()
+           |> then(fn [path] -> path end)
   @ir Path.join(@fixtures, "magic/ir-v2-samples.json") |> File.read!() |> Jason.decode!()
   @external_resource @catalog
   @external_resource Path.join(@fixtures, "magic/ir-v2-samples.json")
@@ -80,7 +83,11 @@ defmodule VoxelRegion.MagicStructureWorldTest do
             age = max(shot.age_s, (now - shot.t0_us) / 1.0e6)
             {vx, vy, vz} = shot.velocity
             t = at_m / :math.sqrt(vx * vx + vy * vy + vz * vz)
-            hit = if age > shot.age_s and t > shot.age_s and t <= age, do: {(t - shot.age_s) / (age - shot.age_s), target}
+
+            hit =
+              if age > shot.age_s and t > shot.age_s and t <= age,
+                do: {(t - shot.age_s) / (age - shot.age_s), target}
+
             {id, shot.age_s, {:sample, age, shot.projectile_source, hit, now}}
         end
       end
@@ -153,14 +160,24 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     root = Path.join(System.tmp_dir!(), "structure_world_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
-    File.cp!(Path.join([@fixtures, "combustion", @properties <> ".json"]), Path.join(root, "properties.json"))
-    File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
+
+    File.cp!(
+      Path.join([@fixtures, "combustion", @properties <> ".json"]),
+      Path.join(root, "properties.json")
+    )
+
+    File.cp!(
+      Path.join([@fixtures, "combustion", "environment-radiation.json"]),
+      Path.join(root, "environment.json")
+    )
+
     File.cp!(@catalog, Path.join(root, "magic.json"))
     w = start(root)
     ground = for x <- -8..12, z <- -2..4, do: {{x, 0, z}, @stone}
     wall = [{{2, 1, 4}, @stone}, {{2, 2, 4}, @stone}]
     {:ok, _} = World.apply_edits(w, ground ++ wall ++ [{{2, 1, 0}, @battery}, {{0, 2, 3}, @leaf}])
     a = actor()
+
     # 作者初态：蓄能石 A 的正式属性行经持久化边界写入 10 MJ（同 `magic_world_test.exs`）。
     {:ok, row} = World.tool_intent(w, a, query(a, @stone_micro))
     seq = World.seq(w)
@@ -176,7 +193,15 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     clock = start_supervised!({Agent, fn -> 1_000_000_000 end}, id: :flight_clock)
     w = start(root, clock: clock)
     :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
-    %{w: w, root: root, a: a, clock: clock, opts: [], digest: :crypto.hash(:sha256, File.read!(@catalog))}
+
+    %{
+      w: w,
+      root: root,
+      a: a,
+      clock: clock,
+      opts: [],
+      digest: :crypto.hash(:sha256, File.read!(@catalog))
+    }
   end
 
   # `opts`：`clock`（服务器时间线 Agent，缺省用生产单调时钟）与直接透传给 World 的 `projectile_backend`、`log`、`source`、
@@ -240,8 +265,18 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   end
 
   defp actor(extra \\ %{}) do
-    a = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2, eye: {0.5, 2.5, 0.5},
-      feet: {0.5, 1.0, 0.5}, tick_us: 16_667, controller: :player} |> Map.merge(extra)
+    a =
+      %{
+        cid: @cid,
+        gate: self(),
+        identity: make_ref(),
+        refresh: &Actor.tool_context/2,
+        eye: {0.5, 2.5, 0.5},
+        feet: {0.5, 1.0, 0.5},
+        tick_us: 16_667,
+        controller: :player
+      }
+      |> Map.merge(extra)
 
     Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
   end
@@ -249,7 +284,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   defp next, do: System.unique_integer([:positive, :monotonic])
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [@cid], @box)
   defp energy(c), do: elem(World.caster_state(c.w, @cid), 1).energy_j
-  defp program(id), do: Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
+
+  defp program(id),
+    do:
+      Enum.find(@ir["samples"], &(&1["id"] == id))["program_hex"] |> Base.decode16!(case: :lower)
 
   defp aim(a, {x, y, z}) do
     {ex, ey, ez} = a.eye
@@ -261,23 +299,46 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   defp query(a, micro) do
     seq = next()
 
-    %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 0, tool_id: 1, direction: aim(a, micro),
-      micro: micro, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
+    %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: aim(a, micro),
+      micro: micro,
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
   end
 
   defp request(c, micro, bytes, opts) do
     {:ok, target} = World.tool_intent(c.w, c.a, query(c.a, micro))
     seq = next()
 
-    %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: Keyword.get(opts, :action, 1),
-      catalog_digest: c.digest, direction: aim(c.a, micro), program: bytes}
+    %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: Keyword.get(opts, :action, 1),
+      catalog_digest: c.digest,
+      direction: aim(c.a, micro),
+      program: bytes
+    }
     |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
   end
 
   defp spell(c, micro, bytes, opts \\ []) do
     request = request(c, micro, bytes, opts)
     at = Keyword.get(opts, :at, request.client_intent_seq * 1_000_000)
-    VoxelRegion.TestSupport.spell(c.w, Map.merge(c.a, %{received_us: at, clock_node: node()}), request)
+
+    VoxelRegion.TestSupport.spell(
+      c.w,
+      Map.merge(c.a, %{received_us: at, clock_node: node()}),
+      request
+    )
   end
 
   # 〈取〉程序（设计 §11.4.1）：kind 0、下标 0、`energy_j` 槽 dec。
@@ -300,7 +361,11 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # 建成：返回 {结构 id, 出生记录, 施放回复}。施放记录 live 0 与结构记录 live 1 必须在同一笔事务里（W4-1）。
   defp build(c, micro, preset, at) do
     assert {:ok, %{outcome: nil} = reply} = spell(c, micro, program(preset), at: at)
-    assert_receive {:canonical_delta, %{transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}} = txn}}, 5_000
+
+    assert_receive {:canonical_delta,
+                    %{transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}} = txn}},
+                   5_000
+
     assert [{id, record}] = Map.to_list(Map.fetch!(txn, :structures))
     assert id == {txn.seq, 0} and txn.seq == reply.seq
     {id, record, reply}
@@ -356,20 +421,34 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # body 为切片 5 人物命中进入组织的部分）。
   defp assert_accounts_closed(thermal) do
     get = &Map.get(thermal, &1, 0)
-    keys = [:structure_created_mj, :structure_heat_in_mj, :structure_light_mj, :anima_radiated_mj, :structure_leak_heat_mj,
-      :structure_released_mj, :structure_body_mj, :structure_stored_mj]
+
+    keys = [
+      :structure_created_mj,
+      :structure_heat_in_mj,
+      :structure_light_mj,
+      :anima_radiated_mj,
+      :structure_leak_heat_mj,
+      :structure_released_mj,
+      :structure_body_mj,
+      :structure_stored_mj
+    ]
+
     assert Enum.all?(keys, &is_integer(get.(&1))), inspect(Map.take(thermal, keys))
 
     assert get.(:structure_created_mj) + get.(:structure_heat_in_mj) ==
              get.(:structure_light_mj) + get.(:anima_radiated_mj) + get.(:structure_leak_heat_mj) +
-               get.(:structure_released_mj) + get.(:structure_body_mj) + get.(:structure_stored_mj),
+               get.(:structure_released_mj) + get.(:structure_body_mj) +
+               get.(:structure_stored_mj),
            inspect(Map.take(thermal, keys))
   end
 
   test "W4-1 灯经 spell_intent 建成：扣费 = 报价；同一事务里施放记录 live 0 与结构记录 live 1；load 56、温度 0、发光 100 W", c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
-    assert {:ok, %{caster: quoted}} = spell(c, @leaf_micro, program("lamp"), action: 0, at: 1_500_000)
+
+    assert {:ok, %{caster: quoted}} =
+             spell(c, @leaf_micro, program("lamp"), action: 0, at: 1_500_000)
+
     before = energy(c)
 
     {{seq, 0} = id, record, reply} = build(c, @leaf_micro, "lamp", 2_000_000)
@@ -377,8 +456,22 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_in_delta energy(c), before - quoted.quote_j, 1.0e-6
 
     # 线上字段（决策稿 §3.1）：灯无质量、静止在手边，无〈热〉温度 0，发光取〈辉〉标称 100 W，线内无状态位。
-    assert %{live: 1, caster: @cid, shape: 0, massless: true, ends_on_contact: false, load: 56, coherence: 255,
-             temperature_k: +0.0, glow_w: 100.0, status: [], coupling: [:glow], anchor_type: 0, flight_s: +0.0} = record
+    assert %{
+             live: 1,
+             caster: @cid,
+             shape: 0,
+             massless: true,
+             ends_on_contact: false,
+             load: 56,
+             coherence: 255,
+             temperature_k: +0.0,
+             glow_w: 100.0,
+             status: [],
+             coupling: [:glow],
+             anchor_type: 0,
+             flight_s: +0.0
+           } = record
+
     assert record.origin == record.rest and record.velocity == {0.0, 0.0, 0.0}
     {ex, ey, ez} = c.a.eye
     {dx, dy, dz} = aim(c.a, @leaf_micro)
@@ -390,7 +483,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert s.structures == %{id => record}
     assert s.thermal.structures == 1 and Map.get(s.thermal, :commit_tick, 0) == 0
     # 物理能量 = 〈蓄〉50 kJ（灯无热份额与动能），构型损耗留脚下。
-    assert s.thermal.structure_created_mj == 50_000_000 and s.thermal.structure_stored_mj == 50_000_000
+    assert s.thermal.structure_created_mj == 50_000_000 and
+             s.thermal.structure_stored_mj == 50_000_000
+
     assert seq == reply.seq
   end
 
@@ -417,6 +512,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     tick = tick(c) - born
     assert tick in 263..265, "灯在第 #{tick} 拍终止"
     assert ended.live == Codec.structure_end_live(:exhausted)
+
     # 终态快照：最后一拍仍发出光（发光在泄漏之后支付），装载已降到很低。
     assert ended.glow_w > 0 and ended.load < 56
     # 状态增量：每拍至多一条，且只在分箱改变时发（远少于拍数）。
@@ -426,8 +522,11 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     s = observe(c.w)
     assert s.structures == %{}
     assert s.thermal.structures == 0 and s.thermal.structure_stored_mj == 0
+
     # 灯悬在手边空气里：泄漏与释放的热落不进任何格，全部计入灵炁辐射账；发光逐拍计入光账。
-    assert Map.get(s.thermal, :structure_leak_heat_mj, 0) == 0 and Map.get(s.thermal, :structure_released_mj, 0) == 0
+    assert Map.get(s.thermal, :structure_leak_heat_mj, 0) == 0 and
+             Map.get(s.thermal, :structure_released_mj, 0) == 0
+
     assert s.thermal.structure_light_mj > 0 and s.thermal.anima_radiated_mj > 0
     assert_accounts_closed(s.thermal)
   end
@@ -438,7 +537,14 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {id, _record, _} = build(c, @leaf_micro, "lamp", 2_000_000)
     for _ <- 1..10, do: commit(c)
     before = observe(c.w)
-    persisted = fn -> Path.join(c.root, "overlay.log") |> OverlayLog.File.replay() |> Enum.filter(&Map.has_key?(&1, :thermal)) |> List.last() end
+
+    persisted = fn ->
+      Path.join(c.root, "overlay.log")
+      |> OverlayLog.File.replay()
+      |> Enum.filter(&Map.has_key?(&1, :thermal))
+      |> List.last()
+    end
+
     %{thermal: %{structures: %{^id => stored}, commit_tick: tick}} = persisted.()
     # 落盘的是显式字段 map（Q4-7），拍号与结构的最后一拍一致。
     refute is_struct(stored.structure)
@@ -447,12 +553,22 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     c = restart(c)
     after_restart = observe(c.w)
     assert after_restart.structures == before.structures
-    keys = [:commit_tick, :structures, :structure_stored_mj, :structure_created_mj, :structure_light_mj, :anima_radiated_mj]
+
+    keys = [
+      :commit_tick,
+      :structures,
+      :structure_stored_mj,
+      :structure_created_mj,
+      :structure_light_mj,
+      :anima_radiated_mj
+    ]
+
     assert Map.take(after_restart.thermal, keys) == Map.take(before.thermal, keys)
 
     commit(c)
     %{thermal: %{structures: %{^id => next}, commit_tick: next_tick}} = persisted.()
     assert next_tick == tick + 1 and next.structure.last_tick == tick + 1
+
     # 只走了一拍：运转储能恰好少一拍的出账（灯无供能、无热，出账为正），没有按停机时长补算。
     assert next.structure.e_op_mj < stored.structure.e_op_mj
     assert next.structure.born_tick == stored.structure.born_tick
@@ -462,7 +578,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
 
     for k <- 1..6 do
-      assert {:ok, %{outcome: nil}} = spell(c, @leaf_micro, program("lamp"), at: (1 + k) * 1_000_000)
+      assert {:ok, %{outcome: nil}} =
+               spell(c, @leaf_micro, program("lamp"), at: (1 + k) * 1_000_000)
     end
 
     assert map_size(observe(c.w).structures) == 6
@@ -477,7 +594,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {id, record, _} = build(c, @leaf_micro, "timed_ember", 2_000_000)
     assert record.anchor_type == 1
     # 他人（cid 2002）在施放之后认领叶所在列。
-    {:ok, _} = World.author_regions(c.w, [%{holder: {:character, 2002}, min: {0, 3}, max: {0, 3}}])
+    {:ok, _} =
+      World.author_regions(c.w, [%{holder: {:character, 2002}, min: {0, 3}, max: {0, 3}}])
+
     drain()
 
     log =
@@ -485,13 +604,21 @@ defmodule VoxelRegion.MagicStructureWorldTest do
         Enum.reduce_while(1..80, nil, fn _, _ ->
           commit(c)
           {records, _} = drain()
-          if Enum.any?(records, fn {_, rid, r} -> rid == id and r.live == 6 end), do: {:halt, :ended}, else: {:cont, nil}
+
+          if Enum.any?(records, fn {_, rid, r} -> rid == id and r.live == 6 end),
+            do: {:halt, :ended},
+            else: {:cont, nil}
         end)
       end)
 
-    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=6 type=released .*protected=true/
+    assert log =~
+             ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=6 type=released .*protected=true/
+
     s = observe(c.w)
-    assert Map.get(s.thermal, :structure_leak_heat_mj, 0) == 0 and Map.get(s.thermal, :structure_released_mj, 0) == 0
+
+    assert Map.get(s.thermal, :structure_leak_heat_mj, 0) == 0 and
+             Map.get(s.thermal, :structure_released_mj, 0) == 0
+
     refute Map.has_key?(s.thermal.sources, {0, 2, 3})
     assert_accounts_closed(s.thermal)
   end
@@ -505,6 +632,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
       Enum.reduce_while(1..80, nil, fn _, _ ->
         commit(c)
         {records, _} = drain()
+
         case for({_, ^id, %{live: 6} = r} <- records, do: r) do
           [] -> {:cont, nil}
           [r] -> {:halt, r}
@@ -524,6 +652,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {id, record, _} = build(c, @ground_micro, "hot_throw", 3_000_000)
     assert :flying in record.status and not record.massless
     assert_in_delta record.temperature_k, 2000.0, 1.0e-9
+
     # 切片 5：飞行按墙钟推进（服务器时间线），落地后才作为热节点；一拍飞完全程（约 0.5 s）。
     fly(c, 1.0)
     assert :flying not in observe(c.w).structures[id].status
@@ -537,8 +666,13 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     # 降温后不再受限。一次提交多次内核调用时子步数相加（calls ≥ 2 的行）。
     throttles =
       for [_, tick, throttled, _clamped, scale, steps, calls] <-
-            Regex.scan(~r/voxel_thermal_throttle tick=(\d+) throttled_nodes=(\d+) clamped_nodes=(\d+) min_scale=([\d.e-]+) kernel_steps=(\d+) calls=(\d+)/, log),
-          do: {String.to_integer(tick), String.to_integer(throttled), String.to_float(scale), String.to_integer(steps), String.to_integer(calls)}
+            Regex.scan(
+              ~r/voxel_thermal_throttle tick=(\d+) throttled_nodes=(\d+) clamped_nodes=(\d+) min_scale=([\d.e-]+) kernel_steps=(\d+) calls=(\d+)/,
+              log
+            ),
+          do:
+            {String.to_integer(tick), String.to_integer(throttled), String.to_float(scale),
+             String.to_integer(steps), String.to_integer(calls)}
 
     assert [{_, 1, scale, _, _} | _] = throttles
     assert scale < 1.0
@@ -567,20 +701,33 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     request = if direction, do: %{request | direction: direction}, else: request
     actor = Map.merge(c.a, %{received_us: at, clock_node: node()})
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(c.w, actor, request)
-    assert_receive {:canonical_delta, %{transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}} = txn}}, 5_000
+
+    assert_receive {:canonical_delta,
+                    %{transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}} = txn}},
+                   5_000
+
     assert [{id, record}] = Map.to_list(Map.fetch!(txn, :structures))
     {id, record}
   end
 
   defp bolt(energy_j \\ 1742),
-    do: @bolt_hex |> Base.decode16!(case: :lower) |> binary_part(0, 26) |> Kernel.<>(<<0::4, energy_j::12>>) |>
-          Kernel.<>(binary_part(Base.decode16!(@bolt_hex, case: :lower), 28, 14))
+    do:
+      @bolt_hex
+      |> Base.decode16!(case: :lower)
+      |> binary_part(0, 26)
+      |> Kernel.<>(<<0::4, energy_j::12>>)
+      |> Kernel.<>(binary_part(Base.decode16!(@bolt_hex, case: :lower), 28, 14))
 
   # 飞到弹道上与 `point` 相距 [lo, hi] m 的最早时刻（5 ms 步长，纯运动学），一拍推进到那里后停住（时钟不再前进）。
   defp hover(c, record, point, lo, hi) do
     t =
       Enum.find(1..200, fn k ->
-        d = distance(Semblance.position(record.origin, record.velocity, k * 0.005, record.massless), point)
+        d =
+          distance(
+            Semblance.position(record.origin, record.velocity, k * 0.005, record.massless),
+            point
+          )
+
         d >= lo and d <= hi
       end) * 0.005
 
@@ -588,12 +735,16 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     t
   end
 
-  defp distance({ax, ay, az}, {bx, by, bz}), do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
+  defp distance({ax, ay, az}, {bx, by, bz}),
+    do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
 
   # 日志里最后一份持久化的结构值（显式字段 map 经 `Structure.from_record/2` 换回）。
   defp persisted(c, id) do
     %{thermal: %{structures: %{^id => %{structure: record}}}} =
-      Path.join(c.root, "overlay.log") |> OverlayLog.File.replay() |> Enum.filter(&Map.has_key?(&1, :thermal)) |> List.last()
+      Path.join(c.root, "overlay.log")
+      |> OverlayLog.File.replay()
+      |> Enum.filter(&Map.has_key?(&1, :thermal))
+      |> List.last()
 
     {:ok, s} = Structure.from_record(record, Catalog.load(@catalog))
     s
@@ -618,7 +769,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     Enum.reduce_while(1..max, %{}, fn n, acc ->
       commit(c)
       {records, _} = drain()
-      acc = Enum.reduce(records, acc, fn {_, id, r}, acc -> if id in ids and r.live != 1, do: Map.put(acc, id, {n, r}), else: acc end)
+
+      acc =
+        Enum.reduce(records, acc, fn {_, id, r}, acc ->
+          if id in ids and r.live != 1, do: Map.put(acc, id, {n, r}), else: acc
+        end)
+
       if map_size(acc) == length(ids), do: {:halt, acc}, else: {:cont, acc}
     end)
     |> tap(&assert(map_size(&1) == length(ids), "#{max} 次提交内未全部终止：#{inspect(Map.keys(&1))}"))
@@ -631,8 +787,15 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   end
 
   defp register_backend(target_at_m) do
-    target = %{id: 2002, identity: :target, life_generation: 7, position: {11.0, 1.0, 0.5}, velocity: {0.0, 0.0, 0.0},
-      tissue_k: 307.15, tissue_c_j_per_k: 209.4}
+    target = %{
+      id: 2002,
+      identity: :target,
+      life_generation: 7,
+      position: {11.0, 1.0, 0.5},
+      velocity: {0.0, 0.0, 0.0},
+      tissue_k: 307.15,
+      tissue_c_j_per_k: 209.4
+    }
 
     :persistent_term.put(BodyBackend, %{test: self(), target: target, at_m: target_at_m})
     on_exit(fn -> :persistent_term.erase(BodyBackend) end)
@@ -647,10 +810,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     log = info_log(fn -> fly_until(c, 1.0, fn -> observe(c.w).structures == %{} end) end)
     ended = ended_record(id)
     assert ended.live == Codec.structure_end_live(:contact) and :flying not in ended.status
+
     # 球心停在墙的 z = 4 面外一个半径（0.25 m）；飞行终点即命中时刻，落点在该时刻的弹道上（z 取面）。
     {x, y, z} = ended.rest
     assert_in_delta z, 4.0 - 0.25, 1.0e-9
     assert x > 2.0 and x < 3.0 and y > 2.0 and y < 3.0
+
     # 地形按 50 ms 弦段求交：命中点在弦上，与抛物线相差不超过弦的拱高 g·Δt²/8 ≈ 3 mm。
     {px, py, _} = Semblance.position(record.origin, record.velocity, ended.flight_s, false)
     assert_in_delta x, px, 0.005
@@ -658,11 +823,16 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert ended.flight_s > 0.2 and ended.flight_s < 0.3
 
     sid = Regex.escape(inspect(id))
-    assert log =~ ~r/voxel_structure_flight sid=#{sid} .*phase=contact target=terrain .*reading_lost=false/
+
+    assert log =~
+             ~r/voxel_structure_flight sid=#{sid} .*phase=contact target=terrain .*reading_lost=false/
+
     # 日志的 type 是终止事件，与 live 同一原子（决策稿 §3.2、§4.2）：接触终止记 type=contact，不是〈散〉的结构终止类型。
-    assert log =~ ~r/voxel_structure_end .*sid=#{sid} .*live=2 type=contact .*cell=\{2, 2, 4\} .*hit=terrain/
+    assert log =~
+             ~r/voxel_structure_end .*sid=#{sid} .*live=2 type=contact .*cell=\{2, 2, 4\} .*hit=terrain/
 
     s = observe(c.w)
+
     # 运转储能热半、热份额（至多到 T_port）与动能（0.5 kg × 12² / 2 = 36 J）都进墙格；墙格得到有限热源。
     assert s.thermal.structure_released_mj > 36_000
     assert Map.has_key?(s.thermal.sources, {2, 2, 4})
@@ -673,10 +843,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     {ember, ember_record} = build_program(c, @leaf_micro, program("timed_ember"), 2_000_000)
+
     # 过热保险火球的寿命约 39 拍（附录 A.3：19.5 s），短于火种的 60 拍：火种走过 40 拍后再施放。
     for _ <- 1..40, do: commit(c)
     drain()
     {id, record} = build_program(c, @wall_micro, program("guarded_fireball"), 3_000_000)
+
     # 停在距火种 1.3–1.4 m 处：剂量按 (1 − d / 3 m)² 衰减，火种约 187 kJ 的释放在这里把相干压进 (0.3, 0.5)。
     t = hover(c, record, ember_record.rest, 1.3, 1.4)
     assert :flying in observe(c.w).structures[id].status
@@ -693,7 +865,8 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_accounts_closed(observe(c.w).thermal)
   end
 
-  test "W5-3 法杖光弹（无质量）：直线匀速、无射程终点，第 3 拍在飞行中以 live 3 衰竭；发射相位 0.05 s 与 0.5 s 时路程 31.5 m 与 45 m", c do
+  test "W5-3 法杖光弹（无质量）：直线匀速、无射程终点，第 3 拍在飞行中以 live 3 衰竭；发射相位 0.05 s 与 0.5 s 时路程 31.5 m 与 45 m",
+       c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
 
@@ -702,6 +875,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
       {id, record} = build_program(c, @leaf_micro, bolt(), at, {1.0, 0.0, 0.0})
       assert record.massless and record.ends_on_contact and :flying in record.status
       assert record.velocity == {30.0, 0.0, 0.0}
+
       # 线上预测到预计飞行时长 1.5 s（报价寿命 1.255 s 的整拍上界）为止，不在施法域 30 m 处截断。
       assert record.flight_s == 1.5
 
@@ -753,12 +927,17 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     # 下一拍交付：Q5-2 进入组织的是 E_op 热半——命中在第一个热拍之前，E_op = 〈蓄〉1742 J，不补记维持费（Q5-3 暂行），
     # 所以 q = ½ × 1742 J = 871 J；无〈热〉、无质量，没有热份额与动能；辐射半 871 J 只记账。
     log = info_log(fn -> fly(c, 0.05) end)
-    assert_received {:backend_delivered, ^id, %{q_j: q_j, target: %{id: 2002, life_generation: 7}}}
+
+    assert_received {:backend_delivered, ^id,
+                     %{q_j: q_j, target: %{id: 2002, life_generation: 7}}}
+
     assert q_j == 871.0
     assert_received {:backend_notified, %{q_j: 871.0}, seq}
     ended = ended_record(id)
     assert ended.live == Codec.structure_end_live(:contact) and ended.rest == frozen.rest
-    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*hit=body accepted=true/
+
+    assert log =~
+             ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*hit=body accepted=true/
 
     s = observe(c.w)
     assert s.seq == seq
@@ -805,13 +984,16 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     {ember, ember_record} = build_program(c, @leaf_micro, program("timed_ember"), 2_000_000)
+
     # 火球的寿命约 49 拍（附录 A.3：24.5 s），火种走过 40 拍后再施放，火种释放后还剩约 29 拍可找丢失拍。
     for _ <- 1..40, do: commit(c)
     drain()
     {id, record} = build_program(c, @wall_micro, program("fireball"), 3_000_000)
+
     # 停在距火种 1.55–1.7 m 处：火种的终止释放给它约 0.3–0.45 的欠账（相干仍高于 0.3），读数丢失概率 0.5。
     hover(c, record, ember_record.rest, 1.55, 1.7)
     {_, %{live: 6}} = commit_until_end(c, ember, 70)
+
     # 火种的终止释放在下一热拍生效（决策稿 §11.3 #6）：再推进一拍，火球才带上欠账。
     commit(c)
     catalog = Catalog.load(@catalog)
@@ -829,9 +1011,17 @@ defmodule VoxelRegion.MagicStructureWorldTest do
       end)
 
     assert lost, "30 拍内没有丢失拍"
-    log = info_log(fn -> fly_until(c, 1.0, fn -> :flying not in observe(c.w).structures[id].status end) end)
+
+    log =
+      info_log(fn ->
+        fly_until(c, 1.0, fn -> :flying not in observe(c.w).structures[id].status end)
+      end)
+
     sid = Regex.escape(inspect(id))
-    assert log =~ ~r/voxel_structure_flight sid=#{sid} .*phase=contact target=terrain .*reading_lost=true/
+
+    assert log =~
+             ~r/voxel_structure_flight sid=#{sid} .*phase=contact target=terrain .*reading_lost=true/
+
     {records, _} = drain()
     assert [landed] = for({_, ^id, r} <- records, do: r)
     assert landed.live == 1 and :flying not in landed.status
@@ -878,6 +1068,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     c = restart(c, source: BeyondSource)
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
+
     # 〈蓄〉4000 J 的光弹在热拍里约飞 5 s（第 10 拍衰竭）；本例不推进热提交，只飞行。x = 192 m 以外的 region 读不出 canonical。
     {id, _record} = build_program(c, @leaf_micro, bolt(4000), 2_000_000, {1.0, 0.0, 0.0})
     log = info_log(fn -> fly_until(c, 7.0, fn -> observe(c.w).structures == %{} end) end)
@@ -909,6 +1100,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {_, hy, _} = record.origin
     {_, vy, _} = record.velocity
     t_fall = (vy + :math.sqrt(vy * vy + 2 * 9.81 * hy)) / 9.81
+
     # 测试世界 x > 12 m 之外没有地面，预测不命中：线上预测到 t_fall 为止。旧规则按路程 30 m（约 1.0 s）截断。
     assert_in_delta record.flight_s, t_fall, 1.0e-9
     {ox, _, _} = record.origin
@@ -917,7 +1109,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
 
     # 真实飞行：不推进热拍（不衰竭），飞 1.5 s（路程 > 30 m 施法域）仍在飞行，位置在弹道上。
     fly_until(c, 1.5, fn -> false end)
-    flight = Enum.find(World.stats(c.w).simulation_progress.projectiles.flights, &(&1.id == inspect(id)))
+
+    flight =
+      Enum.find(World.stats(c.w).simulation_progress.projectiles.flights, &(&1.id == inspect(id)))
+
     assert_in_delta flight.simulated_through_s, 1.5, 1.0e-9
     assert :flying in observe(c.w).structures[id].status
     {x, y, _} = Semblance.position(record.origin, record.velocity, 1.5, false)
@@ -930,11 +1125,21 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     key = make_ref()
     actor = Map.put(c.a, :action_key, key)
     request = %{direction: {1.0, 0.0, 0.0}, program: bolt(4000)}
-    state = %{state | pending_casts: %{@cid => %{actor: actor, request: request, program: program}}}
+
+    state = %{
+      state
+      | pending_casts: %{@cid => %{actor: actor, request: request, program: program}}
+    }
 
     # 预计飞行时长：报价寿命 life_s ≈ 4.886 s → 整拍上界 (⌊4.886 / 0.5⌋ + 1) × 0.5 = 5.0 s；无质量路程 30 m/s × 5 s = 150 m。
-    quote = Cost.quote_structure(program, state.magic, %{ambient_k: 293.15, formation_distance_m: 0.0, emissivity: 0.9,
-      exchange_w_per_m2_k: 10.0})
+    quote =
+      Cost.quote_structure(program, state.magic, %{
+        ambient_k: 293.15,
+        formation_distance_m: 0.0,
+        emissivity: 0.9,
+        exchange_w_per_m2_k: 10.0
+      })
+
     assert_in_delta quote.life_s, 4.886, 0.001
     assert Structures.flight_horizon_s(quote, {30.0, 0.0, 0.0}, true, 2.5) == 5.0
 
@@ -967,13 +1172,26 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert_receive {:holding_publish, writer}, 5_000
 
     Enum.reduce_while(1..20, nil, fn _, _ ->
-      if World.stats(c.w).persist_level == :mid, do: {:halt, :ok}, else: (commit(c); {:cont, nil})
+      if World.stats(c.w).persist_level == :mid,
+        do: {:halt, :ok},
+        else:
+          (
+            commit(c)
+            {:cont, nil}
+          )
     end)
 
     assert World.stats(c.w).persist_level == :mid
     tick = tick(c)
     structures = observe(c.w).structures
-    flight = fn -> Enum.find(World.stats(c.w).simulation_progress.projectiles.flights, &(&1.id == inspect(bolt_id))) end
+
+    flight = fn ->
+      Enum.find(
+        World.stats(c.w).simulation_progress.projectiles.flights,
+        &(&1.id == inspect(bolt_id))
+      )
+    end
+
     before = flight.()
 
     send(c.w, :thermal_commit)
@@ -1005,6 +1223,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     {hot, hot_record} = build_program(c, @wall_micro, program("scorch"), 2_000_000)
+
     # 出生记录按报价（施法者所在格的气候温度，设计 §4.2）判越线：不越线。
     assert hot_record.status == []
 
@@ -1014,7 +1233,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert :overline in hot_state.status
 
     [_, x_star, env, temperature] =
-      Regex.run(~r/voxel_structure_state sid=#{Regex.escape(inspect(hot))} .*x_star=([\d.e-]+) env=([\d.e-]+) .*temperature_k=([\d.e-]+)/, log)
+      Regex.run(
+        ~r/voxel_structure_state sid=#{Regex.escape(inspect(hot))} .*x_star=([\d.e-]+) env=([\d.e-]+) .*temperature_k=([\d.e-]+)/,
+        log
+      )
 
     # 手算（设计 §4.3）：env = 1 + 0.5 × (500 − 300) / 100 = 2，x* = √(((1 + 4 × 0.6124²) / 2 − 1) / 4) = 0.25。
     assert_in_delta String.to_float(temperature), 500.0, 1.0
@@ -1036,8 +1258,16 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # 悬空感应器的位置：包围盒 z ∈ [1.5, 2.0]，四周是空气；石格 (5, 2, 2) 的 z = 2 面恰与盒面相贴。
   @sensor_point {5.5, 2.5, 1.75}
   # 碰到感应器的人物（角色 2002）的身体报告，形状同 `body_contact_world_test.exs`（Scene 每秒一次的 `{:body_contact, …}`）。
-  @toucher %{height: 1.8, radius: 0.3, skin_k: 307.15, capacity: 24_430.0, area: 1.8, tissue_k: 307.15,
-    tissue_capacity: 209.4, tissue_g: 0.378207}
+  @toucher %{
+    height: 1.8,
+    radius: 0.3,
+    skin_k: 307.15,
+    capacity: 24_430.0,
+    area: 1.8,
+    tissue_k: 307.15,
+    tissue_capacity: 209.4,
+    tissue_g: 0.378207
+  }
 
   defp scorch_with(rule) do
     scorch = program("scorch")
@@ -1047,7 +1277,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # 近环境温度的悬空感应器：“灼点”的形成锚〈附〉（00 08 FF）换成〈握〉（00 07），〈热〉t0 由 15000 dK 改为 2940 dK
   # （294.0 K，同 `magic_admission_world_test.exs` 的温石），末尾加〈遇〉→〈散〉。
   defp warm_sensor do
-    <<head::binary-size(3), 0, 8, 0xFF, mid::binary-size(16), 0x3A98::16, rest::binary-size(7), 0>> = program("scorch")
+    <<head::binary-size(3), 0, 8, 0xFF, mid::binary-size(16), 0x3A98::16, rest::binary-size(7),
+      0>> = program("scorch")
+
     head <> <<0, 7>> <> mid <> <<2940::16>> <> rest <> @contact_rule
   end
 
@@ -1059,7 +1291,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # 感应器悬在 `point`：施法者面朝 +z、眼在 point 后 0.5 m（同 `hand_lamp/4`）；返回结构 id。
   defp hand_sensor(c, {x, y, z} = point, at) do
     a = actor(%{eye: {x, y, z - 0.5}, feet: {x, y - 1.5, z - 0.5}})
-    assert {:ok, %{outcome: nil, seq: seq}} = hand_spell(%{c | a: a}, legal!(warm_sensor()), {0.0, 0.0, 1.0}, at)
+
+    assert {:ok, %{outcome: nil, seq: seq}} =
+             hand_spell(%{c | a: a}, legal!(warm_sensor()), {0.0, 0.0, 1.0}, at)
+
     {records, _} = drain()
     assert [{^seq, id, %{live: 1, rest: rest, ends_on_contact: true, status: []}}] = records
     assert distance(rest, point) < 1.0e-9
@@ -1072,7 +1307,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
       commit(c)
       {records, states} = drain()
       assert for({_, ^id, r} <- records, r.live != 1, do: r.live) == []
-      if Enum.any?(states, fn {_, sid, r} -> sid == id and :asleep in r.status end), do: {:halt, n}, else: {:cont, nil}
+
+      if Enum.any?(states, fn {_, sid, r} -> sid == id and :asleep in r.status end),
+        do: {:halt, n},
+        else: {:cont, nil}
     end)
     |> tap(&assert(&1, "#{max} 次提交内 #{inspect(id)} 未休眠"))
   end
@@ -1080,7 +1318,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   # 日志里 `id` 的首次导热边接触：[{拍号, 对端种类, 是否从休眠中唤醒}]。
   defp contact_events(log, id) do
     for [_, tick, peers, woke] <-
-          Regex.scan(~r/voxel_structure_contact sid=#{Regex.escape(inspect(id))} cid=\d+ tick=(\d+) peers=(\S+) woke=(\w+)/, log),
+          Regex.scan(
+            ~r/voxel_structure_contact sid=#{Regex.escape(inspect(id))} cid=\d+ tick=(\d+) peers=(\S+) woke=(\w+)/,
+            log
+          ),
         do: {String.to_integer(tick), peers, woke}
   end
 
@@ -1089,18 +1330,22 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     subscribe(c)
     born = tick(c)
     {id, record} = build_program(c, @wall_micro, legal!(scorch_with(@contact_rule)), 2_000_000)
+
     # 不带〈投〉：出生即静止在墙面上（接触格 = 准星命中的墙石 (2, 2, 4)），出生记录 ends_on_contact 置位。
     assert %{ends_on_contact: true, anchor_type: 1, flight_s: +0.0, status: []} = record
 
     log = info_log(fn -> commit(c) end)
     ended = ended_record(id)
+
     # 用户 2026-11-26 裁定 ②：出生前没有热拍，第 1 拍就是导热边首次出现；读〈遇〉的规则触发记 live 2（Q4-W3）。
     assert ended.live == Codec.structure_end_live(:contact)
     assert ended.rest == record.rest
     assert [{tick, "cell", "false"}] = contact_events(log, id)
     assert tick == born + 1 and tick(c) == born + 1
     # 释放只落进接触格（设计 §5.2，决策稿 §11.3 #9）。
-    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*cell=\{2, 2, 4\}/
+    assert log =~
+             ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*live=2 type=contact .*cell=\{2, 2, 4\}/
+
     s = observe(c.w)
     assert s.structures == %{} and s.thermal.structure_released_mj > 0
     assert_accounts_closed(s.thermal)
@@ -1110,13 +1355,16 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     born = tick(c)
-    {id, _record} = build_program(c, @wall_micro, legal!(scorch_with(@contact_timer_rule)), 2_000_000)
+
+    {id, _record} =
+      build_program(c, @wall_micro, legal!(scorch_with(@contact_timer_rule)), 2_000_000)
 
     log =
       info_log(fn ->
         # 第 1 拍首次导热边：〈时〉未到期，规则未满足，接触被消费（设计 §5.4）。〈时〉到期拍 = 出生拍 + ⌈2 s ÷ 0.5 s⌉ = 第 4 拍：
         # 此时仍贴着墙，但接触是“事件发生时，一次性”，不是持续成立的状态，规则仍未满足。
         for _ <- 1..5, do: commit(c)
+
         # 第 6 拍墙格已拆（没有导热边）；第 7、8 拍同一位置放回石格，导热边再次出现，但不是“首次”。
         {:ok, _} = World.apply_edits(c.w, [{{2, 2, 4}, 0}])
         commit(c)
@@ -1132,10 +1380,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert tick == born + 1
   end
 
-  test "§11.3 #16 休眠后被人碰到：近环境温度的悬空〈握〉〈热 294 K〉〈遇〉〈散〉无接触 2 拍即休眠；人物碰到它的那一拍唤醒、首次出现导热边，以 live 2 终止", c do
+  test "§11.3 #16 休眠后被人碰到：近环境温度的悬空〈握〉〈热 294 K〉〈遇〉〈散〉无接触 2 拍即休眠；人物碰到它的那一拍唤醒、首次出现导热边，以 live 2 终止",
+       c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     id = hand_sensor(c, @sensor_point, 2_000_000)
+
     # 设计 §5.3.2 与 Q7-W2：没有接触节点时只看净热流（< 100 W），连续 2 拍平静即休眠。
     assert commit_until_asleep(c, id, 4) == 2
     # 再过一拍：没有接触就没有导热边，不触发、不唤醒。
@@ -1190,12 +1440,15 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
     bytes = legal!(plate())
+
     # 地面石 (2, 0, 2) 的顶面 y = 1：〈附〉的中心沿进入面法线外移该轴半尺寸（`Semblance` 落点规则）；板面法线为世界 +Y、
     # 半厚 = size3（设计 §11.4.2），所以中心 y = 1 + 0.05。
     {_, flat} = build_program(c, @ground_micro, bytes, 2_000_000)
+
     # 线上字段照旧是 size1–3 原值（字节不变）；客户端 `HalfExtentsM` 自己按 (size1, size3, size2) 取三轴半尺寸。
     assert %{shape: 2, size1_m: 0.4, size2_mm: 600, size3_mm: 50, anchor_type: 1} = flat
     assert_in_delta elem(flat.rest, 1), 1.05, 1.0e-9
+
     # 墙石 (2, 2, 4) 的 z = 4 面：法向沿 z，该轴半尺寸 = size2（局部 Z 半边长）→ 中心 z = 4 − 0.6。
     {_, wall} = build_program(c, @wall_micro, bytes, 3_000_000)
     assert_in_delta elem(wall.rest, 2), 3.4, 1.0e-9
@@ -1243,10 +1496,26 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   defp hand_spell(c, bytes, direction, at) do
     seq = next()
 
-    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-      direction: direction, program: bytes, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
+    request = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 1,
+      catalog_digest: c.digest,
+      direction: direction,
+      program: bytes,
+      micro: {0, 0, 0},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
 
-    VoxelRegion.TestSupport.spell(c.w, Map.merge(c.a, %{received_us: at, clock_node: node()}), request)
+    VoxelRegion.TestSupport.spell(
+      c.w,
+      Map.merge(c.a, %{received_us: at, clock_node: node()}),
+      request
+    )
   end
 
   defp offset({x, y, z}, {dx, dy, dz}), do: {x + dx, y + dy, z + dz}
@@ -1261,10 +1530,15 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     log = info_log(fn -> commit(c) end)
     {records, _} = drain()
     ended = Map.new(for {_, id, %{live: live}} <- records, live != 1, do: {id, live})
+
     # 附录 A.4：d = 0 的灯第 1 拍末欠账 1.182 > 0.7，被干预场打掉 → 驱散（live 5）；脉冲自己第 1 拍照常运行（R2）。
     assert ended == %{lamp => Codec.structure_end_live(:dispelled)}
-    assert log =~ ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(lamp))} .*live=5 type=dispelled/
-    assert log =~ ~r/voxel_structure_field emitter=#{Regex.escape(inspect(pulse))} .*t_eff_s=0\.5 .*targets=1/
+
+    assert log =~
+             ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(lamp))} .*live=5 type=dispelled/
+
+    assert log =~
+             ~r/voxel_structure_field emitter=#{Regex.escape(inspect(pulse))} .*t_eff_s=0\.5 .*targets=1/
 
     {n, pulse_end} = commit_until_end(c, pulse, 3)
     # 附录 A.3：脉冲存续约 0.6 s，逐拍在第 2 拍衰竭（断供，live 3）。
@@ -1282,6 +1556,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {records, states} = drain()
     refute Enum.any?(for {_, ^lamp, r} <- records, do: r.live != 1)
     assert_in_delta debt(persisted(c, lamp)), 0.601, 0.005
+
     # 变暗：相干随欠账下降（线上 coherence < 255，客户端据此表现变暗与读数时断时续）。
     assert [_ | _] = dim = for({_, ^lamp, r} <- states, do: r.coherence)
     assert List.last(dim) < 255
@@ -1290,6 +1565,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   test "W6-1/W6-2/验收 4 驱散脉冲 2 m 外的灯存活、轻微受损：欠账 0.131 ± 0.005（附录 A.4）；施法者自己的结构同样受剂量", c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
+
     # 灯与脉冲同一施法者（@cid）：误伤己方（设计 §7.3、§14.0 Q16），不过 Harm。灯放在球心 +x 2 m（−x 一侧施法者的眼会落进叶格）。
     lamp = hand_lamp(c, offset(pulse_center(c), {2.0, 0.0, 0.0}), 2_000_000)
     build_pulse(c, 3_000_000)
@@ -1306,9 +1582,17 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     lamp = hand_lamp(c, offset(pulse_center(c), {-1.0, 0.0, 0.0}), 2_000_000, %{cid: 2002})
 
     # 施法者没有战斗范围（本场禁伤，Scene 配置缺省）：他人的灯不受场，欠账 0、相干满。
-    log = info_log(fn -> build_pulse(c, 3_000_000); commit(c); commit(c) end)
+    log =
+      info_log(fn ->
+        build_pulse(c, 3_000_000)
+        commit(c)
+        commit(c)
+      end)
+
     assert debt(persisted(c, lamp)) == 0
-    assert log =~ ~r/voxel_structure_field .*targets=0 doses=\[\{#{Regex.escape(inspect(lamp))}, [\d.e-]+, false\}\]/
+
+    assert log =~
+             ~r/voxel_structure_field .*targets=0 doses=\[\{#{Regex.escape(inspect(lamp))}, [\d.e-]+, false\}\]/
 
     # 对照：施放时带覆盖双方的战斗范围，同一位置的第二个脉冲作用于他人的灯（附录 A.4 的 1 m 量级）。
     scoped = actor(%{combat_scope: {{-20.0, -20.0, -20.0}, {20.0, 20.0, 20.0}}})
@@ -1327,7 +1611,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     actor(%{eye: {x, 2.5, pz}, feet: {x, 1.0, pz}, position: {x, 1.9, pz}, observer: self()})
   end
 
-  defp doses(log), do: for([_, total] <- Regex.scan(~r/voxel_cast_dose cid=#{@cid} .*total=([\d.e-]+)/, log), do: String.to_float(total))
+  defp doses(log),
+    do:
+      for(
+        [_, total] <- Regex.scan(~r/voxel_cast_dose cid=#{@cid} .*total=([\d.e-]+)/, log),
+        do: String.to_float(total)
+      )
 
   test "W6-4 前摇中的施法者距发出者 1 m：第 1 拍累计 0.444 ≥ 0.3 即通知前摇 owner 一次，脉冲结束时累计 0.527", c do
     fund(c, 1_000_000, 1_000_000)
@@ -1336,11 +1625,30 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     a = windup_caster(c, 1.0)
     seq = next()
 
-    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-      direction: {-1.0, 0.0, 0.0}, program: program("lamp"), micro: {0, 0, 0}, granularity: 0, incarnation: 0,
-      owner: {0, 0}, material: 0}
+    request = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 1,
+      catalog_digest: c.digest,
+      direction: {-1.0, 0.0, 0.0},
+      program: program("lamp"),
+      micro: {0, 0, 0},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
 
-    task = Task.async(fn -> World.spell_intent(c.w, Map.merge(a, %{received_us: 3_000_000, clock_node: node()}), request) end)
+    task =
+      Task.async(fn ->
+        World.spell_intent(
+          c.w,
+          Map.merge(a, %{received_us: 3_000_000, clock_node: node()}),
+          request
+        )
+      end)
+
     await(fn -> Map.has_key?(observe(c.w).casts, @cid) end)
     key = {a.identity, seq}
 
@@ -1353,6 +1661,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     log = info_log(fn -> commit(c) end)
     assert [total] = doses(log)
     assert_in_delta total, 0.527, 0.002
+
     # 只通知一次（Player 收到后自行打断；仍在前摇的 World 只累计不重发）。
     refute_receive {:windup_disrupted, _, _}, 100
 
@@ -1367,14 +1676,39 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     a = windup_caster(c, 1.5)
     seq = next()
 
-    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, catalog_digest: c.digest,
-      direction: {-1.0, 0.0, 0.0}, program: program("lamp"), micro: {0, 0, 0}, granularity: 0, incarnation: 0,
-      owner: {0, 0}, material: 0}
+    request = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 1,
+      catalog_digest: c.digest,
+      direction: {-1.0, 0.0, 0.0},
+      program: program("lamp"),
+      micro: {0, 0, 0},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
 
-    task = Task.async(fn -> World.spell_intent(c.w, Map.merge(a, %{received_us: 3_000_000, clock_node: node()}), request) end)
+    task =
+      Task.async(fn ->
+        World.spell_intent(
+          c.w,
+          Map.merge(a, %{received_us: 3_000_000, clock_node: node()}),
+          request
+        )
+      end)
+
     await(fn -> Map.has_key?(observe(c.w).casts, @cid) end)
+
     # 脉冲两拍后衰竭；之后没有结构，热提交拍号不再推进（前摇中的灯尚未建成）。
-    log = info_log(fn -> commit(c); commit(c) end)
+    log =
+      info_log(fn ->
+        commit(c)
+        commit(c)
+      end)
+
     assert_in_delta List.last(doses(log)), 0.297, 0.002
     refute_receive {:windup_disrupted, _, _}, 100
 
@@ -1392,12 +1726,20 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     lamp = program("lamp")
     n = byte_size(lamp) - 2
     <<0, 0>> = binary_part(lamp, n, 2)
-    legal!(binary_part(lamp, 0, n) <> <<0, 1, 0, 1, 0x23::16, duration_cs::16, 0xFF, 1, 0x2C::16, 0>>)
+
+    legal!(
+      binary_part(lamp, 0, n) <> <<0, 1, 0, 1, 0x23::16, duration_cs::16, 0xFF, 1, 0x2C::16, 0>>
+    )
   end
 
   # 终止日志里的释放能量 E（`voxel_structure_end … released_mj`，整数 mJ）。
   defp released_mj(log, id) do
-    assert [_, mj] = Regex.run(~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*released_mj=(\d+)/, log)
+    assert [_, mj] =
+             Regex.run(
+               ~r/voxel_structure_end .*sid=#{Regex.escape(inspect(id))} .*released_mj=(\d+)/,
+               log
+             )
+
     String.to_integer(mj)
   end
 
@@ -1409,13 +1751,18 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     rt = Catalog.load(@catalog).runtime
     x = (s.e_op_mj + abs(s.e_th_mj)) / s.e_cap_mj
 
-    rt.disruption_rate_per_s * s.precision * (1 + rt.disruption_load_gain * x * x) * rt.disruption_dose_gain *
+    rt.disruption_rate_per_s * s.precision * (1 + rt.disruption_load_gain * x * x) *
+      rt.disruption_dose_gain *
       rt.release_dose_ratio * (energy_mj / 1.0e6) * (1 - d / rt.release_dose_radius_m) ** 2
   end
 
   # 日志里最后一份持久化的 `thermal`。
   defp last_thermal(c),
-    do: Path.join(c.root, "overlay.log") |> OverlayLog.File.replay() |> Enum.filter(&Map.has_key?(&1, :thermal)) |> List.last()
+    do:
+      Path.join(c.root, "overlay.log")
+      |> OverlayLog.File.replay()
+      |> Enum.filter(&Map.has_key?(&1, :thermal))
+      |> List.last()
 
   # 火球自默认手边瞄向墙石 (2, 2, 4)：返回 {结构 id, 施放时预测的落点}。预测落点即施放时弹道求交的命中点（z = 4 面外一个
   # 半径）；真实飞行按 50 ms 弦段求交，与预测相差毫米级（W5-1）。施放后飞行不推进，直到 `fly_into_wall/2`。
@@ -1425,7 +1772,11 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   end
 
   defp fly_into_wall(c, id) do
-    log = info_log(fn -> fly_until(c, 1.0, fn -> not Map.has_key?(observe(c.w).structures, id) end) end)
+    log =
+      info_log(fn ->
+        fly_until(c, 1.0, fn -> not Map.has_key?(observe(c.w).structures, id) end)
+      end)
+
     hit = ended_record(id)
     assert hit.live == Codec.structure_end_live(:contact)
     {hit, log}
@@ -1434,6 +1785,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
   test "§11.3 #6 释放剂量与施放先后无关：两对同样布置、施放先后相反的“定时灯 → 2 m 外的灯”，收件灯在下一热拍得到逐位相同的欠账（设计 §5.5 手算）", c do
     fund(c, 1_000_000, 1_000_000)
     subscribe(c)
+
     # 两对相距 > 8 m（互不在邻居项半径内），几何相同：定时灯在收件灯 −x 方向 2 m。−x 一对先施放定时灯（id 更小），
     # +x 一对先施放收件灯（id 更小）——旧实现里只有前者在定时灯终止的同一拍收到剂量。
     e1 = hand_cast(c, {-5.5, 2.5, 1.0}, timed_lamp(100), 2_000_000)
@@ -1443,7 +1795,12 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     assert e1 < r1 and r2 < e2
 
     # 〈时 1 s〉的到期拍 = 出生拍 + ⌈1 s ÷ 0.5 s⌉ = 第 2 拍：两盏定时灯都以 live 6 终止；这一拍的释放还没有作用于任何结构。
-    log = info_log(fn -> commit(c); commit(c) end)
+    log =
+      info_log(fn ->
+        commit(c)
+        commit(c)
+      end)
+
     {records, _} = drain()
     assert Enum.sort(for {_, id, %{live: 6}} <- records, do: id) == Enum.sort([e1, e2])
     assert {persisted(c, r1).debt_micro, persisted(c, r2).debt_micro} == {0, 0}
@@ -1453,7 +1810,10 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     commit(c)
     {s1, s2} = {persisted(c, r1), persisted(c, r2)}
     assert s1.debt_micro > 0
-    assert {s1.debt_micro, s1.debt_int_micro, s1.e_op_mj} == {s2.debt_micro, s2.debt_int_micro, s2.e_op_mj}
+
+    assert {s1.debt_micro, s1.debt_int_micro, s1.e_op_mj} ==
+             {s2.debt_micro, s2.debt_int_micro, s2.e_op_mj}
+
     assert s1.debt_int_micro == 0
     assert released_mj(log, e1) == released_mj(log, e2)
     assert_in_delta debt(s1), release_dose(before, released_mj(log, e1), 2.0), 1.0e-6
@@ -1468,6 +1828,7 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {hit, log} = fly_into_wall(c, ball)
     d = distance(hit.rest, offset(predicted, {2.4, 0.0, 0.0}))
     assert d < 3.0
+
     # 撞墙那笔投射物提交事务不改别的结构：灯还没有走过热拍，欠账为 0。
     before = persisted(c, lamp)
     assert {before.last_tick, before.debt_micro} == {0, 0}
@@ -1476,7 +1837,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     after_hit = persisted(c, lamp)
     assert_in_delta debt(after_hit), release_dose(before, released_mj(log, ball), d), 1.0e-6
     assert after_hit.debt_int_micro == 0
-    assert tick_log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} cid=#{@cid} tick=1 .*targets=1 /
+
+    assert tick_log =~
+             ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} cid=#{@cid} tick=1 .*targets=1 /
 
     # 队列用完即清空：再走一拍不重复施加，灯在线内只偿还，欠账下降。
     log = info_log(fn -> commit(c) end)
@@ -1499,13 +1862,21 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     # C 离火球落点 > 3 m，不受这次剂量。
     log = info_log(fn -> commit(c) end)
     b_end = ended_record(b)
-    assert b_end.live in [Codec.structure_end_live(:exhausted), Codec.structure_end_live(:collapsed)]
+
+    assert b_end.live in [
+             Codec.structure_end_live(:exhausted),
+             Codec.structure_end_live(:collapsed)
+           ]
+
     before = persisted(c, lamp_c)
     assert before.debt_micro == 0
 
     # 第 2 拍：B 的释放作用于 C。
     commit(c)
-    assert_in_delta debt(persisted(c, lamp_c)), release_dose(before, released_mj(log, b), 2.5), 1.0e-6
+
+    assert_in_delta debt(persisted(c, lamp_c)),
+                    release_dose(before, released_mj(log, b), 2.5),
+                    1.0e-6
   end
 
   test "§11.3 #6 冷重启在释放与生效之间：待生效队列随 thermal 落盘，恢复后下一热拍照常生效；损坏的队列在恢复时显式拒绝", c do
@@ -1514,9 +1885,13 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     {ball, predicted} = fireball(c, 2_000_000)
     lamp = hand_lamp(c, offset(predicted, {2.4, 0.0, 0.0}), 3_000_000)
     {hit, log} = fly_into_wall(c, ball)
+
     # 撞墙那笔投射物提交事务的 thermal 带一条释放事件（可选键，为空时不写）。
     stored = last_thermal(c)
-    assert [%{id: ^ball, position: position, energy_mj: energy, caster: @cid, scope: nil}] = stored.thermal.structure_releases
+
+    assert [%{id: ^ball, position: position, energy_mj: energy, caster: @cid, scope: nil}] =
+             stored.thermal.structure_releases
+
     assert position == hit.rest and energy == released_mj(log, ball)
     before = persisted(c, lamp)
 
@@ -1533,7 +1908,15 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     thermal = %{stored.thermal | structure_releases: [%{event | energy_mj: -1}]}
     path = Path.join(c.root, "overlay.log")
     seq = path |> OverlayLog.File.replay() |> List.last() |> Map.fetch!(:seq)
-    OverlayLog.File.append(path, %{seq: seq + 1, entries: [], coarse: [], property_states: [], thermal: thermal})
+
+    OverlayLog.File.append(path, %{
+      seq: seq + 1,
+      entries: [],
+      coarse: [],
+      property_states: [],
+      thermal: thermal
+    })
+
     capture_log(fn ->
       assert {:error, reason} = start_supervised(world_spec(c.root, clock: c.clock), id: :world)
       assert inspect(reason) =~ "voxel_structure_restore_failed releases"
@@ -1553,10 +1936,13 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     log = info_log(fn -> commit(c) end)
     assert persisted(c, older).debt_micro > 0
     assert persisted(c, newer).debt_micro == 0
-    assert log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} .*targets=1 doses=\[\{#{Regex.escape(inspect(older))}, /
+
+    assert log =~
+             ~r/voxel_structure_release sid=#{Regex.escape(inspect(ball))} .*targets=1 doses=\[\{#{Regex.escape(inspect(older))}, /
   end
 
-  test "§11.3 #6 释放剂量作用于他人结构前过 Harm（与驱散场同一判定，对照 W6-3）：施法时没有战斗范围的火球不伤他人的灯、照常伤自己的灯；带战斗范围时伤及范围内他人的灯", c do
+  test "§11.3 #6 释放剂量作用于他人结构前过 Harm（与驱散场同一判定，对照 W6-3）：施法时没有战斗范围的火球不伤他人的灯、照常伤自己的灯；带战斗范围时伤及范围内他人的灯",
+       c do
     other = actor(%{cid: 2002})
     fund(%{c | a: other}, 1_000_000, 1_000_000)
     fund(c, 2_000_000, 1_500_000)
@@ -1571,7 +1957,9 @@ defmodule VoxelRegion.MagicStructureWorldTest do
     log = info_log(fn -> commit(c) end)
     assert debt(persisted(c, theirs)) == 0
     assert debt(persisted(c, mine)) > 0
-    assert log =~ ~r/voxel_structure_release sid=#{Regex.escape(inspect(first))} .*targets=1 doses=.*\{#{Regex.escape(inspect(theirs))}, [\d.e-]+, false\}/
+
+    assert log =~
+             ~r/voxel_structure_release sid=#{Regex.escape(inspect(first))} .*targets=1 doses=.*\{#{Regex.escape(inspect(theirs))}, [\d.e-]+, false\}/
 
     # 对照：施放时带覆盖双方的战斗范围，同一处撞墙的第二个火球的释放作用于他人的灯。
     scoped = actor(%{combat_scope: {{-20.0, -20.0, -20.0}, {20.0, 20.0, 20.0}}})
